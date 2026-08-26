@@ -62,5 +62,5 @@ docs/source/**/generated/
 .vscode/
 .DS_Store
 
-# Refs 
+# Refs
 /pymc-marketing
