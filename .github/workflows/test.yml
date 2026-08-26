@@ -70,6 +70,12 @@ jobs:
       - name: Run tests with coverage
         run: pytest -m "not slow" --cov --cov-report=xml --cov-report=term
 
+      - name: Run tests with JAX 64-bit mode
+        if: matrix.python-version == '3.12'
+        env:
+          JAX_ENABLE_X64: "true"
+        run: pytest -m "not slow"
+
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.12'
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
