@@ -1,0 +1,79 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  dependencyDashboard: false,
+  dependencyDashboardTitle: "Renovate Dependency Dashboard",
+  schedule: ["before 4am on Monday"],
+  timezone: "America/New_York",
+  labels: ["dependencies"],
+  semanticCommits: "disabled",
+  separateMajorMinor: true,
+  enabledManagers: ["github-actions", "pre-commit", "pep621", "pixi"],
+  "pre-commit": {
+    enabled: true,
+  },
+  packageRules: [
+    // Pin GitHub Actions to SHA digests for security
+    {
+      matchDepTypes: ["action"],
+      pinDigests: true,
+    },
+    // Annotate GitHub Actions SHAs with SemVer version
+    {
+      extends: ["helpers:pinGitHubActionDigests"],
+      extractVersion: "^(?<version>v?\\d+\\.\\d+\\.\\d+)$",
+      versioning: "regex:^v?(?<major>\\d+)(\\.(?<minor>\\d+)\\.(?<patch>\\d+))?$",
+    },
+    // Group all pre-commit hook updates together
+    {
+      groupName: "pre-commit hooks",
+      matchManagers: ["pre-commit"],
+    },
+    // Group GitHub Actions updates together
+    {
+      groupName: "GitHub Actions",
+      matchManagers: ["github-actions"],
+      matchDatasources: ["gitea-tags", "github-tags"],
+    },
+    // Disable PRs updating GitHub runners (e.g. 'runs-on: ubuntu-latest')
+    {
+      matchManagers: ["github-actions"],
+      matchDatasources: ["github-runners"],
+      enabled: false,
+    },
+    // Group dependency updates by purpose across pyproject.toml and pixi.toml
+    {
+      groupName: "core dependencies",
+      matchManagers: ["pep621", "pixi"],
+      matchPackageNames: ["jax", "jaxtyping"],
+    },
+    {
+      groupName: "test dependencies",
+      matchManagers: ["pep621", "pixi"],
+      matchPackageNames: ["pytest", "pytest-cov", "pytest-timeout"],
+    },
+    {
+      groupName: "documentation dependencies",
+      matchManagers: ["pep621", "pixi"],
+      matchPackageNames: [
+        "ipython",
+        "matplotlib-base",
+        "myst-nb",
+        "myst-parser",
+        "sphinx",
+        "sphinx-copybutton",
+        "sphinx-design",
+        "sphinx-immaterial",
+      ],
+    },
+    {
+      groupName: "development dependencies",
+      matchManagers: ["pep621", "pixi"],
+      matchPackageNames: ["flit", "mypy", "prek", "ruff", "ty"],
+    },
+  ],
+  vulnerabilityAlerts: {
+    labels: ["dependencies", "security"],
+    // Run vulnerability alerts immediately, not just on schedule
+    schedule: ["at any time"],
+  },
+}

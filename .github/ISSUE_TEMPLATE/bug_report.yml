@@ -1,0 +1,87 @@
+name: Bug report
+description: Report a bug or unexpected behavior in mmmJAX
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. Filling out the sections
+        below with a minimal example helps us reproduce and fix the issue quickly.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Preliminary checks
+      options:
+        - label: I have searched the [existing issues](https://github.com/jordandeklerk/mmmJAX/issues) and this has not already been reported.
+          required: true
+        - label: I am using the latest released version of mmmJAX, or the `main` branch.
+          required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproducible example
+      description: A minimal, self-contained snippet that reproduces the problem.
+      placeholder: |
+        import jax
+        import mmmjax
+
+        # << your code here >>
+      render: python
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened? Paste the full traceback if there is an error.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: mmmjax-version
+    attributes:
+      label: mmmJAX version
+      description: 'Output of `python -c "import mmmjax; print(mmmjax.__version__)"`'
+    validations:
+      required: true
+
+  - type: textarea
+    id: runtime
+    attributes:
+      label: JAX runtime information
+      description: >
+        Paste the output of `python -c "import jax; jax.print_environment_info()"`.
+        This reports your JAX, jaxlib, NumPy, and Python versions, your platform,
+        and the available devices (CPU / GPU / TPU).
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Anything else that might help, such as related issues or references.
+    validations:
+      required: false

@@ -1,0 +1,14 @@
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 2%
+        base: auto
+        paths:
+          - "mmmjax"
+        branches:
+          - main
+        if_ci_failed: error
+        informational: false
+        only_pulls: false
