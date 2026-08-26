@@ -1,0 +1,82 @@
+[workspace]
+authors = ["Jordan DeKlerk <jordan.deklerk@gmail.com>"]
+description = "Bayesian marketing mix modeling in JAX, in the style of Stan."
+channels = ["conda-forge"]
+name = "mmmjax"
+platforms = ["linux-64", "osx-arm64", "osx-64"]
+version = "0.0.1"
+
+[dependencies]
+python = ">=3.11,<3.15"
+jax = ">=0.10.0,<0.11"
+
+[feature.dev.dependencies]
+pytest = ">=7.0.0"
+pytest-cov = ">=4.0.0"
+pytest-timeout = ">=2.0.0"
+
+[feature.dev.tasks]
+tests = "pytest -vv"
+
+[feature.docs.dependencies]
+sphinx = ">=8,<9"
+sphinx-copybutton = ">=0.5"
+sphinx-design = ">=0.7"
+ipython = "*"
+matplotlib-base = "*"
+
+[feature.docs.pypi-dependencies]
+myst-parser = { version = ">=5.0.0", extras = ["linkify"] }
+myst-nb = ">=1.4.0"
+sphinx-immaterial = ">=0.13.9"
+
+[feature.docs.tasks]
+docs = "sphinx-build -E -a -W --keep-going -d docs/_doctree docs/source docs/_build/html --color -bhtml"
+docs-open = { cmd = "python -c \"import functools, http.server, threading, webbrowser; threading.Timer(0.8, lambda: webbrowser.open('http://127.0.0.1:8765')).start(); handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory='docs/_build/html'); print('serving docs at http://127.0.0.1:8765, stop with ctrl-c'); http.server.HTTPServer(('127.0.0.1', 8765), handler).serve_forever()\"", depends-on = [
+  "docs",
+] }
+docs-serve = { cmd = "python -m http.server 8765 --directory docs/_build/html --bind 127.0.0.1", depends-on = [
+  "docs",
+] }
+docs-clean = "rm -rf docs/_build docs/_doctree"
+
+[feature.lint.dependencies]
+mypy = ">=1.0.0"
+
+[feature.lint.pypi-dependencies]
+prek = "*"
+ruff = ">=0.16.4"
+ty = "*"
+
+[feature.lint.tasks]
+lint = "SKIP=no-commit-to-branch prek run --all-files"
+typecheck = { cmd = "mypy mmmjax && ty check mmmjax" }
+
+[feature.build.dependencies]
+pip = "*"
+flit = ">=4,<5"
+
+[feature.build.pypi-dependencies]
+mmmjax = { path = ".", editable = true }
+
+[feature.build.tasks]
+package = "flit build"
+
+[feature.gpu]
+platforms = ["linux-64"]
+
+[feature.gpu.dependencies]
+python = ">=3.11,<3.15"
+pip = "*"
+
+[feature.gpu.pypi-dependencies]
+jax = { version = ">=0.10.0,<0.11", extras = ["cuda12"] }
+jaxtyping = ">=0.2.36"
+
+[environments]
+default = { features = ["dev", "build"], solve-group = "default" }
+dev = { features = ["dev", "build"], solve-group = "default" }
+docs = { features = ["docs", "build"], solve-group = "default" }
+check = { features = ["lint", "build"], solve-group = "default" }
+build = { features = ["build"], solve-group = "default" }
+gpu = { features = ["gpu", "dev", "build"], no-default-feature = true }
