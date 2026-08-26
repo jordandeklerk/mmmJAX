@@ -42,6 +42,8 @@ docs-clean = "rm -rf docs/_build docs/_doctree"
 
 [feature.lint.dependencies]
 mypy = ">=1.0.0"
+# NumPy 2.5 stubs require Python 3.12 syntax, while mypy checks our Python 3.11 floor.
+numpy = ">=2.0,<2.5"
 
 [feature.lint.pypi-dependencies]
 prek = "*"
