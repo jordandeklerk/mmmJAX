@@ -15,11 +15,8 @@
 
 </div>
 
-**mmmJAX** adapts the transparency of Stan models to Bayesian marketing mix modeling in JAX.
-Channel carryover, saturation, controls, priors, likelihoods, and predictions remain visible as
-replaceable functions, keeping models readable and independent of any particular sampler while
-retaining access to `grad`, `jit`, and `vmap`.
-
-> [!WARNING]
-> mmmJAX is in early development and has not been released. The API is unstable and may
-> change without notice.
+**mmmJAX** brings Stan's explicit modeling style to Bayesian marketing mix models expressed entirely
+in JAX. Models define their parameter constraints, transformations between constrained and
+unconstrained spaces, and log density as ordinary JAX functions, keeping the statistical
+specification transparent and independent of any particular inference algorithm while taking
+advantage of JAX's modern computational capabilities.

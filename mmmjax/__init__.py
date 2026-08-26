@@ -1,3 +1,3 @@
-"""Bayesian marketing mix modeling in JAX, in the style of Stan."""
+"""Stan-inspired Bayesian marketing mix models, expressed entirely in JAX."""
 
 __version__ = "0.0.1"
