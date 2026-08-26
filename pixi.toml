@@ -1,6 +1,6 @@
 [workspace]
 authors = ["Jordan DeKlerk <jordan.deklerk@gmail.com>"]
-description = "Bayesian marketing mix modeling in JAX, in the style of Stan."
+description = "Stan-inspired Bayesian marketing mix models expressed entirely in JAX."
 channels = ["conda-forge"]
 name = "mmmjax"
 platforms = ["linux-64", "osx-arm64", "osx-64"]

@@ -61,3 +61,6 @@ docs/source/**/generated/
 .idea/
 .vscode/
 .DS_Store
+
+# Refs 
+/pymc-marketing
