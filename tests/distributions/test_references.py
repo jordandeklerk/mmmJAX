@@ -1,5 +1,6 @@
 """Tests against established distribution implementations."""
 
+from dataclasses import dataclass
 from functools import partial
 
 import jax
@@ -10,6 +11,81 @@ from scipy import stats
 
 import mmmjax
 from benchmarks.jax_references import JAX_REFERENCES
+
+
+@dataclass(frozen=True)
+class _SmoothReferenceCase:
+    name: str
+    arguments: tuple[jax.Array, ...]
+    scipy_logpdf: np.ndarray
+
+
+_SMOOTH_REFERENCE_CASES = (
+    _SmoothReferenceCase(
+        name="beta",
+        arguments=(jnp.array([0.1, 0.8]), jnp.array([0.5, 5.0]), jnp.array([3.0, 0.8])),
+        scipy_logpdf=stats.beta.logpdf([0.1, 0.8], [0.5, 5.0], [3.0, 0.8]),
+    ),
+    _SmoothReferenceCase(
+        name="exponential",
+        arguments=(jnp.array([0.1, 2.0]), jnp.array([0.5, 3.0])),
+        scipy_logpdf=stats.expon.logpdf([0.1, 2.0], scale=1 / np.array([0.5, 3.0])),
+    ),
+    _SmoothReferenceCase(
+        name="gamma",
+        arguments=(jnp.array([0.1, 2.0]), jnp.array([0.5, 5.0]), jnp.array([0.8, 3.0])),
+        scipy_logpdf=stats.gamma.logpdf([0.1, 2.0], [0.5, 5.0], scale=1 / np.array([0.8, 3.0])),
+    ),
+    _SmoothReferenceCase(
+        name="half_normal",
+        arguments=(jnp.array([0.25, 2.0]), jnp.array([0.5, 3.0])),
+        scipy_logpdf=stats.halfnorm.logpdf([0.25, 2.0], scale=[0.5, 3.0]),
+    ),
+    _SmoothReferenceCase(
+        name="inverse_gamma",
+        arguments=(jnp.array([0.1, 2.0]), jnp.array([0.5, 5.0]), jnp.array([0.8, 3.0])),
+        scipy_logpdf=stats.invgamma.logpdf([0.1, 2.0], [0.5, 5.0], scale=[0.8, 3.0]),
+    ),
+    _SmoothReferenceCase(
+        name="laplace",
+        arguments=(jnp.array([-2.0, 3.0]), jnp.array([-0.5, 2.0]), jnp.array([0.8, 3.0])),
+        scipy_logpdf=stats.laplace.logpdf([-2.0, 3.0], loc=[-0.5, 2.0], scale=[0.8, 3.0]),
+    ),
+    _SmoothReferenceCase(
+        name="lognormal",
+        arguments=(jnp.array([0.1, 4.0]), jnp.array([-0.5, 1.0]), jnp.array([0.8, 0.5])),
+        scipy_logpdf=stats.lognorm.logpdf(
+            [0.1, 4.0],
+            [0.8, 0.5],
+            scale=np.exp([-0.5, 1.0]),
+        ),
+    ),
+    _SmoothReferenceCase(
+        name="normal",
+        arguments=(jnp.array([-2.0, 3.0]), jnp.array([-0.5, 2.0]), jnp.array([0.8, 3.0])),
+        scipy_logpdf=stats.norm.logpdf([-2.0, 3.0], loc=[-0.5, 2.0], scale=[0.8, 3.0]),
+    ),
+    _SmoothReferenceCase(
+        name="student_t",
+        arguments=(
+            jnp.array([-2.0, 3.0]),
+            jnp.array([3.0, 10.0]),
+            jnp.array([-0.5, 2.0]),
+            jnp.array([0.8, 3.0]),
+        ),
+        scipy_logpdf=stats.t.logpdf(
+            [-2.0, 3.0],
+            [3.0, 10.0],
+            loc=[-0.5, 2.0],
+            scale=[0.8, 3.0],
+        ),
+    ),
+    _SmoothReferenceCase(
+        name="uniform",
+        arguments=(jnp.array([-0.5, 1.0]), jnp.array([-1.0, 0.0]), jnp.array([1.0, 3.0])),
+        scipy_logpdf=stats.uniform.logpdf([-0.5, 1.0], loc=[-1.0, 0.0], scale=[2.0, 3.0]),
+    ),
+)
 
 
 def test_jax_references_cover_every_distribution() -> None:
@@ -27,97 +103,44 @@ def test_jax_references_cover_every_distribution() -> None:
     }
 
 
-@pytest.mark.parametrize(
-    ("name", "arguments", "expected"),
-    [
-        pytest.param(
-            "beta",
-            (jnp.array([0.1, 0.8]), jnp.array([0.5, 5.0]), jnp.array([3.0, 0.8])),
-            stats.beta.logpdf([0.1, 0.8], [0.5, 5.0], [3.0, 0.8]),
-            id="beta",
-        ),
-        pytest.param(
-            "exponential",
-            (jnp.array([0.1, 2.0]), jnp.array([0.5, 3.0])),
-            stats.expon.logpdf([0.1, 2.0], scale=1 / np.array([0.5, 3.0])),
-            id="exponential",
-        ),
-        pytest.param(
-            "gamma",
-            (jnp.array([0.1, 2.0]), jnp.array([0.5, 5.0]), jnp.array([0.8, 3.0])),
-            stats.gamma.logpdf([0.1, 2.0], [0.5, 5.0], scale=1 / np.array([0.8, 3.0])),
-            id="gamma",
-        ),
-        pytest.param(
-            "half_normal",
-            (jnp.array([0.0, 2.0]), jnp.array([0.5, 3.0])),
-            stats.halfnorm.logpdf([0.0, 2.0], scale=[0.5, 3.0]),
-            id="half-normal",
-        ),
-        pytest.param(
-            "inverse_gamma",
-            (jnp.array([0.1, 2.0]), jnp.array([0.5, 5.0]), jnp.array([0.8, 3.0])),
-            stats.invgamma.logpdf([0.1, 2.0], [0.5, 5.0], scale=[0.8, 3.0]),
-            id="inverse-gamma",
-        ),
-        pytest.param(
-            "laplace",
-            (jnp.array([-2.0, 3.0]), jnp.array([-0.5, 2.0]), jnp.array([0.8, 3.0])),
-            stats.laplace.logpdf([-2.0, 3.0], loc=[-0.5, 2.0], scale=[0.8, 3.0]),
-            id="laplace",
-        ),
-        pytest.param(
-            "lognormal",
-            (jnp.array([0.1, 4.0]), jnp.array([-0.5, 1.0]), jnp.array([0.8, 0.5])),
-            stats.lognorm.logpdf(
-                [0.1, 4.0],
-                [0.8, 0.5],
-                scale=np.exp([-0.5, 1.0]),
-            ),
-            id="lognormal",
-        ),
-        pytest.param(
-            "normal",
-            (jnp.array([-2.0, 3.0]), jnp.array([-0.5, 2.0]), jnp.array([0.8, 3.0])),
-            stats.norm.logpdf([-2.0, 3.0], loc=[-0.5, 2.0], scale=[0.8, 3.0]),
-            id="normal",
-        ),
-        pytest.param(
-            "student_t",
-            (
-                jnp.array([-2.0, 3.0]),
-                jnp.array([3.0, 10.0]),
-                jnp.array([-0.5, 2.0]),
-                jnp.array([0.8, 3.0]),
-            ),
-            stats.t.logpdf(
-                [-2.0, 3.0],
-                [3.0, 10.0],
-                loc=[-0.5, 2.0],
-                scale=[0.8, 3.0],
-            ),
-            id="student-t",
-        ),
-        pytest.param(
-            "uniform",
-            (jnp.array([-0.5, 1.0]), jnp.array([-1.0, 0.0]), jnp.array([1.0, 3.0])),
-            stats.uniform.logpdf([-0.5, 1.0], loc=[-1.0, 0.0], scale=[2.0, 3.0]),
-            id="uniform",
-        ),
-    ],
-)
-def test_mmmjax_logpdf_matches_jax_and_scipy(name: str, arguments: tuple[jax.Array, ...], expected) -> None:
-    reference = JAX_REFERENCES[name]
-    implementation = getattr(mmmjax, f"{name}_logpdf")
+@pytest.mark.parametrize("case", _SMOOTH_REFERENCE_CASES, ids=lambda case: case.name)
+def test_mmmjax_logpdf_matches_jax_and_scipy(case: _SmoothReferenceCase) -> None:
+    reference = JAX_REFERENCES[case.name]
+    implementation = getattr(mmmjax, f"{case.name}_logpdf")
 
-    result = implementation(*arguments)
-    jax_result = reference.logpdf(*arguments)
-    compiled_jax_result = jax.jit(reference.logpdf)(*arguments)
+    result = implementation(*case.arguments)
+    jax_result = reference.logpdf(*case.arguments)
+    compiled_jax_result = jax.jit(reference.logpdf)(*case.arguments)
 
-    tolerance = 1e-12 if result.dtype == jnp.dtype(jnp.float64) else 3e-6
-    np.testing.assert_allclose(result, expected, rtol=tolerance, atol=tolerance)
-    np.testing.assert_allclose(result, jax_result, rtol=tolerance, atol=tolerance)
-    np.testing.assert_allclose(result, compiled_jax_result, rtol=tolerance, atol=tolerance)
+    _assert_close(result, case.scipy_logpdf)
+    _assert_close(result, jax_result)
+    _assert_close(result, compiled_jax_result)
+
+
+@pytest.mark.parametrize("case", _SMOOTH_REFERENCE_CASES, ids=lambda case: case.name)
+def test_mmmjax_reverse_mode_matches_jax(case: _SmoothReferenceCase) -> None:
+    reference = JAX_REFERENCES[case.name].logpdf
+    implementation = getattr(mmmjax, f"{case.name}_logpdf")
+    argnums = tuple(range(len(case.arguments)))
+
+    result = jax.jit(jax.jacrev(implementation, argnums=argnums))(*case.arguments)
+    jax_result = jax.jit(jax.jacrev(reference, argnums=argnums))(*case.arguments)
+
+    for result_jacobian, jax_jacobian in zip(result, jax_result, strict=True):
+        _assert_close(result_jacobian, jax_jacobian)
+
+
+@pytest.mark.parametrize("case", _SMOOTH_REFERENCE_CASES, ids=lambda case: case.name)
+def test_mmmjax_forward_mode_matches_jax(case: _SmoothReferenceCase) -> None:
+    reference = JAX_REFERENCES[case.name].logpdf
+    implementation = getattr(mmmjax, f"{case.name}_logpdf")
+    argnums = tuple(range(len(case.arguments)))
+
+    result = jax.jit(jax.jacfwd(implementation, argnums=argnums))(*case.arguments)
+    jax_result = jax.jit(jax.jacfwd(reference, argnums=argnums))(*case.arguments)
+
+    for result_jacobian, jax_jacobian in zip(result, jax_result, strict=True):
+        _assert_close(result_jacobian, jax_jacobian)
 
 
 @pytest.mark.parametrize(
@@ -193,3 +216,9 @@ def test_mmmjax_rng_matches_jax_benchmark_contract(
     assert compiled_jax_result.shape == result.shape
     assert compiled_jax_result.dtype == result.dtype
     assert jnp.all(jnp.isfinite(compiled_jax_result))
+
+
+def _assert_close(actual, expected) -> None:
+    actual_array = jnp.asarray(actual)
+    tolerance = 1e-12 if actual_array.dtype == jnp.dtype(jnp.float64) else 3e-6
+    np.testing.assert_allclose(actual_array, expected, rtol=tolerance, atol=tolerance)
