@@ -2,6 +2,7 @@
 
 import jax
 import jax.numpy as jnp
+from jax.scipy.special import gammaln
 from jax.scipy.stats import beta as beta_distribution
 from jax.typing import ArrayLike
 
@@ -201,10 +202,27 @@ def _beta_logpdf_core(
     dtype_bits = jax.dtypes.itemsize_bits(value.dtype)
     asymptotic_threshold = jnp.asarray(64 if dtype_bits == 64 else 8, dtype=value.dtype)
     centered_region = jnp.minimum(safe_alpha, safe_beta) >= asymptotic_threshold
-    ordinary_value = jnp.where(centered_region, jnp.full_like(safe_value, 0.5), safe_value)
-    ordinary_alpha = jnp.where(centered_region, jnp.ones_like(safe_alpha), safe_alpha)
-    ordinary_beta = jnp.where(centered_region, jnp.ones_like(safe_beta), safe_beta)
-    ordinary_log_density = beta_distribution.logpdf(ordinary_value, ordinary_alpha, ordinary_beta)
+    direct_region = largest_shape < asymptotic_threshold
+
+    # Direct lgamma avoids the approximation JAX betaln uses at its cutoff
+    direct_value = jnp.where(direct_region, safe_value, jnp.full_like(safe_value, 0.5))
+    direct_alpha = jnp.where(direct_region, safe_alpha, jnp.ones_like(safe_alpha))
+    direct_beta = jnp.where(direct_region, safe_beta, jnp.ones_like(safe_beta))
+    direct_log_density = (
+        gammaln(direct_alpha + direct_beta)
+        - gammaln(direct_alpha)
+        - gammaln(direct_beta)
+        + (direct_alpha - 1) * jnp.log(direct_value)
+        + (direct_beta - 1) * jnp.log1p(-direct_value)
+    )
+
+    # JAX betaln protects the mixed large-small regime from lgamma cancellation
+    mixed_region = ~centered_region & ~direct_region
+    mixed_value = jnp.where(mixed_region, safe_value, jnp.full_like(safe_value, 0.5))
+    mixed_alpha = jnp.where(mixed_region, safe_alpha, jnp.ones_like(safe_alpha))
+    mixed_beta = jnp.where(mixed_region, safe_beta, jnp.ones_like(safe_beta))
+    mixed_log_density = beta_distribution.logpdf(mixed_value, mixed_alpha, mixed_beta)
+    ordinary_log_density = jnp.where(direct_region, direct_log_density, mixed_log_density)
     interior_log_density = jnp.where(centered_region, centered_log_density, ordinary_log_density)
 
     lower_boundary_log_density = jnp.where(
@@ -267,7 +285,16 @@ def _beta_logpdf_core_jvp(
 
     value_deviation = safe_value - alpha_mean
     shape_difference = -largest_shape * (scaled_sum * value_deviation)
-    value_derivative = (shape_difference + 2 * safe_value - 1) / (safe_value * one_minus_value)
+    centered_value_derivative = (shape_difference + 2 * safe_value - 1) / (safe_value * one_minus_value)
+    ordinary_value_derivative = (safe_alpha - 1) / safe_value - (safe_beta - 1) / one_minus_value
+    dtype_bits = jax.dtypes.itemsize_bits(value.dtype)
+    asymptotic_threshold = jnp.asarray(64 if dtype_bits == 64 else 8, dtype=value.dtype)
+    centered_region = jnp.minimum(safe_alpha, safe_beta) >= asymptotic_threshold
+    value_derivative = jnp.where(
+        centered_region,
+        centered_value_derivative,
+        ordinary_value_derivative,
+    )
     alpha_derivative = alpha_log_ratio + _gamma_shape_log_derivative(safe_alpha) - sum_log_derivative
     beta_derivative = beta_log_ratio + _gamma_shape_log_derivative(safe_beta) - sum_log_derivative
 

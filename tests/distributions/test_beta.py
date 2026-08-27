@@ -60,6 +60,58 @@ def test_beta_logpdf_gradients_match_analytic_reference_grid() -> None:
     np.testing.assert_allclose(result, expected, rtol=3e-6, atol=3e-6)
 
 
+@pytest.mark.parametrize(
+    ("value", "alpha", "beta_parameter", "expected"),
+    [
+        (0.9990000128746033, 2.5, 1.0, 1.5015014819800854),
+        (0.0010000000474974513, 1.0, 0.5, 0.5005005005480932),
+    ],
+)
+def test_beta_logpdf_value_gradient_uses_ordinary_shape_formula(
+    value: float,
+    alpha: float,
+    beta_parameter: float,
+    expected: float,
+) -> None:
+    result = jax.grad(beta_logpdf)(
+        jnp.float32(value),
+        jnp.float32(alpha),
+        jnp.float32(beta_parameter),
+    )
+
+    assert jnp.allclose(result, expected, rtol=3e-6, atol=0)
+
+
+@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+def test_beta_logpdf_matches_scipy_across_float64_betaln_cutoff() -> None:
+    cutoff = np.float64(8.0)
+    beta_parameters = np.array(
+        [
+            np.nextafter(cutoff, -np.inf),
+            cutoff,
+            np.nextafter(cutoff, np.inf),
+        ]
+    )
+    expected = stats.beta.logpdf(0.37, 2.5, beta_parameters)
+
+    result = beta_logpdf(
+        jnp.float64(0.37),
+        jnp.float64(2.5),
+        jnp.asarray(beta_parameters),
+    )
+
+    np.testing.assert_allclose(result, expected, rtol=1e-12, atol=5e-13)
+
+
+@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+def test_beta_logpdf_matches_scipy_for_ordinary_float64_tail() -> None:
+    expected = stats.beta.logpdf(0.001, 8.0, 2.5)
+
+    result = beta_logpdf(jnp.float64(0.001), jnp.float64(8.0), jnp.float64(2.5))
+
+    assert jnp.allclose(result, expected, rtol=1e-12, atol=5e-13)
+
+
 def test_beta_returns_scalar_sum() -> None:
     values = jnp.array([0.1, 0.4, 0.8])
 

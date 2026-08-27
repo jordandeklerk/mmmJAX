@@ -203,7 +203,16 @@ def _gamma_logpdf_core_jvp(
         safe_shape,
         safe_rate,
     )
-    value_derivative = -(density_deviation + 1) / safe_value
+    centered_value_derivative = -(density_deviation + 1) / safe_value
+    ordinary_value_derivative = (safe_shape - 1) / safe_value - safe_rate
+    dtype_bits = jax.dtypes.itemsize_bits(value.dtype)
+    asymptotic_threshold = jnp.asarray(64 if dtype_bits == 64 else 8, dtype=value.dtype)
+    # The direct form avoids cancellation when an ordinary shape is close to one
+    value_derivative = jnp.where(
+        safe_shape >= asymptotic_threshold,
+        centered_value_derivative,
+        ordinary_value_derivative,
+    )
     shape_derivative = log_ratio + _gamma_shape_log_derivative(safe_shape)
 
     direct_rate_derivative = safe_shape / safe_rate - safe_value
@@ -266,27 +275,33 @@ def _gamma_ratio_terms(
         raw_log_ratio,
     )
 
-    use_rate_first_ratio = ~valid_product_ratio & valid_rate_first_ratio
+    # Dividing equal shape and rate values first preserves displacements near the mode
+    use_rate_first_ratio = valid_rate_first_ratio & ((rate == shape) | ~valid_product_ratio)
     log_ratio = jnp.where(
-        valid_product_ratio,
-        product_log_ratio,
-        jnp.where(use_rate_first_ratio, rate_first_log_ratio, value_first_log_ratio),
+        use_rate_first_ratio,
+        rate_first_log_ratio,
+        jnp.where(valid_product_ratio, product_log_ratio, value_first_log_ratio),
     )
     ratio_deviation = jnp.where(
-        valid_product_ratio,
-        product_ratio_deviation,
-        jnp.where(use_rate_first_ratio, rate_first_deviation, value_first_deviation),
+        use_rate_first_ratio,
+        rate_first_deviation,
+        jnp.where(valid_product_ratio, product_ratio_deviation, value_first_deviation),
     )
     has_finite_ratio = valid_product_ratio | valid_rate_first_ratio | valid_value_first_ratio
 
     valid_product_density_deviation = jnp.isfinite(product_density_deviation)
     fallback_density_deviation = shape * ratio_deviation
     valid_fallback_density_deviation = has_finite_ratio & jnp.isfinite(fallback_density_deviation)
+    use_rate_first_density_deviation = use_rate_first_ratio & valid_fallback_density_deviation
     has_density_deviation = valid_product_density_deviation | valid_fallback_density_deviation
     density_deviation = jnp.where(
-        valid_product_density_deviation,
-        product_density_deviation,
+        use_rate_first_density_deviation,
         fallback_density_deviation,
+        jnp.where(
+            valid_product_density_deviation,
+            product_density_deviation,
+            fallback_density_deviation,
+        ),
     )
     near_unit_ratio = has_finite_ratio & (jnp.abs(ratio_deviation) < 0.5)
     return log_ratio, density_deviation, ratio_deviation, near_unit_ratio, has_density_deviation

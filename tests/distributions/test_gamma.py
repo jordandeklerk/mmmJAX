@@ -151,6 +151,23 @@ def test_gamma_logpdf_remains_accurate_for_concentrated_shape() -> None:
     )
 
 
+def test_gamma_logpdf_preserves_displacement_near_large_shape_mode() -> None:
+    value = jnp.float32(1.000100016593933)
+    shape = jnp.float32(1e8)
+    rate = jnp.float32(1e8)
+
+    result = gamma_logpdf(value, shape, rate)
+    gradients = jax.grad(gamma_logpdf, argnums=(0, 1, 2))(value, shape, rate)
+
+    assert jnp.allclose(result, 7.791169166564941, rtol=3e-7, atol=0)
+    assert jnp.allclose(
+        jnp.asarray(gradients),
+        jnp.array([-10001.6591796875, 0.00010001659393310547, -0.00010001659393310547]),
+        rtol=3e-6,
+        atol=0,
+    )
+
+
 def test_gamma_logpdf_handles_maximum_finite_concentrated_shape() -> None:
     shape = jnp.asarray(jnp.finfo(jnp.float32).max)
 
