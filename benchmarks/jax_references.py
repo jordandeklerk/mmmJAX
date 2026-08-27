@@ -18,6 +18,10 @@ class JaxReference:
     logpdf: Kernel
     rng: Kernel
 
+    def density(self, *arguments: jax.Array) -> jax.Array:
+        """Sum the elementwise log density over every broadcast value."""
+        return jnp.sum(self.logpdf(*arguments))
+
 
 def _exponential_logpdf(value: jax.Array, rate: jax.Array) -> jax.Array:
     return stats.expon.logpdf(value, loc=0, scale=1 / rate)

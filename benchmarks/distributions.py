@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import jax
 import jax.numpy as jnp
 
+from benchmarks.jax_references import JAX_REFERENCES
 from mmmjax.distributions import (
     beta,
     beta_logpdf,
@@ -69,13 +70,19 @@ class BenchmarkProfile:
 
 
 @dataclass(frozen=True)
-class DistributionSpec:
-    """Describe the public functions and ordinary inputs for a distribution."""
+class DistributionFunctions:
+    """Store one implementation of the public distribution operations."""
 
-    name: str
     logpdf: Kernel
     density: Kernel
     rng: Kernel
+
+
+@dataclass(frozen=True)
+class DistributionSpec:
+    """Describe the ordinary inputs and supported regimes for a distribution."""
+
+    name: str
     value_range: tuple[float, float]
     parameter_values: tuple[float, ...]
     supports_concentrated_regime: bool = False
@@ -85,6 +92,7 @@ class DistributionSpec:
 class BenchmarkOperation:
     """Describe one compiled operation and its arguments."""
 
+    implementation: str
     name: str
     function: BenchmarkFunction
     arguments: Arguments
@@ -94,6 +102,7 @@ class BenchmarkOperation:
 class BenchmarkResult:
     """Store cold compilation and warm execution measurements."""
 
+    implementation: str
     distribution: str
     profile: str
     regime: str
@@ -134,89 +143,77 @@ _PROFILES: dict[str, BenchmarkProfile] = {
 _DISTRIBUTIONS = (
     DistributionSpec(
         name="beta",
-        logpdf=beta_logpdf,
-        density=beta,
-        rng=beta_rng,
         value_range=(0.05, 0.95),
         parameter_values=(2.5, 3.5),
         supports_concentrated_regime=True,
     ),
     DistributionSpec(
         name="exponential",
-        logpdf=exponential_logpdf,
-        density=exponential,
-        rng=exponential_rng,
         value_range=(0.1, 2.0),
         parameter_values=(1.3,),
     ),
     DistributionSpec(
         name="gamma",
-        logpdf=gamma_logpdf,
-        density=gamma,
-        rng=gamma_rng,
         value_range=(0.1, 2.0),
         parameter_values=(2.5, 1.3),
         supports_concentrated_regime=True,
     ),
     DistributionSpec(
         name="half_normal",
-        logpdf=half_normal_logpdf,
-        density=half_normal,
-        rng=half_normal_rng,
         value_range=(0.1, 2.0),
         parameter_values=(1.3,),
     ),
     DistributionSpec(
         name="inverse_gamma",
-        logpdf=inverse_gamma_logpdf,
-        density=inverse_gamma,
-        rng=inverse_gamma_rng,
         value_range=(0.1, 2.0),
         parameter_values=(3.5, 1.2),
         supports_concentrated_regime=True,
     ),
     DistributionSpec(
         name="laplace",
-        logpdf=laplace_logpdf,
-        density=laplace,
-        rng=laplace_rng,
         value_range=(-1.0, 1.0),
         parameter_values=(0.2, 1.3),
     ),
     DistributionSpec(
         name="lognormal",
-        logpdf=lognormal_logpdf,
-        density=lognormal,
-        rng=lognormal_rng,
         value_range=(0.1, 2.0),
         parameter_values=(0.2, 0.8),
     ),
     DistributionSpec(
         name="normal",
-        logpdf=normal_logpdf,
-        density=normal,
-        rng=normal_rng,
         value_range=(-1.0, 1.0),
         parameter_values=(0.2, 1.3),
     ),
     DistributionSpec(
         name="student_t",
-        logpdf=student_t_logpdf,
-        density=student_t,
-        rng=student_t_rng,
         value_range=(-1.0, 1.0),
         parameter_values=(5.0, 0.2, 1.3),
     ),
     DistributionSpec(
         name="uniform",
-        logpdf=uniform_logpdf,
-        density=uniform,
-        rng=uniform_rng,
         value_range=(-0.5, 0.5),
         parameter_values=(-1.0, 1.0),
     ),
 )
 
+_IMPLEMENTATIONS: dict[str, dict[str, DistributionFunctions]] = {
+    "mmmjax": {
+        "beta": DistributionFunctions(beta_logpdf, beta, beta_rng),
+        "exponential": DistributionFunctions(exponential_logpdf, exponential, exponential_rng),
+        "gamma": DistributionFunctions(gamma_logpdf, gamma, gamma_rng),
+        "half_normal": DistributionFunctions(half_normal_logpdf, half_normal, half_normal_rng),
+        "inverse_gamma": DistributionFunctions(inverse_gamma_logpdf, inverse_gamma, inverse_gamma_rng),
+        "laplace": DistributionFunctions(laplace_logpdf, laplace, laplace_rng),
+        "lognormal": DistributionFunctions(lognormal_logpdf, lognormal, lognormal_rng),
+        "normal": DistributionFunctions(normal_logpdf, normal, normal_rng),
+        "student_t": DistributionFunctions(student_t_logpdf, student_t, student_t_rng),
+        "uniform": DistributionFunctions(uniform_logpdf, uniform, uniform_rng),
+    },
+    "jax": {
+        name: DistributionFunctions(reference.logpdf, reference.density, reference.rng)
+        for name, reference in JAX_REFERENCES.items()
+    },
+}
 _OPERATIONS = ("logpdf", "density", "value_and_grad", "rng")
 
 
@@ -249,23 +246,27 @@ def _arguments(
 
 
 def _operations(
-    distribution: DistributionSpec,
+    functions: DistributionFunctions,
     profile: BenchmarkProfile,
     arguments: Arguments,
+    implementation: str,
 ) -> tuple[BenchmarkOperation, ...]:
-    argument_indices = tuple(range(len(arguments)))
+    # Observed values are data, so model inference only differentiates parameters
+    parameter_indices = tuple(range(1, len(arguments)))
     parameters = arguments[1:]
     return (
-        BenchmarkOperation("logpdf", distribution.logpdf, arguments),
-        BenchmarkOperation("density", distribution.density, arguments),
+        BenchmarkOperation(implementation, "logpdf", functions.logpdf, arguments),
+        BenchmarkOperation(implementation, "density", functions.density, arguments),
         BenchmarkOperation(
+            implementation,
             "value_and_grad",
-            jax.value_and_grad(distribution.density, argnums=argument_indices),
+            jax.value_and_grad(functions.density, argnums=parameter_indices),
             arguments,
         ),
         BenchmarkOperation(
+            implementation,
             "rng",
-            functools.partial(distribution.rng, sample_shape=profile.sample_shape),
+            functools.partial(functions.rng, sample_shape=profile.sample_shape),
             (jax.random.key(0), *parameters),
         ),
     )
@@ -330,6 +331,7 @@ def _benchmark(
         iterations=iterations,
     )
     return BenchmarkResult(
+        implementation=operation.implementation,
         distribution=distribution.name,
         profile=profile_name,
         regime=regime,
@@ -343,6 +345,7 @@ def _benchmark(
 
 def _print_results(results: list[BenchmarkResult]) -> None:
     headings = (
+        "implementation",
         "distribution",
         "profile",
         "regime",
@@ -354,6 +357,7 @@ def _print_results(results: list[BenchmarkResult]) -> None:
     )
     rows = [
         (
+            result.implementation,
             result.distribution,
             result.profile,
             result.regime,
@@ -377,6 +381,12 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profiles", choices=tuple(_PROFILES), nargs="+", default=("channel_prior",))
     parser.add_argument("--distributions", choices=distribution_names, nargs="+", default=distribution_names)
+    parser.add_argument(
+        "--implementations",
+        choices=tuple(_IMPLEMENTATIONS),
+        nargs="+",
+        default=tuple(_IMPLEMENTATIONS),
+    )
     parser.add_argument("--operations", choices=_OPERATIONS, nargs="+", default=_OPERATIONS)
     parser.add_argument("--dtype", choices=("float32", "float64"), default="float32")
     parser.add_argument("--regimes", choices=("ordinary", "concentrated"), nargs="+", default=("ordinary",))
@@ -390,6 +400,11 @@ def _parse_args() -> argparse.Namespace:
         parser.error("--repeats must be positive")
     if arguments.iterations <= 0:
         parser.error("--iterations must be positive")
+    if set(arguments.regimes) == {"concentrated"} and set(arguments.implementations) == {"jax"}:
+        parser.error(
+            "public JAX does not meet the concentrated-regime accuracy gate; "
+            "use --regimes ordinary or --implementations mmmjax"
+        )
     return arguments
 
 
@@ -402,8 +417,11 @@ def main() -> None:
     dtype = jnp.dtype(arguments.dtype)
 
     selected_distributions = set(arguments.distributions)
+    selected_implementations = set(arguments.implementations)
     selected_operations = set(arguments.operations)
     print(f"backend={jax.default_backend()} device={jax.devices()[0]} x64={jax.config.x64_enabled}")
+    if "concentrated" in arguments.regimes and "jax" in selected_implementations:
+        print("note=public JAX is omitted from concentrated regimes because it does not meet the accuracy gate")
 
     results = []
     for profile_name in arguments.profiles:
@@ -416,21 +434,27 @@ def main() -> None:
                     continue
 
                 distribution_arguments = _arguments(distribution, profile, regime, dtype)
-                for operation in _operations(distribution, profile, distribution_arguments):
-                    if operation.name not in selected_operations:
+                for implementation, functions_by_distribution in _IMPLEMENTATIONS.items():
+                    if implementation not in selected_implementations:
                         continue
-                    results.append(
-                        _benchmark(
-                            distribution,
-                            profile_name,
-                            regime,
-                            operation,
-                            dtype,
-                            compile_repeats=arguments.compile_repeats,
-                            repeats=arguments.repeats,
-                            iterations=arguments.iterations,
+                    if regime == "concentrated" and implementation == "jax":
+                        continue
+                    functions = functions_by_distribution[distribution.name]
+                    for operation in _operations(functions, profile, distribution_arguments, implementation):
+                        if operation.name not in selected_operations:
+                            continue
+                        results.append(
+                            _benchmark(
+                                distribution,
+                                profile_name,
+                                regime,
+                                operation,
+                                dtype,
+                                compile_repeats=arguments.compile_repeats,
+                                repeats=arguments.repeats,
+                                iterations=arguments.iterations,
+                            )
                         )
-                    )
 
     if not results:
         raise SystemExit("No benchmark cases match the selected distributions and regimes")
