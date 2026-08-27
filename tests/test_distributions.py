@@ -1,4 +1,4 @@
-"""Tests for Stan-style probability functions."""
+"""Tests for probability density and random sampling functions."""
 
 from functools import partial
 
@@ -355,29 +355,46 @@ def test_rng_supports_empty_sample_dimension() -> None:
 
 @pytest.mark.parametrize("sample_shape", [[2], (True,), (1.5,)])
 def test_rng_rejects_invalid_sample_shape_type(sample_shape) -> None:
-    with pytest.raises(TypeError, match="sample_shape must be a tuple of nonnegative integers"):
+    with pytest.raises(
+        TypeError,
+        match=r"sample_shape(\[0\])? must be a (tuple of )?nonnegative integer",
+    ):
         normal_rng(jax.random.key(0), 0.0, 1.0, sample_shape=sample_shape)
 
 
 def test_rng_rejects_negative_sample_shape() -> None:
-    with pytest.raises(ValueError, match="sample_shape dimensions must be nonnegative"):
+    with pytest.raises(ValueError, match=r"sample_shape\[0\] must be nonnegative, got -1"):
         exponential_rng(jax.random.key(0), 1.0, sample_shape=(-1,))
 
 
 def test_normal_rng_rejects_incompatible_parameter_shapes() -> None:
-    with pytest.raises(ValueError, match="Incompatible shapes for broadcasting"):
+    with pytest.raises(
+        ValueError,
+        match=r"parameter shapes cannot be broadcast together: \(\(2,\), \(3,\)\)",
+    ):
         normal_rng(jax.random.key(0), jnp.zeros(2), jnp.ones(3))
 
 
 @pytest.mark.parametrize(
-    ("function", "arguments"),
+    ("function", "arguments", "argument_name"),
     [
-        (normal_logpdf, (0.0, 0.0, 1.0 + 0.0j)),
-        (exponential_logpdf, (0.0, 1.0 + 0.0j)),
-        (normal_rng, (jax.random.key(0), 0.0, 1.0 + 0.0j)),
-        (exponential_rng, (jax.random.key(0), 1.0 + 0.0j)),
+        (normal_logpdf, (0.0, 0.0, 1.0 + 0.0j), "scale"),
+        (exponential_logpdf, (0.0, 1.0 + 0.0j), "rate"),
+        (normal_rng, (jax.random.key(0), 0.0, 1.0 + 0.0j), "scale"),
+        (exponential_rng, (jax.random.key(0), 1.0 + 0.0j), "rate"),
     ],
 )
-def test_distribution_functions_reject_complex_arguments(function, arguments) -> None:
-    with pytest.raises(TypeError, match="distribution arguments must have real numeric dtypes"):
+def test_distribution_functions_reject_complex_arguments(function, arguments, argument_name: str) -> None:
+    with pytest.raises(
+        TypeError,
+        match=rf"argument '{argument_name}' must have a real numeric dtype, got complex",
+    ):
         function(*arguments)
+
+
+def test_distribution_functions_identify_non_array_like_argument() -> None:
+    with pytest.raises(
+        TypeError,
+        match="argument 'scale' must be real numeric and array-like, got object",
+    ):
+        normal_logpdf(0.0, 0.0, object())
