@@ -5,7 +5,16 @@ import jax.numpy as jnp
 from jax.scipy.stats import beta as beta_distribution
 from jax.typing import ArrayLike
 
-from mmmjax.distributions._utils import _promote_inexact, _random_shape
+from mmmjax.distributions._utils import (
+    _asymptotic_gamma_shape_log_derivative,
+    _asymptotic_gamma_shape_normalizer,
+    _gamma_shape_log_derivative,
+    _gamma_shape_normalizer,
+    _promote_inexact,
+    _random_shape,
+    _stable_log_ratio,
+    _weighted_log_ratio_deviance,
+)
 
 
 def beta_logpdf(
@@ -52,37 +61,7 @@ def beta_logpdf(
         ("alpha", alpha),
         ("beta", beta),
     )
-
-    at_lower_boundary = value_array == 0
-    at_upper_boundary = value_array == 1
-    outside_support = (value_array < 0) | (value_array > 1) | jnp.isinf(value_array)
-    # Keep endpoints and unsupported values out of undefined logarithms
-    safe_value = jnp.where(
-        at_lower_boundary | at_upper_boundary | outside_support,
-        jnp.full_like(value_array, 0.5),
-        value_array,
-    )
-
-    interior_log_density = beta_distribution.logpdf(safe_value, alpha_array, beta_array)
-    lower_boundary_log_density = jnp.where(
-        alpha_array < 1,
-        jnp.inf,
-        jnp.where(alpha_array == 1, jnp.log(beta_array), -jnp.inf),
-    )
-    upper_boundary_log_density = jnp.where(
-        beta_array < 1,
-        jnp.inf,
-        jnp.where(beta_array == 1, jnp.log(alpha_array), -jnp.inf),
-    )
-    supported_log_density = jnp.where(
-        at_lower_boundary,
-        lower_boundary_log_density,
-        jnp.where(at_upper_boundary, upper_boundary_log_density, interior_log_density),
-    )
-    supported_log_density = jnp.where(outside_support, -jnp.inf, supported_log_density)
-
-    valid_parameters = jnp.isfinite(alpha_array) & (alpha_array > 0) & jnp.isfinite(beta_array) & (beta_array > 0)
-    return jnp.where(valid_parameters, supported_log_density, jnp.nan)
+    return _beta_logpdf_core(value_array, alpha_array, beta_array)
 
 
 def beta(
@@ -164,3 +143,203 @@ def beta_rng(
     )
 
     return jnp.where(valid_alpha & valid_beta, samples, jnp.nan)
+
+
+@jax.custom_jvp
+def _beta_logpdf_core(
+    value: jax.Array,
+    alpha: jax.Array,
+    beta: jax.Array,
+) -> jax.Array:
+    valid_value = jnp.isfinite(value) & (value > 0) & (value < 1)
+    valid_alpha = jnp.isfinite(alpha) & (alpha > 0)
+    valid_beta = jnp.isfinite(beta) & (beta > 0)
+
+    # Sanitizing every candidate branch keeps invalid inputs out of JAX derivatives
+    safe_value = jnp.where(valid_value, value, jnp.full_like(value, 0.5))
+    safe_alpha = jnp.where(valid_alpha, alpha, jnp.ones_like(alpha))
+    safe_beta = jnp.where(valid_beta, beta, jnp.ones_like(beta))
+    one_minus_value = 1 - safe_value
+
+    direct_sum, log_sum, inverse_sum, exact_sum_region = _beta_shape_sum(safe_alpha, safe_beta)
+    sum_normalizer = _beta_sum_normalizer(
+        direct_sum,
+        log_sum,
+        inverse_sum,
+        exact_sum_region,
+    )
+    normalizer = _gamma_shape_normalizer(safe_alpha) + _gamma_shape_normalizer(safe_beta) - sum_normalizer
+
+    largest_shape = jnp.maximum(safe_alpha, safe_beta)
+    scaled_alpha = safe_alpha / largest_shape
+    scaled_beta = safe_beta / largest_shape
+    scaled_sum = scaled_alpha + scaled_beta
+    alpha_mean = scaled_alpha / scaled_sum
+    beta_mean = scaled_beta / scaled_sum
+
+    log_value = jnp.log(safe_value)
+    log_one_minus_value = jnp.log1p(-safe_value)
+    raw_alpha_log_ratio = log_value + log_sum - jnp.log(safe_alpha)
+    raw_beta_log_ratio = log_one_minus_value + log_sum - jnp.log(safe_beta)
+    alpha_log_ratio, _, _ = _stable_log_ratio(safe_value, alpha_mean, raw_alpha_log_ratio)
+    beta_log_ratio, _, _ = _stable_log_ratio(one_minus_value, beta_mean, raw_beta_log_ratio)
+
+    value_deviation = safe_value - alpha_mean
+    shape_difference = -largest_shape * (scaled_sum * value_deviation)
+    alpha_contribution = _weighted_log_ratio_deviance(
+        safe_alpha,
+        alpha_log_ratio,
+        -shape_difference,
+    )
+    beta_contribution = _weighted_log_ratio_deviance(
+        safe_beta,
+        beta_log_ratio,
+        shape_difference,
+    )
+    centered_log_density = normalizer + alpha_contribution + beta_contribution - log_value - log_one_minus_value
+
+    dtype_bits = jax.dtypes.itemsize_bits(value.dtype)
+    asymptotic_threshold = jnp.asarray(64 if dtype_bits == 64 else 8, dtype=value.dtype)
+    centered_region = jnp.minimum(safe_alpha, safe_beta) >= asymptotic_threshold
+    ordinary_value = jnp.where(centered_region, jnp.full_like(safe_value, 0.5), safe_value)
+    ordinary_alpha = jnp.where(centered_region, jnp.ones_like(safe_alpha), safe_alpha)
+    ordinary_beta = jnp.where(centered_region, jnp.ones_like(safe_beta), safe_beta)
+    ordinary_log_density = beta_distribution.logpdf(ordinary_value, ordinary_alpha, ordinary_beta)
+    interior_log_density = jnp.where(centered_region, centered_log_density, ordinary_log_density)
+
+    lower_boundary_log_density = jnp.where(
+        safe_alpha < 1,
+        jnp.inf,
+        jnp.where(safe_alpha == 1, jnp.log(safe_beta), -jnp.inf),
+    )
+    upper_boundary_log_density = jnp.where(
+        safe_beta < 1,
+        jnp.inf,
+        jnp.where(safe_beta == 1, jnp.log(safe_alpha), -jnp.inf),
+    )
+    supported_log_density = jnp.where(
+        value == 0,
+        lower_boundary_log_density,
+        jnp.where(
+            value == 1,
+            upper_boundary_log_density,
+            jnp.where(valid_value, interior_log_density, jnp.where(jnp.isnan(value), jnp.nan, -jnp.inf)),
+        ),
+    )
+    return jnp.where(valid_alpha & valid_beta, supported_log_density, jnp.nan)
+
+
+@_beta_logpdf_core.defjvp
+def _beta_logpdf_core_jvp(
+    primals: tuple[jax.Array, jax.Array, jax.Array],
+    tangents: tuple[jax.Array, jax.Array, jax.Array],
+) -> tuple[jax.Array, jax.Array]:
+    value, alpha, beta = primals
+    value_tangent, alpha_tangent, beta_tangent = tangents
+    log_density = _beta_logpdf_core(value, alpha, beta)
+
+    valid_value = jnp.isfinite(value) & (value > 0) & (value < 1)
+    valid_alpha = jnp.isfinite(alpha) & (alpha > 0)
+    valid_beta = jnp.isfinite(beta) & (beta > 0)
+    safe_value = jnp.where(valid_value, value, jnp.full_like(value, 0.5))
+    safe_alpha = jnp.where(valid_alpha, alpha, jnp.ones_like(alpha))
+    safe_beta = jnp.where(valid_beta, beta, jnp.ones_like(beta))
+    one_minus_value = 1 - safe_value
+
+    direct_sum, log_sum, inverse_sum, exact_sum_region = _beta_shape_sum(safe_alpha, safe_beta)
+    sum_log_derivative = _beta_sum_log_derivative(
+        direct_sum,
+        inverse_sum,
+        exact_sum_region,
+    )
+
+    largest_shape = jnp.maximum(safe_alpha, safe_beta)
+    scaled_alpha = safe_alpha / largest_shape
+    scaled_beta = safe_beta / largest_shape
+    scaled_sum = scaled_alpha + scaled_beta
+    alpha_mean = scaled_alpha / scaled_sum
+    beta_mean = scaled_beta / scaled_sum
+
+    raw_alpha_log_ratio = jnp.log(safe_value) + log_sum - jnp.log(safe_alpha)
+    raw_beta_log_ratio = jnp.log1p(-safe_value) + log_sum - jnp.log(safe_beta)
+    alpha_log_ratio, _, _ = _stable_log_ratio(safe_value, alpha_mean, raw_alpha_log_ratio)
+    beta_log_ratio, _, _ = _stable_log_ratio(one_minus_value, beta_mean, raw_beta_log_ratio)
+
+    value_deviation = safe_value - alpha_mean
+    shape_difference = -largest_shape * (scaled_sum * value_deviation)
+    value_derivative = (shape_difference + 2 * safe_value - 1) / (safe_value * one_minus_value)
+    alpha_derivative = alpha_log_ratio + _gamma_shape_log_derivative(safe_alpha) - sum_log_derivative
+    beta_derivative = beta_log_ratio + _gamma_shape_log_derivative(safe_beta) - sum_log_derivative
+
+    value_derivative = jnp.where(valid_value, value_derivative, jnp.zeros_like(value_derivative))
+    lower_alpha_derivative = jnp.zeros_like(alpha_derivative)
+    lower_beta_derivative = jnp.where(
+        (value == 0) & (safe_alpha == 1),
+        1 / safe_beta,
+        jnp.zeros_like(beta_derivative),
+    )
+    upper_alpha_derivative = jnp.where(
+        (value == 1) & (safe_beta == 1),
+        1 / safe_alpha,
+        lower_alpha_derivative,
+    )
+    upper_beta_derivative = jnp.zeros_like(beta_derivative)
+    alpha_derivative = jnp.where(
+        valid_value,
+        alpha_derivative,
+        jnp.where(value == 1, upper_alpha_derivative, lower_alpha_derivative),
+    )
+    beta_derivative = jnp.where(
+        valid_value,
+        beta_derivative,
+        jnp.where(value == 0, lower_beta_derivative, upper_beta_derivative),
+    )
+
+    defined_derivatives = valid_alpha & valid_beta & ~jnp.isnan(value)
+    value_derivative = jnp.where(defined_derivatives, value_derivative, jnp.nan)
+    alpha_derivative = jnp.where(defined_derivatives, alpha_derivative, jnp.nan)
+    beta_derivative = jnp.where(defined_derivatives, beta_derivative, jnp.nan)
+
+    log_density_tangent = (
+        value_derivative * value_tangent + alpha_derivative * alpha_tangent + beta_derivative * beta_tangent
+    )
+    return log_density, log_density_tangent
+
+
+def _beta_shape_sum(
+    alpha: jax.Array,
+    beta: jax.Array,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    largest_shape = jnp.maximum(alpha, beta)
+    scaled_sum = alpha / largest_shape + beta / largest_shape
+    log_sum = jnp.log(largest_shape) + jnp.log(scaled_sum)
+    inverse_sum = (1 / largest_shape) / scaled_sum
+
+    direct_sum = alpha + beta
+    dtype_bits = jax.dtypes.itemsize_bits(alpha.dtype)
+    asymptotic_threshold = jnp.asarray(64 if dtype_bits == 64 else 8, dtype=alpha.dtype)
+    exact_sum_region = jnp.isfinite(direct_sum) & (direct_sum < asymptotic_threshold)
+    return direct_sum, log_sum, inverse_sum, exact_sum_region
+
+
+def _beta_sum_normalizer(
+    direct_sum: jax.Array,
+    log_sum: jax.Array,
+    inverse_sum: jax.Array,
+    exact_sum_region: jax.Array,
+) -> jax.Array:
+    exact_sum = jnp.where(exact_sum_region, direct_sum, jnp.ones_like(direct_sum))
+    exact_normalizer = _gamma_shape_normalizer(exact_sum)
+    asymptotic_normalizer = _asymptotic_gamma_shape_normalizer(log_sum, inverse_sum)
+    return jnp.where(exact_sum_region, exact_normalizer, asymptotic_normalizer)
+
+
+def _beta_sum_log_derivative(
+    direct_sum: jax.Array,
+    inverse_sum: jax.Array,
+    exact_sum_region: jax.Array,
+) -> jax.Array:
+    exact_sum = jnp.where(exact_sum_region, direct_sum, jnp.ones_like(direct_sum))
+    exact_derivative = _gamma_shape_log_derivative(exact_sum)
+    asymptotic_derivative = _asymptotic_gamma_shape_log_derivative(inverse_sum)
+    return jnp.where(exact_sum_region, exact_derivative, asymptotic_derivative)

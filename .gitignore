@@ -66,3 +66,5 @@ docs/source/**/generated/
 /pymc-marketing
 /jax
 /meridian
+/stan
+/math

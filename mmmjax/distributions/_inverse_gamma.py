@@ -1,13 +1,17 @@
 """Inverse Gamma distribution functions."""
 
-import math
-
 import jax
 import jax.numpy as jnp
-from jax.scipy.special import gammaln
 from jax.typing import ArrayLike
 
-from mmmjax.distributions._utils import _promote_inexact, _random_shape
+from mmmjax.distributions._utils import (
+    _gamma_shape_log_derivative,
+    _gamma_shape_normalizer,
+    _promote_inexact,
+    _random_shape,
+    _stable_log_ratio,
+    _weighted_log_ratio_deviance,
+)
 
 
 def inverse_gamma_logpdf(
@@ -44,121 +48,19 @@ def inverse_gamma_logpdf(
         Nonpositive values and either infinity produce ``-inf``. A
         nonpositive or nonfinite shape or scale produces ``nan``. A ``nan``
         value also produces ``nan``.
+
+    Notes
+    -----
+    Highly concentrated distributions can require JAX 64-bit mode. If
+    ``scale`` and ``shape * value`` differ by less than their dtype can
+    represent, that difference cannot be recovered by the density calculation.
     """
     value_array, shape_array, scale_array = _promote_inexact(
         ("value", value),
         ("shape", shape),
         ("scale", scale),
     )
-
-    outside_support = (value_array <= 0) | jnp.isinf(value_array)
-    # Keep unsupported values out of logarithms and division
-    safe_value = jnp.where(outside_support, jnp.ones_like(value_array), value_array)
-
-    log_value = jnp.log(safe_value)
-    log_scale_to_value = jnp.log(scale_array) - log_value
-
-    # The first omitted Stirling term is below the dtype precision at these cutoffs
-    dtype_bits = jax.dtypes.itemsize_bits(value_array.dtype)
-    asymptotic_threshold = jnp.asarray(64 if dtype_bits == 64 else 8, dtype=value_array.dtype)
-    large_shape = jnp.isfinite(shape_array) & (shape_array >= asymptotic_threshold)
-    centered_shape = jnp.where(large_shape, shape_array, asymptotic_threshold)
-
-    # Centering around scale / value = shape avoids large terms canceling near the mode
-    product_denominator = safe_value * centered_shape
-    product_deviation = (scale_array - product_denominator) / product_denominator
-    scaled_inverse_value = scale_array / safe_value
-    sequential_deviation = (scaled_inverse_value - centered_shape) / centered_shape
-    valid_product_deviation = (
-        jnp.isfinite(product_denominator)
-        & (product_denominator > 0)
-        & jnp.isfinite(product_deviation)
-        & (product_deviation > -1)
-    )
-    valid_sequential_deviation = (
-        jnp.isfinite(scaled_inverse_value)
-        & (scaled_inverse_value > 0)
-        & jnp.isfinite(sequential_deviation)
-        & (sequential_deviation > -1)
-    )
-    has_finite_deviation = valid_product_deviation | valid_sequential_deviation
-    scale_to_shape_deviation = jnp.where(
-        valid_product_deviation,
-        product_deviation,
-        jnp.where(valid_sequential_deviation, sequential_deviation, jnp.zeros_like(product_deviation)),
-    )
-    centered_region = large_shape & has_finite_deviation
-
-    centered_value = jnp.where(centered_region, safe_value, jnp.ones_like(safe_value))
-    centered_scale = jnp.where(centered_region, scale_array, centered_shape)
-    scale_to_shape_deviation = jnp.where(
-        centered_region,
-        scale_to_shape_deviation,
-        jnp.zeros_like(scale_to_shape_deviation),
-    )
-    logarithmic_ratio = jnp.log(centered_scale) - jnp.log(centered_value) - jnp.log(centered_shape)
-    direct_logarithmic_ratio = jnp.log1p(scale_to_shape_deviation)
-    # The direct value keeps nearby ratios precise while the log path avoids overflow in AD
-    log_scale_to_shape_ratio = logarithmic_ratio + jax.lax.stop_gradient(direct_logarithmic_ratio - logarithmic_ratio)
-    # Terms through seventh order put the first omitted term below the dtype precision here
-    series_threshold = jnp.asarray(0.01 if dtype_bits == 64 else 0.1, dtype=value_array.dtype)
-    series_region = jnp.abs(log_scale_to_shape_ratio) < series_threshold
-    series_argument = jnp.where(
-        series_region,
-        log_scale_to_shape_ratio,
-        jnp.zeros_like(log_scale_to_shape_ratio),
-    )
-    squared_series_argument = jnp.square(series_argument)
-    log_ratio_deviation_series = -squared_series_argument * (
-        0.5
-        + series_argument
-        * (
-            1 / 6
-            + series_argument
-            * (1 / 24 + series_argument * (1 / 120 + series_argument * (1 / 720 + series_argument / 5040)))
-        )
-    )
-    direct_argument = jnp.where(
-        series_region,
-        jnp.zeros_like(log_scale_to_shape_ratio),
-        log_scale_to_shape_ratio,
-    )
-    log_ratio_deviation = jnp.where(
-        series_region,
-        log_ratio_deviation_series,
-        direct_argument - jnp.expm1(direct_argument),
-    )
-
-    # Stirling's correction keeps the Gamma normalizer accurate for large shapes
-    inverse_shape = 1 / centered_shape
-    squared_inverse_shape = jnp.square(inverse_shape)
-    stirling_correction = inverse_shape * (
-        1 / 12
-        + squared_inverse_shape * (-1 / 360 + squared_inverse_shape * (1 / 1260 + squared_inverse_shape * (-1 / 1680)))
-    )
-    centered_normalizer = (
-        0.5 * (jnp.log(centered_shape) - jnp.asarray(math.log(2 * math.pi), dtype=value_array.dtype))
-        - stirling_correction
-    )
-    centered_log_density = centered_shape * log_ratio_deviation + centered_normalizer - log_value
-
-    standard_shape = jnp.where(centered_region, jnp.ones_like(shape_array), shape_array)
-    standard_log_scale_to_value = jnp.where(
-        centered_region,
-        jnp.zeros_like(log_scale_to_value),
-        log_scale_to_value,
-    )
-    standard_log_density = (
-        standard_shape * standard_log_scale_to_value
-        - gammaln(standard_shape)
-        - log_value
-        - jnp.exp(standard_log_scale_to_value)
-    )
-    interior_log_density = jnp.where(centered_region, centered_log_density, standard_log_density)
-    supported_log_density = jnp.where(outside_support, -jnp.inf, interior_log_density)
-
-    valid_parameters = jnp.isfinite(shape_array) & (shape_array > 0) & jnp.isfinite(scale_array) & (scale_array > 0)
-    return jnp.where(valid_parameters, supported_log_density, jnp.nan)
+    return _inverse_gamma_logpdf_core(value_array, shape_array, scale_array)
 
 
 def inverse_gamma(
@@ -239,3 +141,151 @@ def inverse_gamma_rng(
     samples = jnp.exp(jnp.log(safe_scale) - log_unit_rate_samples)
 
     return jnp.where(valid_shape & valid_scale, samples, jnp.nan)
+
+
+@jax.custom_jvp
+def _inverse_gamma_logpdf_core(
+    value: jax.Array,
+    shape: jax.Array,
+    scale: jax.Array,
+) -> jax.Array:
+    valid_value = jnp.isfinite(value) & (value > 0)
+    valid_shape = jnp.isfinite(shape) & (shape > 0)
+    valid_scale = jnp.isfinite(scale) & (scale > 0)
+
+    # Sanitizing every candidate branch keeps invalid inputs out of JAX derivatives
+    safe_value = jnp.where(valid_value, value, jnp.ones_like(value))
+    safe_shape = jnp.where(valid_shape, shape, jnp.ones_like(shape))
+    safe_scale = jnp.where(valid_scale, scale, jnp.ones_like(scale))
+
+    log_ratio, density_deviation, _, _, has_density_deviation = _inverse_gamma_ratio_terms(
+        safe_value,
+        safe_shape,
+        safe_scale,
+    )
+
+    density_contribution = _weighted_log_ratio_deviance(
+        safe_shape,
+        log_ratio,
+        jnp.where(has_density_deviation, density_deviation, jnp.inf),
+    )
+
+    interior_log_density = _gamma_shape_normalizer(safe_shape) + density_contribution - jnp.log(safe_value)
+    supported_log_density = jnp.where(
+        valid_value,
+        interior_log_density,
+        jnp.where(jnp.isnan(value), jnp.nan, -jnp.inf),
+    )
+    return jnp.where(valid_shape & valid_scale, supported_log_density, jnp.nan)
+
+
+@_inverse_gamma_logpdf_core.defjvp
+def _inverse_gamma_logpdf_core_jvp(
+    primals: tuple[jax.Array, jax.Array, jax.Array],
+    tangents: tuple[jax.Array, jax.Array, jax.Array],
+) -> tuple[jax.Array, jax.Array]:
+    value, shape, scale = primals
+    value_tangent, shape_tangent, scale_tangent = tangents
+    log_density = _inverse_gamma_logpdf_core(value, shape, scale)
+
+    valid_value = jnp.isfinite(value) & (value > 0)
+    valid_shape = jnp.isfinite(shape) & (shape > 0)
+    valid_scale = jnp.isfinite(scale) & (scale > 0)
+    safe_value = jnp.where(valid_value, value, jnp.ones_like(value))
+    safe_shape = jnp.where(valid_shape, shape, jnp.ones_like(shape))
+    safe_scale = jnp.where(valid_scale, scale, jnp.ones_like(scale))
+
+    log_ratio, density_deviation, ratio_deviation, near_unit_ratio, _ = _inverse_gamma_ratio_terms(
+        safe_value,
+        safe_shape,
+        safe_scale,
+    )
+
+    value_derivative = (density_deviation - 1) / safe_value
+    shape_derivative = log_ratio + _gamma_shape_log_derivative(safe_shape)
+
+    direct_scale_derivative = safe_shape / safe_scale - 1 / safe_value
+    near_ratio_deviation = jnp.where(
+        near_unit_ratio,
+        ratio_deviation,
+        jnp.zeros_like(ratio_deviation),
+    )
+    near_scale_derivative = -near_ratio_deviation / (safe_value * (1 + near_ratio_deviation))
+    scale_derivative = jnp.where(
+        near_unit_ratio,
+        near_scale_derivative,
+        direct_scale_derivative,
+    )
+
+    valid_interior = valid_value & valid_shape & valid_scale
+    defined_support = valid_shape & valid_scale & ~jnp.isnan(value)
+    undefined_derivative = jnp.where(
+        defined_support,
+        jnp.zeros_like(value_derivative),
+        jnp.nan,
+    )
+    value_derivative = jnp.where(
+        valid_interior,
+        value_derivative,
+        undefined_derivative,
+    )
+    shape_derivative = jnp.where(
+        valid_interior,
+        shape_derivative,
+        undefined_derivative,
+    )
+    scale_derivative = jnp.where(
+        valid_interior,
+        scale_derivative,
+        undefined_derivative,
+    )
+    log_density_tangent = (
+        value_derivative * value_tangent + shape_derivative * shape_tangent + scale_derivative * scale_tangent
+    )
+    return log_density, log_density_tangent
+
+
+def _inverse_gamma_ratio_terms(
+    value: jax.Array,
+    shape: jax.Array,
+    scale: jax.Array,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+    product_denominator = value * shape
+    product_difference = scale - product_denominator
+    product_density_deviation = product_difference / value
+
+    scaled_inverse_value = scale / value
+    sequential_density_deviation = scaled_inverse_value - shape
+
+    raw_log_ratio = jnp.log(scale) - jnp.log(value) - jnp.log(shape)
+    product_log_ratio, product_ratio_deviation, valid_product_ratio = _stable_log_ratio(
+        scale,
+        product_denominator,
+        raw_log_ratio,
+    )
+    sequential_log_ratio, sequential_ratio_deviation, valid_sequential_ratio = _stable_log_ratio(
+        scaled_inverse_value,
+        shape,
+        raw_log_ratio,
+    )
+    has_finite_ratio = valid_product_ratio | valid_sequential_ratio
+    log_ratio = jnp.where(valid_product_ratio, product_log_ratio, sequential_log_ratio)
+    ratio_deviation = jnp.where(
+        valid_product_ratio,
+        product_ratio_deviation,
+        sequential_ratio_deviation,
+    )
+
+    valid_product_density_deviation = (
+        jnp.isfinite(product_denominator) & (product_denominator > 0) & jnp.isfinite(product_density_deviation)
+    )
+    valid_sequential_density_deviation = jnp.isfinite(sequential_density_deviation)
+    has_density_deviation = valid_product_density_deviation | valid_sequential_density_deviation
+    density_deviation = jnp.where(
+        valid_product_density_deviation,
+        product_density_deviation,
+        sequential_density_deviation,
+    )
+
+    near_unit_ratio = has_finite_ratio & (jnp.abs(ratio_deviation) < 0.5)
+    return log_ratio, density_deviation, ratio_deviation, near_unit_ratio, has_density_deviation

@@ -2,7 +2,9 @@
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
+from scipy import special, stats
 
 from mmmjax import (
     beta,
@@ -21,6 +23,41 @@ def test_beta_logpdf_matches_known_values() -> None:
     result = beta_logpdf(values, 2.3, 4.7)
 
     assert jnp.allclose(result, expected)
+
+
+def test_beta_logpdf_matches_scipy_reference_grid() -> None:
+    values = np.array([1e-20, 0.01, 0.1, 0.4, 0.5, 0.8, 0.99, 1 - 1e-6], dtype=np.float32)
+    alphas = np.array([0.1, 0.5, 1.0, 2.3, 7.999, 8.0, 50.0, 3.0], dtype=np.float32)
+    betas = np.array([3.0, 0.2, 1.0, 4.7, 8.001, 25.0, 9.0, 0.1], dtype=np.float32)
+    expected = stats.beta.logpdf(
+        values.astype(np.float64),
+        alphas.astype(np.float64),
+        betas.astype(np.float64),
+    )
+
+    result = beta_logpdf(values, alphas, betas)
+
+    np.testing.assert_allclose(result, expected, rtol=3e-6, atol=3e-6)
+
+
+def test_beta_logpdf_gradients_match_analytic_reference_grid() -> None:
+    values = np.array([0.01, 0.2, 0.5, 0.7, 0.99], dtype=np.float32)
+    alphas = np.array([0.2, 1.0, 2.3, 8.0, 50.0], dtype=np.float32)
+    betas = np.array([4.0, 0.5, 4.7, 25.0, 9.0], dtype=np.float32)
+    shape_sums = alphas + betas
+    expected = np.stack(
+        [
+            (alphas - 1) / values - (betas - 1) / (1 - values),
+            np.log(values) - special.digamma(alphas) + special.digamma(shape_sums),
+            np.log1p(-values) - special.digamma(betas) + special.digamma(shape_sums),
+        ],
+        axis=-1,
+    )
+
+    gradients = jax.vmap(jax.grad(beta_logpdf, argnums=(0, 1, 2)))(values, alphas, betas)
+    result = np.stack(gradients, axis=-1)
+
+    np.testing.assert_allclose(result, expected, rtol=3e-6, atol=3e-6)
 
 
 def test_beta_returns_scalar_sum() -> None:
@@ -97,6 +134,60 @@ def test_beta_logpdf_preserves_small_tail_terms() -> None:
     assert jnp.allclose(result, 45.051701859880914)
 
 
+def test_beta_logpdf_remains_accurate_for_concentrated_shapes() -> None:
+    value = jnp.float32(0.5)
+    alpha = jnp.float32(1e8)
+    beta_parameter = jnp.float32(1e8)
+
+    result = beta_logpdf(value, alpha, beta_parameter)
+    gradients = jax.grad(beta, argnums=(0, 1, 2))(value, alpha, beta_parameter)
+
+    assert jnp.allclose(result, 9.331122398376465, rtol=2e-7, atol=0)
+    assert jnp.allclose(
+        jnp.asarray(gradients),
+        jnp.array([0.0, 2.5000002068509275e-9, 2.5000002068509275e-9]),
+        rtol=2e-7,
+        atol=0,
+    )
+
+
+def test_beta_logpdf_preserves_concentrated_off_mode_terms() -> None:
+    value = jnp.float32(0.5001000165939331)
+    alpha = jnp.float32(1e8)
+    beta_parameter = jnp.float32(1e8)
+
+    result = beta_logpdf(value, alpha, beta_parameter)
+    gradients = jax.grad(beta_logpdf, argnums=(0, 1, 2))(value, alpha, beta_parameter)
+
+    assert jnp.allclose(result, 5.329794883728027, rtol=3e-7, atol=0)
+    assert jnp.allclose(
+        jnp.asarray(gradients),
+        jnp.array([-80013.28125, 0.00020001568167936057, -0.00020005069382023066]),
+        rtol=3e-7,
+        atol=0,
+    )
+
+
+def test_beta_logpdf_handles_maximum_finite_concentrated_shapes() -> None:
+    shape = jnp.asarray(jnp.finfo(jnp.float32).max)
+
+    result = beta_logpdf(jnp.float32(0.5), shape, shape)
+    gradients = jax.grad(beta_logpdf, argnums=(0, 1, 2))(jnp.float32(0.5), shape, shape)
+
+    assert jnp.isfinite(result)
+    assert jnp.allclose(result, 44.482200622558594, rtol=2e-7, atol=0)
+    assert jnp.all(jnp.isfinite(jnp.asarray(gradients)))
+
+
+@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+def test_beta_logpdf_remains_accurate_at_extreme_float64_shapes() -> None:
+    shape = jnp.float64(1e20)
+
+    result = beta_logpdf(jnp.float64(0.5), shape, shape)
+
+    assert jnp.allclose(result, 23.1466331675757, rtol=1e-14, atol=0)
+
+
 def test_beta_is_differentiable_with_respect_to_value() -> None:
     values = jnp.array([0.1, 0.4, 0.8])
     expected = jnp.array([8.888888888888886, -2.9166666666666674, -16.875000000000004])
@@ -120,6 +211,44 @@ def test_beta_is_differentiable_with_respect_to_beta() -> None:
     result = jax.grad(lambda current_beta: beta(values, 2.3, current_beta))(4.7)
 
     assert jnp.allclose(result, -0.91954247545786227)
+
+
+def test_beta_logpdf_supports_forward_mode_differentiation() -> None:
+    primals = (jnp.float32(0.4), jnp.float32(2.3), jnp.float32(4.7))
+    tangents = (jnp.float32(0.2), jnp.float32(-0.3), jnp.float32(0.4))
+
+    _, result = jax.jvp(beta_logpdf, primals, tangents)
+
+    assert jnp.allclose(result, -0.72045548951)
+
+
+def test_beta_logpdf_supports_higher_order_differentiation() -> None:
+    parameters = jnp.array([0.4, 2.3, 4.7], dtype=jnp.float32)
+    expected = jnp.array(
+        [
+            [-18.40277778, 2.5, -1.66666667],
+            [2.5, -0.38899228, 0.15354518],
+            [-1.66666667, 0.15354518, -0.08344666],
+        ]
+    )
+
+    result = jax.hessian(lambda arguments: beta_logpdf(*arguments))(parameters)
+
+    assert jnp.allclose(result, expected, rtol=3e-6, atol=1e-7)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        (0.5, 0.0, 1.0),
+        (0.5, 1.0, 0.0),
+        (jnp.nan, 1.0, 1.0),
+    ],
+)
+def test_beta_logpdf_gradients_propagate_invalid_inputs(arguments) -> None:
+    gradients = jax.grad(beta_logpdf, argnums=(0, 1, 2))(*arguments)
+
+    assert jnp.all(jnp.isnan(jnp.asarray(gradients)))
 
 
 def test_beta_can_be_vectorized_over_datasets() -> None:
