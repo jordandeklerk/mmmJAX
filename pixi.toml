@@ -18,6 +18,7 @@ scipy = ">=1.14"
 
 [feature.dev.tasks]
 tests = "pytest -vv"
+benchmarks = "python benchmarks/distributions.py"
 
 [feature.docs.dependencies]
 sphinx = ">=8,<9"
