@@ -3,13 +3,16 @@
 import argparse
 import functools
 import math
+import platform
 import statistics
 import time
+import timeit
 from collections.abc import Callable
 from dataclasses import dataclass
 
 import jax
 import jax.numpy as jnp
+import jaxlib
 
 from benchmarks.jax_references import JAX_REFERENCES
 from mmmjax.distributions import (
@@ -99,6 +102,14 @@ class BenchmarkOperation:
 
 
 @dataclass(frozen=True)
+class TimingSummary:
+    """Store a median timing and its median absolute deviation."""
+
+    median_seconds: float
+    mad_seconds: float
+
+
+@dataclass(frozen=True)
 class BenchmarkResult:
     """Store cold compilation and warm execution measurements."""
 
@@ -109,8 +120,9 @@ class BenchmarkResult:
     operation: str
     element_count: int
     dtype: str
-    compile_ms: float
-    execution_us: float
+    compile_timing: TimingSummary
+    execution_timing: TimingSummary
+    iterations: int
 
 
 _PROFILES: dict[str, BenchmarkProfile] = {
@@ -277,7 +289,7 @@ def _compile(
     arguments: Arguments,
     *,
     repeats: int,
-) -> tuple[Callable[..., object], float]:
+) -> tuple[Callable[..., object], TimingSummary]:
     compile_timings = []
     for _ in range(repeats):
         jax.clear_caches()
@@ -285,26 +297,28 @@ def _compile(
         compiled = jax.jit(function).lower(*arguments).compile()
         compile_timings.append(time.perf_counter() - start)
     jax.block_until_ready(compiled(*arguments))
-    return compiled, statistics.median(compile_timings) * 1_000
+    return compiled, _summarize_timings(compile_timings)
 
 
-def _median_execution_us(
+def _measure_execution(
     function: Callable[..., object],
     arguments: Arguments,
     *,
     repeats: int,
-    iterations: int,
-) -> float:
-    for _ in range(5):
-        jax.block_until_ready(function(*arguments))
+    iterations: int | None,
+) -> tuple[TimingSummary, int]:
+    timer = timeit.Timer(lambda: jax.block_until_ready(function(*arguments)))
+    if iterations is None:
+        iterations, _ = timer.autorange()
 
-    timings = []
-    for _ in range(repeats):
-        start = time.perf_counter()
-        for _ in range(iterations):
-            jax.block_until_ready(function(*arguments))
-        timings.append((time.perf_counter() - start) / iterations)
-    return statistics.median(timings) * 1_000_000
+    execution_timings = [elapsed / iterations for elapsed in timer.repeat(repeat=repeats, number=iterations)]
+    return _summarize_timings(execution_timings), iterations
+
+
+def _summarize_timings(timings: list[float]) -> TimingSummary:
+    median_seconds = statistics.median(timings)
+    mad_seconds = statistics.median(abs(timing - median_seconds) for timing in timings)
+    return TimingSummary(median_seconds=median_seconds, mad_seconds=mad_seconds)
 
 
 def _benchmark(
@@ -316,15 +330,15 @@ def _benchmark(
     *,
     compile_repeats: int,
     repeats: int,
-    iterations: int,
+    iterations: int | None,
 ) -> BenchmarkResult:
     jax.block_until_ready(operation.arguments)
-    compiled, compile_ms = _compile(
+    compiled, compile_timing = _compile(
         operation.function,
         operation.arguments,
         repeats=compile_repeats,
     )
-    execution_us = _median_execution_us(
+    execution_timing, measured_iterations = _measure_execution(
         compiled,
         operation.arguments,
         repeats=repeats,
@@ -338,8 +352,9 @@ def _benchmark(
         operation=operation.name,
         element_count=math.prod(_PROFILES[profile_name].value_shape),
         dtype=dtype.name,
-        compile_ms=compile_ms,
-        execution_us=execution_us,
+        compile_timing=compile_timing,
+        execution_timing=execution_timing,
+        iterations=measured_iterations,
     )
 
 
@@ -352,8 +367,9 @@ def _print_results(results: list[BenchmarkResult]) -> None:
         "operation",
         "elements",
         "dtype",
-        "compile ms",
-        "execution us",
+        "compile ms (MAD)",
+        "execution us (MAD)",
+        "iterations",
     )
     rows = [
         (
@@ -364,8 +380,10 @@ def _print_results(results: list[BenchmarkResult]) -> None:
             result.operation,
             f"{result.element_count:,}",
             result.dtype,
-            f"{result.compile_ms:.2f}",
-            f"{result.execution_us:.2f}",
+            f"{result.compile_timing.median_seconds * 1_000:.2f} ({result.compile_timing.mad_seconds * 1_000:.2f})",
+            f"{result.execution_timing.median_seconds * 1_000_000:.2f} "
+            f"({result.execution_timing.mad_seconds * 1_000_000:.2f})",
+            f"{result.iterations:,}",
         )
         for result in results
     ]
@@ -374,6 +392,21 @@ def _print_results(results: list[BenchmarkResult]) -> None:
     print("  ".join("-" * width for width in widths))
     for row in rows:
         print("  ".join(value.ljust(widths[index]) for index, value in enumerate(row)))
+
+
+def _print_environment(dtype: jnp.dtype, arguments: argparse.Namespace) -> None:
+    device = jax.local_devices()[0]
+    iteration_setting = "auto" if arguments.iterations is None else f"{arguments.iterations:,}"
+    print(f"runtime python={platform.python_version()} jax={jax.__version__} jaxlib={jaxlib.__version__}")
+    print(
+        f"hardware system={platform.system()} machine={platform.machine()} backend={jax.default_backend()} "
+        f"platform={device.platform} device={device.device_kind!r} global_devices={jax.device_count()} "
+        f"local_devices={jax.local_device_count()} process={jax.process_index()}/{jax.process_count()}"
+    )
+    print(
+        f"timing dtype={dtype.name} x64={jax.config.x64_enabled} compile_repeats={arguments.compile_repeats} "
+        f"repeats={arguments.repeats} iterations={iteration_setting}"
+    )
 
 
 def _parse_args() -> argparse.Namespace:
@@ -392,13 +425,17 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--regimes", choices=("ordinary", "concentrated"), nargs="+", default=("ordinary",))
     parser.add_argument("--compile-repeats", type=int, default=3)
     parser.add_argument("--repeats", type=int, default=5)
-    parser.add_argument("--iterations", type=int, default=20)
+    parser.add_argument(
+        "--iterations",
+        type=int,
+        help="fixed calls per repetition; omitted uses timeit autorange",
+    )
     arguments = parser.parse_args()
     if arguments.compile_repeats <= 0:
         parser.error("--compile-repeats must be positive")
     if arguments.repeats <= 0:
         parser.error("--repeats must be positive")
-    if arguments.iterations <= 0:
+    if arguments.iterations is not None and arguments.iterations <= 0:
         parser.error("--iterations must be positive")
     if set(arguments.regimes) == {"concentrated"} and set(arguments.implementations) == {"jax"}:
         parser.error(
@@ -419,7 +456,7 @@ def main() -> None:
     selected_distributions = set(arguments.distributions)
     selected_implementations = set(arguments.implementations)
     selected_operations = set(arguments.operations)
-    print(f"backend={jax.default_backend()} device={jax.devices()[0]} x64={jax.config.x64_enabled}")
+    _print_environment(dtype, arguments)
     if "concentrated" in arguments.regimes and "jax" in selected_implementations:
         print("note=public JAX is omitted from concentrated regimes because it does not meet the accuracy gate")
 
