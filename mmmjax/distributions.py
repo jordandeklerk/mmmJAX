@@ -4,12 +4,22 @@ import math
 
 import jax
 import jax.numpy as jnp
+from jax.scipy.special import gammaln, xlogy
 from jax.typing import ArrayLike
 
 __all__ = [
     "exponential",
     "exponential_logpdf",
     "exponential_rng",
+    "gamma",
+    "gamma_logpdf",
+    "gamma_rng",
+    "half_normal",
+    "half_normal_logpdf",
+    "half_normal_rng",
+    "lognormal",
+    "lognormal_logpdf",
+    "lognormal_rng",
     "normal",
     "normal_logpdf",
     "normal_rng",
@@ -133,6 +143,210 @@ def normal_rng(
     return jnp.where(valid_parameters, samples, jnp.nan)
 
 
+def half_normal_logpdf(value: ArrayLike, scale: ArrayLike) -> jax.Array:
+    r"""Evaluate the HalfNormal log density elementwise.
+
+    For value :math:`x \geq 0` and scale :math:`\sigma > 0`, the log density is
+
+    .. math::
+
+        \log p(x \mid \sigma)
+        = \frac{1}{2}\log\left(\frac{2}{\pi}\right)
+          - \log(\sigma)
+          - \frac{1}{2}\left(\frac{x}{\sigma}\right)^2,
+        \qquad x \geq 0,\; \sigma > 0.
+
+    Parameters
+    ----------
+    value
+        Values at which to evaluate the density.
+    scale
+        Positive standard deviation of the underlying zero-centered Normal
+        distribution.
+
+    Returns
+    -------
+    jax.Array
+        Normalized log densities with the broadcast shape of the arguments.
+        Values below zero produce ``-inf`` and a nonpositive or nonfinite scale
+        produces ``nan``.
+    """
+    value_array, scale_array = _promote_inexact(("value", value), ("scale", scale))
+    log_two = jnp.asarray(math.log(2), dtype=value_array.dtype)
+    log_density = normal_logpdf(value_array, 0, scale_array) + log_two
+    supported_log_density = jnp.where(value_array < 0, -jnp.inf, log_density)
+    valid_scale = jnp.isfinite(scale_array) & (scale_array > 0)
+    return jnp.where(valid_scale, supported_log_density, jnp.nan)
+
+
+def half_normal(value: ArrayLike, scale: ArrayLike) -> jax.Array:
+    """Return the scalar sum of HalfNormal log densities.
+
+    Parameters
+    ----------
+    value
+        Values at which to evaluate the density.
+    scale
+        Positive standard deviation of the underlying zero-centered Normal
+        distribution.
+
+    Returns
+    -------
+    jax.Array
+        Complete normalized log density, including constants, summed across
+        every dimension of the broadcast result.
+    """
+    log_density = jnp.sum(half_normal_logpdf(value, scale))
+    scale_array = jnp.asarray(scale)
+    valid_scale = jnp.all(jnp.isfinite(scale_array) & (scale_array > 0))
+    return jnp.where(valid_scale, log_density, jnp.nan)
+
+
+def half_normal_rng(
+    key: jax.Array,
+    scale: ArrayLike,
+    *,
+    sample_shape: tuple[int, ...] = (),
+) -> jax.Array:
+    """Draw samples from a HalfNormal distribution using a JAX random key.
+
+    Parameters
+    ----------
+    key
+        JAX random key controlling the draw. Reusing a key repeats the same
+        sample. Use ``jax.random.split`` to create keys for new random
+        operations.
+    scale
+        Positive standard deviation of the underlying zero-centered Normal
+        distribution.
+    sample_shape
+        Independent sample dimensions prepended to the parameter shape. The
+        tuple must be static when the function is JIT-compiled.
+
+    Returns
+    -------
+    jax.Array
+        Random variates with shape ``sample_shape + scale.shape``. A
+        nonpositive or nonfinite scale produces ``nan``.
+    """
+    return jnp.abs(normal_rng(key, 0, scale, sample_shape=sample_shape))
+
+
+def lognormal_logpdf(
+    value: ArrayLike,
+    location: ArrayLike,
+    scale: ArrayLike,
+) -> jax.Array:
+    r"""Evaluate the LogNormal log density elementwise.
+
+    For value :math:`x > 0`, log-scale location :math:`\mu \in \mathbb{R}`,
+    and log-scale standard deviation :math:`\sigma > 0`, the log density is
+
+    .. math::
+
+        \log p(x \mid \mu, \sigma)
+        = -\frac{1}{2}\left(\frac{\log(x) - \mu}{\sigma}\right)^2
+          - \log(\sigma)
+          - \log(x)
+          - \frac{1}{2}\log(2\pi),
+        \qquad x > 0,\; \sigma > 0.
+
+    Parameters
+    ----------
+    value
+        Values at which to evaluate the density.
+    location
+        Mean of the underlying Normal distribution for ``log(value)``.
+    scale
+        Positive standard deviation of the underlying Normal distribution for
+        ``log(value)``.
+
+    Returns
+    -------
+    jax.Array
+        Normalized log densities with the broadcast shape of the arguments.
+        Values at or below zero produce ``-inf``. A nonfinite location or a
+        nonpositive or nonfinite scale produces ``nan``.
+    """
+    value_array, location_array, scale_array = _promote_inexact(
+        ("value", value),
+        ("location", location),
+        ("scale", scale),
+    )
+    outside_support = value_array <= 0
+    # Avoid an indeterminate expression at zero without changing NaN inputs
+    safe_value = jnp.where(outside_support, jnp.ones_like(value_array), value_array)
+    log_value = jnp.log(safe_value)
+    log_density = normal_logpdf(log_value, location_array, scale_array) - log_value
+    supported_log_density = jnp.where(outside_support, -jnp.inf, log_density)
+    valid_parameters = jnp.isfinite(location_array) & jnp.isfinite(scale_array) & (scale_array > 0)
+    return jnp.where(valid_parameters, supported_log_density, jnp.nan)
+
+
+def lognormal(
+    value: ArrayLike,
+    location: ArrayLike,
+    scale: ArrayLike,
+) -> jax.Array:
+    """Return the scalar sum of LogNormal log densities.
+
+    Parameters
+    ----------
+    value
+        Values at which to evaluate the density.
+    location
+        Mean of the underlying Normal distribution for ``log(value)``.
+    scale
+        Positive standard deviation of the underlying Normal distribution for
+        ``log(value)``.
+
+    Returns
+    -------
+    jax.Array
+        Complete normalized log density, including constants, summed across
+        every dimension of the broadcast result.
+    """
+    log_density = jnp.sum(lognormal_logpdf(value, location, scale))
+    location_array = jnp.asarray(location)
+    scale_array = jnp.asarray(scale)
+    valid_parameters = jnp.all(jnp.isfinite(location_array)) & jnp.all(jnp.isfinite(scale_array) & (scale_array > 0))
+    return jnp.where(valid_parameters, log_density, jnp.nan)
+
+
+def lognormal_rng(
+    key: jax.Array,
+    location: ArrayLike,
+    scale: ArrayLike,
+    *,
+    sample_shape: tuple[int, ...] = (),
+) -> jax.Array:
+    """Draw samples from a LogNormal distribution using a JAX random key.
+
+    Parameters
+    ----------
+    key
+        JAX random key controlling the draw. Reusing a key repeats the same
+        sample. Use ``jax.random.split`` to create keys for new random
+        operations.
+    location
+        Mean of the underlying Normal distribution for ``log(value)``.
+    scale
+        Positive standard deviation of the underlying Normal distribution for
+        ``log(value)``.
+    sample_shape
+        Independent sample dimensions prepended to the broadcast parameter shape.
+        The tuple must be static when the function is JIT-compiled.
+
+    Returns
+    -------
+    jax.Array
+        Random variates with shape ``sample_shape + broadcast_shape``. A
+        nonfinite location or a nonpositive or nonfinite scale produces
+        ``nan``.
+    """
+    return jnp.exp(normal_rng(key, location, scale, sample_shape=sample_shape))
+
+
 def exponential_logpdf(value: ArrayLike, rate: ArrayLike) -> jax.Array:
     r"""Evaluate the Exponential log density elementwise.
 
@@ -223,6 +437,157 @@ def exponential_rng(
     samples = standard_exponential / rate_array
     valid_rate = jnp.isfinite(rate_array) & (rate_array > 0)
     return jnp.where(valid_rate, samples, jnp.nan)
+
+
+def gamma_logpdf(
+    value: ArrayLike,
+    shape: ArrayLike,
+    rate: ArrayLike,
+) -> jax.Array:
+    r"""Evaluate the Gamma log density elementwise.
+
+    For value :math:`x > 0`, shape :math:`\alpha > 0`, and rate
+    :math:`\beta > 0`, the log density is
+
+    .. math::
+
+        \log p(x \mid \alpha, \beta)
+        = \alpha\log(\beta)
+          - \log\Gamma(\alpha)
+          + (\alpha - 1)\log(x)
+          - \beta x.
+
+    At :math:`x = 0`, the log density is :math:`+\infty` when
+    :math:`\alpha < 1`, :math:`\log(\beta)` when :math:`\alpha = 1`, and
+    :math:`-\infty` when :math:`\alpha > 1`.
+
+    Parameters
+    ----------
+    value
+        Values at which to evaluate the density.
+    shape
+        Positive shape parameter.
+    rate
+        Positive rate parameter, equal to the inverse scale.
+
+    Returns
+    -------
+    jax.Array
+        Normalized log densities with the broadcast shape of the arguments.
+        Negative values and positive infinity produce ``-inf``. A nonpositive
+        or nonfinite shape or rate produces ``nan``.
+    """
+    value_array, shape_array, rate_array = _promote_inexact(
+        ("value", value),
+        ("shape", shape),
+        ("rate", rate),
+    )
+    at_boundary = value_array == 0
+    outside_support = value_array < 0
+    positive_infinity = jnp.isposinf(value_array)
+    # Keep boundary and unsupported values out of undefined logarithms
+    safe_value = jnp.where(
+        at_boundary | outside_support | positive_infinity,
+        jnp.ones_like(value_array),
+        value_array,
+    )
+    interior_log_density = (
+        shape_array * jnp.log(rate_array)
+        - gammaln(shape_array)
+        + xlogy(shape_array - 1, safe_value)
+        - rate_array * safe_value
+    )
+    boundary_log_density = jnp.where(
+        shape_array < 1,
+        jnp.inf,
+        jnp.where(shape_array == 1, jnp.log(rate_array), -jnp.inf),
+    )
+    supported_log_density = jnp.where(at_boundary, boundary_log_density, interior_log_density)
+    supported_log_density = jnp.where(
+        outside_support | positive_infinity,
+        -jnp.inf,
+        supported_log_density,
+    )
+    valid_parameters = jnp.isfinite(shape_array) & (shape_array > 0) & jnp.isfinite(rate_array) & (rate_array > 0)
+    return jnp.where(valid_parameters, supported_log_density, jnp.nan)
+
+
+def gamma(
+    value: ArrayLike,
+    shape: ArrayLike,
+    rate: ArrayLike,
+) -> jax.Array:
+    """Return the scalar sum of Gamma log densities.
+
+    Parameters
+    ----------
+    value
+        Values at which to evaluate the density.
+    shape
+        Positive shape parameter.
+    rate
+        Positive rate parameter, equal to the inverse scale.
+
+    Returns
+    -------
+    jax.Array
+        Complete normalized log density, including constants, summed across
+        every dimension of the broadcast result.
+    """
+    log_density = jnp.sum(gamma_logpdf(value, shape, rate))
+    shape_array = jnp.asarray(shape)
+    rate_array = jnp.asarray(rate)
+    valid_parameters = jnp.all(jnp.isfinite(shape_array) & (shape_array > 0)) & jnp.all(
+        jnp.isfinite(rate_array) & (rate_array > 0)
+    )
+    return jnp.where(valid_parameters, log_density, jnp.nan)
+
+
+def gamma_rng(
+    key: jax.Array,
+    shape: ArrayLike,
+    rate: ArrayLike,
+    *,
+    sample_shape: tuple[int, ...] = (),
+) -> jax.Array:
+    """Draw samples from a Gamma distribution using a JAX random key.
+
+    Parameters
+    ----------
+    key
+        JAX random key controlling the draw. Reusing a key repeats the same
+        sample. Use ``jax.random.split`` to create keys for new random
+        operations.
+    shape
+        Positive shape parameter.
+    rate
+        Positive rate parameter, equal to the inverse scale.
+    sample_shape
+        Independent sample dimensions prepended to the broadcast parameter shape.
+        The tuple must be static when the function is JIT-compiled.
+
+    Returns
+    -------
+    jax.Array
+        Random variates with shape ``sample_shape + broadcast_shape``. A
+        nonpositive or nonfinite shape or rate produces ``nan``.
+    """
+    shape_array, rate_array = _promote_inexact(("shape", shape), ("rate", rate))
+    output_shape = _random_shape(sample_shape, shape_array, rate_array)
+    valid_shape = jnp.isfinite(shape_array) & (shape_array > 0)
+    valid_rate = jnp.isfinite(rate_array) & (rate_array > 0)
+    # Keep invalid shapes out of JAX's rejection sampler
+    safe_shape = jnp.where(valid_shape, shape_array, jnp.ones_like(shape_array))
+    safe_rate = jnp.where(valid_rate, rate_array, jnp.ones_like(rate_array))
+    # Scale in log space so tiny unit-rate draws can be rescaled before they underflow
+    log_unit_rate_samples = jax.random.loggamma(
+        key,
+        safe_shape,
+        shape=output_shape,
+        dtype=shape_array.dtype,
+    )
+    samples = jnp.exp(log_unit_rate_samples - jnp.log(safe_rate))
+    return jnp.where(valid_shape & valid_rate, samples, jnp.nan)
 
 
 def _random_shape(sample_shape: tuple[int, ...], *parameters: jax.Array) -> tuple[int, ...]:
