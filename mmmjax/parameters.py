@@ -190,7 +190,7 @@ def _initialize(
     shape: tuple[int, ...],
     dtype: DTypeLike,
 ) -> jax.Array:
-    # Matching Stan's default range gives every parameterization a predictable baseline.
+    # Match Stan's default range so initialization is familiar to Stan users
     return jax.random.uniform(
         key,
         shape=shape,
