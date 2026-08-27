@@ -21,6 +21,9 @@ from mmmjax.distributions._normal import normal_rng as normal_rng
 from mmmjax.distributions._student_t import student_t as student_t
 from mmmjax.distributions._student_t import student_t_logpdf as student_t_logpdf
 from mmmjax.distributions._student_t import student_t_rng as student_t_rng
+from mmmjax.distributions._uniform import uniform as uniform
+from mmmjax.distributions._uniform import uniform_logpdf as uniform_logpdf
+from mmmjax.distributions._uniform import uniform_rng as uniform_rng
 
 __all__ = [
     "beta",
@@ -44,4 +47,7 @@ __all__ = [
     "student_t",
     "student_t_logpdf",
     "student_t_rng",
+    "uniform",
+    "uniform_logpdf",
+    "uniform_rng",
 ]

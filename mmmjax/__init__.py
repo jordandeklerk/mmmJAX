@@ -22,6 +22,9 @@ from mmmjax.distributions import (
     student_t,
     student_t_logpdf,
     student_t_rng,
+    uniform,
+    uniform_logpdf,
+    uniform_rng,
 )
 from mmmjax.model import Model
 from mmmjax.parameters import Interval, LowerBound, Parameterization, Positive, Real, UpperBound
@@ -57,4 +60,7 @@ __all__ = [
     "student_t",
     "student_t_logpdf",
     "student_t_rng",
+    "uniform",
+    "uniform_logpdf",
+    "uniform_rng",
 ]

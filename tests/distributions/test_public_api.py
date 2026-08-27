@@ -25,6 +25,9 @@ DISTRIBUTION_EXPORTS = [
     "student_t",
     "student_t_logpdf",
     "student_t_rng",
+    "uniform",
+    "uniform_logpdf",
+    "uniform_rng",
 ]
 
 

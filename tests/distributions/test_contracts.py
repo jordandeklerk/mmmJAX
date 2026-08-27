@@ -28,6 +28,9 @@ from mmmjax import (
     student_t,
     student_t_logpdf,
     student_t_rng,
+    uniform,
+    uniform_logpdf,
+    uniform_rng,
 )
 
 
@@ -41,6 +44,7 @@ from mmmjax import (
         (gamma, (jnp.empty((0,)), 1.0, 1.0)),
         (beta, (jnp.empty((0,)), 1.0, 1.0)),
         (student_t, (jnp.empty((0,)), 5.0, 0.0, 1.0)),
+        (uniform, (jnp.empty((0,)), 0.0, 1.0)),
     ],
 )
 def test_density_of_empty_batch_is_scalar_zero(density, arguments) -> None:
@@ -68,6 +72,10 @@ def test_density_of_empty_batch_is_scalar_zero(density, arguments) -> None:
         (student_t, (jnp.empty((0,)), 0.0, 0.0, 1.0)),
         (student_t, (jnp.empty((0,)), 5.0, jnp.inf, 1.0)),
         (student_t, (jnp.empty((0,)), 5.0, 0.0, jnp.inf)),
+        (uniform, (jnp.empty((0,)), 0.0, 0.0)),
+        (uniform, (jnp.empty((0,)), -jnp.inf, 1.0)),
+        (uniform, (jnp.empty((0,)), jnp.empty((0,)), jnp.inf)),
+        (uniform, (jnp.empty((0,)), -jnp.inf, jnp.empty((0,)))),
     ],
 )
 def test_invalid_parameters_remain_nan_for_empty_batch(density, arguments) -> None:
@@ -92,6 +100,7 @@ def test_densities_use_at_least_float32(dtype, expected_dtype) -> None:
     assert gamma_logpdf(values + 1, dtype(1.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert beta_logpdf(values, dtype(1.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert student_t_logpdf(values, dtype(5.0), dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
+    assert uniform_logpdf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
 
 
 def test_densities_promote_integer_inputs_to_float32() -> None:
@@ -104,6 +113,7 @@ def test_densities_promote_integer_inputs_to_float32() -> None:
     assert gamma_logpdf(values + 1, 1, 1).dtype == jnp.dtype(jnp.float32)
     assert beta_logpdf(values, 1, 1).dtype == jnp.dtype(jnp.float32)
     assert student_t_logpdf(values, 5, 0, 1).dtype == jnp.dtype(jnp.float32)
+    assert uniform_logpdf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
 
 
 @pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
@@ -118,6 +128,7 @@ def test_distribution_functions_support_float64() -> None:
     assert gamma_logpdf(values + 1, 1.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert beta_logpdf(values, 1.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert student_t_logpdf(values, 5.0, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
+    assert uniform_logpdf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert normal_rng(key, jnp.float64(0.0), jnp.float64(1.0)).dtype == jnp.dtype(jnp.float64)
     assert half_normal_rng(key, jnp.float64(1.0)).dtype == jnp.dtype(jnp.float64)
     assert lognormal_rng(key, jnp.float64(0.0), jnp.float64(1.0)).dtype == jnp.dtype(jnp.float64)
@@ -125,6 +136,7 @@ def test_distribution_functions_support_float64() -> None:
     assert gamma_rng(key, jnp.float64(1.0), jnp.float64(1.0)).dtype == jnp.dtype(jnp.float64)
     assert beta_rng(key, jnp.float64(1.0), jnp.float64(1.0)).dtype == jnp.dtype(jnp.float64)
     assert student_t_rng(key, jnp.float64(5.0), jnp.float64(0.0), jnp.float64(1.0)).dtype == jnp.dtype(jnp.float64)
+    assert uniform_rng(key, jnp.float64(0.0), jnp.float64(1.0)).dtype == jnp.dtype(jnp.float64)
 
 
 @pytest.mark.parametrize(
@@ -144,6 +156,8 @@ def test_distribution_functions_support_float64() -> None:
         (beta, (jnp.array([0.25, 0.75]), 2.0, 1.5)),
         (student_t_logpdf, (jnp.array([0.0, 1.0]), 5.0, 0.5, 2.0)),
         (student_t, (jnp.array([0.0, 1.0]), 5.0, 0.5, 2.0)),
+        (uniform_logpdf, (jnp.array([0.0, 1.0]), -0.5, 2.0)),
+        (uniform, (jnp.array([0.0, 1.0]), -0.5, 2.0)),
     ],
 )
 def test_density_functions_can_be_jitted(function, arguments) -> None:
@@ -160,6 +174,7 @@ def test_rngs_return_scalar_for_scalar_parameters() -> None:
     assert gamma_rng(key, 1.0, 1.0).shape == ()
     assert beta_rng(key, 1.0, 1.0).shape == ()
     assert student_t_rng(key, 5.0, 0.0, 1.0).shape == ()
+    assert uniform_rng(key, 0.0, 1.0).shape == ()
 
 
 def test_rngs_return_nan_for_invalid_parameters() -> None:
@@ -186,6 +201,11 @@ def test_rngs_return_nan_for_invalid_parameters() -> None:
         0.0,
         jnp.array([1.0, 0.0, -1.0, jnp.inf, jnp.nan]),
     )
+    uniform_result = uniform_rng(
+        key,
+        jnp.array([0.0, 0.0, 1.0, -jnp.inf, 0.0]),
+        jnp.array([1.0, 0.0, 0.0, 1.0, jnp.nan]),
+    )
 
     assert jnp.isfinite(normal_result[0])
     assert jnp.all(jnp.isnan(normal_result[1:]))
@@ -209,6 +229,8 @@ def test_rngs_return_nan_for_invalid_parameters() -> None:
     assert jnp.all(jnp.isnan(student_location_result[1:]))
     assert jnp.isfinite(student_scale_result[0])
     assert jnp.all(jnp.isnan(student_scale_result[1:]))
+    assert jnp.isfinite(uniform_result[0])
+    assert jnp.all(jnp.isnan(uniform_result[1:]))
 
 
 @pytest.mark.parametrize("dtype", [jnp.float16, jnp.bfloat16])
@@ -235,6 +257,9 @@ def test_rngs_compute_with_float32_for_low_precision_parameters(dtype) -> None:
         shape=(2,),
         dtype=jnp.float32,
     )
+    uniform_lower = jnp.zeros(2, dtype=dtype)
+    uniform_upper = jnp.ones(2, dtype=dtype)
+    expected_uniform = jax.random.uniform(key, shape=(2,), dtype=jnp.float32)
 
     normal_result = normal_rng(key, location, scale)
     half_normal_result = half_normal_rng(key, scale)
@@ -243,6 +268,7 @@ def test_rngs_compute_with_float32_for_low_precision_parameters(dtype) -> None:
     gamma_result = gamma_rng(key, scale, rate)
     beta_result = beta_rng(key, scale, rate)
     student_result = student_t_rng(key, degrees, location, scale)
+    uniform_result = uniform_rng(key, uniform_lower, uniform_upper)
 
     assert normal_result.dtype == jnp.dtype(jnp.float32)
     assert half_normal_result.dtype == jnp.dtype(jnp.float32)
@@ -251,6 +277,7 @@ def test_rngs_compute_with_float32_for_low_precision_parameters(dtype) -> None:
     assert gamma_result.dtype == jnp.dtype(jnp.float32)
     assert beta_result.dtype == jnp.dtype(jnp.float32)
     assert student_result.dtype == jnp.dtype(jnp.float32)
+    assert uniform_result.dtype == jnp.dtype(jnp.float32)
     assert jnp.array_equal(normal_result, expected_normal)
     assert jnp.array_equal(half_normal_result, expected_half_normal)
     assert jnp.array_equal(lognormal_result, expected_lognormal)
@@ -258,6 +285,7 @@ def test_rngs_compute_with_float32_for_low_precision_parameters(dtype) -> None:
     assert jnp.array_equal(gamma_result, expected_gamma)
     assert jnp.array_equal(beta_result, expected_beta)
     assert jnp.all(jnp.isfinite(student_result))
+    assert jnp.array_equal(uniform_result, expected_uniform)
 
 
 def test_rngs_can_be_jitted() -> None:
@@ -271,6 +299,7 @@ def test_rngs_can_be_jitted() -> None:
     compiled_student = jax.jit(
         partial(student_t_rng, degrees_of_freedom=5.0, location=0.0, scale=1.0, sample_shape=(2,))
     )
+    compiled_uniform = jax.jit(partial(uniform_rng, lower=0.0, upper=1.0, sample_shape=(2,)))
 
     assert jnp.array_equal(compiled_normal(key), normal_rng(key, 0.0, 1.0, sample_shape=(2,)))
     assert jnp.array_equal(compiled_half_normal(key), half_normal_rng(key, 1.0, sample_shape=(2,)))
@@ -279,6 +308,7 @@ def test_rngs_can_be_jitted() -> None:
     assert jnp.allclose(compiled_gamma(key), gamma_rng(key, 2.0, 1.0, sample_shape=(2,)))
     assert jnp.allclose(compiled_beta(key), beta_rng(key, 2.0, 1.0, sample_shape=(2,)))
     assert jnp.allclose(compiled_student(key), student_t_rng(key, 5.0, 0.0, 1.0, sample_shape=(2,)))
+    assert jnp.array_equal(compiled_uniform(key), uniform_rng(key, 0.0, 1.0, sample_shape=(2,)))
 
 
 def test_rngs_can_be_vectorized_over_keys() -> None:
@@ -291,6 +321,7 @@ def test_rngs_can_be_vectorized_over_keys() -> None:
     gamma_result = jax.vmap(gamma_rng, in_axes=(0, None, None))(keys, 2.0, 1.0)
     beta_result = jax.vmap(beta_rng, in_axes=(0, None, None))(keys, 2.0, 1.0)
     student_result = jax.vmap(student_t_rng, in_axes=(0, None, None, None))(keys, 5.0, 0.0, 1.0)
+    uniform_result = jax.vmap(uniform_rng, in_axes=(0, None, None))(keys, 0.0, 1.0)
     expected_normal = jnp.stack([normal_rng(key, 0.0, 1.0) for key in keys])
     expected_half_normal = jnp.stack([half_normal_rng(key, 1.0) for key in keys])
     expected_lognormal = jnp.stack([lognormal_rng(key, 0.0, 1.0) for key in keys])
@@ -298,6 +329,7 @@ def test_rngs_can_be_vectorized_over_keys() -> None:
     expected_gamma = jnp.stack([gamma_rng(key, 2.0, 1.0) for key in keys])
     expected_beta = jnp.stack([beta_rng(key, 2.0, 1.0) for key in keys])
     expected_student = jnp.stack([student_t_rng(key, 5.0, 0.0, 1.0) for key in keys])
+    expected_uniform = jnp.stack([uniform_rng(key, 0.0, 1.0) for key in keys])
 
     assert jnp.array_equal(normal_result, expected_normal)
     assert jnp.array_equal(half_normal_result, expected_half_normal)
@@ -306,6 +338,7 @@ def test_rngs_can_be_vectorized_over_keys() -> None:
     assert jnp.allclose(gamma_result, expected_gamma)
     assert jnp.array_equal(beta_result, expected_beta)
     assert jnp.array_equal(student_result, expected_student)
+    assert jnp.array_equal(uniform_result, expected_uniform)
 
 
 def test_rngs_are_deterministic_for_a_given_key() -> None:
@@ -356,6 +389,8 @@ def test_rng_rejects_negative_sample_shape() -> None:
         (beta_rng, (jax.random.key(0), 1.0, 1.0 + 0.0j), "beta"),
         (student_t_logpdf, (0.0, 5.0 + 0.0j, 0.0, 1.0), "degrees_of_freedom"),
         (student_t_rng, (jax.random.key(0), 5.0, 0.0, 1.0 + 0.0j), "scale"),
+        (uniform_logpdf, (0.0, 0.0 + 0.0j, 1.0), "lower"),
+        (uniform_rng, (jax.random.key(0), 0.0, 1.0 + 0.0j), "upper"),
     ],
 )
 def test_distribution_functions_reject_complex_arguments(function, arguments, argument_name: str) -> None:
