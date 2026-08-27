@@ -255,6 +255,37 @@ def test_random_initialization_can_be_jitted() -> None:
     assert jax.tree.all(jax.tree.map(jnp.array_equal, result, specification.initialize_random(key)))
 
 
+def test_model_outputs_follow_jax_default_dtype() -> None:
+    specification = _make_regression_model()
+    position = specification.initialize_random(jax.random.key(0))
+    data = _regression_data()
+    parameters = specification.constrain(position)
+    expected_dtype = jnp.asarray(0.0).dtype
+
+    density = specification.log_density(position, data)
+    generated = specification.generate(jax.random.key(1), parameters, data)
+
+    assert jax.tree.all(jax.tree.map(lambda value: value.dtype == expected_dtype, position))
+    assert jax.tree.all(jax.tree.map(lambda value: value.dtype == expected_dtype, parameters))
+    assert density.dtype == expected_dtype
+    assert jax.tree.all(jax.tree.map(lambda value: value.dtype == expected_dtype, generated))
+
+
+def test_model_preserves_explicit_float32() -> None:
+    def generate(key, data, a):
+        return {"a": a}
+
+    specification = Model({"a": Real(dtype=jnp.float32)}, _one_parameter_log_density, generate)
+    position = {"a": jnp.asarray(0.25, dtype=jnp.float32)}
+    parameters = specification.constrain(position)
+
+    density = specification.log_density(position, {})
+    generated = specification.generate(jax.random.key(0), parameters, {})
+
+    assert density.dtype == jnp.dtype(jnp.float32)
+    assert generated["a"].dtype == jnp.dtype(jnp.float32)
+
+
 def test_model_without_parameters_can_be_initialized() -> None:
     specification = Model({}, _empty_log_density)
 

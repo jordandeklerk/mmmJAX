@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 
-from mmmjax.distributions._normal import normal_logpdf, normal_rng
+from mmmjax.distributions._normal import _normal_logpdf_kernel, normal_rng
 from mmmjax.distributions._utils import _promote_inexact
 
 
@@ -54,7 +54,7 @@ def lognormal_logpdf(
     # Avoid an indeterminate expression at zero without changing NaN inputs
     safe_value = jnp.where(outside_support, jnp.ones_like(value_array), value_array)
     log_value = jnp.log(safe_value)
-    log_density = normal_logpdf(log_value, location_array, scale_array) - log_value
+    log_density = _normal_logpdf_kernel(log_value, location_array, scale_array) - log_value
     supported_log_density = jnp.where(outside_support, -jnp.inf, log_density)
 
     valid_parameters = jnp.isfinite(location_array) & jnp.isfinite(scale_array) & (scale_array > 0)
@@ -84,7 +84,12 @@ def lognormal(
         Complete normalized log density, including constants, summed across
         every dimension of the broadcast result.
     """
-    log_density = jnp.sum(lognormal_logpdf(value, location, scale))
+    log_densities = lognormal_logpdf(value, location, scale)
+    log_density = jnp.sum(log_densities)
+
+    # Only empty results need a separate check because no element can carry nan into the sum
+    if log_densities.size:
+        return log_density
 
     location_array = jnp.asarray(location)
     scale_array = jnp.asarray(scale)

@@ -49,10 +49,7 @@ def normal_logpdf(
         ("scale", scale),
     )
 
-    # Keep the scale out of the square so extreme values stay finite
-    standardized = (value_array - location_array) / scale_array
-    half_log_two_pi = jnp.asarray(math.log(2 * math.pi) / 2, dtype=value_array.dtype)
-    log_density = -0.5 * jnp.square(standardized) - jnp.log(scale_array) - half_log_two_pi
+    log_density = _normal_logpdf_kernel(value_array, location_array, scale_array)
 
     valid_parameters = jnp.isfinite(location_array) & jnp.isfinite(scale_array) & (scale_array > 0)
     return jnp.where(valid_parameters, log_density, jnp.nan)
@@ -80,7 +77,12 @@ def normal(
         Complete normalized log density, including constants, summed across
         every dimension of the broadcast result.
     """
-    log_density = jnp.sum(normal_logpdf(value, location, scale))
+    log_densities = normal_logpdf(value, location, scale)
+    log_density = jnp.sum(log_densities)
+
+    # Only empty results need a separate check because no element can carry nan into the sum
+    if log_densities.size:
+        return log_density
 
     location_array = jnp.asarray(location)
     scale_array = jnp.asarray(scale)
@@ -129,3 +131,14 @@ def normal_rng(
 
     valid_parameters = jnp.isfinite(location_array) & jnp.isfinite(scale_array) & (scale_array > 0)
     return jnp.where(valid_parameters, samples, jnp.nan)
+
+
+def _normal_logpdf_kernel(
+    value: jax.Array,
+    location: jax.Array,
+    scale: jax.Array,
+) -> jax.Array:
+    # Keep the scale out of the square so extreme values stay finite
+    standardized = (value - location) / scale
+    half_log_two_pi = jnp.asarray(math.log(2 * math.pi) / 2, dtype=value.dtype)
+    return -0.5 * jnp.square(standardized) - jnp.log(scale) - half_log_two_pi
