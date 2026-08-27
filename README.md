@@ -15,8 +15,7 @@
 
 </div>
 
-**mmmJAX** brings Stan's explicit modeling style to Bayesian marketing mix models expressed entirely
-in JAX. Models define their parameter constraints, transformations between constrained and
-unconstrained spaces, and log density as ordinary JAX functions, keeping the statistical
-specification transparent and independent of any particular inference algorithm while taking
-advantage of JAX's modern computational capabilities.
+**mmmJAX** brings Stan's explicit modeling style to Bayesian marketing mix modeling expressed
+entirely in JAX. Parameter constraints, transformations, and log densities remain visible as
+ordinary JAX functions. This keeps the statistical model transparent and separate from inference
+while retaining JAX's modern computational capabilities.
