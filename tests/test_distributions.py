@@ -7,6 +7,9 @@ import jax.numpy as jnp
 import pytest
 
 from mmmjax import (
+    beta,
+    beta_logpdf,
+    beta_rng,
     exponential,
     exponential_logpdf,
     exponential_rng,
@@ -85,6 +88,18 @@ def test_gamma_logpdf_matches_known_values() -> None:
     assert jnp.allclose(result, expected)
 
 
+def test_beta_logpdf_matches_known_values() -> None:
+    values = jnp.array([0.1, 0.4, 0.8], dtype=jnp.float32)
+    expected = jnp.array(
+        [0.30546208190868773, 0.6074238513643362, -2.556350281979741],
+        dtype=jnp.float32,
+    )
+
+    result = beta_logpdf(values, 2.3, 4.7)
+
+    assert jnp.allclose(result, expected)
+
+
 def test_normal_returns_scalar_sum() -> None:
     values = jnp.array([0.0, 1.0, -2.0])
 
@@ -130,6 +145,15 @@ def test_gamma_returns_scalar_sum() -> None:
     assert jnp.allclose(result, -4.530859837130152)
 
 
+def test_beta_returns_scalar_sum() -> None:
+    values = jnp.array([0.1, 0.4, 0.8])
+
+    result = beta(values, 2.3, 4.7)
+
+    assert result.shape == ()
+    assert jnp.allclose(result, -1.6434643487067171)
+
+
 @pytest.mark.parametrize(
     ("density", "arguments"),
     [
@@ -138,6 +162,7 @@ def test_gamma_returns_scalar_sum() -> None:
         (lognormal, (jnp.empty((0,)), 0.0, 1.0)),
         (exponential, (jnp.empty((0,)), 1.0)),
         (gamma, (jnp.empty((0,)), 1.0, 1.0)),
+        (beta, (jnp.empty((0,)), 1.0, 1.0)),
     ],
 )
 def test_density_of_empty_batch_is_scalar_zero(density, arguments) -> None:
@@ -160,6 +185,8 @@ def test_density_of_empty_batch_is_scalar_zero(density, arguments) -> None:
         (exponential, (jnp.empty((0,)), jnp.inf)),
         (gamma, (jnp.empty((0,)), 0.0, 1.0)),
         (gamma, (jnp.empty((0,)), 1.0, jnp.inf)),
+        (beta, (jnp.empty((0,)), 0.0, 1.0)),
+        (beta, (jnp.empty((0,)), 1.0, jnp.inf)),
     ],
 )
 def test_invalid_parameters_remain_nan_for_empty_batch(density, arguments) -> None:
@@ -233,6 +260,24 @@ def test_gamma_logpdf_broadcasts_arguments() -> None:
     assert result.shape == (2, 3)
     assert jnp.allclose(result, expected)
     assert jnp.allclose(gamma(values, shapes, rates), jnp.sum(expected))
+
+
+def test_beta_logpdf_broadcasts_arguments() -> None:
+    values = jnp.array([[0.2], [0.75]])
+    alphas = jnp.array([0.5, 1.0, 3.0])
+    betas = jnp.array([2.0, 1.0, 0.5])
+    expected = jnp.array(
+        [
+            [0.29389333245105947, 0.0, -3.1718425703486668],
+            [-1.530135397345781, 0.0, 0.05324451451881232],
+        ]
+    )
+
+    result = beta_logpdf(values, alphas, betas)
+
+    assert result.shape == (2, 3)
+    assert jnp.allclose(result, expected, atol=1e-6)
+    assert jnp.allclose(beta(values, alphas, betas), jnp.sum(expected))
 
 
 def test_normal_logpdf_rejects_invalid_parameters_without_repairing_them() -> None:
@@ -399,6 +444,53 @@ def test_gamma_with_unit_shape_matches_exponential() -> None:
     assert jnp.allclose(result, exponential_logpdf(values, rate))
 
 
+def test_beta_logpdf_uses_boundary_limits() -> None:
+    alphas = jnp.array([0.5, 1.0, 2.0])
+    betas = jnp.array([0.5, 1.0, 2.0])
+    maximum = jnp.asarray(jnp.finfo(jnp.float32).max)
+
+    lower_result = beta_logpdf(jnp.array([[0.0], [-0.0]]), alphas, 4.7)
+    upper_result = beta_logpdf(1.0, 2.3, betas)
+    extreme_equality_result = beta_logpdf(jnp.array([0.0, 1.0]), jnp.array([1.0, maximum]), jnp.array([maximum, 1.0]))
+    extreme_concentrated_result = beta_logpdf(jnp.array([0.0, 1.0]), maximum, maximum)
+
+    assert lower_result.shape == (2, 3)
+    assert jnp.all(jnp.isposinf(lower_result[:, 0]))
+    assert jnp.allclose(lower_result[:, 1], jnp.log(4.7))
+    assert jnp.all(jnp.isneginf(lower_result[:, 2]))
+    assert jnp.isposinf(upper_result[0])
+    assert jnp.allclose(upper_result[1], jnp.log(2.3))
+    assert jnp.isneginf(upper_result[2])
+    assert jnp.allclose(extreme_equality_result, jnp.log(maximum))
+    assert jnp.all(jnp.isneginf(extreme_concentrated_result))
+
+
+def test_beta_logpdf_enforces_support_and_propagates_nan() -> None:
+    values = jnp.array([-jnp.inf, -0.1, 1.1, jnp.inf, jnp.nan])
+
+    result = beta_logpdf(values, 2.3, 4.7)
+
+    assert jnp.all(jnp.isneginf(result[:4]))
+    assert jnp.isnan(result[4])
+
+
+def test_beta_logpdf_rejects_invalid_parameters_before_support_check() -> None:
+    invalid_parameters = jnp.array([0.0, -1.0, jnp.inf, jnp.nan])
+
+    invalid_alphas = beta_logpdf(-1.0, invalid_parameters, 1.0)
+    invalid_betas = beta_logpdf(-1.0, 1.0, invalid_parameters)
+
+    assert jnp.all(jnp.isnan(invalid_alphas))
+    assert jnp.all(jnp.isnan(invalid_betas))
+
+
+def test_beta_logpdf_preserves_small_tail_terms() -> None:
+    result = beta_logpdf(jnp.float32(1e-20), 1.0, jnp.float32(1e20))
+
+    assert jnp.isfinite(result)
+    assert jnp.allclose(result, 45.051701859880914)
+
+
 @pytest.mark.parametrize(
     ("dtype", "expected_dtype"),
     [(jnp.float16, jnp.float32), (jnp.bfloat16, jnp.float32), (jnp.float32, jnp.float32)],
@@ -411,6 +503,7 @@ def test_densities_use_at_least_float32(dtype, expected_dtype) -> None:
     assert lognormal_logpdf(values + 1, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert exponential_logpdf(values, dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert gamma_logpdf(values + 1, dtype(1.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
+    assert beta_logpdf(values, dtype(1.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
 
 
 def test_densities_promote_integer_inputs_to_float32() -> None:
@@ -421,6 +514,7 @@ def test_densities_promote_integer_inputs_to_float32() -> None:
     assert lognormal_logpdf(values + 1, 0, 1).dtype == jnp.dtype(jnp.float32)
     assert exponential_logpdf(values, 1).dtype == jnp.dtype(jnp.float32)
     assert gamma_logpdf(values + 1, 1, 1).dtype == jnp.dtype(jnp.float32)
+    assert beta_logpdf(values, 1, 1).dtype == jnp.dtype(jnp.float32)
 
 
 @pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
@@ -433,11 +527,13 @@ def test_distribution_functions_support_float64() -> None:
     assert lognormal_logpdf(values + 1, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert exponential_logpdf(values, 1.0).dtype == jnp.dtype(jnp.float64)
     assert gamma_logpdf(values + 1, 1.0, 1.0).dtype == jnp.dtype(jnp.float64)
+    assert beta_logpdf(values, 1.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert normal_rng(key, jnp.float64(0.0), jnp.float64(1.0)).dtype == jnp.dtype(jnp.float64)
     assert half_normal_rng(key, jnp.float64(1.0)).dtype == jnp.dtype(jnp.float64)
     assert lognormal_rng(key, jnp.float64(0.0), jnp.float64(1.0)).dtype == jnp.dtype(jnp.float64)
     assert exponential_rng(key, jnp.float64(1.0)).dtype == jnp.dtype(jnp.float64)
     assert gamma_rng(key, jnp.float64(1.0), jnp.float64(1.0)).dtype == jnp.dtype(jnp.float64)
+    assert beta_rng(key, jnp.float64(1.0), jnp.float64(1.0)).dtype == jnp.dtype(jnp.float64)
 
 
 @pytest.mark.parametrize(
@@ -453,6 +549,8 @@ def test_distribution_functions_support_float64() -> None:
         (exponential, (jnp.array([0.0, 1.0]), 2.0)),
         (gamma_logpdf, (jnp.array([0.5, 1.0]), 2.0, 1.5)),
         (gamma, (jnp.array([0.5, 1.0]), 2.0, 1.5)),
+        (beta_logpdf, (jnp.array([0.25, 0.75]), 2.0, 1.5)),
+        (beta, (jnp.array([0.25, 0.75]), 2.0, 1.5)),
     ],
 )
 def test_density_functions_can_be_jitted(function, arguments) -> None:
@@ -549,6 +647,31 @@ def test_gamma_is_differentiable_with_respect_to_rate() -> None:
     assert jnp.allclose(result, 0.16176470588235325)
 
 
+def test_beta_is_differentiable_with_respect_to_value() -> None:
+    values = jnp.array([0.1, 0.4, 0.8])
+    expected = jnp.array([8.888888888888886, -2.9166666666666674, -16.875000000000004])
+
+    result = jax.grad(lambda current_values: beta(current_values, 2.3, 4.7))(values)
+
+    assert jnp.allclose(result, expected)
+
+
+def test_beta_is_differentiable_with_respect_to_alpha() -> None:
+    values = jnp.array([0.1, 0.4, 0.8])
+
+    result = jax.grad(lambda current_alpha: beta(values, current_alpha, 4.7))(2.3)
+
+    assert jnp.allclose(result, 0.37621398802108175)
+
+
+def test_beta_is_differentiable_with_respect_to_beta() -> None:
+    values = jnp.array([0.1, 0.4, 0.8])
+
+    result = jax.grad(lambda current_beta: beta(values, 2.3, current_beta))(4.7)
+
+    assert jnp.allclose(result, -0.91954247545786227)
+
+
 def test_normal_can_be_vectorized_over_datasets() -> None:
     values = jnp.array([[0.0, 1.0], [-1.0, 2.0]])
     locations = jnp.array([0.0, 0.5])
@@ -602,6 +725,19 @@ def test_gamma_can_be_vectorized_over_datasets() -> None:
 
     result = jax.vmap(gamma)(values, shapes, rates)
     expected = jnp.stack([gamma(value, shape, rate) for value, shape, rate in zip(values, shapes, rates, strict=True)])
+
+    assert jnp.allclose(result, expected)
+
+
+def test_beta_can_be_vectorized_over_datasets() -> None:
+    values = jnp.array([[0.1, 0.4], [0.5, 0.8]])
+    alphas = jnp.array([1.5, 3.0])
+    betas = jnp.array([0.5, 2.0])
+
+    result = jax.vmap(beta)(values, alphas, betas)
+    expected = jnp.stack(
+        [beta(value, alpha, beta_value) for value, alpha, beta_value in zip(values, alphas, betas, strict=True)]
+    )
 
     assert jnp.allclose(result, expected)
 
@@ -666,6 +802,19 @@ def test_gamma_rng_scales_log_space_unit_rate_draws() -> None:
     assert jnp.all(result >= 0)
 
 
+def test_beta_rng_wraps_jax_sampler() -> None:
+    key = jax.random.key(42)
+    alphas = jnp.array([0.5, 2.5], dtype=jnp.float32)
+    betas = jnp.array([1.7, 0.8], dtype=jnp.float32)
+    expected = jax.random.beta(key, alphas, betas, shape=(3, 2), dtype=jnp.float32)
+
+    result = beta_rng(key, alphas, betas, sample_shape=(3,))
+
+    assert result.shape == (3, 2)
+    assert jnp.array_equal(result, expected)
+    assert jnp.all((result >= 0) & (result <= 1))
+
+
 def test_normal_rng_uses_broadcast_parameter_shape() -> None:
     location = jnp.zeros((2, 1))
     scale = jnp.ones(3)
@@ -693,6 +842,15 @@ def test_gamma_rng_uses_broadcast_parameter_shape() -> None:
     assert result.shape == (4, 2, 3)
 
 
+def test_beta_rng_uses_broadcast_parameter_shape() -> None:
+    alphas = jnp.ones((2, 1))
+    betas = jnp.ones(3)
+
+    result = beta_rng(jax.random.key(0), alphas, betas, sample_shape=(4,))
+
+    assert result.shape == (4, 2, 3)
+
+
 def test_rngs_return_scalar_for_scalar_parameters() -> None:
     key = jax.random.key(0)
 
@@ -701,6 +859,7 @@ def test_rngs_return_scalar_for_scalar_parameters() -> None:
     assert lognormal_rng(key, 0.0, 1.0).shape == ()
     assert exponential_rng(key, 1.0).shape == ()
     assert gamma_rng(key, 1.0, 1.0).shape == ()
+    assert beta_rng(key, 1.0, 1.0).shape == ()
 
 
 def test_rngs_return_nan_for_invalid_parameters() -> None:
@@ -712,6 +871,8 @@ def test_rngs_return_nan_for_invalid_parameters() -> None:
     exponential_result = exponential_rng(key, jnp.array([1.0, 0.0, jnp.inf]))
     gamma_shape_result = gamma_rng(key, jnp.array([1.0, 0.0, -1.0, jnp.inf, jnp.nan]), 1.0)
     gamma_rate_result = gamma_rng(key, 1.0, jnp.array([1.0, 0.0, -1.0, jnp.inf, jnp.nan]))
+    beta_alpha_result = beta_rng(key, jnp.array([1.0, 0.0, -1.0, jnp.inf, jnp.nan]), 1.0)
+    beta_beta_result = beta_rng(key, 1.0, jnp.array([1.0, 0.0, -1.0, jnp.inf, jnp.nan]))
 
     assert jnp.isfinite(normal_result[0])
     assert jnp.all(jnp.isnan(normal_result[1:]))
@@ -725,6 +886,10 @@ def test_rngs_return_nan_for_invalid_parameters() -> None:
     assert jnp.all(jnp.isnan(gamma_shape_result[1:]))
     assert jnp.isfinite(gamma_rate_result[0])
     assert jnp.all(jnp.isnan(gamma_rate_result[1:]))
+    assert jnp.isfinite(beta_alpha_result[0])
+    assert jnp.all(jnp.isnan(beta_alpha_result[1:]))
+    assert jnp.isfinite(beta_beta_result[0])
+    assert jnp.all(jnp.isnan(beta_beta_result[1:]))
 
 
 @pytest.mark.parametrize("dtype", [jnp.float16, jnp.bfloat16])
@@ -743,23 +908,33 @@ def test_rngs_compute_with_float32_for_low_precision_parameters(dtype) -> None:
         jax.random.loggamma(key, scale.astype(jnp.float32), shape=(2,), dtype=jnp.float32)
         - jnp.log(rate.astype(jnp.float32))
     )
+    expected_beta = jax.random.beta(
+        key,
+        scale.astype(jnp.float32),
+        rate.astype(jnp.float32),
+        shape=(2,),
+        dtype=jnp.float32,
+    )
 
     normal_result = normal_rng(key, location, scale)
     half_normal_result = half_normal_rng(key, scale)
     lognormal_result = lognormal_rng(key, location, scale)
     exponential_result = exponential_rng(key, rate)
     gamma_result = gamma_rng(key, scale, rate)
+    beta_result = beta_rng(key, scale, rate)
 
     assert normal_result.dtype == jnp.dtype(jnp.float32)
     assert half_normal_result.dtype == jnp.dtype(jnp.float32)
     assert lognormal_result.dtype == jnp.dtype(jnp.float32)
     assert exponential_result.dtype == jnp.dtype(jnp.float32)
     assert gamma_result.dtype == jnp.dtype(jnp.float32)
+    assert beta_result.dtype == jnp.dtype(jnp.float32)
     assert jnp.array_equal(normal_result, expected_normal)
     assert jnp.array_equal(half_normal_result, expected_half_normal)
     assert jnp.array_equal(lognormal_result, expected_lognormal)
     assert jnp.array_equal(exponential_result, expected_exponential)
     assert jnp.array_equal(gamma_result, expected_gamma)
+    assert jnp.array_equal(beta_result, expected_beta)
 
 
 def test_rngs_can_be_jitted() -> None:
@@ -769,12 +944,14 @@ def test_rngs_can_be_jitted() -> None:
     compiled_lognormal = jax.jit(partial(lognormal_rng, location=0.0, scale=1.0, sample_shape=(2,)))
     compiled_exponential = jax.jit(partial(exponential_rng, rate=1.0, sample_shape=(2,)))
     compiled_gamma = jax.jit(partial(gamma_rng, shape=2.0, rate=1.0, sample_shape=(2,)))
+    compiled_beta = jax.jit(partial(beta_rng, alpha=2.0, beta=1.0, sample_shape=(2,)))
 
     assert jnp.array_equal(compiled_normal(key), normal_rng(key, 0.0, 1.0, sample_shape=(2,)))
     assert jnp.array_equal(compiled_half_normal(key), half_normal_rng(key, 1.0, sample_shape=(2,)))
     assert jnp.array_equal(compiled_lognormal(key), lognormal_rng(key, 0.0, 1.0, sample_shape=(2,)))
     assert jnp.array_equal(compiled_exponential(key), exponential_rng(key, 1.0, sample_shape=(2,)))
     assert jnp.allclose(compiled_gamma(key), gamma_rng(key, 2.0, 1.0, sample_shape=(2,)))
+    assert jnp.allclose(compiled_beta(key), beta_rng(key, 2.0, 1.0, sample_shape=(2,)))
 
 
 def test_rngs_can_be_vectorized_over_keys() -> None:
@@ -785,17 +962,20 @@ def test_rngs_can_be_vectorized_over_keys() -> None:
     lognormal_result = jax.vmap(lognormal_rng, in_axes=(0, None, None))(keys, 0.0, 1.0)
     exponential_result = jax.vmap(exponential_rng, in_axes=(0, None))(keys, 1.0)
     gamma_result = jax.vmap(gamma_rng, in_axes=(0, None, None))(keys, 2.0, 1.0)
+    beta_result = jax.vmap(beta_rng, in_axes=(0, None, None))(keys, 2.0, 1.0)
     expected_normal = jnp.stack([normal_rng(key, 0.0, 1.0) for key in keys])
     expected_half_normal = jnp.stack([half_normal_rng(key, 1.0) for key in keys])
     expected_lognormal = jnp.stack([lognormal_rng(key, 0.0, 1.0) for key in keys])
     expected_exponential = jnp.stack([exponential_rng(key, 1.0) for key in keys])
     expected_gamma = jnp.stack([gamma_rng(key, 2.0, 1.0) for key in keys])
+    expected_beta = jnp.stack([beta_rng(key, 2.0, 1.0) for key in keys])
 
     assert jnp.array_equal(normal_result, expected_normal)
     assert jnp.array_equal(half_normal_result, expected_half_normal)
     assert jnp.allclose(lognormal_result, expected_lognormal)
     assert jnp.array_equal(exponential_result, expected_exponential)
     assert jnp.allclose(gamma_result, expected_gamma)
+    assert jnp.array_equal(beta_result, expected_beta)
 
 
 def test_rngs_are_deterministic_for_a_given_key() -> None:
@@ -814,6 +994,13 @@ def test_gamma_rng_matches_distribution_moments() -> None:
 
     assert jnp.allclose(jnp.mean(samples), 2.0, rtol=0, atol=0.03)
     assert jnp.allclose(jnp.var(samples), 1.0, rtol=0, atol=0.06)
+
+
+def test_beta_rng_matches_distribution_moments() -> None:
+    samples = beta_rng(jax.random.key(7), 2.0, 5.0, sample_shape=(50_000,))
+
+    assert jnp.allclose(jnp.mean(samples), 2 / 7, rtol=0, atol=0.007)
+    assert jnp.allclose(jnp.var(samples), 10 / 392, rtol=0, atol=0.002)
 
 
 def test_rng_supports_empty_sample_dimension() -> None:
@@ -852,6 +1039,14 @@ def test_gamma_rng_rejects_incompatible_parameter_shapes() -> None:
         gamma_rng(jax.random.key(0), jnp.ones(2), jnp.ones(3))
 
 
+def test_beta_rng_rejects_incompatible_parameter_shapes() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"parameter shapes cannot be broadcast together: \(\(2,\), \(3,\)\)",
+    ):
+        beta_rng(jax.random.key(0), jnp.ones(2), jnp.ones(3))
+
+
 @pytest.mark.parametrize(
     ("function", "arguments", "argument_name"),
     [
@@ -860,11 +1055,13 @@ def test_gamma_rng_rejects_incompatible_parameter_shapes() -> None:
         (lognormal_logpdf, (1.0, 0.0, 1.0 + 0.0j), "scale"),
         (exponential_logpdf, (0.0, 1.0 + 0.0j), "rate"),
         (gamma_logpdf, (1.0, 1.0 + 0.0j, 1.0), "shape"),
+        (beta_logpdf, (0.5, 1.0 + 0.0j, 1.0), "alpha"),
         (normal_rng, (jax.random.key(0), 0.0, 1.0 + 0.0j), "scale"),
         (half_normal_rng, (jax.random.key(0), 1.0 + 0.0j), "scale"),
         (lognormal_rng, (jax.random.key(0), 0.0, 1.0 + 0.0j), "scale"),
         (exponential_rng, (jax.random.key(0), 1.0 + 0.0j), "rate"),
         (gamma_rng, (jax.random.key(0), 1.0, 1.0 + 0.0j), "rate"),
+        (beta_rng, (jax.random.key(0), 1.0, 1.0 + 0.0j), "beta"),
     ],
 )
 def test_distribution_functions_reject_complex_arguments(function, arguments, argument_name: str) -> None:

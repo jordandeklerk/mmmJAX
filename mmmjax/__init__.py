@@ -1,6 +1,9 @@
 """Bayesian marketing mix modeling expressed entirely in JAX."""
 
 from mmmjax.distributions import (
+    beta,
+    beta_logpdf,
+    beta_rng,
     exponential,
     exponential_logpdf,
     exponential_rng,
@@ -30,6 +33,9 @@ __all__ = [
     "Positive",
     "Real",
     "UpperBound",
+    "beta",
+    "beta_logpdf",
+    "beta_rng",
     "exponential",
     "exponential_logpdf",
     "exponential_rng",
