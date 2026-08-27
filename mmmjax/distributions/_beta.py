@@ -87,7 +87,12 @@ def beta(
         Complete normalized log density, including constants, summed across
         every dimension of the broadcast result.
     """
-    log_density = jnp.sum(beta_logpdf(value, alpha, beta))
+    log_densities = beta_logpdf(value, alpha, beta)
+    log_density = jnp.sum(log_densities)
+
+    # Only empty results need a separate check because no element can carry nan into the sum
+    if log_densities.size:
+        return log_density
 
     alpha_array = jnp.asarray(alpha)
     beta_array = jnp.asarray(beta)

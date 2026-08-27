@@ -126,6 +126,39 @@ def test_densities_promote_integer_inputs_to_float32() -> None:
     assert uniform_logpdf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
 
 
+@pytest.mark.parametrize(
+    ("logpdf", "logpdf_arguments", "rng", "rng_arguments"),
+    [
+        pytest.param(normal_logpdf, (0.0, 0.0, 1.0), normal_rng, (0.0, 1.0), id="normal"),
+        pytest.param(half_normal_logpdf, (0.0, 1.0), half_normal_rng, (1.0,), id="half-normal"),
+        pytest.param(lognormal_logpdf, (1.0, 0.0, 1.0), lognormal_rng, (0.0, 1.0), id="lognormal"),
+        pytest.param(exponential_logpdf, (1.0, 1.0), exponential_rng, (1.0,), id="exponential"),
+        pytest.param(gamma_logpdf, (1.0, 1.0, 1.0), gamma_rng, (1.0, 1.0), id="gamma"),
+        pytest.param(beta_logpdf, (0.5, 1.0, 1.0), beta_rng, (1.0, 1.0), id="beta"),
+        pytest.param(
+            inverse_gamma_logpdf,
+            (1.0, 1.0, 1.0),
+            inverse_gamma_rng,
+            (1.0, 1.0),
+            id="inverse-gamma",
+        ),
+        pytest.param(
+            student_t_logpdf,
+            (0.0, 5.0, 0.0, 1.0),
+            student_t_rng,
+            (5.0, 0.0, 1.0),
+            id="student-t",
+        ),
+        pytest.param(uniform_logpdf, (0.5, 0.0, 1.0), uniform_rng, (0.0, 1.0), id="uniform"),
+    ],
+)
+def test_python_scalar_inputs_follow_jax_default_dtype(logpdf, logpdf_arguments, rng, rng_arguments) -> None:
+    expected_dtype = jnp.asarray(0.0).dtype
+
+    assert logpdf(*logpdf_arguments).dtype == expected_dtype
+    assert rng(jax.random.key(0), *rng_arguments).dtype == expected_dtype
+
+
 @pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
 def test_distribution_functions_support_float64() -> None:
     values = jnp.array([0.0, 1.0], dtype=jnp.float64)

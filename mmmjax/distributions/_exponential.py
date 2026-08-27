@@ -61,7 +61,12 @@ def exponential(value: ArrayLike, rate: ArrayLike) -> jax.Array:
         Complete normalized log density, including constants, summed across
         every dimension of the broadcast result.
     """
-    log_density = jnp.sum(exponential_logpdf(value, rate))
+    log_densities = exponential_logpdf(value, rate)
+    log_density = jnp.sum(log_densities)
+
+    # Only empty results need a separate check because no element can carry nan into the sum
+    if log_densities.size:
+        return log_density
 
     rate_array = jnp.asarray(rate)
     valid_rate = jnp.all(jnp.isfinite(rate_array) & (rate_array > 0))

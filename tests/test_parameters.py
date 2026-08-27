@@ -265,7 +265,7 @@ def test_initialization_is_shaped_deterministic_and_unconstrained(
     compiled = jax.jit(parameterization.initialize)(key)
 
     assert first.shape == (2, 3)
-    assert first.dtype == jnp.dtype(jnp.float32)
+    assert first.dtype == jnp.asarray(0.0).dtype
     assert jnp.array_equal(first, repeated)
     assert jnp.array_equal(first, compiled)
     assert not jnp.array_equal(first, different)
@@ -273,51 +273,100 @@ def test_initialization_is_shaped_deterministic_and_unconstrained(
     assert jnp.all(first < 2.0)
 
 
-@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
 @pytest.mark.parametrize(
-    "parameterization",
+    ("parameterization_type", "bound_arguments"),
     [
-        Real(dtype=jnp.float64),
-        Positive(dtype=jnp.float64),
-        LowerBound(lower=0.0, dtype=jnp.float64),
-        UpperBound(upper=1.0, dtype=jnp.float64),
-        Interval(lower=0.0, upper=1.0, dtype=jnp.float64),
+        (Real, ()),
+        (Positive, ()),
+        (LowerBound, (0.0,)),
+        (UpperBound, (1.0,)),
+        (Interval, (0.0, 1.0)),
     ],
 )
-def test_initialization_supports_float64(parameterization: Parameterization) -> None:
-    assert parameterization.initialize(jax.random.key(0)).dtype == jnp.dtype(jnp.float64)
+def test_default_dtype_follows_jax_precision_policy(parameterization_type, bound_arguments) -> None:
+    parameterization = parameterization_type(*bound_arguments, shape=(2,))
+    expected_dtype = jnp.asarray(0.0).dtype
+
+    position = jnp.zeros(parameterization.position_shape, dtype=expected_dtype)
+    parameter = parameterization.constrain(position)
+
+    assert parameterization.dtype == expected_dtype
+    assert parameterization.initialize(jax.random.key(0)).dtype == expected_dtype
+    assert parameter.dtype == expected_dtype
+    assert parameterization.unconstrain(parameter).dtype == expected_dtype
+    assert parameterization.log_density_adjustment(position).dtype == expected_dtype
 
 
-@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
 @pytest.mark.parametrize(
-    ("parameterization", "input_dtype", "expected_dtype"),
+    ("parameterization_type", "bound_arguments"),
     [
-        (Real(shape=(2,), dtype=jnp.float32), jnp.float64, jnp.float32),
-        (Positive(shape=(2,), dtype=jnp.float32), jnp.float64, jnp.float32),
-        (LowerBound(lower=0.0, shape=(2,), dtype=jnp.float32), jnp.float64, jnp.float32),
-        (UpperBound(upper=1.0, shape=(2,), dtype=jnp.float32), jnp.float64, jnp.float32),
-        (Interval(lower=0.0, upper=1.0, shape=(2,), dtype=jnp.float32), jnp.float64, jnp.float32),
-        (Real(shape=(2,), dtype=jnp.float64), jnp.float32, jnp.float64),
-        (Positive(shape=(2,), dtype=jnp.float64), jnp.float32, jnp.float64),
-        (LowerBound(lower=0.0, shape=(2,), dtype=jnp.float64), jnp.float32, jnp.float64),
-        (UpperBound(upper=1.0, shape=(2,), dtype=jnp.float64), jnp.float32, jnp.float64),
-        (Interval(lower=0.0, upper=1.0, shape=(2,), dtype=jnp.float64), jnp.float32, jnp.float64),
+        (Real, ()),
+        (Positive, ()),
+        (LowerBound, (0.0,)),
+        (UpperBound, (1.0,)),
+        (Interval, (0.0, 1.0)),
     ],
 )
-def test_parameterization_methods_follow_declared_dtype(
-    parameterization: Parameterization,
-    input_dtype,
-    expected_dtype,
-) -> None:
-    position = jnp.array([-0.5, 0.5], dtype=input_dtype)
+def test_explicit_float32_is_preserved(parameterization_type, bound_arguments) -> None:
+    parameterization = parameterization_type(*bound_arguments, shape=(2,), dtype=jnp.float32)
+    position = jnp.array([-0.5, 0.5], dtype=jnp.float32)
 
     parameter = parameterization.constrain(position)
     unconstrained = parameterization.unconstrain(parameter)
     adjustment = parameterization.log_density_adjustment(position)
 
-    assert parameter.dtype == jnp.dtype(expected_dtype)
-    assert unconstrained.dtype == jnp.dtype(expected_dtype)
-    assert adjustment.dtype == jnp.dtype(expected_dtype)
+    assert parameterization.dtype == jnp.dtype(jnp.float32)
+    assert parameterization.initialize(jax.random.key(0)).dtype == jnp.dtype(jnp.float32)
+    assert parameter.dtype == jnp.dtype(jnp.float32)
+    assert unconstrained.dtype == jnp.dtype(jnp.float32)
+    assert adjustment.dtype == jnp.dtype(jnp.float32)
+
+
+@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+@pytest.mark.parametrize(
+    ("parameterization_type", "bound_arguments"),
+    [
+        (Real, ()),
+        (Positive, ()),
+        (LowerBound, (0.0,)),
+        (UpperBound, (1.0,)),
+        (Interval, (0.0, 1.0)),
+    ],
+)
+def test_explicit_float64_is_preserved(parameterization_type, bound_arguments) -> None:
+    parameterization = parameterization_type(*bound_arguments, shape=(2,), dtype=jnp.float64)
+    position = jnp.array([-0.5, 0.5], dtype=jnp.float64)
+
+    parameter = parameterization.constrain(position)
+
+    assert parameterization.dtype == jnp.dtype(jnp.float64)
+    assert parameterization.initialize(jax.random.key(0)).dtype == jnp.dtype(jnp.float64)
+    assert parameter.dtype == jnp.dtype(jnp.float64)
+    assert parameterization.unconstrain(parameter).dtype == jnp.dtype(jnp.float64)
+    assert parameterization.log_density_adjustment(position).dtype == jnp.dtype(jnp.float64)
+
+
+@pytest.mark.skipif(jax.config.x64_enabled, reason="JAX 64-bit mode is enabled")
+@pytest.mark.parametrize(
+    ("parameterization_type", "bound_arguments"),
+    [
+        (Real, ()),
+        (Positive, ()),
+        (LowerBound, (0.0,)),
+        (UpperBound, (1.0,)),
+        (Interval, (0.0, 1.0)),
+    ],
+)
+def test_explicit_float64_requires_x64(parameterization_type, bound_arguments) -> None:
+    with pytest.raises(ValueError, match="explicit dtype float64 requires JAX 64-bit mode"):
+        parameterization_type(*bound_arguments, dtype=jnp.float64)
+
+
+@pytest.mark.skipif(jax.config.x64_enabled, reason="JAX 64-bit mode is enabled")
+@pytest.mark.parametrize("dtype", [jnp.float64, "float64", jnp.dtype("float64")])
+def test_explicit_float64_aliases_require_x64(dtype) -> None:
+    with pytest.raises(ValueError, match="JAX_ENABLE_X64=true"):
+        Real(dtype=dtype)
 
 
 def test_dtype_is_canonicalized() -> None:
@@ -326,12 +375,6 @@ def test_dtype_is_canonicalized() -> None:
 
     assert from_string == from_type
     assert hash(from_string) == hash(from_type)
-
-
-def test_dtype_follows_jax_precision_policy() -> None:
-    parameterization = Real(dtype=jnp.float64)
-
-    assert parameterization.dtype == jax.dtypes.canonicalize_dtype(jnp.float64)
 
 
 def test_bound_metadata_is_canonicalized_for_equality_and_hashing() -> None:
@@ -478,7 +521,7 @@ def test_bounded_target_gradient_matches_analytical_result(
 
 
 def test_positive_remains_finite_across_representative_float32_positions() -> None:
-    parameterization = Positive(shape=(3,))
+    parameterization = Positive(shape=(3,), dtype=jnp.float32)
     position = jnp.array([-80.0, 0.0, 80.0], dtype=jnp.float32)
 
     constrained = parameterization.constrain(position)
@@ -489,7 +532,7 @@ def test_positive_remains_finite_across_representative_float32_positions() -> No
 
 
 def test_interval_adjustment_remains_finite_across_float32_tails() -> None:
-    parameterization = Interval(lower=0.0, upper=1.0, shape=(3,))
+    parameterization = Interval(lower=0.0, upper=1.0, shape=(3,), dtype=jnp.float32)
     position = jnp.array([-80.0, 0.0, 80.0], dtype=jnp.float32)
 
     constrained = parameterization.constrain(position)
@@ -510,7 +553,7 @@ def test_interval_adjustment_gradient_matches_analytical_result() -> None:
 
 
 def test_interval_keeps_positive_tail_gradient() -> None:
-    parameterization = Interval(lower=0.0, upper=1.0)
+    parameterization = Interval(lower=0.0, upper=1.0, dtype=jnp.float32)
 
     gradient = jax.grad(parameterization.constrain)(jnp.array(20.0, dtype=jnp.float32))
 
@@ -519,7 +562,10 @@ def test_interval_keeps_positive_tail_gradient() -> None:
 
 @pytest.mark.parametrize(
     "parameterization",
-    [LowerBound(lower=1e30), UpperBound(upper=1e30)],
+    [
+        LowerBound(lower=1e30, dtype=jnp.float32),
+        UpperBound(upper=1e30, dtype=jnp.float32),
+    ],
 )
 def test_one_sided_transform_can_round_to_bound(parameterization: LowerBound | UpperBound) -> None:
     constrained = parameterization.constrain(jnp.array(0.0, dtype=jnp.float32))

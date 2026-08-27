@@ -58,7 +58,7 @@ class Real:
     """Unconstrained real parameter with the identity parameterization."""
 
     shape: tuple[int, ...] = ()
-    dtype: DTypeLike = jnp.float32
+    dtype: DTypeLike = float
 
     def __post_init__(self) -> None:
         """Normalize metadata so equal specifications share JIT cache keys."""
@@ -114,7 +114,7 @@ class Positive:
     """
 
     shape: tuple[int, ...] = ()
-    dtype: DTypeLike = jnp.float32
+    dtype: DTypeLike = float
 
     def __post_init__(self) -> None:
         """Normalize metadata so equal specifications share JIT cache keys."""
@@ -176,7 +176,7 @@ class LowerBound:
 
     lower: float
     shape: tuple[int, ...] = ()
-    dtype: DTypeLike = jnp.float32
+    dtype: DTypeLike = float
 
     def __post_init__(self) -> None:
         """Normalize metadata so equal specifications share JIT cache keys."""
@@ -243,7 +243,7 @@ class UpperBound:
 
     upper: float
     shape: tuple[int, ...] = ()
-    dtype: DTypeLike = jnp.float32
+    dtype: DTypeLike = float
 
     def __post_init__(self) -> None:
         """Normalize metadata so equal specifications share JIT cache keys."""
@@ -311,7 +311,7 @@ class Interval:
     lower: float
     upper: float
     shape: tuple[int, ...] = ()
-    dtype: DTypeLike = jnp.float32
+    dtype: DTypeLike = float
 
     def __post_init__(self) -> None:
         """Normalize and validate the finite interval metadata."""
@@ -404,13 +404,20 @@ def _validate_shape(shape: tuple[int, ...]) -> None:
 
 
 def _canonicalize_dtype(dtype: DTypeLike) -> DTypeLike:
+    follows_jax_default = dtype is float
     try:
-        canonical_dtype = jnp.dtype(dtype)
+        requested_dtype = jnp.dtype(dtype)
     except (TypeError, ValueError) as exc:
         raise TypeError(f"dtype must be a floating-point dtype, got {dtype!r}") from exc
-    if not jnp.issubdtype(canonical_dtype, jnp.floating):
-        raise TypeError(f"dtype must be a floating-point dtype, got {canonical_dtype}")
-    return cast(DTypeLike, jax.dtypes.canonicalize_dtype(canonical_dtype))
+    if not jnp.issubdtype(requested_dtype, jnp.floating):
+        raise TypeError(f"dtype must be a floating-point dtype, got {requested_dtype}")
+    canonical_dtype = jax.dtypes.canonicalize_dtype(requested_dtype)
+    if requested_dtype == jnp.dtype(jnp.float64) and not follows_jax_default and canonical_dtype != requested_dtype:
+        raise ValueError(
+            "explicit dtype float64 requires JAX 64-bit mode; set JAX_ENABLE_X64=true "
+            "before starting Python or use dtype=float32"
+        )
+    return cast(DTypeLike, canonical_dtype)
 
 
 def _canonicalize_bound(value: object, *, name: str, dtype: DTypeLike) -> float:
