@@ -49,12 +49,14 @@ def lognormal_logpdf(
         ("location", location),
         ("scale", scale),
     )
+
     outside_support = value_array <= 0
     # Avoid an indeterminate expression at zero without changing NaN inputs
     safe_value = jnp.where(outside_support, jnp.ones_like(value_array), value_array)
     log_value = jnp.log(safe_value)
     log_density = normal_logpdf(log_value, location_array, scale_array) - log_value
     supported_log_density = jnp.where(outside_support, -jnp.inf, log_density)
+
     valid_parameters = jnp.isfinite(location_array) & jnp.isfinite(scale_array) & (scale_array > 0)
     return jnp.where(valid_parameters, supported_log_density, jnp.nan)
 
@@ -83,6 +85,7 @@ def lognormal(
         every dimension of the broadcast result.
     """
     log_density = jnp.sum(lognormal_logpdf(value, location, scale))
+
     location_array = jnp.asarray(location)
     scale_array = jnp.asarray(scale)
     valid_parameters = jnp.all(jnp.isfinite(location_array)) & jnp.all(jnp.isfinite(scale_array) & (scale_array > 0))

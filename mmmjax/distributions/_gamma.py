@@ -51,6 +51,7 @@ def gamma_logpdf(
         ("shape", shape),
         ("rate", rate),
     )
+
     at_boundary = value_array == 0
     outside_support = value_array < 0
     positive_infinity = jnp.isposinf(value_array)
@@ -60,6 +61,7 @@ def gamma_logpdf(
         jnp.ones_like(value_array),
         value_array,
     )
+
     interior_log_density = (
         shape_array * jnp.log(rate_array)
         - gammaln(shape_array)
@@ -77,6 +79,7 @@ def gamma_logpdf(
         -jnp.inf,
         supported_log_density,
     )
+
     valid_parameters = jnp.isfinite(shape_array) & (shape_array > 0) & jnp.isfinite(rate_array) & (rate_array > 0)
     return jnp.where(valid_parameters, supported_log_density, jnp.nan)
 
@@ -104,6 +107,7 @@ def gamma(
         every dimension of the broadcast result.
     """
     log_density = jnp.sum(gamma_logpdf(value, shape, rate))
+
     shape_array = jnp.asarray(shape)
     rate_array = jnp.asarray(rate)
     valid_parameters = jnp.all(jnp.isfinite(shape_array) & (shape_array > 0)) & jnp.all(
@@ -143,11 +147,13 @@ def gamma_rng(
     """
     shape_array, rate_array = _promote_inexact(("shape", shape), ("rate", rate))
     output_shape = _random_shape(sample_shape, shape_array, rate_array)
+
     valid_shape = jnp.isfinite(shape_array) & (shape_array > 0)
     valid_rate = jnp.isfinite(rate_array) & (rate_array > 0)
     # Keep invalid shapes out of JAX's rejection sampler
     safe_shape = jnp.where(valid_shape, shape_array, jnp.ones_like(shape_array))
     safe_rate = jnp.where(valid_rate, rate_array, jnp.ones_like(rate_array))
+
     # Scale in log space so tiny unit-rate draws can be rescaled before they underflow
     log_unit_rate_samples = jax.random.loggamma(
         key,
@@ -156,4 +162,5 @@ def gamma_rng(
         dtype=shape_array.dtype,
     )
     samples = jnp.exp(log_unit_rate_samples - jnp.log(safe_rate))
+
     return jnp.where(valid_shape & valid_rate, samples, jnp.nan)

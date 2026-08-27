@@ -225,6 +225,7 @@ def student_t(
         every dimension of the broadcast result.
     """
     log_density = jnp.sum(student_t_logpdf(value, degrees_of_freedom, location, scale))
+
     degrees_array = jnp.asarray(degrees_of_freedom)
     location_array = jnp.asarray(location)
     scale_array = jnp.asarray(scale)
@@ -275,6 +276,7 @@ def student_t_rng(
         ("scale", scale),
     )
     output_shape = _random_shape(sample_shape, degrees_array, location_array, scale_array)
+
     valid_degrees = jnp.isfinite(degrees_array) & (degrees_array > 0)
     valid_location = jnp.isfinite(location_array)
     valid_scale = jnp.isfinite(scale_array) & (scale_array > 0)
@@ -290,6 +292,7 @@ def student_t_rng(
         shape=output_shape,
         dtype=degrees_array.dtype,
     )
+
     nonzero_normal = standard_normal != 0
     safe_absolute_normal = jnp.where(nonzero_normal, jnp.abs(standard_normal), jnp.ones_like(standard_normal))
     log_magnitude = (
@@ -302,6 +305,7 @@ def student_t_rng(
         jnp.copysign(jnp.exp(log_magnitude), standard_normal),
         jnp.zeros_like(standard_normal),
     )
+
     samples = safe_location + centered_samples
     valid_parameters = valid_degrees & valid_location & valid_scale
     return jnp.where(valid_parameters, samples, jnp.nan)

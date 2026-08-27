@@ -37,8 +37,10 @@ def exponential_logpdf(value: ArrayLike, rate: ArrayLike) -> jax.Array:
         produces ``nan``.
     """
     value_array, rate_array = _promote_inexact(("value", value), ("rate", rate))
+
     log_density = jnp.log(rate_array) - rate_array * value_array
     supported_log_density = jnp.where(value_array < 0, -jnp.inf, log_density)
+
     valid_rate = jnp.isfinite(rate_array) & (rate_array > 0)
     return jnp.where(valid_rate, supported_log_density, jnp.nan)
 
@@ -60,6 +62,7 @@ def exponential(value: ArrayLike, rate: ArrayLike) -> jax.Array:
         every dimension of the broadcast result.
     """
     log_density = jnp.sum(exponential_logpdf(value, rate))
+
     rate_array = jnp.asarray(rate)
     valid_rate = jnp.all(jnp.isfinite(rate_array) & (rate_array > 0))
     return jnp.where(valid_rate, log_density, jnp.nan)
@@ -92,8 +95,10 @@ def exponential_rng(
         or nonfinite rate produces ``nan``.
     """
     (rate_array,) = _promote_inexact(("rate", rate))
+
     shape = _random_shape(sample_shape, rate_array)
     standard_exponential = jax.random.exponential(key, shape=shape, dtype=rate_array.dtype)
     samples = standard_exponential / rate_array
+
     valid_rate = jnp.isfinite(rate_array) & (rate_array > 0)
     return jnp.where(valid_rate, samples, jnp.nan)

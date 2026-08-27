@@ -52,6 +52,7 @@ def beta_logpdf(
         ("alpha", alpha),
         ("beta", beta),
     )
+
     at_lower_boundary = value_array == 0
     at_upper_boundary = value_array == 1
     outside_support = (value_array < 0) | (value_array > 1) | jnp.isinf(value_array)
@@ -61,6 +62,7 @@ def beta_logpdf(
         jnp.full_like(value_array, 0.5),
         value_array,
     )
+
     interior_log_density = beta_distribution.logpdf(safe_value, alpha_array, beta_array)
     lower_boundary_log_density = jnp.where(
         alpha_array < 1,
@@ -78,6 +80,7 @@ def beta_logpdf(
         jnp.where(at_upper_boundary, upper_boundary_log_density, interior_log_density),
     )
     supported_log_density = jnp.where(outside_support, -jnp.inf, supported_log_density)
+
     valid_parameters = jnp.isfinite(alpha_array) & (alpha_array > 0) & jnp.isfinite(beta_array) & (beta_array > 0)
     return jnp.where(valid_parameters, supported_log_density, jnp.nan)
 
@@ -105,6 +108,7 @@ def beta(
         every dimension of the broadcast result.
     """
     log_density = jnp.sum(beta_logpdf(value, alpha, beta))
+
     alpha_array = jnp.asarray(alpha)
     beta_array = jnp.asarray(beta)
     valid_parameters = jnp.all(jnp.isfinite(alpha_array) & (alpha_array > 0)) & jnp.all(
@@ -144,11 +148,13 @@ def beta_rng(
     """
     alpha_array, beta_array = _promote_inexact(("alpha", alpha), ("beta", beta))
     output_shape = _random_shape(sample_shape, alpha_array, beta_array)
+
     valid_alpha = jnp.isfinite(alpha_array) & (alpha_array > 0)
     valid_beta = jnp.isfinite(beta_array) & (beta_array > 0)
     # Keep invalid shapes out of JAX's rejection sampler
     safe_alpha = jnp.where(valid_alpha, alpha_array, jnp.ones_like(alpha_array))
     safe_beta = jnp.where(valid_beta, beta_array, jnp.ones_like(beta_array))
+
     samples = jax.random.beta(
         key,
         safe_alpha,
@@ -156,4 +162,5 @@ def beta_rng(
         shape=output_shape,
         dtype=alpha_array.dtype,
     )
+
     return jnp.where(valid_alpha & valid_beta, samples, jnp.nan)

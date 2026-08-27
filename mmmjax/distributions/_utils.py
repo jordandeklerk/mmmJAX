@@ -8,6 +8,7 @@ from jax.typing import ArrayLike
 def _random_shape(sample_shape: tuple[int, ...], *parameters: jax.Array) -> tuple[int, ...]:
     if not isinstance(sample_shape, tuple):
         raise TypeError(f"sample_shape must be a tuple of nonnegative integers, got {type(sample_shape).__name__}")
+
     invalid_dimension = next(
         (
             (index, size)
@@ -22,6 +23,7 @@ def _random_shape(sample_shape: tuple[int, ...], *parameters: jax.Array) -> tupl
             f"sample_shape[{invalid_index}] must be a nonnegative integer, "
             f"got {invalid_size!r} of type {type(invalid_size).__name__}"
         )
+
     negative_dimension = next(
         ((index, size) for index, size in enumerate(sample_shape) if size < 0),
         None,
@@ -31,11 +33,13 @@ def _random_shape(sample_shape: tuple[int, ...], *parameters: jax.Array) -> tupl
         raise ValueError(
             f"sample_shape[{negative_index}] must be nonnegative, got {negative_size} in sample_shape {sample_shape}"
         )
+
     parameter_shapes = tuple(parameter.shape for parameter in parameters)
     try:
         batch_shape = jnp.broadcast_shapes(*parameter_shapes)
     except ValueError as exc:
         raise ValueError(f"distribution parameter shapes cannot be broadcast together: {parameter_shapes}") from exc
+
     return sample_shape + batch_shape
 
 
@@ -50,6 +54,7 @@ def _promote_inexact(
             raise TypeError(
                 f"distribution argument {name!r} must be real numeric and array-like, got {type(value).__name__}"
             ) from exc
+
         is_real_numeric = (
             argument_dtype == jnp.dtype(jnp.bool_)
             or jnp.issubdtype(argument_dtype, jnp.integer)
@@ -57,6 +62,7 @@ def _promote_inexact(
         )
         if not is_real_numeric:
             raise TypeError(f"distribution argument {name!r} must have a real numeric dtype, got {argument_dtype}")
+
         values.append(value)
 
     dtype = jnp.result_type(*values)

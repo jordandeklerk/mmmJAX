@@ -39,9 +39,11 @@ def half_normal_logpdf(value: ArrayLike, scale: ArrayLike) -> jax.Array:
         produces ``nan``.
     """
     value_array, scale_array = _promote_inexact(("value", value), ("scale", scale))
+
     log_two = jnp.asarray(math.log(2), dtype=value_array.dtype)
     log_density = normal_logpdf(value_array, 0, scale_array) + log_two
     supported_log_density = jnp.where(value_array < 0, -jnp.inf, log_density)
+
     valid_scale = jnp.isfinite(scale_array) & (scale_array > 0)
     return jnp.where(valid_scale, supported_log_density, jnp.nan)
 
@@ -64,6 +66,7 @@ def half_normal(value: ArrayLike, scale: ArrayLike) -> jax.Array:
         every dimension of the broadcast result.
     """
     log_density = jnp.sum(half_normal_logpdf(value, scale))
+
     scale_array = jnp.asarray(scale)
     valid_scale = jnp.all(jnp.isfinite(scale_array) & (scale_array > 0))
     return jnp.where(valid_scale, log_density, jnp.nan)
