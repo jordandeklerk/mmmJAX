@@ -43,6 +43,7 @@ test = [
     "pytest",
     "pytest-cov",
     "pytest-timeout",
+    "scipy>=1.14",
 ]
 doc = [
     "sphinx>=8,<9",

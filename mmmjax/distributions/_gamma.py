@@ -2,10 +2,16 @@
 
 import jax
 import jax.numpy as jnp
-from jax.scipy.special import gammaln, xlogy
 from jax.typing import ArrayLike
 
-from mmmjax.distributions._utils import _promote_inexact, _random_shape
+from mmmjax.distributions._utils import (
+    _gamma_shape_log_derivative,
+    _gamma_shape_normalizer,
+    _promote_inexact,
+    _random_shape,
+    _stable_log_ratio,
+    _weighted_log_ratio_deviance,
+)
 
 
 def gamma_logpdf(
@@ -51,37 +57,7 @@ def gamma_logpdf(
         ("shape", shape),
         ("rate", rate),
     )
-
-    at_boundary = value_array == 0
-    outside_support = value_array < 0
-    positive_infinity = jnp.isposinf(value_array)
-    # Keep boundary and unsupported values out of undefined logarithms
-    safe_value = jnp.where(
-        at_boundary | outside_support | positive_infinity,
-        jnp.ones_like(value_array),
-        value_array,
-    )
-
-    interior_log_density = (
-        shape_array * jnp.log(rate_array)
-        - gammaln(shape_array)
-        + xlogy(shape_array - 1, safe_value)
-        - rate_array * safe_value
-    )
-    boundary_log_density = jnp.where(
-        shape_array < 1,
-        jnp.inf,
-        jnp.where(shape_array == 1, jnp.log(rate_array), -jnp.inf),
-    )
-    supported_log_density = jnp.where(at_boundary, boundary_log_density, interior_log_density)
-    supported_log_density = jnp.where(
-        outside_support | positive_infinity,
-        -jnp.inf,
-        supported_log_density,
-    )
-
-    valid_parameters = jnp.isfinite(shape_array) & (shape_array > 0) & jnp.isfinite(rate_array) & (rate_array > 0)
-    return jnp.where(valid_parameters, supported_log_density, jnp.nan)
+    return _gamma_logpdf_core(value_array, shape_array, rate_array)
 
 
 def gamma(
@@ -164,3 +140,168 @@ def gamma_rng(
     samples = jnp.exp(log_unit_rate_samples - jnp.log(safe_rate))
 
     return jnp.where(valid_shape & valid_rate, samples, jnp.nan)
+
+
+@jax.custom_jvp
+def _gamma_logpdf_core(
+    value: jax.Array,
+    shape: jax.Array,
+    rate: jax.Array,
+) -> jax.Array:
+    valid_value = jnp.isfinite(value) & (value > 0)
+    valid_shape = jnp.isfinite(shape) & (shape > 0)
+    valid_rate = jnp.isfinite(rate) & (rate > 0)
+
+    # Sanitizing every candidate branch keeps invalid inputs out of JAX derivatives
+    safe_value = jnp.where(valid_value, value, jnp.ones_like(value))
+    safe_shape = jnp.where(valid_shape, shape, jnp.ones_like(shape))
+    safe_rate = jnp.where(valid_rate, rate, jnp.ones_like(rate))
+
+    log_ratio, density_deviation, _, _, has_density_deviation = _gamma_ratio_terms(
+        safe_value,
+        safe_shape,
+        safe_rate,
+    )
+    density_contribution = _weighted_log_ratio_deviance(
+        safe_shape,
+        log_ratio,
+        jnp.where(has_density_deviation, density_deviation, jnp.inf),
+    )
+    interior_log_density = _gamma_shape_normalizer(safe_shape) + density_contribution - jnp.log(safe_value)
+
+    boundary_log_density = jnp.where(
+        safe_shape < 1,
+        jnp.inf,
+        jnp.where(safe_shape == 1, jnp.log(safe_rate), -jnp.inf),
+    )
+    supported_log_density = jnp.where(
+        value == 0,
+        boundary_log_density,
+        jnp.where(valid_value, interior_log_density, jnp.where(jnp.isnan(value), jnp.nan, -jnp.inf)),
+    )
+    return jnp.where(valid_shape & valid_rate, supported_log_density, jnp.nan)
+
+
+@_gamma_logpdf_core.defjvp
+def _gamma_logpdf_core_jvp(
+    primals: tuple[jax.Array, jax.Array, jax.Array],
+    tangents: tuple[jax.Array, jax.Array, jax.Array],
+) -> tuple[jax.Array, jax.Array]:
+    value, shape, rate = primals
+    value_tangent, shape_tangent, rate_tangent = tangents
+    log_density = _gamma_logpdf_core(value, shape, rate)
+
+    valid_value = jnp.isfinite(value) & (value > 0)
+    valid_shape = jnp.isfinite(shape) & (shape > 0)
+    valid_rate = jnp.isfinite(rate) & (rate > 0)
+    safe_value = jnp.where(valid_value, value, jnp.ones_like(value))
+    safe_shape = jnp.where(valid_shape, shape, jnp.ones_like(shape))
+    safe_rate = jnp.where(valid_rate, rate, jnp.ones_like(rate))
+
+    log_ratio, density_deviation, ratio_deviation, near_unit_ratio, _ = _gamma_ratio_terms(
+        safe_value,
+        safe_shape,
+        safe_rate,
+    )
+    centered_value_derivative = -(density_deviation + 1) / safe_value
+    ordinary_value_derivative = (safe_shape - 1) / safe_value - safe_rate
+    dtype_bits = jax.dtypes.itemsize_bits(value.dtype)
+    asymptotic_threshold = jnp.asarray(64 if dtype_bits == 64 else 8, dtype=value.dtype)
+    # The direct form avoids cancellation when an ordinary shape is close to one
+    value_derivative = jnp.where(
+        safe_shape >= asymptotic_threshold,
+        centered_value_derivative,
+        ordinary_value_derivative,
+    )
+    shape_derivative = log_ratio + _gamma_shape_log_derivative(safe_shape)
+
+    direct_rate_derivative = safe_shape / safe_rate - safe_value
+    near_ratio_deviation = jnp.where(
+        near_unit_ratio,
+        ratio_deviation,
+        jnp.zeros_like(ratio_deviation),
+    )
+    near_rate_derivative = -safe_value * near_ratio_deviation / (1 + near_ratio_deviation)
+    rate_derivative = jnp.where(
+        near_unit_ratio,
+        near_rate_derivative,
+        direct_rate_derivative,
+    )
+
+    value_derivative = jnp.where(valid_value, value_derivative, jnp.zeros_like(value_derivative))
+    shape_derivative = jnp.where(valid_value, shape_derivative, jnp.zeros_like(shape_derivative))
+    boundary_rate_derivative = jnp.where(
+        (value == 0) & (safe_shape == 1),
+        1 / safe_rate,
+        jnp.zeros_like(rate_derivative),
+    )
+    rate_derivative = jnp.where(valid_value, rate_derivative, boundary_rate_derivative)
+
+    defined_derivatives = valid_shape & valid_rate & ~jnp.isnan(value)
+    value_derivative = jnp.where(defined_derivatives, value_derivative, jnp.nan)
+    shape_derivative = jnp.where(defined_derivatives, shape_derivative, jnp.nan)
+    rate_derivative = jnp.where(defined_derivatives, rate_derivative, jnp.nan)
+
+    log_density_tangent = (
+        value_derivative * value_tangent + shape_derivative * shape_tangent + rate_derivative * rate_tangent
+    )
+    return log_density, log_density_tangent
+
+
+def _gamma_ratio_terms(
+    value: jax.Array,
+    shape: jax.Array,
+    rate: jax.Array,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+    scaled_value = rate * value
+    product_density_deviation = scaled_value - shape
+    raw_log_ratio = jnp.log(rate) + jnp.log(value) - jnp.log(shape)
+    product_log_ratio, product_ratio_deviation, valid_product_ratio = _stable_log_ratio(
+        scaled_value,
+        shape,
+        raw_log_ratio,
+    )
+
+    rate_first_ratio = (rate / shape) * value
+    rate_first_log_ratio, rate_first_deviation, valid_rate_first_ratio = _stable_log_ratio(
+        rate_first_ratio,
+        jnp.ones_like(rate_first_ratio),
+        raw_log_ratio,
+    )
+    value_first_ratio = (value / shape) * rate
+    value_first_log_ratio, value_first_deviation, valid_value_first_ratio = _stable_log_ratio(
+        value_first_ratio,
+        jnp.ones_like(value_first_ratio),
+        raw_log_ratio,
+    )
+
+    # Dividing equal shape and rate values first preserves displacements near the mode
+    use_rate_first_ratio = valid_rate_first_ratio & ((rate == shape) | ~valid_product_ratio)
+    log_ratio = jnp.where(
+        use_rate_first_ratio,
+        rate_first_log_ratio,
+        jnp.where(valid_product_ratio, product_log_ratio, value_first_log_ratio),
+    )
+    ratio_deviation = jnp.where(
+        use_rate_first_ratio,
+        rate_first_deviation,
+        jnp.where(valid_product_ratio, product_ratio_deviation, value_first_deviation),
+    )
+    has_finite_ratio = valid_product_ratio | valid_rate_first_ratio | valid_value_first_ratio
+
+    valid_product_density_deviation = jnp.isfinite(product_density_deviation)
+    fallback_density_deviation = shape * ratio_deviation
+    valid_fallback_density_deviation = has_finite_ratio & jnp.isfinite(fallback_density_deviation)
+    use_rate_first_density_deviation = use_rate_first_ratio & valid_fallback_density_deviation
+    has_density_deviation = valid_product_density_deviation | valid_fallback_density_deviation
+    density_deviation = jnp.where(
+        use_rate_first_density_deviation,
+        fallback_density_deviation,
+        jnp.where(
+            valid_product_density_deviation,
+            product_density_deviation,
+            fallback_density_deviation,
+        ),
+    )
+    near_unit_ratio = has_finite_ratio & (jnp.abs(ratio_deviation) < 0.5)
+    return log_ratio, density_deviation, ratio_deviation, near_unit_ratio, has_density_deviation

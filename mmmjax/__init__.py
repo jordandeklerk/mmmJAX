@@ -13,6 +13,9 @@ from mmmjax.distributions import (
     half_normal,
     half_normal_logpdf,
     half_normal_rng,
+    inverse_gamma,
+    inverse_gamma_logpdf,
+    inverse_gamma_rng,
     lognormal,
     lognormal_logpdf,
     lognormal_rng,
@@ -22,6 +25,9 @@ from mmmjax.distributions import (
     student_t,
     student_t_logpdf,
     student_t_rng,
+    uniform,
+    uniform_logpdf,
+    uniform_rng,
 )
 from mmmjax.model import Model
 from mmmjax.parameters import Interval, LowerBound, Parameterization, Positive, Real, UpperBound
@@ -48,6 +54,9 @@ __all__ = [
     "half_normal",
     "half_normal_logpdf",
     "half_normal_rng",
+    "inverse_gamma",
+    "inverse_gamma_logpdf",
+    "inverse_gamma_rng",
     "lognormal",
     "lognormal_logpdf",
     "lognormal_rng",
@@ -57,4 +66,7 @@ __all__ = [
     "student_t",
     "student_t_logpdf",
     "student_t_rng",
+    "uniform",
+    "uniform_logpdf",
+    "uniform_rng",
 ]

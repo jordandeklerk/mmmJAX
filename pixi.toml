@@ -14,9 +14,11 @@ jax = ">=0.10.0,<0.11"
 pytest = ">=7.0.0"
 pytest-cov = ">=4.0.0"
 pytest-timeout = ">=2.0.0"
+scipy = ">=1.14"
 
 [feature.dev.tasks]
 tests = "pytest -vv"
+benchmarks = "python benchmarks/distributions.py"
 
 [feature.docs.dependencies]
 sphinx = ">=8,<9"
