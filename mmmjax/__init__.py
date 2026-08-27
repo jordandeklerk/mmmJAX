@@ -19,6 +19,9 @@ from mmmjax.distributions import (
     normal,
     normal_logpdf,
     normal_rng,
+    student_t,
+    student_t_logpdf,
+    student_t_rng,
 )
 from mmmjax.model import Model
 from mmmjax.parameters import Interval, LowerBound, Parameterization, Positive, Real, UpperBound
@@ -51,4 +54,7 @@ __all__ = [
     "normal",
     "normal_logpdf",
     "normal_rng",
+    "student_t",
+    "student_t_logpdf",
+    "student_t_rng",
 ]
