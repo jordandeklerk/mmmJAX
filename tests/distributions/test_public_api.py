@@ -16,6 +16,9 @@ DISTRIBUTION_EXPORTS = [
     "half_normal",
     "half_normal_logpdf",
     "half_normal_rng",
+    "inverse_gamma",
+    "inverse_gamma_logpdf",
+    "inverse_gamma_rng",
     "lognormal",
     "lognormal_logpdf",
     "lognormal_rng",
@@ -33,5 +36,6 @@ DISTRIBUTION_EXPORTS = [
 
 def test_distribution_exports_match_root_package() -> None:
     assert distributions.__all__ == DISTRIBUTION_EXPORTS
+    assert set(DISTRIBUTION_EXPORTS).issubset(mmmjax.__all__)
     for name in DISTRIBUTION_EXPORTS:
         assert getattr(distributions, name) is getattr(mmmjax, name)
