@@ -1,4 +1,4 @@
-"""Stan-inspired Bayesian marketing mix models expressed entirely in JAX."""
+"""Bayesian marketing mix modeling expressed entirely in JAX."""
 
 from mmmjax.distributions import (
     exponential,
@@ -8,11 +8,13 @@ from mmmjax.distributions import (
     normal_logpdf,
     normal_rng,
 )
+from mmmjax.model import Model
 from mmmjax.parameters import Parameterization, Positive, Real
 
 __version__ = "0.0.1"
 
 __all__ = [
+    "Model",
     "Parameterization",
     "Positive",
     "Real",

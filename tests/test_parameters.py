@@ -9,11 +9,6 @@ import pytest
 from mmmjax import Parameterization, Positive, Real
 
 
-def _target(parameterization: Parameterization, position: jax.Array) -> jax.Array:
-    parameter = parameterization.constrain(position)
-    return -0.5 * jnp.sum(parameter**2) + parameterization.log_density_adjustment(position)
-
-
 @pytest.mark.parametrize("parameterization", [Real(), Positive()])
 def test_parameterization_round_trip(parameterization: Real | Positive) -> None:
     position = jnp.array(0.75, dtype=jnp.float32)
@@ -75,14 +70,14 @@ def test_parameterization_rejects_wrong_value_shape(parameterization: Real | Pos
 @pytest.mark.parametrize("parameterization_type", [Real, Positive])
 @pytest.mark.parametrize("shape", [[2], (True,), (1.5,)])
 def test_parameterization_rejects_invalid_shape_type(parameterization_type, shape) -> None:
-    with pytest.raises(TypeError, match="shape must be a tuple of positive integers"):
+    with pytest.raises(TypeError, match=r"shape(\[0\])? must be a (tuple of )?positive integer"):
         parameterization_type(shape=shape)
 
 
 @pytest.mark.parametrize("parameterization_type", [Real, Positive])
 @pytest.mark.parametrize("shape", [(0,), (-1,)])
 def test_parameterization_rejects_nonpositive_shape(parameterization_type, shape) -> None:
-    with pytest.raises(ValueError, match="shape dimensions must be positive"):
+    with pytest.raises(ValueError, match=rf"shape\[0\] must be positive, got {shape[0]}"):
         parameterization_type(shape=shape)
 
 
@@ -91,6 +86,12 @@ def test_parameterization_rejects_nonpositive_shape(parameterization_type, shape
 def test_parameterization_requires_floating_dtype(parameterization_type, dtype) -> None:
     with pytest.raises(TypeError, match="dtype must be a floating-point dtype"):
         parameterization_type(dtype=dtype)
+
+
+@pytest.mark.parametrize("parameterization", [Real(), Positive()])
+def test_parameterization_requires_array_like_values(parameterization: Real | Positive) -> None:
+    with pytest.raises(TypeError, match="position must be array-like and convertible"):
+        parameterization.constrain(object())
 
 
 @pytest.mark.parametrize("parameterization", [Real(shape=(2, 3)), Positive(shape=(2, 3))])
@@ -184,3 +185,8 @@ def test_parameterization_target_can_be_vectorized(parameterization: Real | Posi
 
     expected = jnp.stack([target(position) for position in positions])
     assert jnp.allclose(result, expected)
+
+
+def _target(parameterization: Parameterization, position: jax.Array) -> jax.Array:
+    parameter = parameterization.constrain(position)
+    return -0.5 * jnp.sum(parameter**2) + parameterization.log_density_adjustment(position)

@@ -1,7 +1,7 @@
 """Parameter declarations and their inference-space mappings."""
 
 from dataclasses import dataclass
-from typing import Protocol, cast
+from typing import Protocol, cast, runtime_checkable
 
 import jax
 import jax.numpy as jnp
@@ -10,6 +10,7 @@ from jax.typing import ArrayLike, DTypeLike
 __all__ = ["Parameterization", "Positive", "Real"]
 
 
+@runtime_checkable
 class Parameterization(Protocol):
     """Contract for mapping unconstrained positions to model parameters."""
 
@@ -154,20 +155,33 @@ class Positive:
 
 def _validate_shape(shape: tuple[int, ...]) -> None:
     if not isinstance(shape, tuple):
-        raise TypeError("shape must be a tuple of positive integers")
-    if any(isinstance(size, bool) or not isinstance(size, int) for size in shape):
-        raise TypeError("shape must be a tuple of positive integers")
-    if any(size <= 0 for size in shape):
-        raise ValueError("shape dimensions must be positive")
+        raise TypeError(f"shape must be a tuple of positive integers, got {type(shape).__name__}")
+    invalid_dimension = next(
+        ((index, size) for index, size in enumerate(shape) if isinstance(size, bool) or not isinstance(size, int)),
+        None,
+    )
+    if invalid_dimension is not None:
+        invalid_index, invalid_size = invalid_dimension
+        raise TypeError(
+            f"shape[{invalid_index}] must be a positive integer, "
+            f"got {invalid_size!r} of type {type(invalid_size).__name__}"
+        )
+    nonpositive_dimension = next(
+        ((index, size) for index, size in enumerate(shape) if size <= 0),
+        None,
+    )
+    if nonpositive_dimension is not None:
+        nonpositive_index, nonpositive_size = nonpositive_dimension
+        raise ValueError(f"shape[{nonpositive_index}] must be positive, got {nonpositive_size} in shape {shape}")
 
 
 def _canonicalize_dtype(dtype: DTypeLike) -> DTypeLike:
     try:
         canonical_dtype = jnp.dtype(dtype)
-    except TypeError as exc:
-        raise TypeError("dtype must be a floating-point dtype") from exc
+    except (TypeError, ValueError) as exc:
+        raise TypeError(f"dtype must be a floating-point dtype, got {dtype!r}") from exc
     if not jnp.issubdtype(canonical_dtype, jnp.floating):
-        raise TypeError("dtype must be a floating-point dtype")
+        raise TypeError(f"dtype must be a floating-point dtype, got {canonical_dtype}")
     return cast(DTypeLike, jax.dtypes.canonicalize_dtype(canonical_dtype))
 
 
@@ -178,7 +192,12 @@ def _as_array(
     shape: tuple[int, ...],
     dtype: DTypeLike,
 ) -> jax.Array:
-    array = jnp.asarray(value, dtype=dtype)
+    try:
+        array = jnp.asarray(value, dtype=dtype)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(
+            f"{name} must be array-like and convertible to dtype {jnp.dtype(dtype)}, got {type(value).__name__}"
+        ) from exc
     if array.shape != shape:
         raise ValueError(f"{name} must have shape {shape}, got {array.shape}")
     return array

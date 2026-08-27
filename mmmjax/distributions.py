@@ -50,7 +50,11 @@ def normal_logpdf(
         A nonfinite location or a nonpositive or nonfinite scale produces
         ``nan``.
     """
-    value_array, location_array, scale_array = _promote_inexact(value, location, scale)
+    value_array, location_array, scale_array = _promote_inexact(
+        ("value", value),
+        ("location", location),
+        ("scale", scale),
+    )
     # Keep the scale out of the square so extreme values stay finite
     standardized = (value_array - location_array) / scale_array
     half_log_two_pi = jnp.asarray(math.log(2 * math.pi) / 2, dtype=value_array.dtype)
@@ -118,7 +122,10 @@ def normal_rng(
         nonfinite location or a nonpositive or nonfinite scale produces
         ``nan``.
     """
-    location_array, scale_array = _promote_inexact(location, scale)
+    location_array, scale_array = _promote_inexact(
+        ("location", location),
+        ("scale", scale),
+    )
     shape = _random_shape(sample_shape, location_array, scale_array)
     standard_normal = jax.random.normal(key, shape=shape, dtype=location_array.dtype)
     samples = location_array + scale_array * standard_normal
@@ -155,7 +162,7 @@ def exponential_logpdf(value: ArrayLike, rate: ArrayLike) -> jax.Array:
         Values below zero produce ``-inf`` and a nonpositive or nonfinite rate
         produces ``nan``.
     """
-    value_array, rate_array = _promote_inexact(value, rate)
+    value_array, rate_array = _promote_inexact(("value", value), ("rate", rate))
     log_density = jnp.log(rate_array) - rate_array * value_array
     supported_log_density = jnp.where(value_array < 0, -jnp.inf, log_density)
     valid_rate = jnp.isfinite(rate_array) & (rate_array > 0)
@@ -210,7 +217,7 @@ def exponential_rng(
         Random variates with shape ``sample_shape + rate.shape``. A nonpositive
         or nonfinite rate produces ``nan``.
     """
-    (rate_array,) = _promote_inexact(rate)
+    (rate_array,) = _promote_inexact(("rate", rate))
     shape = _random_shape(sample_shape, rate_array)
     standard_exponential = jax.random.exponential(key, shape=shape, dtype=rate_array.dtype)
     samples = standard_exponential / rate_array
@@ -220,22 +227,59 @@ def exponential_rng(
 
 def _random_shape(sample_shape: tuple[int, ...], *parameters: jax.Array) -> tuple[int, ...]:
     if not isinstance(sample_shape, tuple):
-        raise TypeError("sample_shape must be a tuple of nonnegative integers")
-    if any(isinstance(size, bool) or not isinstance(size, int) for size in sample_shape):
-        raise TypeError("sample_shape must be a tuple of nonnegative integers")
-    if any(size < 0 for size in sample_shape):
-        raise ValueError("sample_shape dimensions must be nonnegative")
-    batch_shape = jnp.broadcast_shapes(*(parameter.shape for parameter in parameters))
+        raise TypeError(f"sample_shape must be a tuple of nonnegative integers, got {type(sample_shape).__name__}")
+    invalid_dimension = next(
+        (
+            (index, size)
+            for index, size in enumerate(sample_shape)
+            if isinstance(size, bool) or not isinstance(size, int)
+        ),
+        None,
+    )
+    if invalid_dimension is not None:
+        invalid_index, invalid_size = invalid_dimension
+        raise TypeError(
+            f"sample_shape[{invalid_index}] must be a nonnegative integer, "
+            f"got {invalid_size!r} of type {type(invalid_size).__name__}"
+        )
+    negative_dimension = next(
+        ((index, size) for index, size in enumerate(sample_shape) if size < 0),
+        None,
+    )
+    if negative_dimension is not None:
+        negative_index, negative_size = negative_dimension
+        raise ValueError(
+            f"sample_shape[{negative_index}] must be nonnegative, got {negative_size} in sample_shape {sample_shape}"
+        )
+    parameter_shapes = tuple(parameter.shape for parameter in parameters)
+    try:
+        batch_shape = jnp.broadcast_shapes(*parameter_shapes)
+    except ValueError as exc:
+        raise ValueError(f"distribution parameter shapes cannot be broadcast together: {parameter_shapes}") from exc
     return sample_shape + batch_shape
 
 
-def _promote_inexact(*values: ArrayLike) -> tuple[jax.Array, ...]:
+def _promote_inexact(
+    *arguments: tuple[str, ArrayLike],
+) -> tuple[jax.Array, ...]:
+    values: list[ArrayLike] = []
+    for name, value in arguments:
+        try:
+            argument_dtype = jnp.result_type(value)
+        except (TypeError, ValueError) as exc:
+            raise TypeError(
+                f"distribution argument {name!r} must be real numeric and array-like, got {type(value).__name__}"
+            ) from exc
+        is_real_numeric = (
+            argument_dtype == jnp.dtype(jnp.bool_)
+            or jnp.issubdtype(argument_dtype, jnp.integer)
+            or jnp.issubdtype(argument_dtype, jnp.floating)
+        )
+        if not is_real_numeric:
+            raise TypeError(f"distribution argument {name!r} must have a real numeric dtype, got {argument_dtype}")
+        values.append(value)
+
     dtype = jnp.result_type(*values)
-    is_real_numeric = (
-        dtype == jnp.dtype(jnp.bool_) or jnp.issubdtype(dtype, jnp.integer) or jnp.issubdtype(dtype, jnp.floating)
-    )
-    if not is_real_numeric:
-        raise TypeError("distribution arguments must have real numeric dtypes")
     if not jnp.issubdtype(dtype, jnp.inexact):
         dtype = jnp.float64 if jax.dtypes.itemsize_bits(dtype) == 64 else jnp.float32
     # Use float32 or better so the distribution tails have enough detail

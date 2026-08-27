@@ -65,3 +65,4 @@ docs/source/**/generated/
 # Refs
 /pymc-marketing
 /jax
+/meridian
