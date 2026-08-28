@@ -1,4 +1,4 @@
-"""Public JAX reference kernels for distribution benchmarks."""
+"""Provide JAX reference kernels for distribution benchmarks."""
 
 import math
 from collections.abc import Callable

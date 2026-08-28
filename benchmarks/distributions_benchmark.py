@@ -1,4 +1,4 @@
-"""Benchmark public distribution primitives."""
+"""Benchmark distribution primitives."""
 
 import argparse
 import math
@@ -11,7 +11,7 @@ import jax.numpy as jnp
 import jaxlib
 
 from benchmarks._timing import CompiledOperations, TimingSummary, compile_function, measure_executions
-from benchmarks.distribution_cases import (
+from benchmarks.workloads import (
     DISTRIBUTIONS,
     IMPLEMENTATIONS,
     OPERATIONS,

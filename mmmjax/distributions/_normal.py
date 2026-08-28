@@ -4,6 +4,7 @@ import math
 
 import jax
 import jax.numpy as jnp
+from jax.scipy.special import log_ndtr
 from jax.typing import ArrayLike
 
 from mmmjax.distributions._utils import _promote_inexact, _random_shape
@@ -90,6 +91,95 @@ def normal(
     return jnp.where(valid_parameters, log_density, jnp.nan)
 
 
+def normal_logcdf(
+    value: ArrayLike,
+    location: ArrayLike,
+    scale: ArrayLike,
+) -> jax.Array:
+    r"""Evaluate the Normal log cumulative distribution function elementwise.
+
+    For value :math:`x \in \mathbb{R}`, location :math:`\mu \in \mathbb{R}`,
+    and scale :math:`\sigma > 0`, the log cumulative probability is
+
+    .. math::
+
+        \log F(x \mid \mu, \sigma)
+        = \log \Phi\left(\frac{x - \mu}{\sigma}\right),
+        \qquad \sigma > 0,
+
+    where :math:`\Phi` is the standard Normal cumulative distribution
+    function.
+
+    Parameters
+    ----------
+    value
+        Values at which to evaluate the cumulative probability.
+    location
+        Location of the distribution.
+    scale
+        Positive standard deviation of the distribution.
+
+    Returns
+    -------
+    jax.Array
+        Log cumulative probabilities with the broadcast shape of the
+        arguments. A nonfinite location or a nonpositive or nonfinite scale
+        produces ``nan``.
+    """
+    value_array, location_array, scale_array = _promote_inexact(
+        ("value", value),
+        ("location", location),
+        ("scale", scale),
+    )
+
+    return _normal_logcdf_kernel(value_array, location_array, scale_array)
+
+
+def normal_logsf(
+    value: ArrayLike,
+    location: ArrayLike,
+    scale: ArrayLike,
+) -> jax.Array:
+    r"""Evaluate the Normal log survival function elementwise.
+
+    For value :math:`x \in \mathbb{R}`, location :math:`\mu \in \mathbb{R}`,
+    and scale :math:`\sigma > 0`, the log survival probability is
+
+    .. math::
+
+        \log \overline{F}(x \mid \mu, \sigma)
+        = \log\left[1 - \Phi\left(\frac{x - \mu}{\sigma}\right)\right]
+        = \log \Phi\left(\frac{\mu - x}{\sigma}\right),
+        \qquad \sigma > 0,
+
+    where :math:`\Phi` is the standard Normal cumulative distribution
+    function.
+
+    Parameters
+    ----------
+    value
+        Values at which to evaluate the survival probability.
+    location
+        Location of the distribution.
+    scale
+        Positive standard deviation of the distribution.
+
+    Returns
+    -------
+    jax.Array
+        Log survival probabilities with the broadcast shape of the arguments.
+        A nonfinite location or a nonpositive or nonfinite scale produces
+        ``nan``.
+    """
+    value_array, location_array, scale_array = _promote_inexact(
+        ("value", value),
+        ("location", location),
+        ("scale", scale),
+    )
+
+    return _normal_logsf_kernel(value_array, location_array, scale_array)
+
+
 def normal_rng(
     key: jax.Array,
     location: ArrayLike,
@@ -142,3 +232,39 @@ def _normal_logpdf_kernel(
     standardized = (value - location) / scale
     half_log_two_pi = jnp.asarray(math.log(2 * math.pi) / 2, dtype=value.dtype)
     return -0.5 * jnp.square(standardized) - jnp.log(scale) - half_log_two_pi
+
+
+def _normal_logcdf_kernel(
+    value: jax.Array,
+    location: jax.Array,
+    scale: jax.Array,
+) -> jax.Array:
+    return _normal_log_probability(value, location, scale, direction=1)
+
+
+def _normal_logsf_kernel(
+    value: jax.Array,
+    location: jax.Array,
+    scale: jax.Array,
+) -> jax.Array:
+    return _normal_log_probability(value, location, scale, direction=-1)
+
+
+def _normal_log_probability(
+    value: jax.Array,
+    location: jax.Array,
+    scale: jax.Array,
+    *,
+    direction: int,
+) -> jax.Array:
+    valid_parameters = jnp.isfinite(location) & jnp.isfinite(scale) & (scale > 0)
+    infinite_value = jnp.isinf(value)
+    evaluate_probability = valid_parameters & ~infinite_value
+    safe_value = jnp.where(infinite_value, jnp.zeros_like(value), value)
+    safe_location = jnp.where(evaluate_probability, location, jnp.zeros_like(location))
+    safe_scale = jnp.where(evaluate_probability, scale, jnp.ones_like(scale))
+    log_probability = log_ndtr(direction * ((safe_value - safe_location) / safe_scale))
+
+    endpoint_probability = jnp.where(direction * value > 0, jnp.zeros_like(value), -jnp.inf)
+    supported_log_probability = jnp.where(infinite_value, endpoint_probability, log_probability)
+    return jnp.where(valid_parameters, supported_log_probability, jnp.nan)

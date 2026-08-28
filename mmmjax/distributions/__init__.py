@@ -19,10 +19,14 @@ from mmmjax.distributions._laplace import laplace as laplace
 from mmmjax.distributions._laplace import laplace_logpdf as laplace_logpdf
 from mmmjax.distributions._laplace import laplace_rng as laplace_rng
 from mmmjax.distributions._lognormal import lognormal as lognormal
+from mmmjax.distributions._lognormal import lognormal_logcdf as lognormal_logcdf
 from mmmjax.distributions._lognormal import lognormal_logpdf as lognormal_logpdf
+from mmmjax.distributions._lognormal import lognormal_logsf as lognormal_logsf
 from mmmjax.distributions._lognormal import lognormal_rng as lognormal_rng
 from mmmjax.distributions._normal import normal as normal
+from mmmjax.distributions._normal import normal_logcdf as normal_logcdf
 from mmmjax.distributions._normal import normal_logpdf as normal_logpdf
+from mmmjax.distributions._normal import normal_logsf as normal_logsf
 from mmmjax.distributions._normal import normal_rng as normal_rng
 from mmmjax.distributions._student_t import student_t as student_t
 from mmmjax.distributions._student_t import student_t_logpdf as student_t_logpdf
@@ -51,10 +55,14 @@ __all__ = [
     "laplace_logpdf",
     "laplace_rng",
     "lognormal",
+    "lognormal_logcdf",
     "lognormal_logpdf",
+    "lognormal_logsf",
     "lognormal_rng",
     "normal",
+    "normal_logcdf",
     "normal_logpdf",
+    "normal_logsf",
     "normal_rng",
     "student_t",
     "student_t_logpdf",

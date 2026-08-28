@@ -1,4 +1,4 @@
-"""Workload definitions for distribution benchmarks."""
+"""Define distribution benchmark workloads."""
 
 import functools
 import math
@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 
 from benchmarks._timing import Arguments, BenchmarkFunction
-from benchmarks.jax_references import JAX_REFERENCES
+from benchmarks.references import JAX_REFERENCES
 from mmmjax.distributions import (
     beta,
     beta_logpdf,
@@ -95,8 +95,8 @@ class BenchmarkOperation:
 
 
 PROFILES: dict[str, BenchmarkProfile] = {
-    # A quick run that still checks scalar parameter broadcasting
-    "smoke": BenchmarkProfile(
+    # A small vector that checks scalar parameter broadcasting
+    "vector": BenchmarkProfile(
         value_shape=(32,),
         parameter_shape=(),
         sample_shape=(32,),

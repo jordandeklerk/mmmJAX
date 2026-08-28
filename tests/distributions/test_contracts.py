@@ -26,10 +26,14 @@ from mmmjax import (
     laplace_logpdf,
     laplace_rng,
     lognormal,
+    lognormal_logcdf,
     lognormal_logpdf,
+    lognormal_logsf,
     lognormal_rng,
     normal,
+    normal_logcdf,
     normal_logpdf,
+    normal_logsf,
     normal_rng,
     student_t,
     student_t_logpdf,
@@ -106,12 +110,16 @@ def test_invalid_parameters_remain_nan_for_empty_batch(density, arguments) -> No
     ("dtype", "expected_dtype"),
     [(jnp.float16, jnp.float32), (jnp.bfloat16, jnp.float32), (jnp.float32, jnp.float32)],
 )
-def test_densities_use_at_least_float32(dtype, expected_dtype) -> None:
+def test_probability_functions_use_at_least_float32(dtype, expected_dtype) -> None:
     values = jnp.array([0.0, 1.0], dtype=dtype)
 
     assert normal_logpdf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
+    assert normal_logcdf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
+    assert normal_logsf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert half_normal_logpdf(values, dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert lognormal_logpdf(values + 1, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
+    assert lognormal_logcdf(values + 1, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
+    assert lognormal_logsf(values + 1, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert exponential_logpdf(values, dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert gamma_logpdf(values + 1, dtype(1.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert beta_logpdf(values, dtype(1.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
@@ -121,12 +129,16 @@ def test_densities_use_at_least_float32(dtype, expected_dtype) -> None:
     assert uniform_logpdf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
 
 
-def test_densities_promote_integer_inputs_to_float32() -> None:
+def test_probability_functions_promote_integer_inputs_to_float32() -> None:
     values = jnp.array([0, 1], dtype=jnp.int32)
 
     assert normal_logpdf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
+    assert normal_logcdf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
+    assert normal_logsf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
     assert half_normal_logpdf(values, 1).dtype == jnp.dtype(jnp.float32)
     assert lognormal_logpdf(values + 1, 0, 1).dtype == jnp.dtype(jnp.float32)
+    assert lognormal_logcdf(values + 1, 0, 1).dtype == jnp.dtype(jnp.float32)
+    assert lognormal_logsf(values + 1, 0, 1).dtype == jnp.dtype(jnp.float32)
     assert exponential_logpdf(values, 1).dtype == jnp.dtype(jnp.float32)
     assert gamma_logpdf(values + 1, 1, 1).dtype == jnp.dtype(jnp.float32)
     assert beta_logpdf(values, 1, 1).dtype == jnp.dtype(jnp.float32)
@@ -170,14 +182,27 @@ def test_python_scalar_inputs_follow_jax_default_dtype(logpdf, logpdf_arguments,
     assert rng(jax.random.key(0), *rng_arguments).dtype == expected_dtype
 
 
+def test_cumulative_functions_follow_jax_default_dtype_for_python_scalars() -> None:
+    expected_dtype = jnp.asarray(0.0).dtype
+
+    assert normal_logcdf(0.0, 0.0, 1.0).dtype == expected_dtype
+    assert normal_logsf(0.0, 0.0, 1.0).dtype == expected_dtype
+    assert lognormal_logcdf(1.0, 0.0, 1.0).dtype == expected_dtype
+    assert lognormal_logsf(1.0, 0.0, 1.0).dtype == expected_dtype
+
+
 @pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
 def test_distribution_functions_support_float64() -> None:
     values = jnp.array([0.0, 1.0], dtype=jnp.float64)
     key = jax.random.key(0)
 
     assert normal_logpdf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
+    assert normal_logcdf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
+    assert normal_logsf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert half_normal_logpdf(values, 1.0).dtype == jnp.dtype(jnp.float64)
     assert lognormal_logpdf(values + 1, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
+    assert lognormal_logcdf(values + 1, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
+    assert lognormal_logsf(values + 1, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert exponential_logpdf(values, 1.0).dtype == jnp.dtype(jnp.float64)
     assert gamma_logpdf(values + 1, 1.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert beta_logpdf(values, 1.0, 1.0).dtype == jnp.dtype(jnp.float64)
@@ -202,10 +227,14 @@ def test_distribution_functions_support_float64() -> None:
     [
         (normal_logpdf, (jnp.array([0.0, 1.0]), 0.5, 2.0)),
         (normal, (jnp.array([0.0, 1.0]), 0.5, 2.0)),
+        (normal_logcdf, (jnp.array([0.0, 1.0]), 0.5, 2.0)),
+        (normal_logsf, (jnp.array([0.0, 1.0]), 0.5, 2.0)),
         (half_normal_logpdf, (jnp.array([0.0, 1.0]), 2.0)),
         (half_normal, (jnp.array([0.0, 1.0]), 2.0)),
         (lognormal_logpdf, (jnp.array([0.5, 1.0]), 0.5, 2.0)),
         (lognormal, (jnp.array([0.5, 1.0]), 0.5, 2.0)),
+        (lognormal_logcdf, (jnp.array([0.5, 1.0]), 0.5, 2.0)),
+        (lognormal_logsf, (jnp.array([0.5, 1.0]), 0.5, 2.0)),
         (exponential_logpdf, (jnp.array([0.0, 1.0]), 2.0)),
         (exponential, (jnp.array([0.0, 1.0]), 2.0)),
         (gamma_logpdf, (jnp.array([0.5, 1.0]), 2.0, 1.5)),
@@ -222,7 +251,7 @@ def test_distribution_functions_support_float64() -> None:
         (uniform, (jnp.array([0.0, 1.0]), -0.5, 2.0)),
     ],
 )
-def test_density_functions_can_be_jitted(function, arguments) -> None:
+def test_probability_functions_can_be_jitted(function, arguments) -> None:
     assert jnp.allclose(jax.jit(function)(*arguments), function(*arguments))
 
 
@@ -480,8 +509,12 @@ def test_rng_rejects_negative_sample_shape() -> None:
     ("function", "arguments", "argument_name"),
     [
         (normal_logpdf, (0.0, 0.0, 1.0 + 0.0j), "scale"),
+        (normal_logcdf, (0.0, 0.0, 1.0 + 0.0j), "scale"),
+        (normal_logsf, (0.0, 0.0, 1.0 + 0.0j), "scale"),
         (half_normal_logpdf, (0.0, 1.0 + 0.0j), "scale"),
         (lognormal_logpdf, (1.0, 0.0, 1.0 + 0.0j), "scale"),
+        (lognormal_logcdf, (1.0, 0.0, 1.0 + 0.0j), "scale"),
+        (lognormal_logsf, (1.0, 0.0, 1.0 + 0.0j), "scale"),
         (exponential_logpdf, (0.0, 1.0 + 0.0j), "rate"),
         (gamma_logpdf, (1.0, 1.0 + 0.0j, 1.0), "shape"),
         (beta_logpdf, (0.5, 1.0 + 0.0j, 1.0), "alpha"),
