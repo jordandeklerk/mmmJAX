@@ -1,5 +1,7 @@
 """Beta distribution functions."""
 
+from typing import cast
+
 import jax
 import jax.numpy as jnp
 from jax.scipy.special import gammaln
@@ -62,7 +64,7 @@ def beta_logpdf(
         ("alpha", alpha),
         ("beta", beta),
     )
-    return _beta_logpdf_core(value_array, alpha_array, beta_array)
+    return _beta_logpdf(value_array, alpha_array, beta_array)
 
 
 def beta(
@@ -152,7 +154,50 @@ def beta_rng(
 
 
 @jax.custom_jvp
-def _beta_logpdf_core(
+def _beta_logpdf(
+    value: jax.Array,
+    alpha: jax.Array,
+    beta: jax.Array,
+) -> jax.Array:
+    valid_value = jnp.isfinite(value) & (value > 0) & (value < 1)
+    valid_alpha = jnp.isfinite(alpha) & (alpha > 0)
+    valid_beta = jnp.isfinite(beta) & (beta > 0)
+    dtype_bits = jax.dtypes.itemsize_bits(value.dtype)
+    asymptotic_threshold = jnp.asarray(64 if dtype_bits == 64 else 8, dtype=value.dtype)
+    uses_standard_formula = (
+        jnp.all(valid_value)
+        & jnp.all(valid_alpha)
+        & jnp.all(valid_beta)
+        & jnp.all(jnp.maximum(alpha, beta) < asymptotic_threshold)
+    )
+    # Ordinary homogeneous batches do not need the heavier stability calculation
+    return cast(
+        jax.Array,
+        jax.lax.cond(
+            uses_standard_formula,
+            _standard_beta_logpdf,
+            _stable_beta_logpdf,
+            value,
+            alpha,
+            beta,
+        ),
+    )
+
+
+@_beta_logpdf.defjvp
+def _beta_logpdf_jvp(
+    primals: tuple[jax.Array, jax.Array, jax.Array],
+    tangents: tuple[jax.Array, jax.Array, jax.Array],
+) -> tuple[jax.Array, jax.Array]:
+    log_density = _beta_logpdf(*primals)
+
+    # The robust rule preserves derivatives at boundaries and extreme shapes
+    _, log_density_tangent = jax.jvp(_stable_beta_logpdf, primals, tangents)
+    return log_density, log_density_tangent
+
+
+@jax.custom_jvp
+def _stable_beta_logpdf(
     value: jax.Array,
     alpha: jax.Array,
     beta: jax.Array,
@@ -207,27 +252,27 @@ def _beta_logpdf_core(
     dtype_bits = jax.dtypes.itemsize_bits(value.dtype)
     asymptotic_threshold = jnp.asarray(64 if dtype_bits == 64 else 8, dtype=value.dtype)
     centered_region = jnp.minimum(safe_alpha, safe_beta) >= asymptotic_threshold
-    direct_region = largest_shape < asymptotic_threshold
+    uses_standard_formula = largest_shape < asymptotic_threshold
 
-    # Direct lgamma avoids the approximation JAX betaln uses at its cutoff
-    direct_value = jnp.where(direct_region, safe_value, jnp.full_like(safe_value, 0.5))
-    direct_alpha = jnp.where(direct_region, safe_alpha, jnp.ones_like(safe_alpha))
-    direct_beta = jnp.where(direct_region, safe_beta, jnp.ones_like(safe_beta))
-    direct_log_density = (
-        gammaln(direct_alpha + direct_beta)
-        - gammaln(direct_alpha)
-        - gammaln(direct_beta)
-        + (direct_alpha - 1) * jnp.log(direct_value)
-        + (direct_beta - 1) * jnp.log1p(-direct_value)
+    # The standard lgamma formula avoids the approximation JAX betaln uses at its cutoff
+    standard_value = jnp.where(uses_standard_formula, safe_value, jnp.full_like(safe_value, 0.5))
+    standard_alpha = jnp.where(uses_standard_formula, safe_alpha, jnp.ones_like(safe_alpha))
+    standard_beta = jnp.where(uses_standard_formula, safe_beta, jnp.ones_like(safe_beta))
+    standard_log_density = (
+        gammaln(standard_alpha + standard_beta)
+        - gammaln(standard_alpha)
+        - gammaln(standard_beta)
+        + (standard_alpha - 1) * jnp.log(standard_value)
+        + (standard_beta - 1) * jnp.log1p(-standard_value)
     )
 
     # JAX betaln protects the mixed large-small regime from lgamma cancellation
-    mixed_region = ~centered_region & ~direct_region
+    mixed_region = ~centered_region & ~uses_standard_formula
     mixed_value = jnp.where(mixed_region, safe_value, jnp.full_like(safe_value, 0.5))
     mixed_alpha = jnp.where(mixed_region, safe_alpha, jnp.ones_like(safe_alpha))
     mixed_beta = jnp.where(mixed_region, safe_beta, jnp.ones_like(safe_beta))
     mixed_log_density = beta_distribution.logpdf(mixed_value, mixed_alpha, mixed_beta)
-    ordinary_log_density = jnp.where(direct_region, direct_log_density, mixed_log_density)
+    ordinary_log_density = jnp.where(uses_standard_formula, standard_log_density, mixed_log_density)
     interior_log_density = jnp.where(centered_region, centered_log_density, ordinary_log_density)
 
     lower_boundary_log_density = jnp.where(
@@ -252,14 +297,14 @@ def _beta_logpdf_core(
     return jnp.where(valid_alpha & valid_beta, supported_log_density, jnp.nan)
 
 
-@_beta_logpdf_core.defjvp
-def _beta_logpdf_core_jvp(
+@_stable_beta_logpdf.defjvp
+def _stable_beta_logpdf_jvp(
     primals: tuple[jax.Array, jax.Array, jax.Array],
     tangents: tuple[jax.Array, jax.Array, jax.Array],
 ) -> tuple[jax.Array, jax.Array]:
     value, alpha, beta = primals
     value_tangent, alpha_tangent, beta_tangent = tangents
-    log_density = _beta_logpdf_core(value, alpha, beta)
+    log_density = _stable_beta_logpdf(value, alpha, beta)
 
     valid_value = jnp.isfinite(value) & (value > 0) & (value < 1)
     valid_alpha = jnp.isfinite(alpha) & (alpha > 0)
@@ -375,3 +420,27 @@ def _beta_sum_log_derivative(
     exact_derivative = _gamma_shape_log_derivative(exact_sum)
     asymptotic_derivative = _asymptotic_gamma_shape_log_derivative(inverse_sum)
     return jnp.where(exact_sum_region, exact_derivative, asymptotic_derivative)
+
+
+def _standard_beta_logpdf(
+    value: jax.Array,
+    alpha: jax.Array,
+    beta: jax.Array,
+) -> jax.Array:
+    dtype_bits = jax.dtypes.itemsize_bits(value.dtype)
+    asymptotic_threshold = jnp.asarray(64 if dtype_bits == 64 else 8, dtype=value.dtype)
+    valid_value = jnp.isfinite(value) & (value > 0) & (value < 1)
+    valid_alpha = jnp.isfinite(alpha) & (alpha > 0) & (alpha < asymptotic_threshold)
+    valid_beta = jnp.isfinite(beta) & (beta > 0) & (beta < asymptotic_threshold)
+
+    # vmap can turn the conditional into a select, so keep the inactive branch finite
+    safe_value = jnp.where(valid_value, value, jnp.full_like(value, 0.5))
+    safe_alpha = jnp.where(valid_alpha, alpha, jnp.ones_like(alpha))
+    safe_beta = jnp.where(valid_beta, beta, jnp.ones_like(beta))
+    return (
+        gammaln(safe_alpha + safe_beta)
+        - gammaln(safe_alpha)
+        - gammaln(safe_beta)
+        + (safe_alpha - 1) * jnp.log(safe_value)
+        + (safe_beta - 1) * jnp.log1p(-safe_value)
+    )
