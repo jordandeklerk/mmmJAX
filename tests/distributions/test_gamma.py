@@ -87,6 +87,68 @@ def test_gamma_logpdf_broadcasts_arguments() -> None:
     assert jnp.allclose(gamma(values, shapes, rates), jnp.sum(expected))
 
 
+def test_gamma_homogeneous_ordinary_batch_matches_independent_references() -> None:
+    values = jnp.linspace(0.05, 2.0, 12, dtype=jnp.float32).reshape(4, 3)
+    shapes = jnp.array([0.2, 2.5, 7.5], dtype=jnp.float32)
+    rates = jnp.array([0.3, 1.7, 5.0], dtype=jnp.float32)
+    value_tangents = jnp.linspace(-0.2, 0.2, 12, dtype=jnp.float32).reshape(4, 3)
+    shape_tangents = jnp.array([0.1, -0.2, 0.3], dtype=jnp.float32)
+    rate_tangents = jnp.array([-0.3, 0.2, 0.1], dtype=jnp.float32)
+
+    values_reference = np.asarray(values, dtype=np.float64)
+    shapes_reference = np.asarray(shapes, dtype=np.float64)
+    rates_reference = np.asarray(rates, dtype=np.float64)
+    expected_logpdf = stats.gamma.logpdf(
+        values_reference,
+        a=shapes_reference,
+        scale=1 / rates_reference,
+    )
+    value_derivatives = (shapes_reference - 1) / values_reference - rates_reference
+    shape_derivatives = np.log(rates_reference) + np.log(values_reference) - special.digamma(shapes_reference)
+    rate_derivatives = shapes_reference / rates_reference - values_reference
+    expected_parameter_gradients = (
+        np.sum(shape_derivatives, axis=0),
+        np.sum(rate_derivatives, axis=0),
+    )
+    expected_tangent = (
+        value_derivatives * np.asarray(value_tangents)
+        + shape_derivatives * np.asarray(shape_tangents)
+        + rate_derivatives * np.asarray(rate_tangents)
+    )
+
+    result = jax.jit(gamma_logpdf)(values, shapes, rates)
+    density, parameter_gradients = jax.jit(jax.value_and_grad(gamma, argnums=(1, 2)))(values, shapes, rates)
+    _, tangent = jax.jvp(
+        gamma_logpdf,
+        (values, shapes, rates),
+        (value_tangents, shape_tangents, rate_tangents),
+    )
+
+    np.testing.assert_allclose(result, expected_logpdf, rtol=3e-6, atol=3e-6)
+    np.testing.assert_allclose(density, np.sum(expected_logpdf), rtol=3e-6, atol=3e-6)
+    for gradient, expected_gradient in zip(parameter_gradients, expected_parameter_gradients, strict=True):
+        np.testing.assert_allclose(gradient, expected_gradient, rtol=3e-6, atol=3e-6)
+    np.testing.assert_allclose(tangent, expected_tangent, rtol=3e-6, atol=3e-6)
+
+
+def test_gamma_ordinary_shapes_handle_extreme_value_rate_pairs() -> None:
+    smallest_normal = np.finfo(np.float32).tiny
+    largest = np.finfo(np.float32).max
+    values = np.array([smallest_normal, largest, smallest_normal, largest], dtype=np.float32)
+    rates = np.array([largest, smallest_normal, smallest_normal, largest], dtype=np.float32)
+    shape = np.float32(2.5)
+    expected = stats.gamma.logpdf(
+        values.astype(np.float64),
+        a=np.float64(shape),
+        scale=1 / rates.astype(np.float64),
+    )
+
+    result = gamma_logpdf(values, shape, rates)
+
+    np.testing.assert_allclose(result[:3], expected[:3], rtol=3e-6, atol=3e-6)
+    assert jnp.isneginf(result[3])
+
+
 def test_gamma_logpdf_uses_zero_boundary_limits() -> None:
     values = jnp.array([[0.0], [-0.0]])
     shapes = jnp.array([0.5, 1.0, 2.0])
