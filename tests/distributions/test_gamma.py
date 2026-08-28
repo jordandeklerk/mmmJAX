@@ -131,6 +131,56 @@ def test_gamma_homogeneous_ordinary_batch_matches_independent_references() -> No
     np.testing.assert_allclose(tangent, expected_tangent, rtol=3e-6, atol=3e-6)
 
 
+def test_gamma_logpdf_handles_cancellation_at_ordinary_shapes() -> None:
+    values = np.array([0.23502053, 0.0030310706], dtype=np.float32)
+    shapes = np.array([7.1753564, 7.868198], dtype=np.float32)
+    rates = np.array([49.62212, 584.56934], dtype=np.float32)
+    expected = stats.gamma.logpdf(
+        values.astype(np.float64),
+        a=shapes.astype(np.float64),
+        scale=1 / rates.astype(np.float64),
+    )
+
+    result = gamma_logpdf(values, shapes, rates)
+    compiled_result = jax.jit(gamma_logpdf)(values, shapes, rates)
+
+    np.testing.assert_allclose(result, expected, rtol=3e-6, atol=3e-6)
+    np.testing.assert_allclose(compiled_result, expected, rtol=3e-6, atol=3e-6)
+
+
+@pytest.mark.parametrize(
+    ("shape_value", "rate_value", "mode_direction"),
+    [
+        (0.2, 1e-20, 0.0),
+        (7.5, 1e-30, np.inf),
+    ],
+)
+def test_gamma_logpdf_preserves_gradients_near_extreme_modes(
+    shape_value: float,
+    rate_value: float,
+    mode_direction: float,
+) -> None:
+    shape = np.float32(shape_value)
+    rate = np.float32(rate_value)
+    mode = np.float32(shape / rate)
+    value = np.nextafter(mode, np.float32(mode_direction))
+    expected = np.array(
+        [
+            (float(shape) - 1) / float(value) - float(rate),
+            np.log(float(rate)) + np.log(float(value)) - special.digamma(float(shape)),
+            float(shape) / float(rate) - float(value),
+        ]
+    )
+
+    gradients = jax.grad(gamma_logpdf, argnums=(0, 1, 2))(value, shape, rate)
+    compiled_gradients = jax.jit(jax.grad(gamma_logpdf, argnums=(0, 1, 2)))(value, shape, rate)
+
+    for result in (np.asarray(gradients), np.asarray(compiled_gradients)):
+        np.testing.assert_allclose(result[0], expected[0], rtol=3e-6, atol=0)
+        np.testing.assert_allclose(result[1], expected[1], rtol=0, atol=5e-7)
+        np.testing.assert_allclose(result[2], expected[2], rtol=0.1, atol=0)
+
+
 def test_gamma_ordinary_shapes_handle_extreme_value_rate_pairs() -> None:
     smallest_normal = np.finfo(np.float32).tiny
     largest = np.finfo(np.float32).max

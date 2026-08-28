@@ -4,7 +4,7 @@ from typing import cast
 
 import jax
 import jax.numpy as jnp
-from jax.scipy.special import digamma, gammaln
+from jax.scipy.special import gammaln
 from jax.typing import ArrayLike
 
 from mmmjax.distributions._utils import (
@@ -156,18 +156,45 @@ def _gamma_logpdf(
     shape: jax.Array,
     rate: jax.Array,
 ) -> jax.Array:
-    uses_standard_formula = _uses_standard_gamma_formula(value, shape, rate)
+    ordinary_shape_limit = jnp.asarray(8, dtype=value.dtype)
+    uses_ordinary_parameters = jnp.all(jnp.isfinite(shape) & (shape > 0) & (shape < ordinary_shape_limit)) & jnp.all(
+        jnp.isfinite(rate) & (rate > 0)
+    )
+
+    # Large shapes skip direct terms that would only be discarded by the accuracy check
+    return cast(
+        jax.Array,
+        jax.lax.cond(
+            uses_ordinary_parameters,
+            _ordinary_gamma_logpdf,
+            _stable_gamma_logpdf,
+            value,
+            shape,
+            rate,
+        ),
+    )
+
+
+def _ordinary_gamma_logpdf(
+    value: jax.Array,
+    shape: jax.Array,
+    rate: jax.Array,
+) -> jax.Array:
+    standard_log_density, standard_term_magnitude = _standard_gamma_terms(value, shape, rate)
+    uses_standard_formula = _uses_standard_gamma_formula(
+        value,
+        standard_log_density,
+        standard_term_magnitude,
+    )
 
     # Ordinary homogeneous batches do not need the heavier stability calculation
     return cast(
         jax.Array,
         jax.lax.cond(
             uses_standard_formula,
-            _standard_gamma_logpdf,
-            _stable_gamma_logpdf,
-            value,
-            shape,
-            rate,
+            lambda _: standard_log_density,
+            lambda _: _stable_gamma_logpdf(value, shape, rate),
+            operand=None,
         ),
     )
 
@@ -177,20 +204,10 @@ def _gamma_logpdf_jvp(
     primals: tuple[jax.Array, jax.Array, jax.Array],
     tangents: tuple[jax.Array, jax.Array, jax.Array],
 ) -> tuple[jax.Array, jax.Array]:
-    value, shape, rate = primals
-    log_density = _gamma_logpdf(value, shape, rate)
-    uses_standard_formula = _uses_standard_gamma_formula(value, shape, rate)
+    log_density = _gamma_logpdf(*primals)
 
-    # Match each formula with its derivative while keeping boundary rules on the stable path
-    log_density_tangent = cast(
-        jax.Array,
-        jax.lax.cond(
-            uses_standard_formula,
-            lambda _: jax.jvp(_standard_gamma_logpdf, primals, tangents)[1],
-            lambda _: jax.jvp(_stable_gamma_logpdf, primals, tangents)[1],
-            operand=None,
-        ),
-    )
+    # The robust rule preserves derivatives near the mode and at extreme scales
+    _, log_density_tangent = jax.jvp(_stable_gamma_logpdf, primals, tangents)
     return log_density, log_density_tangent
 
 
@@ -359,66 +376,32 @@ def _gamma_ratio_terms(
     return log_ratio, density_deviation, ratio_deviation, near_unit_ratio, has_density_deviation
 
 
-@jax.custom_jvp
-def _standard_gamma_logpdf(
+def _standard_gamma_terms(
     value: jax.Array,
     shape: jax.Array,
     rate: jax.Array,
-) -> jax.Array:
-    valid_inputs = _valid_standard_gamma_inputs(value, shape, rate)
-
-    # vmap can turn the conditional into a select, so keep the unused calculation finite
-    safe_value = jnp.where(valid_inputs, value, jnp.ones_like(value))
-    safe_shape = jnp.where(valid_inputs, shape, jnp.ones_like(shape))
-    safe_rate = jnp.where(valid_inputs, rate, jnp.ones_like(rate))
-    log_rate = jnp.log(safe_rate)
-    log_scaled_value = log_rate + jnp.log(safe_value)
-    return log_rate - gammaln(safe_shape) + (safe_shape - 1) * log_scaled_value - safe_rate * safe_value
-
-
-@_standard_gamma_logpdf.defjvp
-def _standard_gamma_logpdf_jvp(
-    primals: tuple[jax.Array, jax.Array, jax.Array],
-    tangents: tuple[jax.Array, jax.Array, jax.Array],
 ) -> tuple[jax.Array, jax.Array]:
-    value, shape, rate = primals
-    value_tangent, shape_tangent, rate_tangent = tangents
-    log_density = _standard_gamma_logpdf(value, shape, rate)
-    valid_inputs = _valid_standard_gamma_inputs(value, shape, rate)
-    safe_value = jnp.where(valid_inputs, value, jnp.ones_like(value))
-    safe_shape = jnp.where(valid_inputs, shape, jnp.ones_like(shape))
-    safe_rate = jnp.where(valid_inputs, rate, jnp.ones_like(rate))
-
-    value_derivative = (safe_shape - 1) / safe_value - safe_rate
-    shape_derivative = jnp.log(safe_rate) + jnp.log(safe_value) - digamma(safe_shape)
-    rate_derivative = safe_shape / safe_rate - safe_value
-    log_density_tangent = (
-        value_derivative * value_tangent + shape_derivative * shape_tangent + rate_derivative * rate_tangent
+    log_rate = jnp.log(rate)
+    shape_normalizer = gammaln(shape)
+    shape_contribution = (shape - 1) * (log_rate + jnp.log(value))
+    rate_contribution = rate * value
+    log_density = log_rate - shape_normalizer + shape_contribution - rate_contribution
+    term_magnitude = (
+        jnp.abs(log_rate) + jnp.abs(shape_normalizer) + jnp.abs(shape_contribution) + jnp.abs(rate_contribution)
     )
-    return log_density, jnp.where(valid_inputs, log_density_tangent, jnp.zeros_like(log_density_tangent))
+    return log_density, term_magnitude
 
 
 def _uses_standard_gamma_formula(
     value: jax.Array,
-    shape: jax.Array,
-    rate: jax.Array,
-) -> jax.Array:
-    return jnp.all(_valid_standard_gamma_inputs(value, shape, rate))
-
-
-def _valid_standard_gamma_inputs(
-    value: jax.Array,
-    shape: jax.Array,
-    rate: jax.Array,
+    log_density: jax.Array,
+    term_magnitude: jax.Array,
 ) -> jax.Array:
     dtype_bits = jax.dtypes.itemsize_bits(value.dtype)
-    asymptotic_threshold = jnp.asarray(64 if dtype_bits == 64 else 8, dtype=value.dtype)
-    return (
-        jnp.isfinite(value)
-        & (value > 0)
-        & jnp.isfinite(shape)
-        & (shape > 0)
-        & (shape < asymptotic_threshold)
-        & jnp.isfinite(rate)
-        & (rate > 0)
-    )
+    accuracy_tolerance = jnp.asarray(1e-14 if dtype_bits == 64 else 3e-6, dtype=value.dtype)
+    machine_epsilon = jnp.spacing(jnp.asarray(1, dtype=value.dtype))
+    # Keep the direct sum within the numerical accuracy expected for each dtype
+    roundoff_bound = 4 * machine_epsilon * term_magnitude
+    cancellation_safe = roundoff_bound <= accuracy_tolerance * (1 + jnp.abs(log_density))
+    valid_inputs = jnp.isfinite(value) & (value > 0) & jnp.isfinite(log_density) & cancellation_safe
+    return jnp.all(valid_inputs)
