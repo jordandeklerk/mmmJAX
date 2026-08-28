@@ -1,4 +1,4 @@
-# Stan-inspired Bayesian marketing mix modeling in JAX
+# Stan-style Bayesian marketing mix modeling in JAX
 
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/jordandeklerk/mmmJAX/blob/main/LICENSE)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
