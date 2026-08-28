@@ -139,6 +139,47 @@ def test_beta_logpdf_broadcasts_arguments() -> None:
     assert jnp.allclose(beta(values, alphas, betas), jnp.sum(expected))
 
 
+def test_beta_homogeneous_ordinary_batch_matches_independent_references() -> None:
+    values = jnp.linspace(0.05, 0.95, 12, dtype=jnp.float32).reshape(4, 3)
+    alphas = jnp.array([0.2, 2.3, 7.5], dtype=jnp.float32)
+    betas = jnp.array([3.0, 4.7, 0.8], dtype=jnp.float32)
+    value_tangents = jnp.linspace(-0.2, 0.2, 12, dtype=jnp.float32).reshape(4, 3)
+    alpha_tangents = jnp.array([0.1, -0.2, 0.3], dtype=jnp.float32)
+    beta_tangents = jnp.array([-0.3, 0.2, 0.1], dtype=jnp.float32)
+
+    values_reference = np.asarray(values, dtype=np.float64)
+    alphas_reference = np.asarray(alphas, dtype=np.float64)
+    betas_reference = np.asarray(betas, dtype=np.float64)
+    shape_sums = alphas_reference + betas_reference
+    expected_logpdf = stats.beta.logpdf(values_reference, alphas_reference, betas_reference)
+    value_derivatives = (alphas_reference - 1) / values_reference - (betas_reference - 1) / (1 - values_reference)
+    alpha_derivatives = np.log(values_reference) - special.digamma(alphas_reference) + special.digamma(shape_sums)
+    beta_derivatives = np.log1p(-values_reference) - special.digamma(betas_reference) + special.digamma(shape_sums)
+    expected_parameter_gradients = (
+        np.sum(alpha_derivatives, axis=0),
+        np.sum(beta_derivatives, axis=0),
+    )
+    expected_tangent = (
+        value_derivatives * np.asarray(value_tangents)
+        + alpha_derivatives * np.asarray(alpha_tangents)
+        + beta_derivatives * np.asarray(beta_tangents)
+    )
+
+    result = jax.jit(beta_logpdf)(values, alphas, betas)
+    density, parameter_gradients = jax.jit(jax.value_and_grad(beta, argnums=(1, 2)))(values, alphas, betas)
+    _, tangent = jax.jvp(
+        beta_logpdf,
+        (values, alphas, betas),
+        (value_tangents, alpha_tangents, beta_tangents),
+    )
+
+    np.testing.assert_allclose(result, expected_logpdf, rtol=3e-6, atol=3e-6)
+    np.testing.assert_allclose(density, np.sum(expected_logpdf), rtol=3e-6, atol=3e-6)
+    for gradient, expected_gradient in zip(parameter_gradients, expected_parameter_gradients, strict=True):
+        np.testing.assert_allclose(gradient, expected_gradient, rtol=3e-6, atol=3e-6)
+    np.testing.assert_allclose(tangent, expected_tangent, rtol=3e-6, atol=3e-6)
+
+
 def test_beta_logpdf_uses_boundary_limits() -> None:
     alphas = jnp.array([0.5, 1.0, 2.0])
     betas = jnp.array([0.5, 1.0, 2.0])
