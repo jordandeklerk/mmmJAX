@@ -1,5 +1,6 @@
 """Tests against established distribution implementations."""
 
+import math
 from dataclasses import dataclass
 from functools import partial
 
@@ -7,10 +8,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from scipy import stats
+from jax.scipy import stats as jax_stats
+from scipy import special, stats
 
 import mmmjax
-from benchmarks.jax_references import JAX_REFERENCES
+from benchmarks.references import JAX_REFERENCES
 
 
 @dataclass(frozen=True)
@@ -143,6 +145,182 @@ def test_mmmjax_forward_mode_matches_jax(case: _SmoothReferenceCase) -> None:
         _assert_close(result_jacobian, jax_jacobian)
 
 
+@pytest.mark.parametrize("operation", ["logcdf", "logsf"])
+def test_mmmjax_normal_log_probabilities_match_jax_and_scipy(operation: str) -> None:
+    values = (
+        jnp.array([-40.0, -10.0, -2.0, 0.0, 2.0]) if operation == "logcdf" else jnp.array([-2.0, 0.0, 2.0, 10.0, 40.0])
+    )
+    location = jnp.asarray(0.4)
+    scale = jnp.asarray(1.7)
+    implementation = getattr(mmmjax, f"normal_{operation}")
+    jax_reference = getattr(JAX_REFERENCES["normal"], operation)
+    scipy_reference = getattr(stats.norm, operation)
+    assert jax_reference is not None
+
+    result = implementation(values, location, scale)
+
+    _assert_close(result, jax_reference(values, loc=location, scale=scale))
+    _assert_scipy_tail_close(
+        result,
+        scipy_reference(np.asarray(values), loc=float(location), scale=float(scale)),
+    )
+
+
+@pytest.mark.parametrize("operation", ["logcdf", "logsf"])
+def test_mmmjax_lognormal_log_probabilities_match_jax_and_scipy(operation: str) -> None:
+    values = (
+        jnp.array([1e-20, 1e-8, 0.1, 1.0, 10.0]) if operation == "logcdf" else jnp.array([1.0, 10.0, 1e2, 1e8, 1e20])
+    )
+    location = jnp.asarray(0.4)
+    scale = jnp.asarray(0.7)
+    implementation = getattr(mmmjax, f"lognormal_{operation}")
+    jax_reference = getattr(JAX_REFERENCES["lognormal"], operation)
+    scipy_reference = getattr(stats.lognorm, operation)
+    assert jax_reference is not None
+
+    result = implementation(values, location, scale)
+    jax_result = jax_reference(values, location, scale)
+    scipy_result = scipy_reference(
+        np.asarray(values),
+        float(scale),
+        scale=np.exp(float(location)),
+    )
+
+    _assert_close(result, jax_result)
+    _assert_scipy_tail_close(result, scipy_result)
+
+
+@pytest.mark.parametrize("differentiate", [jax.jacfwd, jax.jacrev], ids=["forward", "reverse"])
+@pytest.mark.parametrize("operation", ["logcdf", "logsf"])
+def test_mmmjax_normal_log_probability_gradients_match_jax(operation: str, differentiate) -> None:
+    arguments = (jnp.asarray(1.25), jnp.asarray(-0.3), jnp.asarray(1.7))
+    implementation = getattr(mmmjax, f"normal_{operation}")
+    reference = getattr(jax_stats.norm, operation)
+    argnums = (0, 1, 2)
+
+    result = jax.jit(differentiate(implementation, argnums=argnums))(*arguments)
+    jax_result = jax.jit(differentiate(reference, argnums=argnums))(*arguments)
+
+    for result_jacobian, jax_jacobian in zip(result, jax_result, strict=True):
+        _assert_close(result_jacobian, jax_jacobian)
+
+
+@pytest.mark.parametrize("differentiate", [jax.jacfwd, jax.jacrev], ids=["forward", "reverse"])
+@pytest.mark.parametrize("operation", ["logcdf", "logsf"])
+def test_mmmjax_lognormal_log_probability_gradients_match_jax_transform(operation: str, differentiate) -> None:
+    arguments = (jnp.asarray(1.25), jnp.asarray(-0.3), jnp.asarray(1.7))
+    implementation = getattr(mmmjax, f"lognormal_{operation}")
+    normal_reference = getattr(jax_stats.norm, operation)
+    argnums = (0, 1, 2)
+
+    def reference(value, location, scale):
+        return normal_reference(jnp.log(value), loc=location, scale=scale)
+
+    result = jax.jit(differentiate(implementation, argnums=argnums))(*arguments)
+    jax_result = jax.jit(differentiate(reference, argnums=argnums))(*arguments)
+
+    for result_jacobian, jax_jacobian in zip(result, jax_result, strict=True):
+        _assert_close(result_jacobian, jax_jacobian)
+
+
+@pytest.mark.parametrize("distribution", ["normal", "lognormal"])
+@pytest.mark.parametrize("operation", ["logcdf", "logsf"])
+def test_mmmjax_log_probability_second_derivatives_match_jax(distribution: str, operation: str) -> None:
+    parameters = jnp.array([1.25, -0.3, 1.7])
+    implementation = getattr(mmmjax, f"{distribution}_{operation}")
+    normal_reference = getattr(jax_stats.norm, operation)
+
+    def implementation_from_array(current):
+        return implementation(current[0], current[1], current[2])
+
+    def reference_from_array(current):
+        value = jnp.log(current[0]) if distribution == "lognormal" else current[0]
+        return normal_reference(value, loc=current[1], scale=current[2])
+
+    result = jax.jit(jax.hessian(implementation_from_array))(parameters)
+    jax_result = jax.jit(jax.hessian(reference_from_array))(parameters)
+
+    _assert_close(result, jax_result)
+
+
+@pytest.mark.parametrize(
+    ("dtype", "magnitude", "scale"),
+    [
+        pytest.param(jnp.float32, 20.0, 1.0, id="float32"),
+        pytest.param(jnp.float64, 100.0, 1.0, id="float64"),
+    ],
+)
+@pytest.mark.parametrize("operation", ["logcdf", "logsf"])
+def test_mmmjax_normal_deep_tail_gradients_match_scipy_mills_ratio(
+    dtype,
+    magnitude: float,
+    scale: float,
+    operation: str,
+) -> None:
+    if dtype == jnp.float64 and not jax.config.x64_enabled:
+        pytest.skip("JAX 64-bit mode is disabled")
+
+    direction = 1 if operation == "logcdf" else -1
+    arguments = jnp.array([direction * -magnitude, 0.0, scale], dtype=dtype)
+    standardized_magnitude = magnitude / scale
+    inverse_mills = math.sqrt(2 / math.pi) / special.erfcx(standardized_magnitude / math.sqrt(2))
+    expected = jnp.array(
+        [
+            direction * inverse_mills / scale,
+            -direction * inverse_mills / scale,
+            inverse_mills * standardized_magnitude / scale,
+        ],
+        dtype=dtype,
+    )
+    implementation = getattr(mmmjax, f"normal_{operation}")
+
+    forward = jax.jacfwd(lambda current: implementation(current[0], current[1], current[2]))(arguments)
+    reverse = jax.jacrev(lambda current: implementation(current[0], current[1], current[2]))(arguments)
+
+    _assert_scipy_tail_close(forward, expected)
+    _assert_scipy_tail_close(reverse, expected)
+
+
+@pytest.mark.parametrize("operation", ["logcdf", "logsf"])
+def test_mmmjax_normal_curvature_matches_scipy_mills_ratio(operation: str) -> None:
+    direction = 1 if operation == "logcdf" else -1
+    value = direction * -2.0
+    scale = 1.0
+    standardized_magnitude = abs(value) / scale
+    inverse_mills = math.sqrt(2 / math.pi) / special.erfcx(standardized_magnitude / math.sqrt(2))
+    expected = -inverse_mills * (inverse_mills - standardized_magnitude) / scale**2
+    implementation = getattr(mmmjax, f"normal_{operation}")
+
+    result = jax.grad(jax.grad(lambda current: implementation(current, 0.0, scale)))(value)
+
+    np.testing.assert_allclose(result, expected, rtol=3e-5, atol=0)
+
+
+@pytest.mark.parametrize("operation", ["logcdf", "logsf"])
+def test_mmmjax_lognormal_deep_tail_gradients_match_scipy_mills_ratio(operation: str) -> None:
+    direction = 1 if operation == "logcdf" else -1
+    location = direction * 20.0
+    scale = 1.0
+    arguments = jnp.array([1.0, location, scale], dtype=jnp.float32)
+    standardized_magnitude = abs(location) / scale
+    inverse_mills = math.sqrt(2 / math.pi) / special.erfcx(standardized_magnitude / math.sqrt(2))
+    expected = jnp.array(
+        [
+            direction * inverse_mills / scale,
+            -direction * inverse_mills / scale,
+            inverse_mills * standardized_magnitude / scale,
+        ],
+        dtype=jnp.float32,
+    )
+    implementation = getattr(mmmjax, f"lognormal_{operation}")
+
+    forward = jax.jacfwd(lambda current: implementation(current[0], current[1], current[2]))(arguments)
+    reverse = jax.jacrev(lambda current: implementation(current[0], current[1], current[2]))(arguments)
+
+    _assert_scipy_tail_close(forward, expected)
+    _assert_scipy_tail_close(reverse, expected)
+
+
 @pytest.mark.parametrize(
     ("name", "parameters"),
     [
@@ -222,3 +400,9 @@ def _assert_close(actual, expected) -> None:
     actual_array = jnp.asarray(actual)
     tolerance = 1e-12 if actual_array.dtype == jnp.dtype(jnp.float64) else 3e-6
     np.testing.assert_allclose(actual_array, expected, rtol=tolerance, atol=tolerance)
+
+
+def _assert_scipy_tail_close(actual, expected) -> None:
+    actual_array = jnp.asarray(actual)
+    tolerance = 5e-11 if actual_array.dtype == jnp.dtype(jnp.float64) else 3e-6
+    np.testing.assert_allclose(actual_array, expected, rtol=tolerance, atol=0)
