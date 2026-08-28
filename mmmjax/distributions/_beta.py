@@ -266,7 +266,7 @@ def _stable_beta_logpdf(
         + (standard_beta - 1) * jnp.log1p(-standard_value)
     )
 
-    # JAX betaln protects the mixed large-small regime from lgamma cancellation
+    # JAX betaln protects mixed large and small inputs from lgamma cancellation
     mixed_region = ~centered_region & ~uses_standard_formula
     mixed_value = jnp.where(mixed_region, safe_value, jnp.full_like(safe_value, 0.5))
     mixed_alpha = jnp.where(mixed_region, safe_alpha, jnp.ones_like(safe_alpha))

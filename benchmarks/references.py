@@ -17,6 +17,8 @@ class JaxReference:
 
     logpdf: Kernel
     rng: Kernel
+    logcdf: Kernel | None = None
+    logsf: Kernel | None = None
 
     def density(self, *arguments: jax.Array) -> jax.Array:
         """Sum the elementwise log density over every broadcast value."""
@@ -60,6 +62,22 @@ def _lognormal_logpdf(
     log_density = stats.norm.logpdf(log_value, loc=location, scale=scale) - log_value
     supported_log_density = jnp.where(outside_support, -jnp.inf, log_density)
     return jnp.where(jnp.isnan(value), jnp.nan, supported_log_density)
+
+
+def _lognormal_logcdf(
+    value: jax.Array,
+    location: jax.Array,
+    scale: jax.Array,
+) -> jax.Array:
+    return stats.norm.logcdf(jnp.log(value), loc=location, scale=scale)
+
+
+def _lognormal_logsf(
+    value: jax.Array,
+    location: jax.Array,
+    scale: jax.Array,
+) -> jax.Array:
+    return stats.norm.logsf(jnp.log(value), loc=location, scale=scale)
 
 
 def _uniform_logpdf(
@@ -207,8 +225,18 @@ JAX_REFERENCES: dict[str, JaxReference] = {
     "half_normal": JaxReference(_half_normal_logpdf, _half_normal_rng),
     "inverse_gamma": JaxReference(_inverse_gamma_logpdf, _inverse_gamma_rng),
     "laplace": JaxReference(stats.laplace.logpdf, _laplace_rng),
-    "lognormal": JaxReference(_lognormal_logpdf, _lognormal_rng),
-    "normal": JaxReference(stats.norm.logpdf, _normal_rng),
+    "lognormal": JaxReference(
+        _lognormal_logpdf,
+        _lognormal_rng,
+        logcdf=_lognormal_logcdf,
+        logsf=_lognormal_logsf,
+    ),
+    "normal": JaxReference(
+        stats.norm.logpdf,
+        _normal_rng,
+        logcdf=stats.norm.logcdf,
+        logsf=stats.norm.logsf,
+    ),
     "student_t": JaxReference(stats.t.logpdf, _student_t_rng),
     "uniform": JaxReference(_uniform_logpdf, _uniform_rng),
 }

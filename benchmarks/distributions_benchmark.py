@@ -12,15 +12,17 @@ import jaxlib
 
 from benchmarks._timing import CompiledOperations, TimingSummary, compile_function, measure_executions
 from benchmarks.workloads import (
+    DEFAULT_OPERATIONS,
     DISTRIBUTIONS,
     IMPLEMENTATIONS,
+    INPUT_SETS,
+    LOG_PROBABILITY_OPERATIONS,
     OPERATIONS,
     PROFILES,
     BenchmarkOperation,
     BenchmarkProfile,
     DistributionSpec,
-    make_arguments,
-    make_operations,
+    make_benchmark_operation,
 )
 
 
@@ -31,7 +33,7 @@ class BenchmarkResult:
     implementation: str
     distribution: str
     profile: str
-    regime: str
+    input_set: str
     operation: str
     element_count: int
     dtype: str
@@ -44,7 +46,7 @@ def _benchmark(
     distribution: DistributionSpec,
     profile_name: str,
     profile: BenchmarkProfile,
-    regime: str,
+    input_set: str,
     operations: tuple[BenchmarkOperation, ...],
     dtype: jnp.dtype,
     *,
@@ -74,7 +76,7 @@ def _benchmark(
             implementation=operation.implementation,
             distribution=distribution.name,
             profile=profile_name,
-            regime=regime,
+            input_set=input_set,
             operation=operation.name,
             element_count=math.prod(profile.value_shape),
             dtype=dtype.name,
@@ -91,7 +93,7 @@ def _print_results(results: list[BenchmarkResult]) -> None:
         "implementation",
         "distribution",
         "profile",
-        "regime",
+        "input set",
         "operation",
         "elements",
         "dtype",
@@ -105,7 +107,7 @@ def _print_results(results: list[BenchmarkResult]) -> None:
             result.implementation,
             result.distribution,
             result.profile,
-            result.regime,
+            result.input_set,
             result.operation,
             f"{result.element_count:,}",
             result.dtype,
@@ -122,7 +124,7 @@ def _print_results(results: list[BenchmarkResult]) -> None:
 
 def _print_comparisons(results: list[BenchmarkResult]) -> None:
     reference_results = {
-        (result.distribution, result.profile, result.regime, result.operation, result.dtype): result
+        (result.distribution, result.profile, result.input_set, result.operation, result.dtype): result
         for result in results
         if result.implementation == "jax"
     }
@@ -131,7 +133,7 @@ def _print_comparisons(results: list[BenchmarkResult]) -> None:
         if result.implementation != "mmmjax":
             continue
 
-        key = (result.distribution, result.profile, result.regime, result.operation, result.dtype)
+        key = (result.distribution, result.profile, result.input_set, result.operation, result.dtype)
         reference = reference_results.get(key)
         if reference is None:
             continue
@@ -140,7 +142,7 @@ def _print_comparisons(results: list[BenchmarkResult]) -> None:
             (
                 result.distribution,
                 result.profile,
-                result.regime,
+                result.input_set,
                 result.operation,
                 f"{result.element_count:,}",
                 result.dtype,
@@ -160,7 +162,7 @@ def _print_comparisons(results: list[BenchmarkResult]) -> None:
         (
             "distribution",
             "profile",
-            "regime",
+            "input set",
             "operation",
             "elements",
             "dtype",
@@ -183,7 +185,9 @@ def _print_table(headings: Sequence[str], rows: Sequence[Sequence[str]]) -> None
 def _print_environment(dtype: jnp.dtype, arguments: argparse.Namespace) -> None:
     device = jax.local_devices()[0]
     iteration_setting = "auto" if arguments.iterations is None else f"{arguments.iterations:,}"
-    compares_implementations = len(set(arguments.implementations)) > 1 and "ordinary" in arguments.regimes
+    compares_implementations = len(set(arguments.implementations)) > 1 and any(
+        input_set != "concentrated" for input_set in arguments.inputs
+    )
     execution_order = "counterbalanced" if compares_implementations else "single"
     print(f"runtime python={platform.python_version()} jax={jax.__version__} jaxlib={jaxlib.__version__}")
     print(
@@ -211,9 +215,9 @@ def _parse_args() -> argparse.Namespace:
         nargs="+",
         default=tuple(IMPLEMENTATIONS),
     )
-    parser.add_argument("--operations", choices=OPERATIONS, nargs="+", default=OPERATIONS)
+    parser.add_argument("--operations", choices=OPERATIONS, nargs="+", default=DEFAULT_OPERATIONS)
     parser.add_argument("--dtype", choices=("float32", "float64"), default="float32")
-    parser.add_argument("--regimes", choices=("ordinary", "concentrated"), nargs="+", default=("ordinary",))
+    parser.add_argument("--inputs", choices=INPUT_SETS, nargs="+", default=("ordinary",))
     parser.add_argument("--compile-repeats", type=int, default=3)
     parser.add_argument("--repeats", type=int, default=6)
     parser.add_argument(
@@ -222,7 +226,7 @@ def _parse_args() -> argparse.Namespace:
         help="fixed calls per repetition; omitted uses timeit autorange",
     )
     arguments = parser.parse_args()
-    for option in ("profiles", "distributions", "implementations", "operations", "regimes"):
+    for option in ("profiles", "distributions", "implementations", "operations", "inputs"):
         values = getattr(arguments, option)
         if len(values) != len(set(values)):
             parser.error(f"--{option} must not contain duplicate values")
@@ -230,15 +234,33 @@ def _parse_args() -> argparse.Namespace:
         parser.error("--compile-repeats must be positive")
     if arguments.repeats <= 0:
         parser.error("--repeats must be positive")
-    compares_implementations = len(set(arguments.implementations)) > 1 and "ordinary" in arguments.regimes
+    selected_operations = set(arguments.operations)
+    has_default_operation = bool(selected_operations.intersection(DEFAULT_OPERATIONS))
+    has_log_probability_operation = bool(selected_operations.intersection(LOG_PROBABILITY_OPERATIONS))
+    if "tail" in arguments.inputs and not has_log_probability_operation:
+        parser.error(
+            "--inputs tail requires a log-CDF or log-survival operation; "
+            "choose logcdf, logcdf_value_and_grad, logsf, or logsf_value_and_grad"
+        )
+    if "concentrated" in arguments.inputs and not has_default_operation:
+        parser.error(
+            "--inputs concentrated requires logpdf, density, value_and_grad, or rng; "
+            "log-CDF and log-survival operations support ordinary and tail inputs"
+        )
+    if has_log_probability_operation and not {"normal", "lognormal"}.intersection(arguments.distributions):
+        parser.error("log-CDF and log-survival benchmarks are currently available only for normal and lognormal")
+
+    compares_implementations = len(set(arguments.implementations)) > 1 and any(
+        input_set != "concentrated" for input_set in arguments.inputs
+    )
     if compares_implementations and arguments.repeats % 2 != 0:
         parser.error("--repeats must be even when comparing implementations so execution order stays balanced")
     if arguments.iterations is not None and arguments.iterations <= 0:
         parser.error("--iterations must be positive")
-    if set(arguments.regimes) == {"concentrated"} and set(arguments.implementations) == {"jax"}:
+    if set(arguments.inputs) == {"concentrated"} and set(arguments.implementations) == {"jax"}:
         parser.error(
             "public JAX is not numerically equivalent for the concentrated benchmark inputs; "
-            "use --regimes ordinary or --implementations mmmjax"
+            "use --inputs ordinary or --implementations mmmjax"
         )
     return arguments
 
@@ -254,51 +276,55 @@ def main() -> None:
     selected_distributions = set(arguments.distributions)
     selected_implementations = set(arguments.implementations)
     selected_operations = set(arguments.operations)
+    selected_log_probability_operations = selected_operations.intersection(LOG_PROBABILITY_OPERATIONS)
     _print_environment(dtype, arguments)
-    if "concentrated" in arguments.regimes and "jax" in selected_implementations:
+    if "concentrated" in arguments.inputs and "jax" in selected_implementations:
         print(
-            "note=public JAX is omitted from concentrated regimes because it is not numerically equivalent "
+            "note=public JAX is omitted from concentrated inputs because it is not numerically equivalent "
             "for those benchmark inputs"
         )
+    unsupported_log_probability_distributions = selected_distributions - {"normal", "lognormal"}
+    if selected_log_probability_operations and unsupported_log_probability_distributions:
+        omitted = ", ".join(sorted(unsupported_log_probability_distributions))
+        print(f"note=log-CDF and log-survival operations are omitted for distributions without those APIs: {omitted}")
 
     results: list[BenchmarkResult] = []
     for profile_name in arguments.profiles:
         profile = PROFILES[profile_name]
-        for regime in arguments.regimes:
+        for input_set in arguments.inputs:
             for distribution in DISTRIBUTIONS:
                 if distribution.name not in selected_distributions:
                     continue
-                if regime == "concentrated" and not distribution.supports_concentrated_regime:
-                    continue
-
-                distribution_arguments = make_arguments(distribution, profile, regime, dtype)
-                operations_by_implementation: dict[str, dict[str, BenchmarkOperation]] = {}
-                for implementation, functions_by_distribution in IMPLEMENTATIONS.items():
-                    if implementation not in selected_implementations:
-                        continue
-                    if regime == "concentrated" and implementation == "jax":
-                        continue
-                    functions = functions_by_distribution[distribution.name]
-                    operations_by_implementation[implementation] = {
-                        operation.name: operation
-                        for operation in make_operations(
-                            functions,
-                            profile,
-                            distribution_arguments,
-                            implementation,
-                        )
-                    }
 
                 for operation_name in OPERATIONS:
                     if operation_name not in selected_operations:
+                        continue
+
+                    benchmark_operations: list[BenchmarkOperation] = []
+                    for implementation, functions_by_distribution in IMPLEMENTATIONS.items():
+                        if implementation not in selected_implementations:
+                            continue
+                        operation = make_benchmark_operation(
+                            functions_by_distribution[distribution.name],
+                            distribution,
+                            profile,
+                            input_set=input_set,
+                            operation=operation_name,
+                            dtype=dtype,
+                            implementation=implementation,
+                        )
+                        if operation is not None:
+                            benchmark_operations.append(operation)
+
+                    if not benchmark_operations:
                         continue
                     results.extend(
                         _benchmark(
                             distribution,
                             profile_name,
                             profile,
-                            regime,
-                            tuple(operations[operation_name] for operations in operations_by_implementation.values()),
+                            input_set,
+                            tuple(benchmark_operations),
                             dtype,
                             compile_repeats=arguments.compile_repeats,
                             repeats=arguments.repeats,
@@ -307,7 +333,7 @@ def main() -> None:
                     )
 
     if not results:
-        raise SystemExit("No benchmark cases match the selected distributions and regimes")
+        raise SystemExit("No benchmark cases match the selected distributions and inputs")
     _print_results(results)
     _print_comparisons(results)
 

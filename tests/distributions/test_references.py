@@ -153,8 +153,9 @@ def test_mmmjax_normal_log_probabilities_match_jax_and_scipy(operation: str) -> 
     location = jnp.asarray(0.4)
     scale = jnp.asarray(1.7)
     implementation = getattr(mmmjax, f"normal_{operation}")
-    jax_reference = getattr(jax_stats.norm, operation)
+    jax_reference = getattr(JAX_REFERENCES["normal"], operation)
     scipy_reference = getattr(stats.norm, operation)
+    assert jax_reference is not None
 
     result = implementation(values, location, scale)
 
@@ -173,11 +174,12 @@ def test_mmmjax_lognormal_log_probabilities_match_jax_and_scipy(operation: str) 
     location = jnp.asarray(0.4)
     scale = jnp.asarray(0.7)
     implementation = getattr(mmmjax, f"lognormal_{operation}")
-    normal_reference = getattr(jax_stats.norm, operation)
+    jax_reference = getattr(JAX_REFERENCES["lognormal"], operation)
     scipy_reference = getattr(stats.lognorm, operation)
+    assert jax_reference is not None
 
     result = implementation(values, location, scale)
-    jax_result = normal_reference(jnp.log(values), loc=location, scale=scale)
+    jax_result = jax_reference(values, location, scale)
     scipy_result = scipy_reference(
         np.asarray(values),
         float(scale),
