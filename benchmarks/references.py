@@ -29,6 +29,14 @@ def _exponential_logpdf(value: jax.Array, rate: jax.Array) -> jax.Array:
     return stats.expon.logpdf(value, loc=0, scale=1 / rate)
 
 
+def _exponential_logcdf(value: jax.Array, rate: jax.Array) -> jax.Array:
+    return jax.nn.log1mexp(rate * value)
+
+
+def _exponential_logsf(value: jax.Array, rate: jax.Array) -> jax.Array:
+    return -rate * value
+
+
 def _gamma_logpdf(value: jax.Array, shape: jax.Array, rate: jax.Array) -> jax.Array:
     return stats.gamma.logpdf(value, shape, loc=0, scale=1 / rate)
 
@@ -220,7 +228,12 @@ def _random_metadata(
 
 JAX_REFERENCES: dict[str, JaxReference] = {
     "beta": JaxReference(stats.beta.logpdf, _beta_rng),
-    "exponential": JaxReference(_exponential_logpdf, _exponential_rng),
+    "exponential": JaxReference(
+        _exponential_logpdf,
+        _exponential_rng,
+        logcdf=_exponential_logcdf,
+        logsf=_exponential_logsf,
+    ),
     "gamma": JaxReference(_gamma_logpdf, _gamma_rng),
     "half_normal": JaxReference(_half_normal_logpdf, _half_normal_rng),
     "inverse_gamma": JaxReference(_inverse_gamma_logpdf, _inverse_gamma_rng),

@@ -15,7 +15,9 @@ from mmmjax.distributions import (
     beta_logpdf,
     beta_rng,
     exponential,
+    exponential_logcdf,
     exponential_logpdf,
+    exponential_logsf,
     exponential_rng,
     gamma,
     gamma_logpdf,
@@ -186,7 +188,13 @@ DISTRIBUTIONS = (
 IMPLEMENTATIONS: dict[str, dict[str, DistributionFunctions]] = {
     "mmmjax": {
         "beta": DistributionFunctions(beta_logpdf, beta, beta_rng),
-        "exponential": DistributionFunctions(exponential_logpdf, exponential, exponential_rng),
+        "exponential": DistributionFunctions(
+            exponential_logpdf,
+            exponential,
+            exponential_rng,
+            logcdf=exponential_logcdf,
+            logsf=exponential_logsf,
+        ),
         "gamma": DistributionFunctions(gamma_logpdf, gamma, gamma_rng),
         "half_normal": DistributionFunctions(half_normal_logpdf, half_normal, half_normal_rng),
         "inverse_gamma": DistributionFunctions(inverse_gamma_logpdf, inverse_gamma, inverse_gamma_rng),
@@ -229,6 +237,7 @@ LOG_PROBABILITY_OPERATIONS = (
 )
 OPERATIONS = DEFAULT_OPERATIONS + LOG_PROBABILITY_OPERATIONS
 INPUT_SETS = ("ordinary", "concentrated", "tail")
+LOG_PROBABILITY_DISTRIBUTIONS = frozenset({"exponential", "lognormal", "normal"})
 
 
 def make_arguments(
@@ -269,7 +278,7 @@ def make_log_probability_arguments(
     dtype: jnp.dtype,
 ) -> Arguments:
     """Build ordinary or tail inputs for a log-CDF or log-survival operation."""
-    if distribution.name not in {"normal", "lognormal"}:
+    if distribution.name not in LOG_PROBABILITY_DISTRIBUTIONS:
         raise ValueError(f"{distribution.name} does not define log-CDF or log-survival benchmark inputs")
     if input_set not in {"ordinary", "tail"}:
         raise ValueError(f"log-CDF and log-survival benchmarks do not support {input_set} inputs")
@@ -277,6 +286,21 @@ def make_log_probability_arguments(
         raise ValueError(f"operation must be 'logcdf' or 'logsf', got {operation!r}")
 
     element_count = math.prod(profile.value_shape)
+    if distribution.name == "exponential":
+        # Rate-scaled inputs keep the probability range fixed if benchmark rates change
+        (rate,) = _make_parameters(distribution, profile, dtype)
+        if input_set == "ordinary":
+            scaled_value = jnp.linspace(0.1, 3.0, element_count, dtype=dtype)
+        else:
+            negative_log_probability = jnp.linspace(4.0, 32.0, element_count, dtype=dtype)
+            if operation == "logcdf":
+                scaled_value = -jnp.log1p(-jnp.exp(-negative_log_probability))
+            else:
+                scaled_value = negative_log_probability
+
+        value = scaled_value.reshape(profile.value_shape) / rate
+        return value, rate
+
     if input_set == "ordinary":
         lower, upper = -2.0, 2.0
     elif operation == "logcdf":
@@ -371,7 +395,7 @@ def make_benchmark_operation(
         arguments = make_arguments(distribution, profile, input_set, dtype)
         candidates = make_operations(functions, profile, arguments, implementation)
     else:
-        if input_set == "concentrated" or distribution.name not in {"normal", "lognormal"}:
+        if input_set == "concentrated" or distribution.name not in LOG_PROBABILITY_DISTRIBUTIONS:
             return None
 
         log_probability = "logcdf" if operation.startswith("logcdf") else "logsf"

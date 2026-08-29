@@ -195,14 +195,15 @@ def test_mmmjax_exponential_log_probabilities_match_jax_and_scipy(operation: str
     values = jnp.array([1e-10, 0.1, 0.5, 1.0])
     rate = jnp.asarray(1.7)
     implementation = getattr(mmmjax, f"exponential_{operation}")
-    jax_reference = getattr(jax_stats.expon, operation)
+    jax_reference = getattr(JAX_REFERENCES["exponential"], operation)
     scipy_reference = getattr(stats.expon, operation)
+    assert jax_reference is not None
 
     result = implementation(values, rate)
     scipy_result = scipy_reference(np.asarray(values), scale=1 / float(rate))
 
     _assert_scipy_tail_close(result, scipy_result)
-    _assert_close(result[1:], jax_reference(values[1:], loc=0, scale=1 / rate))
+    _assert_close(result, jax_reference(values, rate))
 
 
 @pytest.mark.parametrize("differentiate", [jax.jacfwd, jax.jacrev], ids=["forward", "reverse"])
