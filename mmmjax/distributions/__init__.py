@@ -9,7 +9,9 @@ from mmmjax.distributions._exponential import exponential_logpdf as exponential_
 from mmmjax.distributions._exponential import exponential_logsf as exponential_logsf
 from mmmjax.distributions._exponential import exponential_rng as exponential_rng
 from mmmjax.distributions._gamma import gamma as gamma
+from mmmjax.distributions._gamma import gamma_logcdf as gamma_logcdf
 from mmmjax.distributions._gamma import gamma_logpdf as gamma_logpdf
+from mmmjax.distributions._gamma import gamma_logsf as gamma_logsf
 from mmmjax.distributions._gamma import gamma_rng as gamma_rng
 from mmmjax.distributions._half_normal import half_normal as half_normal
 from mmmjax.distributions._half_normal import half_normal_logpdf as half_normal_logpdf
@@ -47,7 +49,9 @@ __all__ = [
     "exponential_logsf",
     "exponential_rng",
     "gamma",
+    "gamma_logcdf",
     "gamma_logpdf",
+    "gamma_logsf",
     "gamma_rng",
     "half_normal",
     "half_normal_logpdf",

@@ -4,12 +4,15 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from jax.scipy import stats as jax_stats
 from scipy import special, stats
 
 from mmmjax import (
     exponential_logpdf,
     gamma,
+    gamma_logcdf,
     gamma_logpdf,
+    gamma_logsf,
     gamma_rng,
 )
 
@@ -85,6 +88,81 @@ def test_gamma_logpdf_broadcasts_arguments() -> None:
     assert result.shape == (2, 3)
     assert jnp.allclose(result, expected)
     assert jnp.allclose(gamma(values, shapes, rates), jnp.sum(expected))
+
+
+@pytest.mark.parametrize(
+    ("function", "reference"),
+    [
+        pytest.param(gamma_logcdf, stats.gamma.logcdf, id="logcdf"),
+        pytest.param(gamma_logsf, stats.gamma.logsf, id="logsf"),
+    ],
+)
+def test_gamma_log_probabilities_match_scipy(function, reference) -> None:
+    values = np.array([0.1, 1.0, 5.0], dtype=np.float32)
+    shapes = np.array([0.5, 2.5, 8.0], dtype=np.float32)
+    rates = np.array([0.8, 1.7, 3.0], dtype=np.float32)
+    expected = reference(
+        values.astype(np.float64),
+        a=shapes.astype(np.float64),
+        scale=1 / rates.astype(np.float64),
+    )
+
+    result = function(values, shapes, rates)
+
+    np.testing.assert_allclose(result, expected, rtol=3e-6, atol=3e-6)
+
+
+def test_gamma_log_probabilities_broadcast_arguments() -> None:
+    values = jnp.array([[0.25], [2.0]])
+    shapes = jnp.array([0.5, 1.0, 3.0])
+    rates = jnp.array([0.5, 1.0, 2.0])
+
+    log_cdf = gamma_logcdf(values, shapes, rates)
+    log_survival = gamma_logsf(values, shapes, rates)
+
+    assert log_cdf.shape == (2, 3)
+    assert log_survival.shape == (2, 3)
+    assert jnp.allclose(jnp.logaddexp(log_cdf, log_survival), 0, atol=2e-6)
+
+
+def test_gamma_log_probabilities_enforce_support_and_endpoints() -> None:
+    values = jnp.array([-jnp.inf, -1.0, -0.0, 0.0, jnp.inf, jnp.nan])
+
+    log_cdf = gamma_logcdf(values, 2.5, 1.7)
+    log_survival = gamma_logsf(values, 2.5, 1.7)
+
+    assert jnp.all(jnp.isneginf(log_cdf[:4]))
+    assert log_cdf[4] == 0
+    assert jnp.isnan(log_cdf[5])
+    assert jnp.all(log_survival[:4] == 0)
+    assert jnp.isneginf(log_survival[4])
+    assert jnp.isnan(log_survival[5])
+
+
+@pytest.mark.parametrize("function", [gamma_logcdf, gamma_logsf])
+def test_gamma_log_probabilities_reject_invalid_parameters(function) -> None:
+    invalid = jnp.array([0.0, -1.0, jnp.inf, jnp.nan])
+
+    invalid_shapes = function(-1.0, invalid, 1.0)
+    invalid_rates = function(-1.0, 1.0, invalid)
+
+    assert jnp.all(jnp.isnan(invalid_shapes))
+    assert jnp.all(jnp.isnan(invalid_rates))
+
+
+@pytest.mark.parametrize("function", [gamma_logcdf, gamma_logsf])
+def test_gamma_log_probability_gradients_match_public_jax(function) -> None:
+    arguments = (jnp.float32(1.25), jnp.float32(2.5), jnp.float32(1.7))
+    jax_function = jax_stats.gamma.logcdf if function is gamma_logcdf else jax_stats.gamma.logsf
+
+    def reference(value, shape, rate):
+        return jax_function(rate * value, shape)
+
+    result = jax.grad(function, argnums=(0, 1, 2))(*arguments)
+    expected = jax.grad(reference, argnums=(0, 1, 2))(*arguments)
+
+    for gradient, expected_gradient in zip(result, expected, strict=True):
+        assert jnp.allclose(gradient, expected_gradient, rtol=2e-6, atol=2e-6)
 
 
 def test_gamma_homogeneous_ordinary_batch_matches_independent_references() -> None:
