@@ -5,6 +5,7 @@ from typing import cast
 import jax
 import jax.numpy as jnp
 from jax.scipy.special import gammaln
+from jax.scipy.stats import gamma as gamma_distribution
 from jax.typing import ArrayLike
 
 from mmmjax.distributions._utils import (
@@ -98,6 +99,86 @@ def gamma(
         jnp.isfinite(rate_array) & (rate_array > 0)
     )
     return jnp.where(valid_parameters, log_density, jnp.nan)
+
+
+def gamma_logcdf(
+    value: ArrayLike,
+    shape: ArrayLike,
+    rate: ArrayLike,
+) -> jax.Array:
+    r"""Evaluate the Gamma log cumulative distribution function elementwise.
+
+    For value :math:`x \geq 0`, shape :math:`\alpha > 0`, and rate
+    :math:`\beta > 0`, the log cumulative probability is
+
+    .. math::
+
+        \log F(x \mid \alpha, \beta)
+        = \log P(\alpha, \beta x),
+
+    where :math:`P` is the regularized lower incomplete Gamma function.
+
+    Parameters
+    ----------
+    value
+        Values at which to evaluate the cumulative probability.
+    shape
+        Positive shape parameter.
+    rate
+        Positive rate parameter, equal to the inverse scale.
+
+    Returns
+    -------
+    jax.Array
+        Log cumulative probabilities with the broadcast shape of the
+        arguments. A nonpositive or nonfinite shape or rate produces ``nan``.
+    """
+    value_array, shape_array, rate_array = _promote_inexact(
+        ("value", value),
+        ("shape", shape),
+        ("rate", rate),
+    )
+    return _gamma_log_probability(value_array, shape_array, rate_array, upper_tail=False)
+
+
+def gamma_logsf(
+    value: ArrayLike,
+    shape: ArrayLike,
+    rate: ArrayLike,
+) -> jax.Array:
+    r"""Evaluate the Gamma log survival function elementwise.
+
+    For value :math:`x \geq 0`, shape :math:`\alpha > 0`, and rate
+    :math:`\beta > 0`, the log survival probability is
+
+    .. math::
+
+        \log \overline{F}(x \mid \alpha, \beta)
+        = \log Q(\alpha, \beta x),
+
+    where :math:`Q` is the regularized upper incomplete Gamma function.
+
+    Parameters
+    ----------
+    value
+        Values at which to evaluate the survival probability.
+    shape
+        Positive shape parameter.
+    rate
+        Positive rate parameter, equal to the inverse scale.
+
+    Returns
+    -------
+    jax.Array
+        Log survival probabilities with the broadcast shape of the arguments.
+        A nonpositive or nonfinite shape or rate produces ``nan``.
+    """
+    value_array, shape_array, rate_array = _promote_inexact(
+        ("value", value),
+        ("shape", shape),
+        ("rate", rate),
+    )
+    return _gamma_log_probability(value_array, shape_array, rate_array, upper_tail=True)
 
 
 def gamma_rng(
@@ -405,3 +486,26 @@ def _uses_standard_gamma_formula(
     cancellation_safe = roundoff_bound <= accuracy_tolerance * (1 + jnp.abs(log_density))
     valid_inputs = jnp.isfinite(value) & (value > 0) & jnp.isfinite(log_density) & cancellation_safe
     return jnp.all(valid_inputs)
+
+
+def _gamma_log_probability(
+    value: jax.Array,
+    shape: jax.Array,
+    rate: jax.Array,
+    *,
+    upper_tail: bool,
+) -> jax.Array:
+    valid_shape = jnp.isfinite(shape) & (shape > 0)
+    valid_rate = jnp.isfinite(rate) & (rate > 0)
+    valid_parameters = valid_shape & valid_rate
+
+    safe_shape = jnp.where(valid_shape, shape, jnp.ones_like(shape))
+    safe_rate = jnp.where(valid_rate, rate, jnp.ones_like(rate))
+    scaled_value = safe_rate * value
+
+    if upper_tail:
+        log_probability = gamma_distribution.logsf(scaled_value, safe_shape)
+    else:
+        log_probability = gamma_distribution.logcdf(scaled_value, safe_shape)
+
+    return jnp.where(valid_parameters, log_probability, jnp.nan)

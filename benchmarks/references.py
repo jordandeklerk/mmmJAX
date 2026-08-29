@@ -41,6 +41,14 @@ def _gamma_logpdf(value: jax.Array, shape: jax.Array, rate: jax.Array) -> jax.Ar
     return stats.gamma.logpdf(value, shape, loc=0, scale=1 / rate)
 
 
+def _gamma_logcdf(value: jax.Array, shape: jax.Array, rate: jax.Array) -> jax.Array:
+    return stats.gamma.logcdf(rate * value, shape)
+
+
+def _gamma_logsf(value: jax.Array, shape: jax.Array, rate: jax.Array) -> jax.Array:
+    return stats.gamma.logsf(rate * value, shape)
+
+
 def _half_normal_logpdf(value: jax.Array, scale: jax.Array) -> jax.Array:
     log_two = jnp.asarray(math.log(2), dtype=value.dtype)
     log_density = stats.norm.logpdf(value, loc=0, scale=scale) + log_two
@@ -234,7 +242,12 @@ JAX_REFERENCES: dict[str, JaxReference] = {
         logcdf=_exponential_logcdf,
         logsf=_exponential_logsf,
     ),
-    "gamma": JaxReference(_gamma_logpdf, _gamma_rng),
+    "gamma": JaxReference(
+        _gamma_logpdf,
+        _gamma_rng,
+        logcdf=_gamma_logcdf,
+        logsf=_gamma_logsf,
+    ),
     "half_normal": JaxReference(_half_normal_logpdf, _half_normal_rng),
     "inverse_gamma": JaxReference(_inverse_gamma_logpdf, _inverse_gamma_rng),
     "laplace": JaxReference(stats.laplace.logpdf, _laplace_rng),

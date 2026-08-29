@@ -16,7 +16,9 @@ from mmmjax import (
     exponential_logsf,
     exponential_rng,
     gamma,
+    gamma_logcdf,
     gamma_logpdf,
+    gamma_logsf,
     gamma_rng,
     half_normal,
     half_normal_logpdf,
@@ -126,6 +128,8 @@ def test_probability_functions_use_at_least_float32(dtype, expected_dtype) -> No
     assert exponential_logcdf(values + 1, dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert exponential_logsf(values + 1, dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert gamma_logpdf(values + 1, dtype(1.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
+    assert gamma_logcdf(values + 1, dtype(1.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
+    assert gamma_logsf(values + 1, dtype(1.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert beta_logpdf(values, dtype(1.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert inverse_gamma_logpdf(values + 1, dtype(1.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert laplace_logpdf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
@@ -147,6 +151,8 @@ def test_probability_functions_promote_integer_inputs_to_float32() -> None:
     assert exponential_logcdf(values + 1, 1).dtype == jnp.dtype(jnp.float32)
     assert exponential_logsf(values + 1, 1).dtype == jnp.dtype(jnp.float32)
     assert gamma_logpdf(values + 1, 1, 1).dtype == jnp.dtype(jnp.float32)
+    assert gamma_logcdf(values + 1, 1, 1).dtype == jnp.dtype(jnp.float32)
+    assert gamma_logsf(values + 1, 1, 1).dtype == jnp.dtype(jnp.float32)
     assert beta_logpdf(values, 1, 1).dtype == jnp.dtype(jnp.float32)
     assert inverse_gamma_logpdf(values + 1, 1, 1).dtype == jnp.dtype(jnp.float32)
     assert laplace_logpdf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
@@ -197,6 +203,8 @@ def test_cumulative_functions_follow_jax_default_dtype_for_python_scalars() -> N
     assert lognormal_logsf(1.0, 0.0, 1.0).dtype == expected_dtype
     assert exponential_logcdf(1.0, 1.0).dtype == expected_dtype
     assert exponential_logsf(1.0, 1.0).dtype == expected_dtype
+    assert gamma_logcdf(1.0, 1.0, 1.0).dtype == expected_dtype
+    assert gamma_logsf(1.0, 1.0, 1.0).dtype == expected_dtype
 
 
 @pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
@@ -215,6 +223,8 @@ def test_distribution_functions_support_float64() -> None:
     assert exponential_logcdf(values + 1, 1.0).dtype == jnp.dtype(jnp.float64)
     assert exponential_logsf(values + 1, 1.0).dtype == jnp.dtype(jnp.float64)
     assert gamma_logpdf(values + 1, 1.0, 1.0).dtype == jnp.dtype(jnp.float64)
+    assert gamma_logcdf(values + 1, 1.0, 1.0).dtype == jnp.dtype(jnp.float64)
+    assert gamma_logsf(values + 1, 1.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert beta_logpdf(values, 1.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert inverse_gamma_logpdf(values + 1, 1.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert laplace_logpdf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
@@ -251,6 +261,8 @@ def test_distribution_functions_support_float64() -> None:
         (exponential_logsf, (jnp.array([0.5, 1.0]), 2.0)),
         (gamma_logpdf, (jnp.array([0.5, 1.0]), 2.0, 1.5)),
         (gamma, (jnp.array([0.5, 1.0]), 2.0, 1.5)),
+        (gamma_logcdf, (jnp.array([0.5, 1.0]), 2.0, 1.5)),
+        (gamma_logsf, (jnp.array([0.5, 1.0]), 2.0, 1.5)),
         (beta_logpdf, (jnp.array([0.25, 0.75]), 2.0, 1.5)),
         (beta, (jnp.array([0.25, 0.75]), 2.0, 1.5)),
         (inverse_gamma_logpdf, (jnp.array([0.5, 1.0]), 2.0, 1.5)),
