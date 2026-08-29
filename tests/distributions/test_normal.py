@@ -1,8 +1,11 @@
 """Tests for Normal distribution functions."""
 
+from functools import partial
+
 import jax
 import jax.numpy as jnp
 import pytest
+from jax.scipy import stats as jax_stats
 
 from mmmjax import (
     normal,
@@ -72,6 +75,63 @@ def test_normal_logpdf_remains_finite_for_extreme_valid_scales() -> None:
 
     assert jnp.all(jnp.isfinite(result))
     assert jnp.allclose(result, expected)
+
+
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
+def test_normal_functions_handle_finite_standardization_overflow(dtype) -> None:
+    if dtype == jnp.float64 and not jax.config.x64_enabled:
+        pytest.skip("JAX 64-bit mode is disabled")
+
+    maximum = jnp.asarray(jnp.finfo(dtype).max)
+    values = jnp.asarray([0.75, -0.75], dtype=dtype) * maximum
+    locations = -values
+    scales = jnp.full_like(values, maximum)
+    standardized = jnp.asarray([1.5, -1.5], dtype=dtype)
+    expected_results = (
+        jax_stats.norm.logpdf(standardized) - jnp.log(maximum),
+        jax_stats.norm.logcdf(standardized),
+        jax_stats.norm.logsf(standardized),
+    )
+
+    for function, expected in zip(
+        (normal_logpdf, normal_logcdf, normal_logsf),
+        expected_results,
+        strict=True,
+    ):
+        result = function(values, locations, scales)
+        compiled_result = jax.jit(function)(values, locations, scales)
+        mapped_result = jax.jit(jax.vmap(function))(values, locations, scales)
+
+        assert jnp.all(jnp.isfinite(result))
+        assert jnp.allclose(result, expected, rtol=2e-6, atol=0)
+        assert jnp.allclose(compiled_result, expected, rtol=2e-6, atol=0)
+        assert jnp.allclose(mapped_result, expected, rtol=2e-6, atol=0)
+
+
+def test_normal_functions_preserve_directional_derivatives_at_finite_limits() -> None:
+    maximum = jnp.asarray(jnp.finfo(jnp.float32).max)
+    value = jnp.asarray(0.75, dtype=jnp.float32) * maximum
+    location = -value
+    scale = maximum
+    arguments = (value, location, scale)
+    tangent = (maximum, jnp.float32(0), jnp.float32(0))
+    standardized = jnp.float32(1.5)
+    expected_derivatives = (
+        -standardized,
+        jnp.exp(jax_stats.norm.logpdf(standardized) - jax_stats.norm.logcdf(standardized)),
+        -jnp.exp(jax_stats.norm.logpdf(standardized) - jax_stats.norm.logsf(standardized)),
+    )
+
+    for function, expected in zip(
+        (normal_logpdf, normal_logcdf, normal_logsf),
+        expected_derivatives,
+        strict=True,
+    ):
+        derivative = jax.jvp(function, arguments, tangent)[1]
+        compiled_derivative = jax.jit(partial(jax.jvp, function))(arguments, tangent)[1]
+
+        assert jnp.allclose(derivative, expected, rtol=2e-6, atol=0)
+        assert jnp.allclose(compiled_derivative, expected, rtol=2e-6, atol=0)
 
 
 def test_normal_log_probabilities_are_complements() -> None:

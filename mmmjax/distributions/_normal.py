@@ -228,8 +228,7 @@ def _normal_logpdf_kernel(
     location: jax.Array,
     scale: jax.Array,
 ) -> jax.Array:
-    # Keep the scale out of the square so extreme values stay finite
-    standardized = (value - location) / scale
+    standardized = _standardize(value, location, scale)
     half_log_two_pi = jnp.asarray(math.log(2 * math.pi) / 2, dtype=value.dtype)
     return -0.5 * jnp.square(standardized) - jnp.log(scale) - half_log_two_pi
 
@@ -263,8 +262,44 @@ def _normal_log_probability(
     safe_value = jnp.where(infinite_value, jnp.zeros_like(value), value)
     safe_location = jnp.where(evaluate_probability, location, jnp.zeros_like(location))
     safe_scale = jnp.where(evaluate_probability, scale, jnp.ones_like(scale))
-    log_probability = log_ndtr(direction * ((safe_value - safe_location) / safe_scale))
+    log_probability = log_ndtr(direction * _standardize(safe_value, safe_location, safe_scale))
 
     endpoint_probability = jnp.where(direction * value > 0, jnp.zeros_like(value), -jnp.inf)
     supported_log_probability = jnp.where(infinite_value, endpoint_probability, log_probability)
     return jnp.where(valid_parameters, supported_log_probability, jnp.nan)
+
+
+@jax.custom_jvp
+def _standardize(
+    value: jax.Array,
+    location: jax.Array,
+    scale: jax.Array,
+) -> jax.Array:
+    difference = value - location
+    subtraction_overflowed = jnp.isinf(difference) & jnp.isfinite(value) & jnp.isfinite(location)
+    zero = jnp.zeros_like(difference)
+    standardized = jnp.where(subtraction_overflowed, zero, difference) / scale
+
+    # Halving both parts keeps the overflow path in range without changing the ratio
+    half = jnp.asarray(0.5, dtype=difference.dtype)
+    scaled_value = jnp.where(subtraction_overflowed, value, zero) * half
+    scaled_location = jnp.where(subtraction_overflowed, location, zero) * half
+    scaled_scale = jnp.where(subtraction_overflowed, scale, jnp.ones_like(scale)) * half
+    overflow_standardized = (scaled_value - scaled_location) / scaled_scale
+
+    return jnp.where(subtraction_overflowed, overflow_standardized, standardized)
+
+
+@_standardize.defjvp
+def _standardize_jvp(
+    primals: tuple[jax.Array, jax.Array, jax.Array],
+    tangents: tuple[jax.Array, jax.Array, jax.Array],
+) -> tuple[jax.Array, jax.Array]:
+    value, location, scale = primals
+    value_tangent, location_tangent, scale_tangent = tangents
+    standardized = _standardize(value, location, scale)
+
+    # The analytic rule keeps masked overflow work out of model gradients
+    difference_tangent = value_tangent - location_tangent
+    standardized_tangent = difference_tangent / scale - standardized * (scale_tangent / scale)
+    return standardized, standardized_tangent
