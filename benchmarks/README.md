@@ -14,10 +14,10 @@ Filters can be passed directly, for example:
 pixi run benchmark-distributions --profiles vector --distributions normal
 ```
 
-Normal and LogNormal log-CDF and log-survival benchmarks are opt-in:
+Exponential, Normal, and LogNormal log-CDF and log-survival benchmarks are opt-in:
 
 ```console
-pixi run benchmark-distributions --distributions normal lognormal --operations logcdf logcdf_value_and_grad logsf logsf_value_and_grad --inputs ordinary tail
+pixi run benchmark-distributions --distributions exponential normal lognormal --operations logcdf logcdf_value_and_grad logsf logsf_value_and_grad --inputs ordinary tail
 ```
 
-Ordinary inputs use standardized values from -2 to 2. Tail inputs use values from -8 to -2 for log-CDFs and 2 to 8 for log-survival functions. Gradient benchmarks sum the elementwise results and differentiate only the distribution parameters, matching how observed values are treated during inference.
+Normal and LogNormal ordinary inputs use standardized values from -2 to 2, while Exponential inputs use rate-scaled values from 0.1 to 3. Tail inputs produce log probabilities from roughly -4 to -32. Gradient benchmarks sum the elementwise results and differentiate only the distribution parameters, matching how observed values are treated during inference.

@@ -16,6 +16,7 @@ from benchmarks.workloads import (
     DISTRIBUTIONS,
     IMPLEMENTATIONS,
     INPUT_SETS,
+    LOG_PROBABILITY_DISTRIBUTIONS,
     LOG_PROBABILITY_OPERATIONS,
     OPERATIONS,
     PROFILES,
@@ -247,8 +248,10 @@ def _parse_args() -> argparse.Namespace:
             "--inputs concentrated requires logpdf, density, value_and_grad, or rng; "
             "log-CDF and log-survival operations support ordinary and tail inputs"
         )
-    if has_log_probability_operation and not {"normal", "lognormal"}.intersection(arguments.distributions):
-        parser.error("log-CDF and log-survival benchmarks are currently available only for normal and lognormal")
+    if has_log_probability_operation and not LOG_PROBABILITY_DISTRIBUTIONS.intersection(arguments.distributions):
+        parser.error(
+            "log-CDF and log-survival benchmarks are currently available only for exponential, normal, and lognormal"
+        )
 
     compares_implementations = len(set(arguments.implementations)) > 1 and any(
         input_set != "concentrated" for input_set in arguments.inputs
@@ -283,7 +286,7 @@ def main() -> None:
             "note=public JAX is omitted from concentrated inputs because it is not numerically equivalent "
             "for those benchmark inputs"
         )
-    unsupported_log_probability_distributions = selected_distributions - {"normal", "lognormal"}
+    unsupported_log_probability_distributions = selected_distributions - LOG_PROBABILITY_DISTRIBUTIONS
     if selected_log_probability_operations and unsupported_log_probability_distributions:
         omitted = ", ".join(sorted(unsupported_log_probability_distributions))
         print(f"note=log-CDF and log-survival operations are omitted for distributions without those APIs: {omitted}")

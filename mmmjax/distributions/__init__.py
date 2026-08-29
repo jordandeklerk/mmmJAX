@@ -4,7 +4,9 @@ from mmmjax.distributions._beta import beta as beta
 from mmmjax.distributions._beta import beta_logpdf as beta_logpdf
 from mmmjax.distributions._beta import beta_rng as beta_rng
 from mmmjax.distributions._exponential import exponential as exponential
+from mmmjax.distributions._exponential import exponential_logcdf as exponential_logcdf
 from mmmjax.distributions._exponential import exponential_logpdf as exponential_logpdf
+from mmmjax.distributions._exponential import exponential_logsf as exponential_logsf
 from mmmjax.distributions._exponential import exponential_rng as exponential_rng
 from mmmjax.distributions._gamma import gamma as gamma
 from mmmjax.distributions._gamma import gamma_logpdf as gamma_logpdf
@@ -40,7 +42,9 @@ __all__ = [
     "beta_logpdf",
     "beta_rng",
     "exponential",
+    "exponential_logcdf",
     "exponential_logpdf",
+    "exponential_logsf",
     "exponential_rng",
     "gamma",
     "gamma_logpdf",
