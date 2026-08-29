@@ -20,7 +20,9 @@ from mmmjax.distributions import (
     exponential_logsf,
     exponential_rng,
     gamma,
+    gamma_logcdf,
     gamma_logpdf,
+    gamma_logsf,
     gamma_rng,
     half_normal,
     half_normal_logpdf,
@@ -195,7 +197,13 @@ IMPLEMENTATIONS: dict[str, dict[str, DistributionFunctions]] = {
             logcdf=exponential_logcdf,
             logsf=exponential_logsf,
         ),
-        "gamma": DistributionFunctions(gamma_logpdf, gamma, gamma_rng),
+        "gamma": DistributionFunctions(
+            gamma_logpdf,
+            gamma,
+            gamma_rng,
+            logcdf=gamma_logcdf,
+            logsf=gamma_logsf,
+        ),
         "half_normal": DistributionFunctions(half_normal_logpdf, half_normal, half_normal_rng),
         "inverse_gamma": DistributionFunctions(inverse_gamma_logpdf, inverse_gamma, inverse_gamma_rng),
         "laplace": DistributionFunctions(laplace_logpdf, laplace, laplace_rng),
@@ -237,7 +245,7 @@ LOG_PROBABILITY_OPERATIONS = (
 )
 OPERATIONS = DEFAULT_OPERATIONS + LOG_PROBABILITY_OPERATIONS
 INPUT_SETS = ("ordinary", "concentrated", "tail")
-LOG_PROBABILITY_DISTRIBUTIONS = frozenset({"exponential", "lognormal", "normal"})
+LOG_PROBABILITY_DISTRIBUTIONS = frozenset({"exponential", "gamma", "lognormal", "normal"})
 
 
 def make_arguments(
@@ -300,6 +308,21 @@ def make_log_probability_arguments(
 
         value = scaled_value.reshape(profile.value_shape) / rate
         return value, rate
+
+    if distribution.name == "gamma":
+        shape, rate = _make_parameters(distribution, profile, dtype)
+        if input_set == "ordinary":
+            # Covers roughly the central 4% through 97% for the configured shape of 2.5
+            scaled_value = jnp.linspace(0.5, 6.0, element_count, dtype=dtype)
+        elif operation == "logcdf":
+            # Geometric spacing spreads lower-tail log probabilities from about -32 to -4
+            scaled_value = jnp.geomspace(5e-6, 0.35, element_count, dtype=dtype)
+        else:
+            # Linear spacing gives a similar spread in the upper tail
+            scaled_value = jnp.linspace(6.8, 37.2, element_count, dtype=dtype)
+
+        value = scaled_value.reshape(profile.value_shape) / rate
+        return value, shape, rate
 
     if input_set == "ordinary":
         lower, upper = -2.0, 2.0

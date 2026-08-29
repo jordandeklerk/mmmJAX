@@ -250,7 +250,8 @@ def _parse_args() -> argparse.Namespace:
         )
     if has_log_probability_operation and not LOG_PROBABILITY_DISTRIBUTIONS.intersection(arguments.distributions):
         parser.error(
-            "log-CDF and log-survival benchmarks are currently available only for exponential, normal, and lognormal"
+            "log-CDF and log-survival benchmarks are currently available only for "
+            "exponential, gamma, normal, and lognormal"
         )
 
     compares_implementations = len(set(arguments.implementations)) > 1 and any(
