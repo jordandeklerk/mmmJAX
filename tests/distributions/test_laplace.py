@@ -216,6 +216,25 @@ def test_laplace_log_probabilities_keep_deep_tails_and_derivatives_finite(
     assert hessian == 0
 
 
+@pytest.mark.parametrize(
+    ("function", "value"),
+    [
+        pytest.param(laplace_logcdf, 1_000.0, id="logcdf-upper-tail"),
+        pytest.param(laplace_logsf, -1_000.0, id="logsf-lower-tail"),
+    ],
+)
+def test_laplace_log_probabilities_have_clean_derivatives_near_one(function, value: float) -> None:
+    def evaluate(current):
+        return function(current, 0.0, 1.0)
+
+    result, gradient = jax.jit(jax.value_and_grad(evaluate))(value)
+    hessian = jax.jit(jax.hessian(evaluate))(value)
+
+    assert result == 0
+    assert gradient == 0
+    assert hessian == 0
+
+
 def test_laplace_log_probabilities_handle_opposite_values_at_finite_maximum() -> None:
     maximum = jnp.asarray(jnp.finfo(jnp.float32).max)
     values = jnp.array([maximum, -maximum])
@@ -361,6 +380,23 @@ def test_laplace_logpdf_handles_float64_finite_limits() -> None:
 
     assert jnp.allclose(at_location, -jnp.log(maximum) - log_two, rtol=1e-14, atol=0)
     assert jnp.allclose(across_zero, -jnp.log(maximum) - log_two - 2, rtol=1e-14, atol=0)
+
+
+@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+def test_laplace_log_probabilities_handle_float64_values_at_finite_maximum() -> None:
+    maximum = jnp.asarray(jnp.finfo(jnp.float64).max)
+    values = jnp.stack((maximum, -maximum))
+    locations = jnp.stack((-maximum, maximum))
+    expected_near_probability = jnp.log1p(-jnp.float64(0.5) * jnp.exp(jnp.float64(-2.0)))
+    expected_tail_probability = -jnp.float64(2.0) - jnp.log(jnp.float64(2.0))
+
+    log_cdf = jax.jit(laplace_logcdf)(values, locations, maximum)
+    log_survival = jax.jit(laplace_logsf)(values, locations, maximum)
+
+    expected_log_cdf = jnp.stack((expected_near_probability, expected_tail_probability))
+    expected_log_survival = jnp.stack((expected_tail_probability, expected_near_probability))
+    assert jnp.allclose(log_cdf, expected_log_cdf, rtol=1e-14, atol=0)
+    assert jnp.allclose(log_survival, expected_log_survival, rtol=1e-14, atol=0)
 
 
 def test_laplace_rng_rejects_incompatible_parameter_shapes() -> None:

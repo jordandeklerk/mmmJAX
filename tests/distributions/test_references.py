@@ -250,6 +250,95 @@ def test_mmmjax_inverse_gamma_log_probabilities_match_jax_and_scipy(operation: s
 
 
 @pytest.mark.parametrize("operation", ["logcdf", "logsf"])
+def test_mmmjax_laplace_log_probabilities_match_jax_and_scipy(operation: str) -> None:
+    values = jnp.array([-6.0, -1.0, 0.4, 2.0, 7.0])
+    location = jnp.asarray(0.4)
+    scale = jnp.asarray(1.7)
+    implementation = getattr(mmmjax, f"laplace_{operation}")
+    jax_reference = getattr(JAX_REFERENCES["laplace"], operation)
+    scipy_reference = getattr(stats.laplace, operation)
+    assert jax_reference is not None
+
+    result = implementation(values, location, scale)
+    jax_result = jax_reference(values, location, scale)
+    scipy_result = scipy_reference(
+        np.asarray(values),
+        loc=float(location),
+        scale=float(scale),
+    )
+
+    _assert_close(result, jax_result)
+    _assert_scipy_tail_close(result, scipy_result)
+
+
+@pytest.mark.parametrize("differentiate", [jax.jacfwd, jax.jacrev], ids=["forward", "reverse"])
+@pytest.mark.parametrize("standardized_value", [-1.0, 1.0], ids=["lower", "upper"])
+@pytest.mark.parametrize("operation", ["logcdf", "logsf"])
+def test_mmmjax_laplace_log_probability_gradients_match_jax(
+    operation: str,
+    standardized_value: float,
+    differentiate,
+) -> None:
+    location = jnp.asarray(0.4)
+    scale = jnp.asarray(1.7)
+    value = location + scale * standardized_value
+    arguments = (value, location, scale)
+    implementation = getattr(mmmjax, f"laplace_{operation}")
+    reference = getattr(JAX_REFERENCES["laplace"], operation)
+    argnums = (0, 1, 2)
+    assert reference is not None
+
+    result = jax.jit(differentiate(implementation, argnums=argnums))(*arguments)
+    jax_result = jax.jit(differentiate(reference, argnums=argnums))(*arguments)
+
+    for result_jacobian, jax_jacobian in zip(result, jax_result, strict=True):
+        _assert_close(result_jacobian, jax_jacobian)
+
+
+@pytest.mark.parametrize("operation", ["logcdf", "logsf"])
+def test_mmmjax_laplace_benchmark_tails_match_jax_and_scipy(operation: str) -> None:
+    negative_log_probabilities = jnp.array([4.0, 8.0, 16.0, 32.0])
+    location = jnp.asarray(0.2)
+    scale = jnp.asarray(1.3)
+    log_two = jnp.asarray(math.log(2), dtype=negative_log_probabilities.dtype)
+    standardized = (
+        log_two - negative_log_probabilities if operation == "logcdf" else negative_log_probabilities - log_two
+    )
+    values = location + scale * standardized
+    implementation = getattr(mmmjax, f"laplace_{operation}")
+    reference = getattr(JAX_REFERENCES["laplace"], operation)
+    scipy_reference = getattr(stats.laplace, operation)
+    assert reference is not None
+
+    result = implementation(values, location, scale)
+    jax_result = reference(values, location, scale)
+    scipy_result = scipy_reference(
+        np.asarray(values),
+        loc=float(location),
+        scale=float(scale),
+    )
+
+    def summed(function, current_location, current_scale):
+        return jnp.sum(function(values, current_location, current_scale))
+
+    implementation_value, implementation_gradient = jax.value_and_grad(
+        partial(summed, implementation),
+        argnums=(0, 1),
+    )(location, scale)
+    jax_value, jax_gradient = jax.value_and_grad(
+        partial(summed, reference),
+        argnums=(0, 1),
+    )(location, scale)
+
+    _assert_close(result, -negative_log_probabilities)
+    _assert_close(result, jax_result)
+    _assert_scipy_tail_close(result, scipy_result)
+    _assert_close(implementation_value, jax_value)
+    for result_gradient, jax_gradient_value in zip(implementation_gradient, jax_gradient, strict=True):
+        _assert_close(result_gradient, jax_gradient_value)
+
+
+@pytest.mark.parametrize("operation", ["logcdf", "logsf"])
 def test_mmmjax_uniform_log_probabilities_match_jax_and_scipy(operation: str) -> None:
     values = jnp.array([-1.75, -1.0, 0.5, 2.0, 2.75])
     lower = jnp.asarray(-2.0)
