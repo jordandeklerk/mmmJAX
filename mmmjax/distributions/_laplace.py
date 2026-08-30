@@ -282,6 +282,7 @@ def _laplace_log_probability(
     return jnp.where(valid_parameters, log_probability, jnp.nan)
 
 
+@jax.custom_jvp
 def _standardize(
     value: jax.Array,
     location: jax.Array,
@@ -298,3 +299,19 @@ def _standardize(
     direct_location = jnp.where(crosses_zero, jnp.zeros_like(location), location)
     direct_standardized = (direct_value - direct_location) / scale
     return jnp.where(crosses_zero, cross_zero_standardized, direct_standardized)
+
+
+@_standardize.defjvp
+def _standardize_jvp(
+    primals: tuple[jax.Array, jax.Array, jax.Array],
+    tangents: tuple[jax.Array, jax.Array, jax.Array],
+) -> tuple[jax.Array, jax.Array]:
+    value, location, scale = primals
+    value_tangent, location_tangent, scale_tangent = tangents
+    standardized = _standardize(value, location, scale)
+    crosses_zero = ((value < 0) & (location > 0)) | ((value > 0) & (location < 0))
+
+    # Opposite-sign values must divide before subtraction, just like the primal path
+    cross_tangent = value_tangent / scale - location_tangent / scale - standardized * (scale_tangent / scale)
+    direct_tangent = (value_tangent - location_tangent - standardized * scale_tangent) / scale
+    return standardized, jnp.where(crosses_zero, cross_tangent, direct_tangent)

@@ -1,5 +1,7 @@
 """Tests for Laplace distribution functions."""
 
+from functools import partial
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -266,6 +268,60 @@ def test_laplace_log_probabilities_handle_opposite_values_at_finite_maximum() ->
     assert jnp.all(jnp.isfinite(log_survival))
     assert jnp.allclose(log_cdf, jnp.array([expected_near_probability, expected_tail_probability]))
     assert jnp.allclose(log_survival, jnp.array([expected_tail_probability, expected_near_probability]))
+
+
+def test_laplace_functions_preserve_scale_derivatives_at_finite_limits() -> None:
+    maximum = jnp.asarray(jnp.finfo(jnp.float32).max)
+    arguments = (jnp.float32(0.75) * maximum, jnp.float32(-0.75) * maximum, maximum)
+    tangent = (jnp.float32(0), jnp.float32(0), maximum)
+    standardized = jnp.float32(1.5)
+    expected_derivatives = (
+        jnp.float32(0.5),
+        -standardized / (2 * jnp.exp(standardized) - 1),
+        standardized,
+    )
+
+    for function, expected in zip(
+        (laplace_logpdf, laplace_logcdf, laplace_logsf),
+        expected_derivatives,
+        strict=True,
+    ):
+        derivative = jax.jvp(function, arguments, tangent)[1]
+        compiled_derivative = jax.jit(partial(jax.jvp, function))(arguments, tangent)[1]
+
+        assert jnp.allclose(derivative, expected, rtol=2e-6, atol=0)
+        assert jnp.allclose(compiled_derivative, expected, rtol=2e-6, atol=0)
+
+
+def test_laplace_functions_preserve_scale_invariance_at_finite_limits() -> None:
+    maximum = jnp.asarray(jnp.finfo(jnp.float32).max)
+    arguments = (jnp.float32(0.75) * maximum, jnp.float32(-0.75) * maximum, maximum)
+    expected_derivatives = (jnp.float32(-1), jnp.float32(0), jnp.float32(0))
+
+    for function, expected in zip(
+        (laplace_logpdf, laplace_logcdf, laplace_logsf),
+        expected_derivatives,
+        strict=True,
+    ):
+        derivative = jax.jvp(function, arguments, arguments)[1]
+        compiled_derivative = jax.jit(partial(jax.jvp, function))(arguments, arguments)[1]
+
+        assert jnp.allclose(derivative, expected, rtol=2e-6, atol=0)
+        assert jnp.allclose(compiled_derivative, expected, rtol=2e-6, atol=0)
+
+
+def test_laplace_function_jvps_are_additive() -> None:
+    arguments = (jnp.float32(2), jnp.float32(-0.5), jnp.float32(1.25))
+    first_tangent = (jnp.float32(0.5), jnp.float32(-0.25), jnp.float32(0.1))
+    second_tangent = (jnp.float32(-0.2), jnp.float32(0.4), jnp.float32(-0.05))
+    combined_tangent = tuple(first + second for first, second in zip(first_tangent, second_tangent, strict=True))
+
+    for function in (laplace_logpdf, laplace_logcdf, laplace_logsf):
+        first_derivative = jax.jvp(function, arguments, first_tangent)[1]
+        second_derivative = jax.jvp(function, arguments, second_tangent)[1]
+        combined_derivative = jax.jvp(function, arguments, combined_tangent)[1]
+
+        assert jnp.allclose(combined_derivative, first_derivative + second_derivative)
 
 
 @pytest.mark.parametrize(
