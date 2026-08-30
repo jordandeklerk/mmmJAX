@@ -2,10 +2,15 @@
 
 import jax
 import jax.numpy as jnp
+import numpy as np
+import pytest
+from scipy import stats
 
 from mmmjax import (
     half_normal,
+    half_normal_logcdf,
     half_normal_logpdf,
+    half_normal_logsf,
     half_normal_rng,
 )
 
@@ -29,6 +34,150 @@ def test_half_normal_returns_scalar_sum() -> None:
 
     assert result.shape == ()
     assert jnp.allclose(result, -2.83821382670312)
+
+
+@pytest.mark.parametrize(
+    ("function", "reference", "values"),
+    [
+        pytest.param(
+            half_normal_logcdf,
+            stats.halfnorm.logcdf,
+            [0.0, np.finfo(np.float32).tiny, 1e-30, 1e-10, 0.1, 1.0, 10.0, np.inf],
+            id="logcdf",
+        ),
+        pytest.param(
+            half_normal_logsf,
+            stats.halfnorm.logsf,
+            [0.0, 1e-10, 0.1, 1.0, 10.0, 40.0, np.inf],
+            id="logsf",
+        ),
+    ],
+)
+def test_half_normal_log_probabilities_match_scipy(function, reference, values: list[float]) -> None:
+    values_array = np.asarray(values, dtype=np.float32)
+    scale = np.float32(1.7)
+    expected = reference(values_array.astype(np.float64), scale=float(scale))
+
+    result = function(values_array, scale)
+
+    np.testing.assert_allclose(result, expected, rtol=3e-6, atol=0)
+
+
+def test_half_normal_log_probabilities_are_complements() -> None:
+    values = jnp.concatenate((jnp.asarray([0.0]), jnp.geomspace(1e-30, 40.0, 31)))
+
+    log_cdf = half_normal_logcdf(values, 1.7)
+    log_survival = half_normal_logsf(values, 1.7)
+
+    assert jnp.allclose(jnp.logaddexp(log_cdf, log_survival), 0, atol=2e-7)
+
+
+def test_half_normal_log_probabilities_broadcast_arguments() -> None:
+    values = jnp.array([[0.0], [1.0]])
+    scales = jnp.array([0.5, 1.0, 2.0])
+
+    assert half_normal_logcdf(values, scales).shape == (2, 3)
+    assert half_normal_logsf(values, scales).shape == (2, 3)
+
+
+def test_half_normal_log_probabilities_handle_support_boundaries_and_nan() -> None:
+    values = jnp.array([-jnp.inf, -1.0, -0.0, 0.0, jnp.inf, jnp.nan])
+
+    log_cdf = half_normal_logcdf(values, 1.7)
+    log_survival = half_normal_logsf(values, 1.7)
+
+    assert jnp.all(jnp.isneginf(log_cdf[:4]))
+    assert log_cdf[4] == 0
+    assert jnp.isnan(log_cdf[5])
+    assert jnp.all(log_survival[:4] == 0)
+    assert jnp.isneginf(log_survival[4])
+    assert jnp.isnan(log_survival[5])
+
+
+@pytest.mark.parametrize("function", [half_normal_logcdf, half_normal_logsf])
+def test_half_normal_log_probabilities_reject_invalid_scale(function) -> None:
+    scales = jnp.array([0.0, -1.0, jnp.inf, jnp.nan])
+
+    result = function(-1.0, scales)
+
+    assert jnp.all(jnp.isnan(result))
+
+
+@pytest.mark.parametrize(
+    ("function", "direction"),
+    [(half_normal_logcdf, 1), (half_normal_logsf, -1)],
+)
+@pytest.mark.parametrize("differentiate", [jax.jacfwd, jax.jacrev], ids=["forward", "reverse"])
+@pytest.mark.parametrize("value", [0.3, 5.0], ids=["ordinary", "tail"])
+def test_half_normal_log_probability_gradients_match_density_ratio(
+    function,
+    direction: int,
+    differentiate,
+    value: float,
+) -> None:
+    scale = 1.7
+    expected_value = direction * jnp.exp(half_normal_logpdf(value, scale) - function(value, scale))
+    expected_scale = -(value / scale) * expected_value
+
+    result = differentiate(function, argnums=(0, 1))(value, scale)
+    compiled_result = jax.jit(differentiate(function, argnums=(0, 1)))(value, scale)
+
+    assert jnp.allclose(jnp.asarray(result), jnp.asarray([expected_value, expected_scale]), rtol=3e-6, atol=0)
+    assert jnp.allclose(jnp.asarray(compiled_result), jnp.asarray(result), rtol=3e-6, atol=0)
+
+
+@pytest.mark.parametrize("function", [half_normal_logcdf, half_normal_logsf])
+def test_half_normal_log_probabilities_match_scalar_evaluation_in_mixed_batches(function) -> None:
+    values = jnp.array([np.finfo(np.float32).tiny, 0.5, 5.0, 40.0])
+
+    result = jax.jit(function)(values, 1.0)
+    expected = jnp.stack([jax.jit(function)(value, 1.0) for value in values])
+
+    assert jnp.allclose(result, expected, rtol=3e-6, atol=0)
+
+
+@pytest.mark.parametrize(
+    ("function", "reference"),
+    [
+        (half_normal_logcdf, stats.halfnorm.logcdf),
+        (half_normal_logsf, stats.halfnorm.logsf),
+    ],
+)
+def test_half_normal_log_probabilities_match_scipy_around_formula_boundary(function, reference) -> None:
+    boundary = np.float32(1)
+    values = np.array(
+        [
+            np.nextafter(boundary, np.float32(-np.inf)),
+            boundary,
+            np.nextafter(boundary, np.float32(np.inf)),
+        ]
+    )
+
+    result = function(values, 1.0)
+    expected = reference(values.astype(np.float64))
+
+    np.testing.assert_allclose(
+        result,
+        expected,
+        rtol=3e-6,
+        atol=np.finfo(np.float32).eps,
+    )
+
+
+def test_half_normal_logcdf_preserves_values_below_erf_range() -> None:
+    value = jnp.float32(np.finfo(np.float32).tiny)
+    scale = jnp.float32(1.7)
+    expected = jnp.log(value) - jnp.log(scale) + jnp.asarray(np.log(2 / np.pi) / 2, dtype=jnp.float32)
+
+    result = half_normal_logcdf(value, scale)
+    compiled_result = jax.jit(half_normal_logcdf)(value, scale)
+    gradients = jax.jit(jax.grad(half_normal_logcdf, argnums=(0, 1)))(value, scale)
+
+    assert jnp.isfinite(result)
+    assert jnp.allclose(result, expected, rtol=3e-6, atol=0)
+    assert jnp.allclose(compiled_result, expected, rtol=3e-6, atol=0)
+    assert jnp.allclose(gradients[0], 1 / value, rtol=3e-6, atol=0)
+    assert jnp.allclose(gradients[1], -1 / scale, rtol=3e-6, atol=0)
 
 
 def test_half_normal_logpdf_broadcasts_arguments() -> None:

@@ -14,7 +14,9 @@ from mmmjax.distributions._gamma import gamma_logpdf as gamma_logpdf
 from mmmjax.distributions._gamma import gamma_logsf as gamma_logsf
 from mmmjax.distributions._gamma import gamma_rng as gamma_rng
 from mmmjax.distributions._half_normal import half_normal as half_normal
+from mmmjax.distributions._half_normal import half_normal_logcdf as half_normal_logcdf
 from mmmjax.distributions._half_normal import half_normal_logpdf as half_normal_logpdf
+from mmmjax.distributions._half_normal import half_normal_logsf as half_normal_logsf
 from mmmjax.distributions._half_normal import half_normal_rng as half_normal_rng
 from mmmjax.distributions._inverse_gamma import inverse_gamma as inverse_gamma
 from mmmjax.distributions._inverse_gamma import inverse_gamma_logcdf as inverse_gamma_logcdf
@@ -56,7 +58,9 @@ __all__ = [
     "gamma_logsf",
     "gamma_rng",
     "half_normal",
+    "half_normal_logcdf",
     "half_normal_logpdf",
+    "half_normal_logsf",
     "half_normal_rng",
     "inverse_gamma",
     "inverse_gamma_logcdf",

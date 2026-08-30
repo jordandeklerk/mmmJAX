@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import jax
 import jax.numpy as jnp
 from jax.scipy import stats
+from jax.scipy.special import erf, erfc
 
 Kernel = Callable[..., jax.Array]
 
@@ -53,6 +54,16 @@ def _half_normal_logpdf(value: jax.Array, scale: jax.Array) -> jax.Array:
     log_two = jnp.asarray(math.log(2), dtype=value.dtype)
     log_density = stats.norm.logpdf(value, loc=0, scale=scale) + log_two
     return jnp.where(value < 0, -jnp.inf, log_density)
+
+
+def _half_normal_logcdf(value: jax.Array, scale: jax.Array) -> jax.Array:
+    sqrt_two = jnp.sqrt(jnp.asarray(2, dtype=value.dtype))
+    return jnp.log(erf((value / scale) / sqrt_two))
+
+
+def _half_normal_logsf(value: jax.Array, scale: jax.Array) -> jax.Array:
+    sqrt_two = jnp.sqrt(jnp.asarray(2, dtype=value.dtype))
+    return jnp.log(erfc((value / scale) / sqrt_two))
 
 
 def _inverse_gamma_logpdf(value: jax.Array, shape: jax.Array, scale: jax.Array) -> jax.Array:
@@ -256,7 +267,12 @@ JAX_REFERENCES: dict[str, JaxReference] = {
         logcdf=_gamma_logcdf,
         logsf=_gamma_logsf,
     ),
-    "half_normal": JaxReference(_half_normal_logpdf, _half_normal_rng),
+    "half_normal": JaxReference(
+        _half_normal_logpdf,
+        _half_normal_rng,
+        logcdf=_half_normal_logcdf,
+        logsf=_half_normal_logsf,
+    ),
     "inverse_gamma": JaxReference(
         _inverse_gamma_logpdf,
         _inverse_gamma_rng,

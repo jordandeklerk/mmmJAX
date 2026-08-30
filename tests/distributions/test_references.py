@@ -207,6 +207,27 @@ def test_mmmjax_exponential_log_probabilities_match_jax_and_scipy(operation: str
 
 
 @pytest.mark.parametrize("operation", ["logcdf", "logsf"])
+def test_mmmjax_half_normal_log_probabilities_match_jax_and_scipy(operation: str) -> None:
+    values = (
+        jnp.array([1e-10, 1e-5, 0.1, 0.5, 1.0, 2.0])
+        if operation == "logcdf"
+        else jnp.array([0.1, 0.5, 1.0, 2.0, 5.0, 10.0])
+    )
+    scale = jnp.asarray(1.7)
+    implementation = getattr(mmmjax, f"half_normal_{operation}")
+    jax_reference = getattr(JAX_REFERENCES["half_normal"], operation)
+    scipy_reference = getattr(stats.halfnorm, operation)
+    assert jax_reference is not None
+
+    result = implementation(values, scale)
+    jax_result = jax_reference(values, scale)
+    scipy_result = scipy_reference(np.asarray(values), scale=float(scale))
+
+    _assert_close(result, jax_result)
+    _assert_scipy_tail_close(result, scipy_result)
+
+
+@pytest.mark.parametrize("operation", ["logcdf", "logsf"])
 def test_mmmjax_inverse_gamma_log_probabilities_match_jax_and_scipy(operation: str) -> None:
     values = (
         jnp.array([0.03, 0.05, 0.1, 0.2, 0.5, 1.0])
@@ -226,6 +247,95 @@ def test_mmmjax_inverse_gamma_log_probabilities_match_jax_and_scipy(operation: s
 
     _assert_close(result, jax_result)
     _assert_scipy_tail_close(result, scipy_result)
+
+
+@pytest.mark.parametrize("differentiate", [jax.jacfwd, jax.jacrev], ids=["forward", "reverse"])
+@pytest.mark.parametrize("operation", ["logcdf", "logsf"])
+def test_mmmjax_half_normal_log_probability_gradients_match_jax(operation: str, differentiate) -> None:
+    arguments = (jnp.asarray(1.25), jnp.asarray(1.7))
+    implementation = getattr(mmmjax, f"half_normal_{operation}")
+    reference = getattr(JAX_REFERENCES["half_normal"], operation)
+    argnums = (0, 1)
+    assert reference is not None
+
+    result = jax.jit(differentiate(implementation, argnums=argnums))(*arguments)
+    jax_result = jax.jit(differentiate(reference, argnums=argnums))(*arguments)
+
+    for result_jacobian, jax_jacobian in zip(result, jax_result, strict=True):
+        _assert_close(result_jacobian, jax_jacobian)
+
+
+@pytest.mark.parametrize("operation", ["logcdf", "logsf"])
+@pytest.mark.parametrize("standardized_value", [1.0, 1.25, 4.0], ids=["boundary", "ordinary", "tail"])
+def test_mmmjax_half_normal_log_probability_hessian_matches_distribution_identity(
+    operation: str,
+    standardized_value: float,
+) -> None:
+    scale = 1.7
+    parameters = jnp.array([standardized_value * scale, scale])
+    implementation = getattr(mmmjax, f"half_normal_{operation}")
+
+    def implementation_from_array(current):
+        return implementation(current[0], current[1])
+
+    probability_function = stats.halfnorm.cdf if operation == "logcdf" else stats.halfnorm.sf
+    direction = 1 if operation == "logcdf" else -1
+    density_ratio = stats.halfnorm.pdf(standardized_value) / probability_function(standardized_value)
+    standardized_gradient = direction * density_ratio
+    standardized_curvature = -standardized_value * standardized_gradient - standardized_gradient**2
+    expected = (
+        np.array(
+            [
+                [
+                    standardized_curvature,
+                    -(standardized_gradient + standardized_value * standardized_curvature),
+                ],
+                [
+                    -(standardized_gradient + standardized_value * standardized_curvature),
+                    2 * standardized_value * standardized_gradient + standardized_value**2 * standardized_curvature,
+                ],
+            ]
+        )
+        / scale**2
+    )
+
+    result = jax.jit(jax.hessian(implementation_from_array))(parameters)
+
+    tolerance = 5e-11 if result.dtype == jnp.dtype(jnp.float64) else 3e-5
+    np.testing.assert_allclose(result, expected, rtol=tolerance, atol=tolerance)
+
+
+@pytest.mark.parametrize(
+    ("dtype", "standardized_value"),
+    [
+        pytest.param(jnp.float32, 12.0, id="float32"),
+        pytest.param(jnp.float64, 30.0, id="float64"),
+    ],
+)
+def test_mmmjax_half_normal_deep_tail_gradients_match_scipy_mills_ratio(
+    dtype,
+    standardized_value: float,
+) -> None:
+    if dtype == jnp.float64 and not jax.config.x64_enabled:
+        pytest.skip("JAX 64-bit mode is disabled")
+
+    scale = 1.0
+    parameters = jnp.array([standardized_value * scale, scale], dtype=dtype)
+    inverse_mills = math.sqrt(2 / math.pi) / special.erfcx(standardized_value / math.sqrt(2))
+    expected = jnp.array(
+        [-inverse_mills / scale, standardized_value * inverse_mills / scale],
+        dtype=dtype,
+    )
+
+    def logsf_from_array(current):
+        return mmmjax.half_normal_logsf(current[0], current[1])
+
+    forward = jax.jacfwd(logsf_from_array)(parameters)
+    reverse = jax.jacrev(logsf_from_array)(parameters)
+
+    tolerance = 5e-10 if dtype == jnp.float64 else 5e-6
+    np.testing.assert_allclose(forward, expected, rtol=tolerance, atol=0)
+    np.testing.assert_allclose(reverse, expected, rtol=tolerance, atol=0)
 
 
 @pytest.mark.parametrize("differentiate", [jax.jacfwd, jax.jacrev], ids=["forward", "reverse"])
