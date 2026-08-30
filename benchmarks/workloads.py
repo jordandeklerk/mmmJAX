@@ -35,7 +35,9 @@ from mmmjax.distributions import (
     inverse_gamma_logsf,
     inverse_gamma_rng,
     laplace,
+    laplace_logcdf,
     laplace_logpdf,
+    laplace_logsf,
     laplace_rng,
     lognormal,
     lognormal_logcdf,
@@ -224,7 +226,13 @@ IMPLEMENTATIONS: dict[str, dict[str, DistributionFunctions]] = {
             logcdf=inverse_gamma_logcdf,
             logsf=inverse_gamma_logsf,
         ),
-        "laplace": DistributionFunctions(laplace_logpdf, laplace, laplace_rng),
+        "laplace": DistributionFunctions(
+            laplace_logpdf,
+            laplace,
+            laplace_rng,
+            logcdf=laplace_logcdf,
+            logsf=laplace_logsf,
+        ),
         "lognormal": DistributionFunctions(
             lognormal_logpdf,
             lognormal,
@@ -270,7 +278,7 @@ LOG_PROBABILITY_OPERATIONS = (
 OPERATIONS = DEFAULT_OPERATIONS + LOG_PROBABILITY_OPERATIONS
 INPUT_SETS = ("ordinary", "concentrated", "tail")
 LOG_PROBABILITY_DISTRIBUTIONS = frozenset(
-    {"exponential", "gamma", "half_normal", "inverse_gamma", "lognormal", "normal", "uniform"}
+    {"exponential", "gamma", "half_normal", "inverse_gamma", "laplace", "lognormal", "normal", "uniform"}
 )
 
 
@@ -376,6 +384,19 @@ def make_log_probability_arguments(
 
         value = scale / scaled_inverse_value.reshape(profile.value_shape)
         return value, shape, scale
+
+    if distribution.name == "laplace" and input_set == "tail":
+        location, scale = _make_parameters(distribution, profile, dtype)
+        negative_log_probability = jnp.linspace(4.0, 32.0, element_count, dtype=dtype)
+        log_two = jnp.asarray(math.log(2), dtype=dtype)
+
+        if operation == "logcdf":
+            standardized = log_two - negative_log_probability
+        else:
+            standardized = negative_log_probability - log_two
+
+        value = location + scale * standardized.reshape(profile.value_shape)
+        return value, location, scale
 
     if distribution.name == "uniform":
         if input_set == "ordinary":

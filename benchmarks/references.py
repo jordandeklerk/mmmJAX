@@ -86,6 +86,23 @@ def _inverse_gamma_logsf(value: jax.Array, shape: jax.Array, scale: jax.Array) -
     return stats.gamma.logcdf(scale / value, shape)
 
 
+def _laplace_logcdf(
+    value: jax.Array,
+    location: jax.Array,
+    scale: jax.Array,
+) -> jax.Array:
+    return jnp.log(stats.laplace.cdf(value, loc=location, scale=scale))
+
+
+def _laplace_logsf(
+    value: jax.Array,
+    location: jax.Array,
+    scale: jax.Array,
+) -> jax.Array:
+    # Reflecting the CDF avoids cancellation from computing one minus the CDF
+    return jnp.log(stats.laplace.cdf(-value, loc=-location, scale=scale))
+
+
 def _lognormal_logpdf(
     value: jax.Array,
     location: jax.Array,
@@ -296,7 +313,12 @@ JAX_REFERENCES: dict[str, JaxReference] = {
         logcdf=_inverse_gamma_logcdf,
         logsf=_inverse_gamma_logsf,
     ),
-    "laplace": JaxReference(stats.laplace.logpdf, _laplace_rng),
+    "laplace": JaxReference(
+        stats.laplace.logpdf,
+        _laplace_rng,
+        logcdf=_laplace_logcdf,
+        logsf=_laplace_logsf,
+    ),
     "lognormal": JaxReference(
         _lognormal_logpdf,
         _lognormal_rng,
