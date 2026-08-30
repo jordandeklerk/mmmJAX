@@ -54,20 +54,13 @@ def laplace_logpdf(
     safe_location = jnp.where(valid_location, location_array, jnp.zeros_like(location_array))
     safe_scale = jnp.where(valid_scale, scale_array, jnp.ones_like(scale_array))
 
-    crosses_zero = ((value_array < 0) & (safe_location > 0)) | ((value_array > 0) & (safe_location < 0))
-
-    # Separate magnitudes keep opposite-sign values finite near the dtype limits
-    cross_value = jnp.where(crosses_zero, value_array, jnp.zeros_like(value_array))
-    cross_location = jnp.where(crosses_zero, safe_location, jnp.zeros_like(safe_location))
-    cross_zero_distance = jnp.abs(cross_value) / safe_scale + jnp.abs(cross_location) / safe_scale
-
-    direct_value = jnp.where(crosses_zero, jnp.zeros_like(value_array), value_array)
-    direct_location = jnp.where(crosses_zero, jnp.zeros_like(safe_location), safe_location)
-    residual = direct_value - direct_location
+    standardized = _standardize(value_array, safe_location, safe_scale)
     # The constant branch gives the same symmetric subgradient Stan uses at the cusp
-    residual_magnitude = jnp.where(residual == 0, jnp.zeros_like(residual), jnp.abs(residual))
-    direct_distance = residual_magnitude / safe_scale
-    standardized_distance = jnp.where(crosses_zero, cross_zero_distance, direct_distance)
+    standardized_distance = jnp.where(
+        standardized == 0,
+        jnp.zeros_like(standardized),
+        jnp.abs(standardized),
+    )
 
     log_two = jnp.asarray(math.log(2), dtype=value_array.dtype)
     log_density = -log_two - jnp.log(safe_scale) - standardized_distance
@@ -111,6 +104,102 @@ def laplace(
     return jnp.where(valid_parameters, log_density, jnp.nan)
 
 
+def laplace_logcdf(
+    value: ArrayLike,
+    location: ArrayLike,
+    scale: ArrayLike,
+) -> jax.Array:
+    r"""Evaluate the Laplace log cumulative distribution function elementwise.
+
+    For value :math:`x \in \mathbb{R}`, location :math:`\mu \in \mathbb{R}`,
+    and scale :math:`b > 0`, the log cumulative probability is
+
+    .. math::
+
+        \log F(x \mid \mu, b)
+        = \begin{cases}
+            -\log(2) + \dfrac{x - \mu}{b}, & x < \mu, \\
+            \log\left[1 - \dfrac{1}{2}
+            \exp\left(-\dfrac{x - \mu}{b}\right)\right], & x \geq \mu.
+          \end{cases}
+
+    Parameters
+    ----------
+    value
+        Values at which to evaluate the cumulative probability.
+    location
+        Location of the distribution.
+    scale
+        Positive scale parameter.
+
+    Returns
+    -------
+    jax.Array
+        Log cumulative probabilities with the broadcast shape of the
+        arguments. A nonfinite location or a nonpositive or nonfinite scale
+        produces ``nan``.
+    """
+    value_array, location_array, scale_array = _promote_inexact(
+        ("value", value),
+        ("location", location),
+        ("scale", scale),
+    )
+    return _laplace_log_probability(
+        value_array,
+        location_array,
+        scale_array,
+        survival=False,
+    )
+
+
+def laplace_logsf(
+    value: ArrayLike,
+    location: ArrayLike,
+    scale: ArrayLike,
+) -> jax.Array:
+    r"""Evaluate the Laplace log survival function elementwise.
+
+    For value :math:`x \in \mathbb{R}`, location :math:`\mu \in \mathbb{R}`,
+    and scale :math:`b > 0`, the log survival probability is
+
+    .. math::
+
+        \log \overline{F}(x \mid \mu, b)
+        = \begin{cases}
+            \log\left[1 - \dfrac{1}{2}
+            \exp\left(\dfrac{x - \mu}{b}\right)\right], & x < \mu, \\
+            -\log(2) - \dfrac{x - \mu}{b}, & x \geq \mu.
+          \end{cases}
+
+    Parameters
+    ----------
+    value
+        Values at which to evaluate the survival probability.
+    location
+        Location of the distribution.
+    scale
+        Positive scale parameter.
+
+    Returns
+    -------
+    jax.Array
+        Log survival probabilities with the broadcast shape of the arguments.
+        A nonfinite location or a nonpositive or nonfinite scale produces
+        ``nan``.
+    """
+    value_array, location_array, scale_array = _promote_inexact(
+        ("value", value),
+        ("location", location),
+        ("scale", scale),
+    )
+    return _laplace_log_probability(
+        value_array,
+        location_array,
+        scale_array,
+        survival=True,
+    )
+
+
 def laplace_rng(
     key: jax.Array,
     location: ArrayLike,
@@ -152,3 +241,60 @@ def laplace_rng(
 
     valid_parameters = jnp.isfinite(location_array) & jnp.isfinite(scale_array) & (scale_array > 0)
     return jnp.where(valid_parameters, samples, jnp.nan)
+
+
+def _laplace_log_probability(
+    value: jax.Array,
+    location: jax.Array,
+    scale: jax.Array,
+    *,
+    survival: bool,
+) -> jax.Array:
+    valid_parameters = jnp.isfinite(location) & jnp.isfinite(scale) & (scale > 0)
+    safe_location = jnp.where(valid_parameters, location, jnp.zeros_like(location))
+    safe_scale = jnp.where(valid_parameters, scale, jnp.ones_like(scale))
+    standardized = _standardize(value, safe_location, safe_scale)
+    below_location = value < safe_location
+
+    log_two = jnp.asarray(math.log(2), dtype=value.dtype)
+    if survival:
+        safe_lower_standardized = jnp.where(
+            below_location,
+            standardized,
+            jnp.zeros_like(standardized),
+        )
+        lower_log_probability = jnp.log1p(-0.5 * jnp.exp(safe_lower_standardized))
+        upper_log_probability = -log_two - standardized
+    else:
+        lower_log_probability = standardized - log_two
+        safe_upper_standardized = jnp.where(
+            below_location,
+            jnp.zeros_like(standardized),
+            standardized,
+        )
+        upper_log_probability = jnp.log1p(-0.5 * jnp.exp(-safe_upper_standardized))
+
+    log_probability = jnp.where(
+        below_location,
+        lower_log_probability,
+        upper_log_probability,
+    )
+    return jnp.where(valid_parameters, log_probability, jnp.nan)
+
+
+def _standardize(
+    value: jax.Array,
+    location: jax.Array,
+    scale: jax.Array,
+) -> jax.Array:
+    crosses_zero = ((value < 0) & (location > 0)) | ((value > 0) & (location < 0))
+
+    # Scaling before subtraction keeps opposite-sign values inside the dtype range
+    cross_value = jnp.where(crosses_zero, value, jnp.zeros_like(value))
+    cross_location = jnp.where(crosses_zero, location, jnp.zeros_like(location))
+    cross_zero_standardized = cross_value / scale - cross_location / scale
+
+    direct_value = jnp.where(crosses_zero, jnp.zeros_like(value), value)
+    direct_location = jnp.where(crosses_zero, jnp.zeros_like(location), location)
+    direct_standardized = (direct_value - direct_location) / scale
+    return jnp.where(crosses_zero, cross_zero_standardized, direct_standardized)
