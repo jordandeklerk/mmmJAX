@@ -9,7 +9,9 @@ from scipy import special, stats
 from mmmjax import (
     gamma_logpdf,
     inverse_gamma,
+    inverse_gamma_logcdf,
     inverse_gamma_logpdf,
+    inverse_gamma_logsf,
     inverse_gamma_rng,
 )
 
@@ -72,6 +74,181 @@ def test_inverse_gamma_returns_scalar_sum() -> None:
 
     assert result.shape == ()
     assert jnp.allclose(result, -4.9341161415379124)
+
+
+@pytest.mark.parametrize(
+    ("function", "reference"),
+    [
+        (inverse_gamma_logcdf, stats.invgamma.logcdf),
+        (inverse_gamma_logsf, stats.invgamma.logsf),
+    ],
+)
+def test_inverse_gamma_log_probabilities_match_scipy(function, reference) -> None:
+    values = np.array([1 / 256, 0.01, 0.1, 1.0, 10.0, 100.0, 1e5, 1e10, 1e20], dtype=np.float32)
+    shapes = np.array([32.0, 0.5, 1.0, 2.5, 5.0, 20.0, 20.0, 5.0, 2.5], dtype=np.float32)
+    scales = np.array([1.0, 0.1, 0.5, 1.7, 10.0, 50.0, 1.0, 1.0, 1.0], dtype=np.float32)
+    expected = reference(
+        values.astype(np.float64),
+        a=shapes.astype(np.float64),
+        scale=scales.astype(np.float64),
+    )
+
+    result = function(values, shapes, scales)
+
+    np.testing.assert_allclose(result, expected, rtol=3e-6, atol=3e-6)
+
+
+def test_inverse_gamma_log_probabilities_are_complements() -> None:
+    values = jnp.geomspace(1e-4, 1e4, 21)
+
+    log_cdf = inverse_gamma_logcdf(values, 2.5, 1.7)
+    log_survival = inverse_gamma_logsf(values, 2.5, 1.7)
+
+    assert jnp.allclose(jnp.logaddexp(log_cdf, log_survival), 0, atol=1e-6)
+
+
+def test_inverse_gamma_log_probabilities_broadcast_arguments() -> None:
+    values = jnp.array([[0.25], [2.0]])
+    shapes = jnp.array([0.5, 1.0, 3.0])
+    scales = jnp.array([0.5, 1.0, 2.0])
+
+    assert inverse_gamma_logcdf(values, shapes, scales).shape == (2, 3)
+    assert inverse_gamma_logsf(values, shapes, scales).shape == (2, 3)
+
+
+def test_inverse_gamma_log_probabilities_handle_support_boundaries_and_nan() -> None:
+    values = jnp.array([-jnp.inf, -1.0, -0.0, 0.0, jnp.inf, jnp.nan])
+
+    log_cdf = inverse_gamma_logcdf(values, 2.5, 1.7)
+    log_survival = inverse_gamma_logsf(values, 2.5, 1.7)
+
+    assert jnp.all(jnp.isneginf(log_cdf[:4]))
+    assert log_cdf[4] == 0
+    assert jnp.isnan(log_cdf[5])
+    assert jnp.all(log_survival[:4] == 0)
+    assert jnp.isneginf(log_survival[4])
+    assert jnp.isnan(log_survival[5])
+
+
+@pytest.mark.parametrize("function", [inverse_gamma_logcdf, inverse_gamma_logsf])
+def test_inverse_gamma_log_probabilities_reject_invalid_parameters(function) -> None:
+    invalid_parameters = jnp.array([0.0, -1.0, jnp.inf, jnp.nan])
+
+    invalid_shapes = function(-1.0, invalid_parameters, 1.0)
+    invalid_scales = function(-1.0, 1.0, invalid_parameters)
+
+    assert jnp.all(jnp.isnan(invalid_shapes))
+    assert jnp.all(jnp.isnan(invalid_scales))
+
+
+@pytest.mark.parametrize(
+    ("function", "direction"),
+    [(inverse_gamma_logcdf, 1), (inverse_gamma_logsf, -1)],
+)
+def test_inverse_gamma_log_probability_value_gradients_match_density_ratio(function, direction: int) -> None:
+    value = 1.3
+    shape = 2.5
+    scale = 1.7
+    expected = direction * jnp.exp(inverse_gamma_logpdf(value, shape, scale) - function(value, shape, scale))
+
+    result = jax.grad(function, argnums=0)(value, shape, scale)
+    compiled_result = jax.jit(jax.grad(function, argnums=0))(value, shape, scale)
+
+    assert jnp.allclose(result, expected, rtol=2e-6)
+    assert jnp.allclose(compiled_result, expected, rtol=2e-6)
+
+
+@pytest.mark.parametrize(
+    ("function", "reference"),
+    [
+        (inverse_gamma_logcdf, stats.invgamma.logcdf),
+        (inverse_gamma_logsf, stats.invgamma.logsf),
+    ],
+)
+def test_inverse_gamma_log_probability_parameter_gradients_match_scipy(function, reference) -> None:
+    value = 1.3
+    shape = 2.5
+    scale = 1.7
+    step = 1e-4
+    expected_shape = (reference(value, a=shape + step, scale=scale) - reference(value, a=shape - step, scale=scale)) / (
+        2 * step
+    )
+    expected_scale = (reference(value, a=shape, scale=scale + step) - reference(value, a=shape, scale=scale - step)) / (
+        2 * step
+    )
+
+    result = jax.grad(function, argnums=(1, 2))(value, shape, scale)
+    compiled_result = jax.jit(jax.grad(function, argnums=(1, 2)))(value, shape, scale)
+
+    assert jnp.allclose(jnp.asarray(result), jnp.asarray([expected_shape, expected_scale]), rtol=5e-4, atol=5e-5)
+    assert jnp.allclose(jnp.asarray(compiled_result), jnp.asarray(result), rtol=2e-6)
+
+
+def test_inverse_gamma_logsf_deep_tail_gradients_match_scipy() -> None:
+    value = np.float32(1e5)
+    shape = np.float32(20.0)
+    scale = np.float32(1.0)
+    scaled_inverse_value = scale / value
+    scaled_value_derivative = np.exp(
+        stats.gamma.logpdf(scaled_inverse_value, a=shape) - stats.gamma.logcdf(scaled_inverse_value, a=shape)
+    )
+    expected_value = -(scaled_inverse_value / value) * scaled_value_derivative
+    shape_reference = float(shape)
+    shape_step = 1e-3
+    expected_shape = (
+        stats.invgamma.logsf(value, a=shape_reference + shape_step, scale=scale)
+        - stats.invgamma.logsf(value, a=shape_reference - shape_step, scale=scale)
+    ) / (2 * shape_step)
+    expected_scale = scaled_value_derivative / value
+
+    result = jax.grad(inverse_gamma_logsf, argnums=(0, 1, 2))(
+        value,
+        shape,
+        scale,
+    )
+    compiled_result = jax.jit(jax.grad(inverse_gamma_logsf, argnums=(0, 1, 2)))(
+        value,
+        shape,
+        scale,
+    )
+
+    for gradients in (result, compiled_result):
+        assert jnp.allclose(gradients[0], expected_value, rtol=1e-5, atol=0)
+        assert jnp.allclose(gradients[1], expected_shape, rtol=2e-5, atol=2e-6)
+        assert jnp.allclose(gradients[2], expected_scale, rtol=1e-5, atol=0)
+
+
+def test_inverse_gamma_logcdf_deep_tail_gradients_match_scipy() -> None:
+    value = np.float32(1 / 256)
+    shape = np.float32(32.0)
+    scale = np.float32(1.0)
+    scaled_inverse_value = scale / value
+    expected_log_probability = stats.invgamma.logcdf(value, a=shape, scale=scale)
+    scaled_value_derivative = -np.exp(stats.gamma.logpdf(scaled_inverse_value, a=shape) - expected_log_probability)
+    expected_value = -(scaled_inverse_value / value) * scaled_value_derivative
+    shape_reference = float(shape)
+    shape_step = 1e-3
+    expected_shape = (
+        stats.invgamma.logcdf(value, a=shape_reference + shape_step, scale=scale)
+        - stats.invgamma.logcdf(value, a=shape_reference - shape_step, scale=scale)
+    ) / (2 * shape_step)
+    expected_scale = scaled_value_derivative / value
+
+    result = jax.grad(inverse_gamma_logcdf, argnums=(0, 1, 2))(
+        value,
+        shape,
+        scale,
+    )
+    compiled_result = jax.jit(jax.grad(inverse_gamma_logcdf, argnums=(0, 1, 2)))(
+        value,
+        shape,
+        scale,
+    )
+
+    for gradients in (result, compiled_result):
+        assert jnp.allclose(gradients[0], expected_value, rtol=1e-5, atol=0)
+        assert jnp.allclose(gradients[1], expected_shape, rtol=2e-5, atol=2e-6)
+        assert jnp.allclose(gradients[2], expected_scale, rtol=1e-5, atol=0)
 
 
 def test_inverse_gamma_logpdf_broadcasts_arguments() -> None:

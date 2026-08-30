@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 
+from mmmjax.distributions._gamma import _gamma_log_probability
 from mmmjax.distributions._utils import (
     _gamma_shape_log_derivative,
     _gamma_shape_normalizer,
@@ -96,6 +97,78 @@ def inverse_gamma(
     valid_shape = jnp.all(jnp.isfinite(shape_array) & (shape_array > 0))
     valid_scale = jnp.all(jnp.isfinite(scale_array) & (scale_array > 0))
     return jnp.where(valid_shape & valid_scale, log_density, jnp.nan)
+
+
+def inverse_gamma_logcdf(
+    value: ArrayLike,
+    shape: ArrayLike,
+    scale: ArrayLike,
+) -> jax.Array:
+    r"""Evaluate the Inverse Gamma log cumulative distribution function elementwise.
+
+    For value :math:`x > 0`, shape :math:`\alpha > 0`, and scale
+    :math:`\beta > 0`, the log cumulative probability is
+
+    .. math::
+
+        \log F(x \mid \alpha, \beta)
+        = \log Q\left(\alpha, \frac{\beta}{x}\right),
+
+    where :math:`Q` is the regularized upper incomplete Gamma function. For
+    :math:`x \leq 0`, the log cumulative probability is :math:`-\infty`.
+
+    Parameters
+    ----------
+    value
+        Values at which to evaluate the cumulative probability.
+    shape
+        Positive shape parameter.
+    scale
+        Positive scale parameter.
+
+    Returns
+    -------
+    jax.Array
+        Log cumulative probabilities with the broadcast shape of the
+        arguments. A nonpositive or nonfinite shape or scale produces ``nan``.
+    """
+    return _inverse_gamma_log_probability(value, shape, scale, survival=False)
+
+
+def inverse_gamma_logsf(
+    value: ArrayLike,
+    shape: ArrayLike,
+    scale: ArrayLike,
+) -> jax.Array:
+    r"""Evaluate the Inverse Gamma log survival function elementwise.
+
+    For value :math:`x > 0`, shape :math:`\alpha > 0`, and scale
+    :math:`\beta > 0`, the log survival probability is
+
+    .. math::
+
+        \log \overline{F}(x \mid \alpha, \beta)
+        = \log P\left(\alpha, \frac{\beta}{x}\right),
+
+    where :math:`P` is the regularized lower incomplete Gamma function. For
+    :math:`x \leq 0`, the log survival probability is zero.
+
+    Parameters
+    ----------
+    value
+        Values at which to evaluate the survival probability.
+    shape
+        Positive shape parameter.
+    scale
+        Positive scale parameter.
+
+    Returns
+    -------
+    jax.Array
+        Log survival probabilities with the broadcast shape of the arguments.
+        A nonpositive or nonfinite shape or scale produces ``nan``.
+    """
+    return _inverse_gamma_log_probability(value, shape, scale, survival=True)
 
 
 def inverse_gamma_rng(
@@ -294,3 +367,55 @@ def _inverse_gamma_ratio_terms(
 
     near_unit_ratio = has_finite_ratio & (jnp.abs(ratio_deviation) < 0.5)
     return log_ratio, density_deviation, ratio_deviation, near_unit_ratio, has_density_deviation
+
+
+def _inverse_gamma_log_probability(
+    value: ArrayLike,
+    shape: ArrayLike,
+    scale: ArrayLike,
+    *,
+    survival: bool,
+) -> jax.Array:
+    value_array, shape_array, scale_array = _promote_inexact(
+        ("value", value),
+        ("shape", shape),
+        ("scale", scale),
+    )
+
+    valid_shape = jnp.isfinite(shape_array) & (shape_array > 0)
+    valid_scale = jnp.isfinite(scale_array) & (scale_array > 0)
+    interior_value = jnp.isfinite(value_array) & (value_array > 0)
+    evaluate_probability = valid_shape & valid_scale & interior_value
+    safe_value = jnp.where(evaluate_probability, value_array, jnp.ones_like(value_array))
+    safe_shape = jnp.where(evaluate_probability, shape_array, jnp.ones_like(shape_array))
+    safe_scale = jnp.where(evaluate_probability, scale_array, jnp.ones_like(scale_array))
+    scaled_inverse_value = safe_scale / safe_value
+    log_scaled_inverse_value = jnp.log(safe_scale) - jnp.log(safe_value)
+    unit_rate = jnp.ones((), dtype=value_array.dtype)
+
+    if survival:
+        log_probability = _gamma_log_probability(
+            scaled_inverse_value,
+            safe_shape,
+            unit_rate,
+            upper_tail=False,
+            log_scaled_value=log_scaled_inverse_value,
+        )
+        boundary_log_probability = jnp.where(value_array <= 0, 0, -jnp.inf)
+    else:
+        log_probability = _gamma_log_probability(
+            scaled_inverse_value,
+            safe_shape,
+            unit_rate,
+            upper_tail=True,
+            log_scaled_value=log_scaled_inverse_value,
+        )
+        boundary_log_probability = jnp.where(value_array <= 0, -jnp.inf, 0)
+
+    supported_log_probability = jnp.where(
+        evaluate_probability,
+        log_probability,
+        boundary_log_probability,
+    )
+    supported_log_probability = jnp.where(jnp.isnan(value_array), jnp.nan, supported_log_probability)
+    return jnp.where(valid_shape & valid_scale, supported_log_probability, jnp.nan)
