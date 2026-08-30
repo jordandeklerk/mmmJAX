@@ -40,7 +40,9 @@ from mmmjax.distributions._student_t import student_t as student_t
 from mmmjax.distributions._student_t import student_t_logpdf as student_t_logpdf
 from mmmjax.distributions._student_t import student_t_rng as student_t_rng
 from mmmjax.distributions._uniform import uniform as uniform
+from mmmjax.distributions._uniform import uniform_logcdf as uniform_logcdf
 from mmmjax.distributions._uniform import uniform_logpdf as uniform_logpdf
+from mmmjax.distributions._uniform import uniform_logsf as uniform_logsf
 from mmmjax.distributions._uniform import uniform_rng as uniform_rng
 
 __all__ = [
@@ -84,6 +86,8 @@ __all__ = [
     "student_t_logpdf",
     "student_t_rng",
     "uniform",
+    "uniform_logcdf",
     "uniform_logpdf",
+    "uniform_logsf",
     "uniform_rng",
 ]

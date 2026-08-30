@@ -47,7 +47,9 @@ from mmmjax import (
     student_t_logpdf,
     student_t_rng,
     uniform,
+    uniform_logcdf,
     uniform_logpdf,
+    uniform_logsf,
     uniform_rng,
 )
 
@@ -143,6 +145,8 @@ def test_probability_functions_use_at_least_float32(dtype, expected_dtype) -> No
     assert laplace_logpdf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert student_t_logpdf(values, dtype(5.0), dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert uniform_logpdf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
+    assert uniform_logcdf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
+    assert uniform_logsf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
 
 
 def test_probability_functions_promote_integer_inputs_to_float32() -> None:
@@ -170,6 +174,8 @@ def test_probability_functions_promote_integer_inputs_to_float32() -> None:
     assert laplace_logpdf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
     assert student_t_logpdf(values, 5, 0, 1).dtype == jnp.dtype(jnp.float32)
     assert uniform_logpdf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
+    assert uniform_logcdf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
+    assert uniform_logsf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
 
 
 @pytest.mark.parametrize(
@@ -221,6 +227,8 @@ def test_cumulative_functions_follow_jax_default_dtype_for_python_scalars() -> N
     assert gamma_logsf(1.0, 1.0, 1.0).dtype == expected_dtype
     assert inverse_gamma_logcdf(1.0, 1.0, 1.0).dtype == expected_dtype
     assert inverse_gamma_logsf(1.0, 1.0, 1.0).dtype == expected_dtype
+    assert uniform_logcdf(0.5, 0.0, 1.0).dtype == expected_dtype
+    assert uniform_logsf(0.5, 0.0, 1.0).dtype == expected_dtype
 
 
 @pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
@@ -250,6 +258,8 @@ def test_distribution_functions_support_float64() -> None:
     assert laplace_logpdf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert student_t_logpdf(values, 5.0, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert uniform_logpdf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
+    assert uniform_logcdf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
+    assert uniform_logsf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert normal_rng(key, jnp.float64(0.0), jnp.float64(1.0)).dtype == jnp.dtype(jnp.float64)
     assert half_normal_rng(key, jnp.float64(1.0)).dtype == jnp.dtype(jnp.float64)
     assert lognormal_rng(key, jnp.float64(0.0), jnp.float64(1.0)).dtype == jnp.dtype(jnp.float64)
@@ -297,6 +307,8 @@ def test_distribution_functions_support_float64() -> None:
         (student_t, (jnp.array([0.0, 1.0]), 5.0, 0.5, 2.0)),
         (uniform_logpdf, (jnp.array([0.0, 1.0]), -0.5, 2.0)),
         (uniform, (jnp.array([0.0, 1.0]), -0.5, 2.0)),
+        (uniform_logcdf, (jnp.array([0.0, 1.0]), -0.5, 2.0)),
+        (uniform_logsf, (jnp.array([0.0, 1.0]), -0.5, 2.0)),
     ],
 )
 def test_probability_functions_can_be_jitted(function, arguments) -> None:

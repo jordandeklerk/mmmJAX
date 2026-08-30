@@ -2,9 +2,11 @@
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
+from scipy import stats
 
-from mmmjax import uniform, uniform_logpdf, uniform_rng
+from mmmjax import uniform, uniform_logcdf, uniform_logpdf, uniform_logsf, uniform_rng
 
 
 def test_uniform_logpdf_matches_known_values_and_support() -> None:
@@ -77,6 +79,202 @@ def test_uniform_logpdf_handles_opposite_sign_bounds_at_finite_maximum() -> None
 
     assert jnp.isfinite(result)
     assert jnp.allclose(result, -89.4159862326283)
+
+
+@pytest.mark.parametrize(
+    ("function", "reference"),
+    [
+        pytest.param(uniform_logcdf, stats.uniform.logcdf, id="logcdf"),
+        pytest.param(uniform_logsf, stats.uniform.logsf, id="logsf"),
+    ],
+)
+def test_uniform_log_probabilities_match_scipy(function, reference) -> None:
+    values = np.array([-np.inf, -3.0, -2.0, 0.0, 3.0, 4.0, np.inf], dtype=np.float32)
+    expected = reference(values.astype(np.float64), loc=-2.0, scale=5.0)
+
+    result = function(values, -2.0, 3.0)
+
+    np.testing.assert_allclose(result, expected, rtol=3e-6, atol=0)
+
+
+def test_uniform_log_probabilities_are_complements() -> None:
+    values = jnp.array([-jnp.inf, -2.0, -1.0, 0.5, 2.0, 3.0, jnp.inf])
+
+    log_cdf = uniform_logcdf(values, -2.0, 3.0)
+    log_survival = uniform_logsf(values, -2.0, 3.0)
+
+    assert jnp.allclose(
+        jnp.logaddexp(log_cdf, log_survival),
+        0,
+        atol=jnp.finfo(log_cdf.dtype).eps,
+    )
+
+
+def test_uniform_log_probabilities_broadcast_arguments() -> None:
+    values = jnp.array([[0.0], [3.0]])
+    lowers = jnp.array([-1.0, 1.0, 2.0])
+    uppers = jnp.array([1.0, 5.0, 10.0])
+
+    log_cdf = uniform_logcdf(values, lowers, uppers)
+    log_survival = uniform_logsf(values, lowers, uppers)
+
+    assert log_cdf.shape == (2, 3)
+    assert log_survival.shape == (2, 3)
+    assert jnp.allclose(
+        jnp.logaddexp(log_cdf, log_survival),
+        0,
+        atol=jnp.finfo(log_cdf.dtype).eps,
+    )
+
+
+def test_uniform_log_probabilities_propagate_nan_and_handle_infinite_values() -> None:
+    values = jnp.array([-jnp.inf, -2.0, 3.0, jnp.inf, jnp.nan])
+
+    log_cdf = uniform_logcdf(values, -2.0, 3.0)
+    log_survival = uniform_logsf(values, -2.0, 3.0)
+
+    assert jnp.all(jnp.isneginf(log_cdf[:2]))
+    assert jnp.all(log_cdf[2:4] == 0)
+    assert jnp.isnan(log_cdf[4])
+    assert jnp.all(log_survival[:2] == 0)
+    assert jnp.all(jnp.isneginf(log_survival[2:4]))
+    assert jnp.isnan(log_survival[4])
+
+
+@pytest.mark.parametrize("function", [uniform_logcdf, uniform_logsf])
+def test_uniform_log_probabilities_reject_invalid_bounds_before_support(function) -> None:
+    lowers = jnp.array([0.0, 1.0, -jnp.inf, 0.0, jnp.nan])
+    uppers = jnp.array([0.0, 0.0, 1.0, jnp.inf, 1.0])
+
+    result = function(100.0, lowers, uppers)
+
+    assert jnp.all(jnp.isnan(result))
+
+
+@pytest.mark.parametrize("function", [uniform_logcdf, uniform_logsf])
+def test_uniform_log_probabilities_reject_bounds_that_collapse_after_dtype_promotion(function) -> None:
+    lower = jnp.int32(16_777_216)
+    upper = jnp.int32(16_777_217)
+
+    result = function(lower, lower, upper)
+
+    assert jnp.isnan(result)
+
+
+def test_uniform_log_probabilities_handle_opposite_sign_bounds_at_finite_maximum() -> None:
+    maximum = jnp.asarray(jnp.finfo(jnp.float32).max)
+    values = maximum * jnp.array([-1.0, -0.5, 0.0, 0.5, 1.0])
+    expected_log_cdf = jnp.log(jnp.array([0.0, 0.25, 0.5, 0.75, 1.0]))
+    expected_log_survival = jnp.log(jnp.array([1.0, 0.75, 0.5, 0.25, 0.0]))
+
+    log_cdf = uniform_logcdf(values, -maximum, maximum)
+    log_survival = uniform_logsf(values, -maximum, maximum)
+
+    assert jnp.all(jnp.isfinite(log_cdf[1:]))
+    assert jnp.all(jnp.isfinite(log_survival[:-1]))
+    assert jnp.allclose(log_cdf, expected_log_cdf)
+    assert jnp.allclose(log_survival, expected_log_survival)
+
+
+def test_uniform_log_probabilities_preserve_values_next_to_extreme_bounds() -> None:
+    maximum = jnp.asarray(jnp.finfo(jnp.float32).max)
+    values = jnp.array(
+        [
+            jnp.nextafter(-maximum, maximum),
+            jnp.nextafter(maximum, -maximum),
+        ]
+    )
+    maximum_float64 = float(maximum)
+    values_float64 = np.asarray(values, dtype=np.float64)
+    expected_log_cdf = np.log((values_float64 + maximum_float64) / (2 * maximum_float64))
+    expected_log_survival = np.log((maximum_float64 - values_float64) / (2 * maximum_float64))
+
+    log_cdf = uniform_logcdf(values, -maximum, maximum)
+    log_survival = uniform_logsf(values, -maximum, maximum)
+
+    np.testing.assert_allclose(log_cdf, expected_log_cdf, rtol=3e-6, atol=0)
+    np.testing.assert_allclose(log_survival, expected_log_survival, rtol=3e-6, atol=0)
+
+
+@pytest.mark.parametrize(
+    ("function", "expected_gradient", "expected_hessian"),
+    [
+        pytest.param(
+            uniform_logcdf,
+            [0.4, -0.2, -0.2],
+            [[-0.16, 0.16, 0.0], [0.16, -0.12, -0.04], [0.0, -0.04, 0.04]],
+            id="logcdf",
+        ),
+        pytest.param(
+            uniform_logsf,
+            [-0.4, 0.2, 0.2],
+            [[-0.16, 0.0, 0.16], [0.0, 0.04, -0.04], [0.16, -0.04, -0.12]],
+            id="logsf",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "include_overflowing_interval",
+    [False, True],
+    ids=["finite-width", "overflow-fallback"],
+)
+def test_uniform_log_probability_derivatives_match_closed_form(
+    function,
+    expected_gradient,
+    expected_hessian,
+    include_overflowing_interval: bool,
+) -> None:
+    arguments = jnp.array([0.5, -2.0, 3.0])
+
+    def evaluate(current):
+        if include_overflowing_interval:
+            maximum = jnp.asarray(jnp.finfo(current.dtype).max)
+            values = jnp.stack((current[0], jnp.zeros_like(current[0])))
+            lowers = jnp.stack((current[1], -maximum))
+            uppers = jnp.stack((current[2], maximum))
+            return function(values, lowers, uppers)[0]
+
+        return function(current[0], current[1], current[2])
+
+    forward = jax.jit(jax.jacfwd(evaluate))(arguments)
+    reverse = jax.jit(jax.jacrev(evaluate))(arguments)
+    hessian = jax.jit(jax.hessian(evaluate))(arguments)
+
+    assert jnp.allclose(forward, jnp.asarray(expected_gradient))
+    assert jnp.allclose(reverse, jnp.asarray(expected_gradient))
+    assert jnp.allclose(hessian, jnp.asarray(expected_hessian))
+
+
+@pytest.mark.parametrize(
+    ("function", "expected_gradient"),
+    [
+        pytest.param(uniform_logcdf, [0.4, -0.2, -0.2], id="logcdf"),
+        pytest.param(uniform_logsf, [-0.4, 0.2, 0.2], id="logsf"),
+    ],
+)
+def test_uniform_log_probabilities_can_be_vectorized_across_numerical_paths(
+    function,
+    expected_gradient,
+) -> None:
+    dtype = jnp.asarray(0.0).dtype
+    maximum = jnp.asarray(jnp.finfo(dtype).max)
+    arguments = jnp.array(
+        [
+            [0.5, -2.0, 3.0],
+            [0.0, -maximum, maximum],
+        ],
+        dtype=dtype,
+    )
+
+    def evaluate(current):
+        return jax.vmap(lambda row: function(row[0], row[1], row[2]))(current)
+
+    result = jax.jit(evaluate)(arguments)
+    gradient = jax.jit(jax.grad(lambda current: jnp.sum(evaluate(current))))(arguments)
+
+    assert jnp.allclose(result, -jnp.log(2))
+    assert jnp.allclose(gradient[0], jnp.asarray(expected_gradient))
+    assert jnp.all(jnp.isfinite(gradient))
 
 
 @pytest.mark.parametrize(("lower", "upper"), [(-1.0, 2.0), (2.0, 6.0)])

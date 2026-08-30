@@ -51,7 +51,9 @@ from mmmjax.distributions import (
     student_t_logpdf,
     student_t_rng,
     uniform,
+    uniform_logcdf,
     uniform_logpdf,
+    uniform_logsf,
     uniform_rng,
 )
 
@@ -238,7 +240,13 @@ IMPLEMENTATIONS: dict[str, dict[str, DistributionFunctions]] = {
             logsf=normal_logsf,
         ),
         "student_t": DistributionFunctions(student_t_logpdf, student_t, student_t_rng),
-        "uniform": DistributionFunctions(uniform_logpdf, uniform, uniform_rng),
+        "uniform": DistributionFunctions(
+            uniform_logpdf,
+            uniform,
+            uniform_rng,
+            logcdf=uniform_logcdf,
+            logsf=uniform_logsf,
+        ),
     },
     "jax": {
         name: DistributionFunctions(
@@ -262,7 +270,7 @@ LOG_PROBABILITY_OPERATIONS = (
 OPERATIONS = DEFAULT_OPERATIONS + LOG_PROBABILITY_OPERATIONS
 INPUT_SETS = ("ordinary", "concentrated", "tail")
 LOG_PROBABILITY_DISTRIBUTIONS = frozenset(
-    {"exponential", "gamma", "half_normal", "inverse_gamma", "lognormal", "normal"}
+    {"exponential", "gamma", "half_normal", "inverse_gamma", "lognormal", "normal", "uniform"}
 )
 
 
@@ -368,6 +376,30 @@ def make_log_probability_arguments(
 
         value = scale / scaled_inverse_value.reshape(profile.value_shape)
         return value, shape, scale
+
+    if distribution.name == "uniform":
+        if input_set == "ordinary":
+            lower, upper = _make_parameters(distribution, profile, dtype)
+            value = jnp.linspace(
+                *distribution.value_range,
+                element_count,
+                dtype=dtype,
+            ).reshape(profile.value_shape)
+        else:
+            negative_log_probability = jnp.linspace(4.0, 32.0, element_count, dtype=dtype)
+            tail_probability = jnp.exp(-negative_log_probability).reshape(profile.value_shape)
+
+            # Anchoring the evaluated endpoint at zero keeps deep tail distances representable
+            if operation == "logcdf":
+                lower = jnp.zeros(profile.parameter_shape, dtype=dtype)
+                upper = jnp.ones(profile.parameter_shape, dtype=dtype)
+                value = tail_probability
+            else:
+                lower = -jnp.ones(profile.parameter_shape, dtype=dtype)
+                upper = jnp.zeros(profile.parameter_shape, dtype=dtype)
+                value = -tail_probability
+
+        return value, lower, upper
 
     if input_set == "ordinary":
         lower, upper = -2.0, 2.0

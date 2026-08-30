@@ -123,6 +123,23 @@ def _uniform_logpdf(
     return stats.uniform.logpdf(value, loc=lower, scale=upper - lower)
 
 
+def _uniform_logcdf(
+    value: jax.Array,
+    lower: jax.Array,
+    upper: jax.Array,
+) -> jax.Array:
+    return jnp.log(stats.uniform.cdf(value, loc=lower, scale=upper - lower))
+
+
+def _uniform_logsf(
+    value: jax.Array,
+    lower: jax.Array,
+    upper: jax.Array,
+) -> jax.Array:
+    # Reflecting the CDF avoids cancellation from computing one minus the CDF
+    return jnp.log(stats.uniform.cdf(-value, loc=-upper, scale=upper - lower))
+
+
 def _beta_rng(
     key: jax.Array,
     alpha: jax.Array,
@@ -293,5 +310,10 @@ JAX_REFERENCES: dict[str, JaxReference] = {
         logsf=stats.norm.logsf,
     ),
     "student_t": JaxReference(stats.t.logpdf, _student_t_rng),
-    "uniform": JaxReference(_uniform_logpdf, _uniform_rng),
+    "uniform": JaxReference(
+        _uniform_logpdf,
+        _uniform_rng,
+        logcdf=_uniform_logcdf,
+        logsf=_uniform_logsf,
+    ),
 }

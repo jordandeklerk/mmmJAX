@@ -249,6 +249,79 @@ def test_mmmjax_inverse_gamma_log_probabilities_match_jax_and_scipy(operation: s
     _assert_scipy_tail_close(result, scipy_result)
 
 
+@pytest.mark.parametrize("operation", ["logcdf", "logsf"])
+def test_mmmjax_uniform_log_probabilities_match_jax_and_scipy(operation: str) -> None:
+    values = jnp.array([-1.75, -1.0, 0.5, 2.0, 2.75])
+    lower = jnp.asarray(-2.0)
+    upper = jnp.asarray(3.0)
+    implementation = getattr(mmmjax, f"uniform_{operation}")
+    jax_reference = getattr(JAX_REFERENCES["uniform"], operation)
+    scipy_reference = getattr(stats.uniform, operation)
+    assert jax_reference is not None
+
+    result = implementation(values, lower, upper)
+    jax_result = jax_reference(values, lower, upper)
+    scipy_result = scipy_reference(
+        np.asarray(values),
+        loc=float(lower),
+        scale=float(upper - lower),
+    )
+
+    _assert_close(result, jax_result)
+    _assert_close(result, scipy_result)
+
+
+@pytest.mark.parametrize("differentiate", [jax.jacfwd, jax.jacrev], ids=["forward", "reverse"])
+@pytest.mark.parametrize("operation", ["logcdf", "logsf"])
+def test_mmmjax_uniform_log_probability_gradients_match_jax(operation: str, differentiate) -> None:
+    arguments = (jnp.asarray(-0.75), jnp.asarray(-2.0), jnp.asarray(3.0))
+    implementation = getattr(mmmjax, f"uniform_{operation}")
+    reference = getattr(JAX_REFERENCES["uniform"], operation)
+    argnums = (0, 1, 2)
+    assert reference is not None
+
+    result = jax.jit(differentiate(implementation, argnums=argnums))(*arguments)
+    jax_result = jax.jit(differentiate(reference, argnums=argnums))(*arguments)
+
+    for result_jacobian, jax_jacobian in zip(result, jax_result, strict=True):
+        _assert_close(result_jacobian, jax_jacobian)
+
+
+@pytest.mark.parametrize("operation", ["logcdf", "logsf"])
+def test_mmmjax_uniform_deep_tail_values_and_parameter_gradients_match_jax(operation: str) -> None:
+    negative_log_probabilities = jnp.array([4.0, 8.0, 16.0, 32.0])
+    tail_probabilities = jnp.exp(-negative_log_probabilities)
+    implementation = getattr(mmmjax, f"uniform_{operation}")
+    reference = getattr(JAX_REFERENCES["uniform"], operation)
+    assert reference is not None
+
+    if operation == "logcdf":
+        values, lower, upper = tail_probabilities, jnp.asarray(0.0), jnp.asarray(1.0)
+    else:
+        values, lower, upper = -tail_probabilities, jnp.asarray(-1.0), jnp.asarray(0.0)
+
+    result = implementation(values, lower, upper)
+    jax_result = reference(values, lower, upper)
+
+    def summed(function, current_lower, current_upper):
+        return jnp.sum(function(values, current_lower, current_upper))
+
+    implementation_value, implementation_gradient = jax.value_and_grad(
+        partial(summed, implementation),
+        argnums=(0, 1),
+    )(lower, upper)
+    jax_value, jax_gradient = jax.value_and_grad(
+        partial(summed, reference),
+        argnums=(0, 1),
+    )(lower, upper)
+
+    _assert_close(result, -negative_log_probabilities)
+    _assert_close(result, jax_result)
+    _assert_close(implementation_value, jax_value)
+    for result_gradient, jax_gradient_value in zip(implementation_gradient, jax_gradient, strict=True):
+        _assert_close(result_gradient, jax_gradient_value)
+
+
 @pytest.mark.parametrize("differentiate", [jax.jacfwd, jax.jacrev], ids=["forward", "reverse"])
 @pytest.mark.parametrize("operation", ["logcdf", "logsf"])
 def test_mmmjax_half_normal_log_probability_gradients_match_jax(operation: str, differentiate) -> None:
