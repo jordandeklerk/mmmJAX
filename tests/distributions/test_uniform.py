@@ -6,8 +6,7 @@ import numpy as np
 import pytest
 from scipy import stats
 
-from mmmjax import uniform, uniform_logpdf, uniform_rng
-from mmmjax.distributions._uniform import uniform_logcdf, uniform_logsf
+from mmmjax import uniform, uniform_logcdf, uniform_logpdf, uniform_logsf, uniform_rng
 
 
 def test_uniform_logpdf_matches_known_values_and_support() -> None:

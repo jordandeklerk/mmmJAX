@@ -41,7 +41,9 @@ from mmmjax.distributions import (
     student_t_logpdf,
     student_t_rng,
     uniform,
+    uniform_logcdf,
     uniform_logpdf,
+    uniform_logsf,
     uniform_rng,
 )
 from mmmjax.model import Model
@@ -97,6 +99,8 @@ __all__ = [
     "student_t_logpdf",
     "student_t_rng",
     "uniform",
+    "uniform_logcdf",
     "uniform_logpdf",
+    "uniform_logsf",
     "uniform_rng",
 ]

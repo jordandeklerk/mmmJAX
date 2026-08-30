@@ -44,7 +44,9 @@ DISTRIBUTION_EXPORTS = [
     "student_t_logpdf",
     "student_t_rng",
     "uniform",
+    "uniform_logcdf",
     "uniform_logpdf",
+    "uniform_logsf",
     "uniform_rng",
 ]
 
