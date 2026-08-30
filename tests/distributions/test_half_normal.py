@@ -8,10 +8,11 @@ from scipy import stats
 
 from mmmjax import (
     half_normal,
+    half_normal_logcdf,
     half_normal_logpdf,
+    half_normal_logsf,
     half_normal_rng,
 )
-from mmmjax.distributions._half_normal import half_normal_logcdf, half_normal_logsf
 
 
 def test_half_normal_logpdf_matches_known_values() -> None:
@@ -106,14 +107,20 @@ def test_half_normal_log_probabilities_reject_invalid_scale(function) -> None:
     ("function", "direction"),
     [(half_normal_logcdf, 1), (half_normal_logsf, -1)],
 )
-def test_half_normal_log_probability_gradients_match_density_ratio(function, direction: int) -> None:
-    value = 1.3
+@pytest.mark.parametrize("differentiate", [jax.jacfwd, jax.jacrev], ids=["forward", "reverse"])
+@pytest.mark.parametrize("value", [0.3, 4.0], ids=["ordinary", "tail"])
+def test_half_normal_log_probability_gradients_match_density_ratio(
+    function,
+    direction: int,
+    differentiate,
+    value: float,
+) -> None:
     scale = 1.7
     expected_value = direction * jnp.exp(half_normal_logpdf(value, scale) - function(value, scale))
     expected_scale = -(value / scale) * expected_value
 
-    result = jax.grad(function, argnums=(0, 1))(value, scale)
-    compiled_result = jax.jit(jax.grad(function, argnums=(0, 1)))(value, scale)
+    result = differentiate(function, argnums=(0, 1))(value, scale)
+    compiled_result = jax.jit(differentiate(function, argnums=(0, 1)))(value, scale)
 
     assert jnp.allclose(jnp.asarray(result), jnp.asarray([expected_value, expected_scale]), rtol=3e-6, atol=0)
     assert jnp.allclose(jnp.asarray(compiled_result), jnp.asarray(result), rtol=3e-6, atol=0)
@@ -126,10 +133,13 @@ def test_half_normal_logcdf_preserves_values_below_erf_range() -> None:
 
     result = half_normal_logcdf(value, scale)
     compiled_result = jax.jit(half_normal_logcdf)(value, scale)
+    gradients = jax.jit(jax.grad(half_normal_logcdf, argnums=(0, 1)))(value, scale)
 
     assert jnp.isfinite(result)
     assert jnp.allclose(result, expected, rtol=3e-6, atol=0)
     assert jnp.allclose(compiled_result, expected, rtol=3e-6, atol=0)
+    assert jnp.allclose(gradients[0], 1 / value, rtol=3e-6, atol=0)
+    assert jnp.allclose(gradients[1], -1 / scale, rtol=3e-6, atol=0)
 
 
 def test_half_normal_logpdf_broadcasts_arguments() -> None:

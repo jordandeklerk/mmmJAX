@@ -21,7 +21,9 @@ from mmmjax import (
     gamma_logsf,
     gamma_rng,
     half_normal,
+    half_normal_logcdf,
     half_normal_logpdf,
+    half_normal_logsf,
     half_normal_rng,
     inverse_gamma,
     inverse_gamma_logcdf,
@@ -123,6 +125,8 @@ def test_probability_functions_use_at_least_float32(dtype, expected_dtype) -> No
     assert normal_logcdf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert normal_logsf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert half_normal_logpdf(values, dtype(1.0)).dtype == jnp.dtype(expected_dtype)
+    assert half_normal_logcdf(values, dtype(1.0)).dtype == jnp.dtype(expected_dtype)
+    assert half_normal_logsf(values, dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert lognormal_logpdf(values + 1, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert lognormal_logcdf(values + 1, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert lognormal_logsf(values + 1, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
@@ -148,6 +152,8 @@ def test_probability_functions_promote_integer_inputs_to_float32() -> None:
     assert normal_logcdf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
     assert normal_logsf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
     assert half_normal_logpdf(values, 1).dtype == jnp.dtype(jnp.float32)
+    assert half_normal_logcdf(values, 1).dtype == jnp.dtype(jnp.float32)
+    assert half_normal_logsf(values, 1).dtype == jnp.dtype(jnp.float32)
     assert lognormal_logpdf(values + 1, 0, 1).dtype == jnp.dtype(jnp.float32)
     assert lognormal_logcdf(values + 1, 0, 1).dtype == jnp.dtype(jnp.float32)
     assert lognormal_logsf(values + 1, 0, 1).dtype == jnp.dtype(jnp.float32)
@@ -205,6 +211,8 @@ def test_cumulative_functions_follow_jax_default_dtype_for_python_scalars() -> N
 
     assert normal_logcdf(0.0, 0.0, 1.0).dtype == expected_dtype
     assert normal_logsf(0.0, 0.0, 1.0).dtype == expected_dtype
+    assert half_normal_logcdf(1.0, 1.0).dtype == expected_dtype
+    assert half_normal_logsf(1.0, 1.0).dtype == expected_dtype
     assert lognormal_logcdf(1.0, 0.0, 1.0).dtype == expected_dtype
     assert lognormal_logsf(1.0, 0.0, 1.0).dtype == expected_dtype
     assert exponential_logcdf(1.0, 1.0).dtype == expected_dtype
@@ -224,6 +232,8 @@ def test_distribution_functions_support_float64() -> None:
     assert normal_logcdf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert normal_logsf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert half_normal_logpdf(values, 1.0).dtype == jnp.dtype(jnp.float64)
+    assert half_normal_logcdf(values, 1.0).dtype == jnp.dtype(jnp.float64)
+    assert half_normal_logsf(values, 1.0).dtype == jnp.dtype(jnp.float64)
     assert lognormal_logpdf(values + 1, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert lognormal_logcdf(values + 1, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert lognormal_logsf(values + 1, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
@@ -261,6 +271,8 @@ def test_distribution_functions_support_float64() -> None:
         (normal_logsf, (jnp.array([0.0, 1.0]), 0.5, 2.0)),
         (half_normal_logpdf, (jnp.array([0.0, 1.0]), 2.0)),
         (half_normal, (jnp.array([0.0, 1.0]), 2.0)),
+        (half_normal_logcdf, (jnp.array([0.5, 1.0]), 2.0)),
+        (half_normal_logsf, (jnp.array([0.5, 1.0]), 2.0)),
         (lognormal_logpdf, (jnp.array([0.5, 1.0]), 0.5, 2.0)),
         (lognormal, (jnp.array([0.5, 1.0]), 0.5, 2.0)),
         (lognormal_logcdf, (jnp.array([0.5, 1.0]), 0.5, 2.0)),
@@ -548,6 +560,8 @@ def test_rng_rejects_negative_sample_shape() -> None:
         (normal_logcdf, (0.0, 0.0, 1.0 + 0.0j), "scale"),
         (normal_logsf, (0.0, 0.0, 1.0 + 0.0j), "scale"),
         (half_normal_logpdf, (0.0, 1.0 + 0.0j), "scale"),
+        (half_normal_logcdf, (1.0, 1.0 + 0.0j), "scale"),
+        (half_normal_logsf, (1.0, 1.0 + 0.0j), "scale"),
         (lognormal_logpdf, (1.0, 0.0, 1.0 + 0.0j), "scale"),
         (lognormal_logcdf, (1.0, 0.0, 1.0 + 0.0j), "scale"),
         (lognormal_logsf, (1.0, 0.0, 1.0 + 0.0j), "scale"),
