@@ -108,7 +108,7 @@ def test_half_normal_log_probabilities_reject_invalid_scale(function) -> None:
     [(half_normal_logcdf, 1), (half_normal_logsf, -1)],
 )
 @pytest.mark.parametrize("differentiate", [jax.jacfwd, jax.jacrev], ids=["forward", "reverse"])
-@pytest.mark.parametrize("value", [0.3, 4.0], ids=["ordinary", "tail"])
+@pytest.mark.parametrize("value", [0.3, 5.0], ids=["ordinary", "tail"])
 def test_half_normal_log_probability_gradients_match_density_ratio(
     function,
     direction: int,
@@ -124,6 +124,44 @@ def test_half_normal_log_probability_gradients_match_density_ratio(
 
     assert jnp.allclose(jnp.asarray(result), jnp.asarray([expected_value, expected_scale]), rtol=3e-6, atol=0)
     assert jnp.allclose(jnp.asarray(compiled_result), jnp.asarray(result), rtol=3e-6, atol=0)
+
+
+@pytest.mark.parametrize("function", [half_normal_logcdf, half_normal_logsf])
+def test_half_normal_log_probabilities_match_scalar_evaluation_in_mixed_batches(function) -> None:
+    values = jnp.array([np.finfo(np.float32).tiny, 0.5, 5.0, 40.0])
+
+    result = jax.jit(function)(values, 1.0)
+    expected = jnp.stack([jax.jit(function)(value, 1.0) for value in values])
+
+    assert jnp.allclose(result, expected, rtol=3e-6, atol=0)
+
+
+@pytest.mark.parametrize(
+    ("function", "reference"),
+    [
+        (half_normal_logcdf, stats.halfnorm.logcdf),
+        (half_normal_logsf, stats.halfnorm.logsf),
+    ],
+)
+def test_half_normal_log_probabilities_match_scipy_around_formula_boundary(function, reference) -> None:
+    boundary = np.float32(1)
+    values = np.array(
+        [
+            np.nextafter(boundary, np.float32(-np.inf)),
+            boundary,
+            np.nextafter(boundary, np.float32(np.inf)),
+        ]
+    )
+
+    result = function(values, 1.0)
+    expected = reference(values.astype(np.float64))
+
+    np.testing.assert_allclose(
+        result,
+        expected,
+        rtol=3e-6,
+        atol=np.finfo(np.float32).eps,
+    )
 
 
 def test_half_normal_logcdf_preserves_values_below_erf_range() -> None:

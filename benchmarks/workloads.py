@@ -25,7 +25,9 @@ from mmmjax.distributions import (
     gamma_logsf,
     gamma_rng,
     half_normal,
+    half_normal_logcdf,
     half_normal_logpdf,
+    half_normal_logsf,
     half_normal_rng,
     inverse_gamma,
     inverse_gamma_logcdf,
@@ -206,7 +208,13 @@ IMPLEMENTATIONS: dict[str, dict[str, DistributionFunctions]] = {
             logcdf=gamma_logcdf,
             logsf=gamma_logsf,
         ),
-        "half_normal": DistributionFunctions(half_normal_logpdf, half_normal, half_normal_rng),
+        "half_normal": DistributionFunctions(
+            half_normal_logpdf,
+            half_normal,
+            half_normal_rng,
+            logcdf=half_normal_logcdf,
+            logsf=half_normal_logsf,
+        ),
         "inverse_gamma": DistributionFunctions(
             inverse_gamma_logpdf,
             inverse_gamma,
@@ -253,7 +261,9 @@ LOG_PROBABILITY_OPERATIONS = (
 )
 OPERATIONS = DEFAULT_OPERATIONS + LOG_PROBABILITY_OPERATIONS
 INPUT_SETS = ("ordinary", "concentrated", "tail")
-LOG_PROBABILITY_DISTRIBUTIONS = frozenset({"exponential", "gamma", "inverse_gamma", "lognormal", "normal"})
+LOG_PROBABILITY_DISTRIBUTIONS = frozenset(
+    {"exponential", "gamma", "half_normal", "inverse_gamma", "lognormal", "normal"}
+)
 
 
 def make_arguments(
@@ -331,6 +341,18 @@ def make_log_probability_arguments(
 
         value = scaled_value.reshape(profile.value_shape) / rate
         return value, shape, rate
+
+    if distribution.name == "half_normal":
+        (scale,) = _make_parameters(distribution, profile, dtype)
+        if input_set == "ordinary":
+            standardized = jnp.linspace(0.023, 2.36, element_count, dtype=dtype)
+        elif operation == "logcdf":
+            standardized = jnp.geomspace(1.6e-14, 0.023, element_count, dtype=dtype)
+        else:
+            standardized = jnp.linspace(2.36, 7.71, element_count, dtype=dtype)
+
+        value = scale * standardized.reshape(profile.value_shape)
+        return value, scale
 
     if distribution.name == "inverse_gamma":
         shape, scale = _make_parameters(distribution, profile, dtype)

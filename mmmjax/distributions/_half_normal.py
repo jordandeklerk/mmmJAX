@@ -5,7 +5,7 @@ import math
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax.scipy.special import erf, log_ndtr
+from jax.scipy.special import erf, erfc, log_ndtr
 from jax.typing import ArrayLike
 
 from mmmjax.distributions._normal import _normal_logpdf_kernel, _standardize, normal_rng
@@ -192,15 +192,13 @@ def _half_normal_logcdf_kernel(value: jax.Array, scale: jax.Array) -> jax.Array:
     sqrt_two = jnp.sqrt(jnp.asarray(2, dtype=value.dtype))
     ordinary_logcdf = jnp.log(erf(ordinary_standardized / sqrt_two))
 
-    tail_standardized = jnp.where(standardized > 1, standardized, jnp.ones_like(standardized))
-    log_two = jnp.asarray(math.log(2), dtype=value.dtype)
-    tail_logsf = log_two + log_ndtr(-tail_standardized)
-    tail_logcdf = jax.nn.log1mexp(-tail_logsf)
+    upper_standardized = jnp.where(standardized > 1, standardized, jnp.ones_like(standardized))
+    upper_logcdf = jnp.log1p(-erfc(upper_standardized / sqrt_two))
 
     interior_logcdf = jnp.where(
         standardized < small_threshold,
         small_logcdf,
-        jnp.where(standardized <= 1, ordinary_logcdf, tail_logcdf),
+        jnp.where(standardized <= 1, ordinary_logcdf, upper_logcdf),
     )
     supported_logcdf = jnp.where(
         jnp.isposinf(value),
@@ -218,14 +216,15 @@ def _half_normal_logsf_kernel(value: jax.Array, scale: jax.Array) -> jax.Array:
     safe_scale = jnp.where(valid_scale, scale, jnp.ones_like(scale))
     standardized = _standardize(safe_value, jnp.zeros_like(safe_value), safe_scale)
 
-    ordinary_standardized = jnp.where(standardized <= 1, standardized, jnp.ones_like(standardized))
+    ordinary_region = standardized <= 1
+    ordinary_standardized = jnp.where(ordinary_region, standardized, jnp.ones_like(standardized))
     sqrt_two = jnp.sqrt(jnp.asarray(2, dtype=value.dtype))
     ordinary_logsf = jnp.log1p(-erf(ordinary_standardized / sqrt_two))
 
-    tail_standardized = jnp.where(standardized > 1, standardized, jnp.ones_like(standardized))
+    tail_standardized = jnp.where(ordinary_region, jnp.ones_like(standardized), standardized)
     log_two = jnp.asarray(math.log(2), dtype=value.dtype)
     tail_logsf = log_two + log_ndtr(-tail_standardized)
-    interior_logsf = jnp.where(standardized <= 1, ordinary_logsf, tail_logsf)
+    interior_logsf = jnp.where(ordinary_region, ordinary_logsf, tail_logsf)
 
     supported_logsf = jnp.where(
         value < 0,
