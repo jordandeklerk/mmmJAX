@@ -249,10 +249,8 @@ def _parse_args() -> argparse.Namespace:
             "log-CDF and log-survival operations support ordinary and tail inputs"
         )
     if has_log_probability_operation and not LOG_PROBABILITY_DISTRIBUTIONS.intersection(arguments.distributions):
-        parser.error(
-            "log-CDF and log-survival benchmarks are currently available only for "
-            "exponential, gamma, normal, and lognormal"
-        )
+        supported = ", ".join(sorted(LOG_PROBABILITY_DISTRIBUTIONS))
+        parser.error(f"log-CDF and log-survival benchmarks are currently available only for {supported}")
 
     compares_implementations = len(set(arguments.implementations)) > 1 and any(
         input_set != "concentrated" for input_set in arguments.inputs

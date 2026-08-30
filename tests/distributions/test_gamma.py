@@ -165,6 +165,138 @@ def test_gamma_log_probability_gradients_match_public_jax(function) -> None:
         assert jnp.allclose(gradient, expected_gradient, rtol=2e-6, atol=2e-6)
 
 
+def test_gamma_logcdf_remains_finite_below_float32_probability_range() -> None:
+    values = np.array([1e-4, 5e-5, 1e-5], dtype=np.float32)
+    shapes = np.array([8.0, 8.0, 20.0], dtype=np.float32)
+    rates = np.ones(3, dtype=np.float32)
+    expected = stats.gamma.logcdf(
+        values.astype(np.float64),
+        a=shapes.astype(np.float64),
+    )
+
+    result = gamma_logcdf(values, shapes, rates)
+    compiled_result = jax.jit(gamma_logcdf)(values, shapes, rates)
+
+    assert jnp.all(jnp.isfinite(result))
+    np.testing.assert_allclose(result, expected, rtol=3e-6, atol=3e-5)
+    np.testing.assert_allclose(compiled_result, expected, rtol=3e-6, atol=3e-5)
+
+
+def test_gamma_logcdf_deep_tail_gradients_match_scipy() -> None:
+    value = np.float32(1e-5)
+    shape = np.float32(20.0)
+    rate = np.float32(1.0)
+    expected_log_probability = stats.gamma.logcdf(value, a=shape)
+    expected_value = np.exp(stats.gamma.logpdf(value, a=shape) - expected_log_probability)
+    shape_reference = float(shape)
+    shape_step = 1e-3
+    expected_shape = (
+        stats.gamma.logcdf(value, a=shape_reference + shape_step)
+        - stats.gamma.logcdf(value, a=shape_reference - shape_step)
+    ) / (2 * shape_step)
+    expected_rate = value * expected_value
+
+    result = jax.grad(gamma_logcdf, argnums=(0, 1, 2))(value, shape, rate)
+    compiled_result = jax.jit(jax.grad(gamma_logcdf, argnums=(0, 1, 2)))(
+        value,
+        shape,
+        rate,
+    )
+
+    for gradients in (result, compiled_result):
+        assert jnp.allclose(gradients[0], expected_value, rtol=1e-5, atol=0)
+        assert jnp.allclose(gradients[1], expected_shape, rtol=2e-5, atol=2e-6)
+        assert jnp.allclose(gradients[2], expected_rate, rtol=1e-5, atol=0)
+
+
+def test_gamma_logsf_remains_finite_below_float32_probability_range() -> None:
+    values = np.array([96.0, 108.0, 112.0, 128.0, 256.0], dtype=np.float32)
+    shapes = np.array([8.0, 8.0, 8.0, 8.0, 32.0], dtype=np.float32)
+    rates = np.ones(5, dtype=np.float32)
+    expected = stats.gamma.logsf(
+        values.astype(np.float64),
+        a=shapes.astype(np.float64),
+    )
+
+    result = gamma_logsf(values, shapes, rates)
+    compiled_result = jax.jit(gamma_logsf)(values, shapes, rates)
+
+    assert jnp.all(jnp.isfinite(result))
+    np.testing.assert_allclose(result, expected, rtol=3e-6, atol=3e-5)
+    np.testing.assert_allclose(compiled_result, expected, rtol=3e-6, atol=3e-5)
+
+
+def test_gamma_logsf_deep_tail_gradients_match_scipy() -> None:
+    value = np.float32(256.0)
+    shape = np.float32(32.0)
+    rate = np.float32(1.0)
+    expected_log_probability = stats.gamma.logsf(value, a=shape)
+    expected_value = -np.exp(stats.gamma.logpdf(value, a=shape) - expected_log_probability)
+    shape_reference = float(shape)
+    shape_step = 1e-3
+    expected_shape = (
+        stats.gamma.logsf(value, a=shape_reference + shape_step)
+        - stats.gamma.logsf(value, a=shape_reference - shape_step)
+    ) / (2 * shape_step)
+    expected_rate = value * expected_value
+
+    result = jax.grad(gamma_logsf, argnums=(0, 1, 2))(value, shape, rate)
+    compiled_result = jax.jit(jax.grad(gamma_logsf, argnums=(0, 1, 2)))(
+        value,
+        shape,
+        rate,
+    )
+
+    for gradients in (result, compiled_result):
+        assert jnp.allclose(gradients[0], expected_value, rtol=1e-5, atol=0)
+        assert jnp.allclose(gradients[1], expected_shape, rtol=2e-5, atol=2e-6)
+        assert jnp.allclose(gradients[2], expected_rate, rtol=1e-5, atol=0)
+
+
+@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+@pytest.mark.parametrize(
+    ("function", "value", "shape", "expected", "expected_gradients"),
+    [
+        (
+            gamma_logcdf,
+            1e-50,
+            8.0,
+            -931.6386401003635,
+            (8e50, -117.2698961276579, 8.0),
+        ),
+        (
+            gamma_logsf,
+            1000.0,
+            8.0,
+            -960.1638568779119,
+            (-0.99300703509078, 4.893119824041108, -993.00703509078),
+        ),
+    ],
+)
+def test_gamma_log_probabilities_match_deep_float64_references(
+    function,
+    value: float,
+    shape: float,
+    expected: float,
+    expected_gradients: tuple[float, float, float],
+) -> None:
+    arguments = (jnp.float64(value), jnp.float64(shape), jnp.float64(1.0))
+
+    result = function(*arguments)
+    gradients = jax.grad(function, argnums=(0, 1, 2))(*arguments)
+    compiled_result, compiled_gradients = jax.jit(jax.value_and_grad(function, argnums=(0, 1, 2)))(*arguments)
+
+    assert jnp.allclose(result, expected, rtol=2e-12, atol=2e-12)
+    assert jnp.allclose(compiled_result, expected, rtol=2e-12, atol=2e-12)
+    for current_gradients in (gradients, compiled_gradients):
+        for gradient, expected_gradient in zip(
+            current_gradients,
+            expected_gradients,
+            strict=True,
+        ):
+            assert jnp.allclose(gradient, expected_gradient, rtol=5e-11, atol=0)
+
+
 def test_gamma_homogeneous_ordinary_batch_matches_independent_references() -> None:
     values = jnp.linspace(0.05, 2.0, 12, dtype=jnp.float32).reshape(4, 3)
     shapes = jnp.array([0.2, 2.5, 7.5], dtype=jnp.float32)

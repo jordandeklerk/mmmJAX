@@ -4,7 +4,8 @@ from typing import cast
 
 import jax
 import jax.numpy as jnp
-from jax.scipy.special import gammaln
+import numpy as np
+from jax.scipy.special import gammaln, hyp1f1
 from jax.scipy.stats import gamma as gamma_distribution
 from jax.typing import ArrayLike
 
@@ -494,6 +495,7 @@ def _gamma_log_probability(
     rate: jax.Array,
     *,
     upper_tail: bool,
+    log_scaled_value: jax.Array | None = None,
 ) -> jax.Array:
     valid_shape = jnp.isfinite(shape) & (shape > 0)
     valid_rate = jnp.isfinite(rate) & (rate > 0)
@@ -503,9 +505,248 @@ def _gamma_log_probability(
     safe_rate = jnp.where(valid_rate, rate, jnp.ones_like(rate))
     scaled_value = safe_rate * value
 
+    if log_scaled_value is None:
+        positive_finite_value = jnp.isfinite(value) & (value > 0)
+        safe_value = jnp.where(positive_finite_value, value, jnp.ones_like(value))
+        interior_log_scaled_value = jnp.log(safe_rate) + jnp.log(safe_value)
+        log_scaled_value = jnp.where(
+            positive_finite_value,
+            interior_log_scaled_value,
+            -jnp.inf,
+        )
+
     if upper_tail:
-        log_probability = gamma_distribution.logsf(scaled_value, safe_shape)
+        log_probability = _gamma_logsf_kernel(
+            scaled_value,
+            safe_shape,
+            log_scaled_value,
+        )
     else:
-        log_probability = gamma_distribution.logcdf(scaled_value, safe_shape)
+        log_probability = _gamma_logcdf_kernel(
+            scaled_value,
+            safe_shape,
+            log_scaled_value,
+        )
 
     return jnp.where(valid_parameters, log_probability, jnp.nan)
+
+
+def _gamma_logcdf_kernel(
+    scaled_value: jax.Array,
+    shape: jax.Array,
+    log_scaled_value: jax.Array,
+) -> jax.Array:
+    safe_log_scaled_value = jnp.where(
+        jnp.isfinite(log_scaled_value),
+        log_scaled_value,
+        jnp.zeros_like(log_scaled_value),
+    )
+    log_series_prefix = shape * safe_log_scaled_value - scaled_value - gammaln(shape + 1)
+    minimum_normal = jnp.asarray(
+        np.finfo(scaled_value.dtype).tiny,
+        dtype=scaled_value.dtype,
+    )
+    use_log_series = (
+        jnp.isfinite(log_scaled_value)
+        & jnp.isfinite(scaled_value)
+        & (scaled_value >= 0)
+        & (scaled_value < 100)
+        & (shape > scaled_value)
+        & (log_series_prefix < jnp.log(minimum_normal))
+    )
+
+    def recover_underflow(_: None) -> jax.Array:
+        direct_value = jnp.where(use_log_series, jnp.ones_like(scaled_value), scaled_value)
+        direct_shape = jnp.where(use_log_series, jnp.ones_like(shape), shape)
+        safe_direct_log_probability = gamma_distribution.logcdf(direct_value, direct_shape)
+
+        series_value = jnp.where(use_log_series, scaled_value, jnp.zeros_like(scaled_value))
+        series_shape = jnp.where(use_log_series, shape, jnp.ones_like(shape))
+        series_log_value = jnp.where(
+            use_log_series,
+            log_scaled_value,
+            jnp.zeros_like(log_scaled_value),
+        )
+        series_log_probability = (
+            series_shape * series_log_value
+            - series_value
+            - gammaln(series_shape + 1)
+            + jnp.log(
+                hyp1f1(
+                    jnp.ones_like(series_shape),
+                    series_shape + 1,
+                    series_value,
+                )
+            )
+        )
+        return jnp.where(
+            use_log_series,
+            series_log_probability,
+            safe_direct_log_probability,
+        )
+
+    # Avoid paying for the hypergeometric series on ordinary probabilities
+    return cast(
+        jax.Array,
+        jax.lax.cond(
+            jnp.any(use_log_series),
+            recover_underflow,
+            lambda _: gamma_distribution.logcdf(scaled_value, shape),
+            operand=None,
+        ),
+    )
+
+
+def _gamma_logsf_kernel(
+    scaled_value: jax.Array,
+    shape: jax.Array,
+    log_scaled_value: jax.Array,
+) -> jax.Array:
+    continued_fraction_region = jnp.isfinite(scaled_value) & jnp.isfinite(log_scaled_value) & (scaled_value > shape + 1)
+    prefix_value = jnp.where(
+        continued_fraction_region,
+        scaled_value,
+        jnp.ones_like(scaled_value),
+    )
+    prefix_shape = jnp.where(
+        continued_fraction_region,
+        shape,
+        jnp.ones_like(shape),
+    )
+    prefix_log_value = jnp.where(
+        continued_fraction_region,
+        log_scaled_value,
+        jnp.zeros_like(log_scaled_value),
+    )
+    log_prefactor = prefix_shape * prefix_log_value - prefix_value - gammaln(prefix_shape)
+    first_fraction_log_probability = log_prefactor - jnp.log(prefix_value + 1 - prefix_shape)
+    minimum_normal = jnp.asarray(
+        np.finfo(scaled_value.dtype).tiny,
+        dtype=scaled_value.dtype,
+    )
+    use_continued_fraction = continued_fraction_region & (first_fraction_log_probability < jnp.log(minimum_normal))
+
+    def recover_underflow(_: None) -> jax.Array:
+        direct_value = jnp.where(
+            use_continued_fraction,
+            jnp.ones_like(scaled_value),
+            scaled_value,
+        )
+        direct_shape = jnp.where(
+            use_continued_fraction,
+            jnp.ones_like(shape),
+            shape,
+        )
+        safe_direct_log_probability = gamma_distribution.logsf(direct_value, direct_shape)
+
+        fraction_value = jnp.where(
+            use_continued_fraction,
+            scaled_value,
+            jnp.ones_like(scaled_value),
+        )
+        fraction_shape = jnp.where(
+            use_continued_fraction,
+            shape,
+            jnp.ones_like(shape),
+        )
+        fraction_log_value = jnp.where(
+            use_continued_fraction,
+            log_scaled_value,
+            jnp.zeros_like(log_scaled_value),
+        )
+        log_prefactor = (
+            _gamma_logpdf(
+                fraction_value,
+                fraction_shape,
+                jnp.ones_like(fraction_value),
+            )
+            + fraction_log_value
+        )
+        continued_fraction_log_probability = log_prefactor + jnp.log(
+            _gamma_upper_tail_fraction(fraction_shape, fraction_value)
+        )
+        return jnp.where(
+            use_continued_fraction,
+            continued_fraction_log_probability,
+            safe_direct_log_probability,
+        )
+
+    # The continued fraction only runs when native JAX loses the upper tail
+    return cast(
+        jax.Array,
+        jax.lax.cond(
+            jnp.any(use_continued_fraction),
+            recover_underflow,
+            lambda _: gamma_distribution.logsf(scaled_value, shape),
+            operand=None,
+        ),
+    )
+
+
+def _gamma_upper_tail_fraction(
+    shape: jax.Array,
+    scaled_value: jax.Array,
+) -> jax.Array:
+    minimum_normal = jnp.asarray(
+        np.finfo(scaled_value.dtype).tiny,
+        dtype=scaled_value.dtype,
+    )
+    denominator = scaled_value + 1 - shape
+    d_term = 1 / denominator
+    c_term = jnp.ones_like(scaled_value) / minimum_normal
+    fraction = d_term
+    active = jnp.ones_like(scaled_value, dtype=jnp.bool_)
+    precision = jnp.spacing(jnp.ones((), dtype=scaled_value.dtype))
+
+    def update_fraction(
+        index: int,
+        state: tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array],
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+        current_denominator, current_c, current_d, current_fraction, current_active = state
+        iteration = jnp.asarray(index, dtype=scaled_value.dtype)
+        numerator = -iteration * (iteration - shape)
+        next_denominator = current_denominator + 2
+
+        next_d = numerator * current_d + next_denominator
+        next_d = jnp.where(
+            jnp.abs(next_d) < minimum_normal,
+            jnp.copysign(minimum_normal, next_d),
+            next_d,
+        )
+        next_c = next_denominator + numerator / current_c
+        next_c = jnp.where(
+            jnp.abs(next_c) < minimum_normal,
+            jnp.copysign(minimum_normal, next_c),
+            next_c,
+        )
+        next_d = 1 / next_d
+        multiplier = next_c * next_d
+        fraction_candidate = current_fraction * multiplier
+        next_active = current_active & (jnp.abs(multiplier - 1) > precision)
+
+        return (
+            jnp.where(current_active, next_denominator, current_denominator),
+            jnp.where(current_active, next_c, current_c),
+            jnp.where(current_active, next_d, current_d),
+            jnp.where(current_active, fraction_candidate, current_fraction),
+            next_active,
+        )
+
+    # More precision gets more room to converge without slowing the ordinary JAX path
+    iteration_count = 4 * jax.dtypes.itemsize_bits(scaled_value.dtype)
+    initial_state = (
+        denominator,
+        c_term,
+        d_term,
+        fraction,
+        active,
+    )
+    return cast(
+        jax.Array,
+        jax.lax.fori_loop(
+            1,
+            iteration_count + 1,
+            update_fraction,
+            initial_state,
+        )[3],
+    )

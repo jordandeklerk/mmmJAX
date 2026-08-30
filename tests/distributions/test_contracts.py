@@ -24,7 +24,9 @@ from mmmjax import (
     half_normal_logpdf,
     half_normal_rng,
     inverse_gamma,
+    inverse_gamma_logcdf,
     inverse_gamma_logpdf,
+    inverse_gamma_logsf,
     inverse_gamma_rng,
     laplace,
     laplace_logpdf,
@@ -132,6 +134,8 @@ def test_probability_functions_use_at_least_float32(dtype, expected_dtype) -> No
     assert gamma_logsf(values + 1, dtype(1.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert beta_logpdf(values, dtype(1.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert inverse_gamma_logpdf(values + 1, dtype(1.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
+    assert inverse_gamma_logcdf(values + 1, dtype(1.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
+    assert inverse_gamma_logsf(values + 1, dtype(1.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert laplace_logpdf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert student_t_logpdf(values, dtype(5.0), dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert uniform_logpdf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
@@ -155,6 +159,8 @@ def test_probability_functions_promote_integer_inputs_to_float32() -> None:
     assert gamma_logsf(values + 1, 1, 1).dtype == jnp.dtype(jnp.float32)
     assert beta_logpdf(values, 1, 1).dtype == jnp.dtype(jnp.float32)
     assert inverse_gamma_logpdf(values + 1, 1, 1).dtype == jnp.dtype(jnp.float32)
+    assert inverse_gamma_logcdf(values + 1, 1, 1).dtype == jnp.dtype(jnp.float32)
+    assert inverse_gamma_logsf(values + 1, 1, 1).dtype == jnp.dtype(jnp.float32)
     assert laplace_logpdf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
     assert student_t_logpdf(values, 5, 0, 1).dtype == jnp.dtype(jnp.float32)
     assert uniform_logpdf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
@@ -205,6 +211,8 @@ def test_cumulative_functions_follow_jax_default_dtype_for_python_scalars() -> N
     assert exponential_logsf(1.0, 1.0).dtype == expected_dtype
     assert gamma_logcdf(1.0, 1.0, 1.0).dtype == expected_dtype
     assert gamma_logsf(1.0, 1.0, 1.0).dtype == expected_dtype
+    assert inverse_gamma_logcdf(1.0, 1.0, 1.0).dtype == expected_dtype
+    assert inverse_gamma_logsf(1.0, 1.0, 1.0).dtype == expected_dtype
 
 
 @pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
@@ -227,6 +235,8 @@ def test_distribution_functions_support_float64() -> None:
     assert gamma_logsf(values + 1, 1.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert beta_logpdf(values, 1.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert inverse_gamma_logpdf(values + 1, 1.0, 1.0).dtype == jnp.dtype(jnp.float64)
+    assert inverse_gamma_logcdf(values + 1, 1.0, 1.0).dtype == jnp.dtype(jnp.float64)
+    assert inverse_gamma_logsf(values + 1, 1.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert laplace_logpdf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert student_t_logpdf(values, 5.0, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert uniform_logpdf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
@@ -267,6 +277,8 @@ def test_distribution_functions_support_float64() -> None:
         (beta, (jnp.array([0.25, 0.75]), 2.0, 1.5)),
         (inverse_gamma_logpdf, (jnp.array([0.5, 1.0]), 2.0, 1.5)),
         (inverse_gamma, (jnp.array([0.5, 1.0]), 2.0, 1.5)),
+        (inverse_gamma_logcdf, (jnp.array([0.5, 1.0]), 2.0, 1.5)),
+        (inverse_gamma_logsf, (jnp.array([0.5, 1.0]), 2.0, 1.5)),
         (laplace_logpdf, (jnp.array([0.0, 1.0]), 0.5, 2.0)),
         (laplace, (jnp.array([0.0, 1.0]), 0.5, 2.0)),
         (student_t_logpdf, (jnp.array([0.0, 1.0]), 5.0, 0.5, 2.0)),
@@ -545,6 +557,8 @@ def test_rng_rejects_negative_sample_shape() -> None:
         (gamma_logpdf, (1.0, 1.0 + 0.0j, 1.0), "shape"),
         (beta_logpdf, (0.5, 1.0 + 0.0j, 1.0), "alpha"),
         (inverse_gamma_logpdf, (1.0, 1.0 + 0.0j, 1.0), "shape"),
+        (inverse_gamma_logcdf, (1.0, 1.0 + 0.0j, 1.0), "shape"),
+        (inverse_gamma_logsf, (1.0, 1.0 + 0.0j, 1.0), "shape"),
         (laplace_logpdf, (0.0, 0.0, 1.0 + 0.0j), "scale"),
         (normal_rng, (jax.random.key(0), 0.0, 1.0 + 0.0j), "scale"),
         (half_normal_rng, (jax.random.key(0), 1.0 + 0.0j), "scale"),

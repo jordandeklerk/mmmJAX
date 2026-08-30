@@ -28,7 +28,9 @@ from mmmjax.distributions import (
     half_normal_logpdf,
     half_normal_rng,
     inverse_gamma,
+    inverse_gamma_logcdf,
     inverse_gamma_logpdf,
+    inverse_gamma_logsf,
     inverse_gamma_rng,
     laplace,
     laplace_logpdf,
@@ -205,7 +207,13 @@ IMPLEMENTATIONS: dict[str, dict[str, DistributionFunctions]] = {
             logsf=gamma_logsf,
         ),
         "half_normal": DistributionFunctions(half_normal_logpdf, half_normal, half_normal_rng),
-        "inverse_gamma": DistributionFunctions(inverse_gamma_logpdf, inverse_gamma, inverse_gamma_rng),
+        "inverse_gamma": DistributionFunctions(
+            inverse_gamma_logpdf,
+            inverse_gamma,
+            inverse_gamma_rng,
+            logcdf=inverse_gamma_logcdf,
+            logsf=inverse_gamma_logsf,
+        ),
         "laplace": DistributionFunctions(laplace_logpdf, laplace, laplace_rng),
         "lognormal": DistributionFunctions(
             lognormal_logpdf,
@@ -245,7 +253,7 @@ LOG_PROBABILITY_OPERATIONS = (
 )
 OPERATIONS = DEFAULT_OPERATIONS + LOG_PROBABILITY_OPERATIONS
 INPUT_SETS = ("ordinary", "concentrated", "tail")
-LOG_PROBABILITY_DISTRIBUTIONS = frozenset({"exponential", "gamma", "lognormal", "normal"})
+LOG_PROBABILITY_DISTRIBUTIONS = frozenset({"exponential", "gamma", "inverse_gamma", "lognormal", "normal"})
 
 
 def make_arguments(
@@ -323,6 +331,21 @@ def make_log_probability_arguments(
 
         value = scaled_value.reshape(profile.value_shape) / rate
         return value, shape, rate
+
+    if distribution.name == "inverse_gamma":
+        shape, scale = _make_parameters(distribution, profile, dtype)
+        if input_set == "ordinary":
+            # Scaling by scale / value gives the corresponding unit-rate Gamma argument
+            scaled_inverse_value = jnp.linspace(0.9, 7.35, element_count, dtype=dtype)
+        elif operation == "logcdf":
+            # The Inverse Gamma CDF maps to the Gamma upper tail
+            scaled_inverse_value = jnp.linspace(8.43, 40.1, element_count, dtype=dtype)
+        else:
+            # The Inverse Gamma survival function maps to the Gamma lower tail
+            scaled_inverse_value = jnp.geomspace(2e-4, 0.76, element_count, dtype=dtype)
+
+        value = scale / scaled_inverse_value.reshape(profile.value_shape)
+        return value, shape, scale
 
     if input_set == "ordinary":
         lower, upper = -2.0, 2.0
