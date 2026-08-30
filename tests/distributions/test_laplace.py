@@ -6,8 +6,7 @@ import numpy as np
 import pytest
 from scipy import stats
 
-from mmmjax import laplace, laplace_logpdf, laplace_rng
-from mmmjax.distributions._laplace import laplace_logcdf, laplace_logsf
+from mmmjax import laplace, laplace_logcdf, laplace_logpdf, laplace_logsf, laplace_rng
 
 
 @pytest.mark.parametrize(

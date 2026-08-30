@@ -24,7 +24,9 @@ from mmmjax.distributions._inverse_gamma import inverse_gamma_logpdf as inverse_
 from mmmjax.distributions._inverse_gamma import inverse_gamma_logsf as inverse_gamma_logsf
 from mmmjax.distributions._inverse_gamma import inverse_gamma_rng as inverse_gamma_rng
 from mmmjax.distributions._laplace import laplace as laplace
+from mmmjax.distributions._laplace import laplace_logcdf as laplace_logcdf
 from mmmjax.distributions._laplace import laplace_logpdf as laplace_logpdf
+from mmmjax.distributions._laplace import laplace_logsf as laplace_logsf
 from mmmjax.distributions._laplace import laplace_rng as laplace_rng
 from mmmjax.distributions._lognormal import lognormal as lognormal
 from mmmjax.distributions._lognormal import lognormal_logcdf as lognormal_logcdf
@@ -70,7 +72,9 @@ __all__ = [
     "inverse_gamma_logsf",
     "inverse_gamma_rng",
     "laplace",
+    "laplace_logcdf",
     "laplace_logpdf",
+    "laplace_logsf",
     "laplace_rng",
     "lognormal",
     "lognormal_logcdf",
