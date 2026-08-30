@@ -67,6 +67,14 @@ def _inverse_gamma_logpdf(value: jax.Array, shape: jax.Array, scale: jax.Array) 
     return jnp.where(supported, log_density, jnp.where(jnp.isnan(value), jnp.nan, -jnp.inf))
 
 
+def _inverse_gamma_logcdf(value: jax.Array, shape: jax.Array, scale: jax.Array) -> jax.Array:
+    return stats.gamma.logsf(scale / value, shape)
+
+
+def _inverse_gamma_logsf(value: jax.Array, shape: jax.Array, scale: jax.Array) -> jax.Array:
+    return stats.gamma.logcdf(scale / value, shape)
+
+
 def _lognormal_logpdf(
     value: jax.Array,
     location: jax.Array,
@@ -249,7 +257,12 @@ JAX_REFERENCES: dict[str, JaxReference] = {
         logsf=_gamma_logsf,
     ),
     "half_normal": JaxReference(_half_normal_logpdf, _half_normal_rng),
-    "inverse_gamma": JaxReference(_inverse_gamma_logpdf, _inverse_gamma_rng),
+    "inverse_gamma": JaxReference(
+        _inverse_gamma_logpdf,
+        _inverse_gamma_rng,
+        logcdf=_inverse_gamma_logcdf,
+        logsf=_inverse_gamma_logsf,
+    ),
     "laplace": JaxReference(stats.laplace.logpdf, _laplace_rng),
     "lognormal": JaxReference(
         _lognormal_logpdf,

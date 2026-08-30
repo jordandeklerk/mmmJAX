@@ -206,6 +206,28 @@ def test_mmmjax_exponential_log_probabilities_match_jax_and_scipy(operation: str
     _assert_close(result, jax_reference(values, rate))
 
 
+@pytest.mark.parametrize("operation", ["logcdf", "logsf"])
+def test_mmmjax_inverse_gamma_log_probabilities_match_jax_and_scipy(operation: str) -> None:
+    values = (
+        jnp.array([0.03, 0.05, 0.1, 0.2, 0.5, 1.0])
+        if operation == "logcdf"
+        else jnp.array([0.2, 0.5, 1.0, 2.0, 5.0, 20.0])
+    )
+    shape = jnp.asarray(3.5)
+    scale = jnp.asarray(1.2)
+    implementation = getattr(mmmjax, f"inverse_gamma_{operation}")
+    jax_reference = getattr(JAX_REFERENCES["inverse_gamma"], operation)
+    scipy_reference = getattr(stats.invgamma, operation)
+    assert jax_reference is not None
+
+    result = implementation(values, shape, scale)
+    jax_result = jax_reference(values, shape, scale)
+    scipy_result = scipy_reference(np.asarray(values), float(shape), scale=float(scale))
+
+    _assert_close(result, jax_result)
+    _assert_scipy_tail_close(result, scipy_result)
+
+
 @pytest.mark.parametrize("differentiate", [jax.jacfwd, jax.jacrev], ids=["forward", "reverse"])
 @pytest.mark.parametrize("operation", ["logcdf", "logsf"])
 def test_mmmjax_normal_log_probability_gradients_match_jax(operation: str, differentiate) -> None:
