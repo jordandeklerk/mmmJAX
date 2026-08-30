@@ -57,9 +57,9 @@ def laplace_logpdf(
     standardized = _standardize(value_array, safe_location, safe_scale)
     # The constant branch gives the same symmetric subgradient Stan uses at the cusp
     standardized_distance = jnp.where(
-        standardized == 0,
+        value_array == safe_location,
         jnp.zeros_like(standardized),
-        jnp.abs(standardized),
+        jnp.where(value_array < safe_location, -standardized, standardized),
     )
 
     log_two = jnp.asarray(math.log(2), dtype=value_array.dtype)

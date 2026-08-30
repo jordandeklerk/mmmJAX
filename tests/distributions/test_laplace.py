@@ -129,6 +129,23 @@ def test_laplace_logpdf_uses_stan_subgradient_at_location() -> None:
     assert jnp.allclose(forward_tangent, -0.125)
 
 
+def test_laplace_logpdf_preserves_gradients_when_standardized_residuals_underflow() -> None:
+    values = jnp.array([-1e-30, 1e-30], dtype=jnp.float32)
+    location = jnp.float32(0)
+    scale = jnp.float32(1e20)
+    expected_value_gradient = jnp.array([1e-20, -1e-20], dtype=jnp.float32)
+    expected_location_gradient = -expected_value_gradient
+    gradient = jax.vmap(jax.grad(laplace_logpdf, argnums=(0, 1)), in_axes=(0, None, None))
+
+    value_gradient, location_gradient = gradient(values, location, scale)
+    compiled_value_gradient, compiled_location_gradient = jax.jit(gradient)(values, location, scale)
+
+    assert jnp.allclose(value_gradient, expected_value_gradient, rtol=3e-6, atol=0)
+    assert jnp.allclose(location_gradient, expected_location_gradient, rtol=3e-6, atol=0)
+    assert jnp.allclose(compiled_value_gradient, expected_value_gradient, rtol=3e-6, atol=0)
+    assert jnp.allclose(compiled_location_gradient, expected_location_gradient, rtol=3e-6, atol=0)
+
+
 @pytest.mark.parametrize(
     ("function", "reference"),
     [
