@@ -213,14 +213,27 @@ def test_uniform_log_probabilities_preserve_values_next_to_extreme_bounds() -> N
         ),
     ],
 )
+@pytest.mark.parametrize(
+    "include_overflowing_interval",
+    [False, True],
+    ids=["finite-width", "overflow-fallback"],
+)
 def test_uniform_log_probability_derivatives_match_closed_form(
     function,
     expected_gradient,
     expected_hessian,
+    include_overflowing_interval: bool,
 ) -> None:
     arguments = jnp.array([0.5, -2.0, 3.0])
 
     def evaluate(current):
+        if include_overflowing_interval:
+            maximum = jnp.asarray(jnp.finfo(current.dtype).max)
+            values = jnp.stack((current[0], jnp.zeros_like(current[0])))
+            lowers = jnp.stack((current[1], -maximum))
+            uppers = jnp.stack((current[2], maximum))
+            return function(values, lowers, uppers)[0]
+
         return function(current[0], current[1], current[2])
 
     forward = jax.jit(jax.jacfwd(evaluate))(arguments)
@@ -230,6 +243,38 @@ def test_uniform_log_probability_derivatives_match_closed_form(
     assert jnp.allclose(forward, jnp.asarray(expected_gradient))
     assert jnp.allclose(reverse, jnp.asarray(expected_gradient))
     assert jnp.allclose(hessian, jnp.asarray(expected_hessian))
+
+
+@pytest.mark.parametrize(
+    ("function", "expected_gradient"),
+    [
+        pytest.param(uniform_logcdf, [0.4, -0.2, -0.2], id="logcdf"),
+        pytest.param(uniform_logsf, [-0.4, 0.2, 0.2], id="logsf"),
+    ],
+)
+def test_uniform_log_probabilities_can_be_vectorized_across_numerical_paths(
+    function,
+    expected_gradient,
+) -> None:
+    dtype = jnp.asarray(0.0).dtype
+    maximum = jnp.asarray(jnp.finfo(dtype).max)
+    arguments = jnp.array(
+        [
+            [0.5, -2.0, 3.0],
+            [0.0, -maximum, maximum],
+        ],
+        dtype=dtype,
+    )
+
+    def evaluate(current):
+        return jax.vmap(lambda row: function(row[0], row[1], row[2]))(current)
+
+    result = jax.jit(evaluate)(arguments)
+    gradient = jax.jit(jax.grad(lambda current: jnp.sum(evaluate(current))))(arguments)
+
+    assert jnp.allclose(result, -jnp.log(2))
+    assert jnp.allclose(gradient[0], jnp.asarray(expected_gradient))
+    assert jnp.all(jnp.isfinite(gradient))
 
 
 @pytest.mark.parametrize(("lower", "upper"), [(-1.0, 2.0), (2.0, 6.0)])

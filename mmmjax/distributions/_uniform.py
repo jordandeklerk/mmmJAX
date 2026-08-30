@@ -1,5 +1,7 @@
 """Uniform distribution functions."""
 
+from typing import cast
+
 import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
@@ -137,9 +139,13 @@ def uniform_logcdf(
         valid_bounds & jnp.isfinite(value_array) & (value_array > lower_array) & (value_array < upper_array)
     )
 
-    log_left_distance = _log_difference(value_array, lower_array, inside_support)
-    log_right_distance = _log_difference(upper_array, value_array, inside_support)
-    interior_log_cdf = jax.nn.log_sigmoid(log_left_distance - log_right_distance)
+    interior_log_cdf = _uniform_interior_log_probability(
+        value_array,
+        lower_array,
+        upper_array,
+        inside_support,
+        survival=False,
+    )
 
     boundary_log_cdf = jnp.where(value_array <= lower_array, -jnp.inf, 0)
     boundary_log_cdf = jnp.where(jnp.isnan(value_array), jnp.nan, boundary_log_cdf)
@@ -192,9 +198,13 @@ def uniform_logsf(
         valid_bounds & jnp.isfinite(value_array) & (value_array > lower_array) & (value_array < upper_array)
     )
 
-    log_left_distance = _log_difference(value_array, lower_array, inside_support)
-    log_right_distance = _log_difference(upper_array, value_array, inside_support)
-    interior_log_survival = jax.nn.log_sigmoid(log_right_distance - log_left_distance)
+    interior_log_survival = _uniform_interior_log_probability(
+        value_array,
+        lower_array,
+        upper_array,
+        inside_support,
+        survival=True,
+    )
 
     boundary_log_survival = jnp.where(value_array <= lower_array, 0, -jnp.inf)
     boundary_log_survival = jnp.where(jnp.isnan(value_array), jnp.nan, boundary_log_survival)
@@ -278,3 +288,57 @@ def _log_difference(
     positive_upper = jnp.where(crosses_zero, upper, 1)
     cross_zero_log_difference = jnp.logaddexp(jnp.log(negative_lower), jnp.log(positive_upper))
     return jnp.where(crosses_zero, cross_zero_log_difference, direct_log_difference)
+
+
+def _uniform_interior_log_probability(
+    value: jax.Array,
+    lower: jax.Array,
+    upper: jax.Array,
+    inside_support: jax.Array,
+    *,
+    survival: bool,
+) -> jax.Array:
+    width = upper - lower
+
+    def finite_width_probability(_: None) -> jax.Array:
+        safe_value = jnp.where(inside_support, value, jnp.zeros_like(value))
+        safe_lower = jnp.where(inside_support, lower, -jnp.ones_like(lower))
+        safe_upper = jnp.where(inside_support, upper, jnp.ones_like(upper))
+        safe_width = jnp.where(inside_support, width, 2)
+
+        left_distance = safe_value - safe_lower
+        right_distance = safe_upper - safe_value
+        direct_distance = right_distance if survival else left_distance
+        complement_distance = left_distance if survival else right_distance
+
+        use_direct_probability = direct_distance <= complement_distance
+        safe_direct_distance = jnp.where(use_direct_probability, direct_distance, jnp.ones_like(direct_distance))
+        safe_complement_distance = jnp.where(
+            use_direct_probability,
+            jnp.zeros_like(complement_distance),
+            complement_distance,
+        )
+        direct_log_probability = jnp.log(safe_direct_distance) - jnp.log(safe_width)
+        complement_log_probability = jnp.log1p(-safe_complement_distance / safe_width)
+        return jnp.where(
+            use_direct_probability,
+            direct_log_probability,
+            complement_log_probability,
+        )
+
+    def log_space_probability(_: None) -> jax.Array:
+        log_left_distance = _log_difference(value, lower, inside_support)
+        log_right_distance = _log_difference(upper, value, inside_support)
+        log_odds = log_right_distance - log_left_distance if survival else log_left_distance - log_right_distance
+        return jax.nn.log_sigmoid(log_odds)
+
+    # Ordinary finite widths use fewer operations while extreme intervals keep the log-space path
+    return cast(
+        jax.Array,
+        jax.lax.cond(
+            jnp.all(jnp.isfinite(width)),
+            finite_width_probability,
+            log_space_probability,
+            operand=None,
+        ),
+    )
