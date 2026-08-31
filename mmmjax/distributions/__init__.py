@@ -3,6 +3,9 @@
 from mmmjax.distributions._beta import beta as beta
 from mmmjax.distributions._beta import beta_logpdf as beta_logpdf
 from mmmjax.distributions._beta import beta_rng as beta_rng
+from mmmjax.distributions._cauchy import cauchy as cauchy
+from mmmjax.distributions._cauchy import cauchy_logpdf as cauchy_logpdf
+from mmmjax.distributions._cauchy import cauchy_rng as cauchy_rng
 from mmmjax.distributions._exponential import exponential as exponential
 from mmmjax.distributions._exponential import exponential_logcdf as exponential_logcdf
 from mmmjax.distributions._exponential import exponential_logpdf as exponential_logpdf
@@ -51,6 +54,9 @@ __all__ = [
     "beta",
     "beta_logpdf",
     "beta_rng",
+    "cauchy",
+    "cauchy_logpdf",
+    "cauchy_rng",
     "exponential",
     "exponential_logcdf",
     "exponential_logpdf",
