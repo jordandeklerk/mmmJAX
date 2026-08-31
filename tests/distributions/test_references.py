@@ -110,6 +110,8 @@ def test_jax_references_cover_every_distribution() -> None:
         "laplace",
         "lognormal",
         "normal",
+        "poisson",
+        "poisson_log",
         "student_t",
         "uniform",
     }
@@ -230,6 +232,46 @@ def test_binomial_rng_references_match_public_operations() -> None:
         logit_reference.rng(key, trials, logits, sample_shape=(4,)),
         expected_logit_samples,
     )
+
+
+def test_poisson_log_probability_references_match_public_operations() -> None:
+    values = jnp.array([[0], [1], [4], [12]])
+    rates = jnp.array([0.2, 1.0, 4.5, 20.0])
+    log_rates = jnp.array([-2.0, 0.0, 1.5, 3.0])
+
+    rate_reference = JAX_REFERENCES["poisson"]
+    log_rate_reference = JAX_REFERENCES["poisson_log"]
+
+    assert jnp.array_equal(
+        rate_reference.elementwise_log_probability(values, rates),
+        jax_stats.poisson.logpmf(values, rates),
+    )
+    assert jnp.allclose(
+        log_rate_reference.elementwise_log_probability(values, log_rates),
+        jax_stats.poisson.logpmf(values, jnp.exp(log_rates)),
+        rtol=3e-6,
+        atol=2e-6,
+    )
+
+
+def test_poisson_rng_references_match_public_operations() -> None:
+    rates = jnp.array([0.2, 2.0, 10.0])
+    log_rates = jnp.log(rates)
+    key = jax.random.key(0)
+    rate_result = JAX_REFERENCES["poisson"].rng(key, rates, sample_shape=(4,))
+    log_rate_result = JAX_REFERENCES["poisson_log"].rng(key, log_rates, sample_shape=(4,))
+    expected_rate_result = jax.random.poisson(key, rates, shape=(4, 3), dtype=jnp.int32)
+    expected_log_rate_result = jax.random.poisson(
+        key,
+        jnp.exp(log_rates),
+        shape=(4, 3),
+        dtype=jnp.int32,
+    )
+
+    assert rate_result.dtype == jnp.dtype(jnp.int32)
+    assert log_rate_result.dtype == jnp.dtype(jnp.int32)
+    assert jnp.array_equal(rate_result, expected_rate_result)
+    assert jnp.array_equal(log_rate_result, expected_log_rate_result)
 
 
 @pytest.mark.parametrize("case", _SMOOTH_REFERENCE_CASES, ids=lambda case: case.name)
