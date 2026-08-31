@@ -170,14 +170,6 @@ def test_cauchy_sums_broadcast_log_densities() -> None:
     assert jnp.allclose(result, expected)
 
 
-def test_cauchy_empty_batch_preserves_parameter_validation() -> None:
-    values = jnp.empty((0,))
-
-    assert cauchy(values, 0.0, 1.0) == 0
-    assert jnp.isnan(cauchy(values, 0.0, 0.0))
-    assert jnp.isnan(jax.jit(cauchy)(values, jnp.inf, 1.0))
-
-
 @pytest.mark.parametrize(
     "arguments",
     [

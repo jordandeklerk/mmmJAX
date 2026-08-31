@@ -81,17 +81,7 @@ def uniform(
         Complete normalized log density, including constants, summed across
         every dimension of the broadcast result.
     """
-    log_densities = uniform_logpdf(value, lower, upper)
-    log_density = jnp.sum(log_densities)
-
-    # Only empty results need a separate check because no element can carry nan into the sum
-    if log_densities.size:
-        return log_density
-
-    lower_array, upper_array = _promote_inexact(("lower", lower), ("upper", upper))
-    finite_bounds = jnp.all(jnp.isfinite(lower_array)) & jnp.all(jnp.isfinite(upper_array))
-    valid_bounds = finite_bounds & jnp.all(lower_array < upper_array)
-    return jnp.where(valid_bounds, log_density, jnp.nan)
+    return jnp.sum(uniform_logpdf(value, lower, upper))
 
 
 def uniform_logcdf(
@@ -246,26 +236,24 @@ def uniform_rng(
     output_shape = _random_shape(sample_shape, lower_array, upper_array)
 
     valid_bounds = jnp.isfinite(lower_array) & jnp.isfinite(upper_array) & (lower_array < upper_array)
-    safe_lower = jnp.where(valid_bounds, lower_array, jnp.zeros_like(lower_array))
-    safe_upper = jnp.where(valid_bounds, upper_array, jnp.ones_like(upper_array))
 
     unit_samples = jax.random.uniform(key, shape=output_shape, dtype=lower_array.dtype)
-    crosses_zero = (safe_lower < 0) & (safe_upper > 0)
+    crosses_zero = (lower_array < 0) & (upper_array > 0)
 
-    direct_lower = jnp.where(crosses_zero, jnp.zeros_like(safe_lower), safe_lower)
-    direct_upper = jnp.where(crosses_zero, jnp.ones_like(safe_upper), safe_upper)
+    direct_lower = jnp.where(crosses_zero, jnp.zeros_like(lower_array), lower_array)
+    direct_upper = jnp.where(crosses_zero, jnp.ones_like(upper_array), upper_array)
     direct_samples = direct_lower + unit_samples * (direct_upper - direct_lower)
 
-    cross_zero_lower = jnp.where(crosses_zero, safe_lower, jnp.zeros_like(safe_lower))
-    cross_zero_upper = jnp.where(crosses_zero, safe_upper, jnp.ones_like(safe_upper))
+    cross_zero_lower = jnp.where(crosses_zero, lower_array, jnp.zeros_like(lower_array))
+    cross_zero_upper = jnp.where(crosses_zero, upper_array, jnp.ones_like(upper_array))
     # Convex interpolation stays finite when valid bounds span the dtype range
     cross_zero_samples = (1 - unit_samples) * cross_zero_lower + unit_samples * cross_zero_upper
     samples = jnp.where(crosses_zero, cross_zero_samples, direct_samples)
-    samples = jnp.maximum(samples, safe_lower)
+    samples = jnp.maximum(samples, lower_array)
     # Keep the rounding guard out of pathwise gradients through the bounds
     upper_limit = jnp.nextafter(
-        jax.lax.stop_gradient(safe_upper),
-        jax.lax.stop_gradient(safe_lower),
+        jax.lax.stop_gradient(upper_array),
+        jax.lax.stop_gradient(lower_array),
     )
     samples = jnp.minimum(samples, upper_limit)
 

@@ -68,16 +68,7 @@ def half_normal(value: ArrayLike, scale: ArrayLike) -> jax.Array:
         Complete normalized log density, including constants, summed across
         every dimension of the broadcast result.
     """
-    log_densities = half_normal_logpdf(value, scale)
-    log_density = jnp.sum(log_densities)
-
-    # Only empty results need a separate check because no element can carry nan into the sum
-    if log_densities.size:
-        return log_density
-
-    scale_array = jnp.asarray(scale)
-    valid_scale = jnp.all(jnp.isfinite(scale_array) & (scale_array > 0))
-    return jnp.where(valid_scale, log_density, jnp.nan)
+    return jnp.sum(half_normal_logpdf(value, scale))
 
 
 def half_normal_logcdf(value: ArrayLike, scale: ArrayLike) -> jax.Array:
@@ -138,7 +129,7 @@ def half_normal_logsf(value: ArrayLike, scale: ArrayLike) -> jax.Array:
     -------
     jax.Array
         Log survival probabilities with the broadcast shape of the arguments.
-        Values below zero produce zero. A nonpositive or nonfinite scale
+        Values at or below zero produce zero. A nonpositive or nonfinite scale
         produces ``nan``.
     """
     value_array, scale_array = _promote_inexact(("value", value), ("scale", scale))
@@ -179,13 +170,12 @@ def _half_normal_logcdf_kernel(value: jax.Array, scale: jax.Array) -> jax.Array:
     valid_scale = jnp.isfinite(scale) & (scale > 0)
     positive_finite_value = jnp.isfinite(value) & (value > 0)
     safe_value = jnp.where(positive_finite_value, value, jnp.ones_like(value))
-    safe_scale = jnp.where(valid_scale, scale, jnp.ones_like(scale))
-    standardized = _standardize(safe_value, jnp.zeros_like(safe_value), safe_scale)
+    standardized = _standardize(safe_value, jnp.zeros_like(safe_value), scale)
 
     half_log_two_over_pi = jnp.asarray(math.log(2 / math.pi) / 2, dtype=value.dtype)
     # The leading log limit stays finite when erf falls below the dtype's normal range
     small_threshold = jnp.sqrt(jnp.asarray(np.finfo(value.dtype).tiny, dtype=value.dtype))
-    small_logcdf = jnp.log(safe_value) - jnp.log(safe_scale) + half_log_two_over_pi
+    small_logcdf = jnp.log(safe_value) - jnp.log(scale) + half_log_two_over_pi
 
     ordinary_region = (standardized >= small_threshold) & (standardized <= 1)
     ordinary_standardized = jnp.where(ordinary_region, standardized, jnp.ones_like(standardized))
@@ -213,8 +203,7 @@ def _half_normal_logsf_kernel(value: jax.Array, scale: jax.Array) -> jax.Array:
     valid_scale = jnp.isfinite(scale) & (scale > 0)
     nonnegative_finite_value = jnp.isfinite(value) & (value >= 0)
     safe_value = jnp.where(nonnegative_finite_value, value, jnp.ones_like(value))
-    safe_scale = jnp.where(valid_scale, scale, jnp.ones_like(scale))
-    standardized = _standardize(safe_value, jnp.zeros_like(safe_value), safe_scale)
+    standardized = _standardize(safe_value, jnp.zeros_like(safe_value), scale)
 
     ordinary_region = standardized <= 1
     ordinary_standardized = jnp.where(ordinary_region, standardized, jnp.ones_like(standardized))

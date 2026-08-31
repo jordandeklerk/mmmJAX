@@ -61,15 +61,13 @@ def test_uniform_logpdf_rejects_invalid_bounds_before_support_check() -> None:
     assert jnp.all(jnp.isnan(result))
 
 
-def test_uniform_rejects_bounds_that_collapse_after_dtype_promotion() -> None:
+def test_uniform_logpdf_rejects_bounds_that_collapse_after_dtype_promotion() -> None:
     lower = jnp.int32(16_777_216)
     upper = jnp.int32(16_777_217)
 
-    pointwise_result = uniform_logpdf(lower, lower, upper)
-    empty_batch_result = uniform(jnp.empty((0,)), lower, upper)
+    result = uniform_logpdf(lower, lower, upper)
 
-    assert jnp.isnan(pointwise_result)
-    assert jnp.isnan(empty_batch_result)
+    assert jnp.isnan(result)
 
 
 def test_uniform_logpdf_handles_opposite_sign_bounds_at_finite_maximum() -> None:

@@ -86,17 +86,7 @@ def inverse_gamma(
         Complete normalized log density, including constants, summed across
         every dimension of the broadcast result.
     """
-    log_densities = inverse_gamma_logpdf(value, shape, scale)
-    log_density = jnp.sum(log_densities)
-
-    # Only empty results need a separate check because no element can carry nan into the sum
-    if log_densities.size:
-        return log_density
-
-    shape_array, scale_array = _promote_inexact(("shape", shape), ("scale", scale))
-    valid_shape = jnp.all(jnp.isfinite(shape_array) & (shape_array > 0))
-    valid_scale = jnp.all(jnp.isfinite(scale_array) & (scale_array > 0))
-    return jnp.where(valid_shape & valid_scale, log_density, jnp.nan)
+    return jnp.sum(inverse_gamma_logpdf(value, shape, scale))
 
 
 def inverse_gamma_logcdf(
@@ -207,7 +197,6 @@ def inverse_gamma_rng(
     valid_scale = jnp.isfinite(scale_array) & (scale_array > 0)
     # Keep invalid shapes out of JAX's rejection sampler
     safe_shape = jnp.where(valid_shape, shape_array, jnp.ones_like(shape_array))
-    safe_scale = jnp.where(valid_scale, scale_array, jnp.ones_like(scale_array))
 
     # Work in log space so tiny Gamma draws can be inverted before they underflow
     log_unit_rate_samples = jax.random.loggamma(
@@ -216,7 +205,7 @@ def inverse_gamma_rng(
         shape=output_shape,
         dtype=shape_array.dtype,
     )
-    samples = jnp.exp(jnp.log(safe_scale) - log_unit_rate_samples)
+    samples = jnp.exp(jnp.log(scale_array) - log_unit_rate_samples)
 
     return jnp.where(valid_shape & valid_scale, samples, jnp.nan)
 

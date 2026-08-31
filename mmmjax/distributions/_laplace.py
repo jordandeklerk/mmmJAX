@@ -51,19 +51,17 @@ def laplace_logpdf(
 
     valid_location = jnp.isfinite(location_array)
     valid_scale = jnp.isfinite(scale_array) & (scale_array > 0)
-    safe_location = jnp.where(valid_location, location_array, jnp.zeros_like(location_array))
-    safe_scale = jnp.where(valid_scale, scale_array, jnp.ones_like(scale_array))
 
-    standardized = _standardize(value_array, safe_location, safe_scale)
+    standardized = _standardize(value_array, location_array, scale_array)
     # The constant branch gives the same symmetric subgradient Stan uses at the cusp
     standardized_distance = jnp.where(
-        value_array == safe_location,
+        value_array == location_array,
         jnp.zeros_like(standardized),
-        jnp.where(value_array < safe_location, -standardized, standardized),
+        jnp.where(value_array < location_array, -standardized, standardized),
     )
 
     log_two = jnp.asarray(math.log(2), dtype=value_array.dtype)
-    log_density = -log_two - jnp.log(safe_scale) - standardized_distance
+    log_density = -log_two - jnp.log(scale_array) - standardized_distance
     return jnp.where(valid_location & valid_scale, log_density, jnp.nan)
 
 
@@ -89,19 +87,7 @@ def laplace(
         Complete normalized log density, including constants, summed across
         every dimension of the broadcast result.
     """
-    log_densities = laplace_logpdf(value, location, scale)
-    log_density = jnp.sum(log_densities)
-
-    # Only empty results need a separate check because no element can carry nan into the sum
-    if log_densities.size:
-        return log_density
-
-    location_array, scale_array = _promote_inexact(
-        ("location", location),
-        ("scale", scale),
-    )
-    valid_parameters = jnp.all(jnp.isfinite(location_array)) & jnp.all(jnp.isfinite(scale_array) & (scale_array > 0))
-    return jnp.where(valid_parameters, log_density, jnp.nan)
+    return jnp.sum(laplace_logpdf(value, location, scale))
 
 
 def laplace_logcdf(
@@ -251,10 +237,8 @@ def _laplace_log_probability(
     survival: bool,
 ) -> jax.Array:
     valid_parameters = jnp.isfinite(location) & jnp.isfinite(scale) & (scale > 0)
-    safe_location = jnp.where(valid_parameters, location, jnp.zeros_like(location))
-    safe_scale = jnp.where(valid_parameters, scale, jnp.ones_like(scale))
-    standardized = _standardize(value, safe_location, safe_scale)
-    below_location = value < safe_location
+    standardized = _standardize(value, location, scale)
+    below_location = value < location
 
     log_two = jnp.asarray(math.log(2), dtype=value.dtype)
     if survival:
