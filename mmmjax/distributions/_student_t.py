@@ -63,20 +63,17 @@ def student_t_logpdf(
     valid_location = jnp.isfinite(location_array)
     valid_scale = jnp.isfinite(scale_array) & (scale_array > 0)
 
-    safe_degrees = jnp.where(valid_degrees, degrees_array, jnp.ones_like(degrees_array))
-    safe_location = jnp.where(valid_location, location_array, jnp.zeros_like(location_array))
-    safe_scale = jnp.where(valid_scale, scale_array, jnp.ones_like(scale_array))
-    log_scale = jnp.log(safe_scale)
+    log_scale = jnp.log(scale_array)
 
     one = jnp.ones((), dtype=value_array.dtype)
     log_two = jnp.asarray(math.log(2), dtype=value_array.dtype)
 
-    residual = value_array - safe_location
-    at_location = value_array == safe_location
+    residual = value_array - location_array
+    at_location = value_array == location_array
     scaled_residual_region = jnp.isfinite(value_array) & valid_location & ~at_location
 
     scaled_value = jnp.where(scaled_residual_region, value_array, jnp.ones_like(value_array))
-    scaled_location = jnp.where(scaled_residual_region, safe_location, jnp.zeros_like(safe_location))
+    scaled_location = jnp.where(scaled_residual_region, location_array, jnp.zeros_like(location_array))
     residual_magnitude = jnp.maximum(jnp.abs(scaled_value), jnp.abs(scaled_location))
     _, residual_exponent = jnp.frexp(residual_magnitude)
     residual_scale = jnp.ldexp(
@@ -99,8 +96,8 @@ def student_t_logpdf(
     )
 
     epsilon = jnp.spacing(one)
-    tail_weight = (safe_degrees + 1) / 2
-    log_squared_ratio = 2 * (log_absolute_residual - log_scale) - jnp.log(safe_degrees)
+    tail_weight = (degrees_array + 1) / 2
+    log_squared_ratio = 2 * (log_absolute_residual - log_scale) - jnp.log(degrees_array)
     log_squared_ratio = jnp.where(at_location, -jnp.inf, log_squared_ratio)
     small_ratio_region = log_squared_ratio < jnp.log(epsilon)
 
@@ -123,13 +120,13 @@ def student_t_logpdf(
     center_residual = jnp.where(at_location, residual, jnp.zeros_like(residual))
     center_scale = jnp.where(
         at_location,
-        jax.lax.stop_gradient(safe_scale),
-        jnp.ones_like(safe_scale),
+        jax.lax.stop_gradient(scale_array),
+        jnp.ones_like(scale_array),
     )
     center_degrees = jnp.where(
         at_location,
-        jax.lax.stop_gradient(safe_degrees),
-        jnp.ones_like(safe_degrees),
+        jax.lax.stop_gradient(degrees_array),
+        jnp.ones_like(degrees_array),
     )
     center_standardized = center_residual / center_scale
     center_squared_standardized = jnp.square(center_standardized)
@@ -158,9 +155,9 @@ def student_t_logpdf(
         64 if dtype_bits == 64 else 8,
         dtype=value_array.dtype,
     )
-    small_degrees_region = safe_degrees < 1
-    asymptotic_region = safe_degrees >= asymptotic_threshold
-    gamma_normalizer_degrees = jnp.where(asymptotic_region, jnp.ones_like(safe_degrees), safe_degrees)
+    small_degrees_region = degrees_array < 1
+    asymptotic_region = degrees_array >= asymptotic_threshold
+    gamma_normalizer_degrees = jnp.where(asymptotic_region, jnp.ones_like(degrees_array), degrees_array)
 
     half = jnp.asarray(0.5, dtype=value_array.dtype)
     log_pi = jnp.asarray(math.log(math.pi), dtype=value_array.dtype)
@@ -181,8 +178,8 @@ def student_t_logpdf(
     # The asymptotic form avoids subtracting nearly equal log-Gamma values
     asymptotic_degrees = jnp.where(
         asymptotic_region,
-        safe_degrees,
-        jnp.full_like(safe_degrees, asymptotic_threshold),
+        degrees_array,
+        jnp.full_like(degrees_array, asymptotic_threshold),
     )
     inverse_degrees = 1 / asymptotic_degrees
     squared_inverse_degrees = jnp.square(inverse_degrees)
@@ -270,9 +267,8 @@ def student_t_rng(
     valid_degrees = jnp.isfinite(degrees_array) & (degrees_array > 0)
     valid_location = jnp.isfinite(location_array)
     valid_scale = jnp.isfinite(scale_array) & (scale_array > 0)
+    # Keep invalid degrees of freedom out of JAX's rejection sampler
     safe_degrees = jnp.where(valid_degrees, degrees_array, jnp.ones_like(degrees_array))
-    safe_location = jnp.where(valid_location, location_array, jnp.zeros_like(location_array))
-    safe_scale = jnp.where(valid_scale, scale_array, jnp.ones_like(scale_array))
 
     normal_key, gamma_key = jax.random.split(key)
     standard_normal = jax.random.normal(normal_key, shape=output_shape, dtype=degrees_array.dtype)
@@ -286,7 +282,7 @@ def student_t_rng(
     nonzero_normal = standard_normal != 0
     safe_absolute_normal = jnp.where(nonzero_normal, jnp.abs(standard_normal), jnp.ones_like(standard_normal))
     log_magnitude = (
-        jnp.log(safe_scale)
+        jnp.log(scale_array)
         + jnp.log(safe_absolute_normal)
         + 0.5 * (jnp.log(safe_degrees) - math.log(2) - log_unit_gamma)
     )
@@ -296,6 +292,6 @@ def student_t_rng(
         jnp.zeros_like(standard_normal),
     )
 
-    samples = safe_location + centered_samples
+    samples = location_array + centered_samples
     valid_parameters = valid_degrees & valid_location & valid_scale
     return jnp.where(valid_parameters, samples, jnp.nan)

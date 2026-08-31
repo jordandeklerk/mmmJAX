@@ -50,12 +50,10 @@ def cauchy_logpdf(
 
     valid_location = jnp.isfinite(location_array)
     valid_scale = jnp.isfinite(scale_array) & (scale_array > 0)
-    safe_location = jnp.where(valid_location, location_array, jnp.zeros_like(location_array))
-    safe_scale = jnp.where(valid_scale, scale_array, jnp.ones_like(scale_array))
 
-    residual = value_array - safe_location
+    residual = value_array - location_array
     subtraction_overflowed = jnp.isinf(residual) & jnp.isfinite(value_array)
-    central = ~subtraction_overflowed & (jnp.abs(residual) <= safe_scale)
+    central = ~subtraction_overflowed & (jnp.abs(residual) <= scale_array)
 
     direct_tail = ~central & ~subtraction_overflowed
     direct_residual = jnp.where(direct_tail, jnp.abs(residual), jnp.ones_like(residual))
@@ -64,7 +62,7 @@ def cauchy_logpdf(
     # Halving both parts keeps a finite subtraction in range and only changes its log by log(2)
     half = jnp.asarray(0.5, dtype=value_array.dtype)
     overflow_value = jnp.where(subtraction_overflowed, value_array, jnp.zeros_like(value_array))
-    overflow_location = jnp.where(subtraction_overflowed, safe_location, jnp.zeros_like(safe_location))
+    overflow_location = jnp.where(subtraction_overflowed, location_array, jnp.zeros_like(location_array))
     halved_residual = half * overflow_value - half * overflow_location
     safe_halved_residual = jnp.where(
         subtraction_overflowed,
@@ -79,10 +77,10 @@ def cauchy_logpdf(
         direct_log_residual,
     )
 
-    log_scale = jnp.log(safe_scale)
+    log_scale = jnp.log(scale_array)
 
     central_residual = jnp.where(central, residual, jnp.zeros_like(residual))
-    central_scale = jnp.where(central, safe_scale, jnp.ones_like(safe_scale))
+    central_scale = jnp.where(central, scale_array, jnp.ones_like(scale_array))
     standardized = _standardize(central_residual, central_scale)
     central_kernel = jnp.log1p(jnp.square(standardized))
 

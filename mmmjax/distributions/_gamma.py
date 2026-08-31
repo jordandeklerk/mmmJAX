@@ -206,7 +206,6 @@ def gamma_rng(
     valid_rate = jnp.isfinite(rate_array) & (rate_array > 0)
     # Keep invalid shapes out of JAX's rejection sampler
     safe_shape = jnp.where(valid_shape, shape_array, jnp.ones_like(shape_array))
-    safe_rate = jnp.where(valid_rate, rate_array, jnp.ones_like(rate_array))
 
     # Scale in log space so tiny unit-rate draws can be rescaled before they underflow
     log_unit_rate_samples = jax.random.loggamma(
@@ -215,7 +214,7 @@ def gamma_rng(
         shape=output_shape,
         dtype=shape_array.dtype,
     )
-    samples = jnp.exp(log_unit_rate_samples - jnp.log(safe_rate))
+    samples = jnp.exp(log_unit_rate_samples - jnp.log(rate_array))
 
     return jnp.where(valid_shape & valid_rate, samples, jnp.nan)
 

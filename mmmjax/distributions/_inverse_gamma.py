@@ -197,7 +197,6 @@ def inverse_gamma_rng(
     valid_scale = jnp.isfinite(scale_array) & (scale_array > 0)
     # Keep invalid shapes out of JAX's rejection sampler
     safe_shape = jnp.where(valid_shape, shape_array, jnp.ones_like(shape_array))
-    safe_scale = jnp.where(valid_scale, scale_array, jnp.ones_like(scale_array))
 
     # Work in log space so tiny Gamma draws can be inverted before they underflow
     log_unit_rate_samples = jax.random.loggamma(
@@ -206,7 +205,7 @@ def inverse_gamma_rng(
         shape=output_shape,
         dtype=shape_array.dtype,
     )
-    samples = jnp.exp(jnp.log(safe_scale) - log_unit_rate_samples)
+    samples = jnp.exp(jnp.log(scale_array) - log_unit_rate_samples)
 
     return jnp.where(valid_shape & valid_scale, samples, jnp.nan)
 
