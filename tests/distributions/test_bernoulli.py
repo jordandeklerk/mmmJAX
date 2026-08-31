@@ -1,7 +1,5 @@
 """Tests for Bernoulli distribution functions."""
 
-from functools import partial
-
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -210,15 +208,6 @@ def test_bernoulli_logit_sums_log_masses() -> None:
     assert jnp.allclose(result, expected)
 
 
-def test_bernoulli_functions_preserve_parameter_dtype() -> None:
-    values = jnp.array([0, 1], dtype=jnp.int32)
-    probability = jnp.asarray(0.4, dtype=jnp.float16)
-    logits = jnp.asarray(0.2, dtype=jnp.float16)
-
-    assert bernoulli_logpmf(values, probability).dtype == jnp.dtype(jnp.float32)
-    assert bernoulli_logit_logpmf(values, logits).dtype == jnp.dtype(jnp.float32)
-
-
 @pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
 def test_bernoulli_observations_do_not_control_parameter_dtype() -> None:
     values = jnp.array([0, 1], dtype=jnp.int64)
@@ -292,15 +281,3 @@ def test_bernoulli_logit_rng_handles_deterministic_logits() -> None:
 
     assert jnp.all(result[:, 0] == 0)
     assert jnp.all(result[:, 1] == 1)
-
-
-def test_bernoulli_rngs_support_jit_and_key_vectorization() -> None:
-    keys = jax.random.split(jax.random.key(0), 3)
-    compiled = jax.jit(partial(bernoulli_rng, probability=0.4, sample_shape=(8,)))
-    vectorized = jax.vmap(bernoulli_logit_rng, in_axes=(0, None))(keys, 0.2)
-
-    assert jnp.array_equal(compiled(keys[0]), bernoulli_rng(keys[0], 0.4, sample_shape=(8,)))
-    assert jnp.array_equal(
-        vectorized,
-        jnp.stack([bernoulli_logit_rng(key, 0.2) for key in keys]),
-    )

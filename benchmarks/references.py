@@ -16,14 +16,19 @@ Kernel = Callable[..., jax.Array]
 class JaxReference:
     """Store equivalent JAX functions for one distribution."""
 
-    logpdf: Kernel
+    elementwise_log_probability: Kernel
     rng: Kernel
     logcdf: Kernel | None = None
     logsf: Kernel | None = None
 
-    def density(self, *arguments: jax.Array) -> jax.Array:
-        """Sum the elementwise log density over every broadcast value."""
-        return jnp.sum(self.logpdf(*arguments))
+    def summed_log_probability(self, *arguments: jax.Array) -> jax.Array:
+        """Sum the elementwise log probabilities over every broadcast value."""
+        return jnp.sum(self.elementwise_log_probability(*arguments))
+
+
+def _bernoulli_logit_logpmf(value: jax.Array, logits: jax.Array) -> jax.Array:
+    signed_logits = jnp.where(value == 1, logits, -logits)
+    return jax.nn.log_sigmoid(signed_logits)
 
 
 def _exponential_logpdf(value: jax.Array, rate: jax.Array) -> jax.Array:
@@ -155,6 +160,27 @@ def _uniform_logsf(
 ) -> jax.Array:
     # Reflecting the CDF avoids cancellation from computing one minus the CDF
     return jnp.log(stats.uniform.cdf(-value, loc=-upper, scale=upper - lower))
+
+
+def _bernoulli_rng(
+    key: jax.Array,
+    probability: jax.Array,
+    *,
+    sample_shape: tuple[int, ...] = (),
+) -> jax.Array:
+    shape, _ = _random_metadata(sample_shape, probability)
+    return jax.random.bernoulli(key, probability, shape=shape, mode="high").astype(jnp.int32)
+
+
+def _bernoulli_logit_rng(
+    key: jax.Array,
+    logits: jax.Array,
+    *,
+    sample_shape: tuple[int, ...] = (),
+) -> jax.Array:
+    shape, _ = _random_metadata(sample_shape, logits)
+    categorical_logits = jnp.stack((jnp.zeros_like(logits), logits), axis=-1)
+    return jax.random.categorical(key, categorical_logits, shape=shape, mode="high").astype(jnp.int32)
 
 
 def _beta_rng(
@@ -299,6 +325,8 @@ def _random_metadata(
 
 
 JAX_REFERENCES: dict[str, JaxReference] = {
+    "bernoulli": JaxReference(stats.bernoulli.logpmf, _bernoulli_rng),
+    "bernoulli_logit": JaxReference(_bernoulli_logit_logpmf, _bernoulli_logit_rng),
     "beta": JaxReference(stats.beta.logpdf, _beta_rng),
     "cauchy": JaxReference(stats.cauchy.logpdf, _cauchy_rng),
     "exponential": JaxReference(

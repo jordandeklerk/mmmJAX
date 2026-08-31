@@ -7,6 +7,12 @@ import jax.numpy as jnp
 import pytest
 
 from mmmjax import (
+    bernoulli,
+    bernoulli_logit,
+    bernoulli_logit_logpmf,
+    bernoulli_logit_rng,
+    bernoulli_logpmf,
+    bernoulli_rng,
     beta,
     beta_logpdf,
     beta_rng,
@@ -60,8 +66,10 @@ from mmmjax import (
 
 
 @pytest.mark.parametrize(
-    ("density", "arguments"),
+    ("log_density", "arguments"),
     [
+        (bernoulli, (jnp.empty((0,), dtype=jnp.int32), 0.4)),
+        (bernoulli_logit, (jnp.empty((0,), dtype=jnp.int32), 0.0)),
         (normal, (jnp.empty((0,)), 0.0, 1.0)),
         (half_normal, (jnp.empty((0,)), 1.0)),
         (lognormal, (jnp.empty((0,)), 0.0, 1.0)),
@@ -75,16 +83,18 @@ from mmmjax import (
         (uniform, (jnp.empty((0,)), 0.0, 1.0)),
     ],
 )
-def test_density_of_empty_batch_is_scalar_zero(density, arguments) -> None:
-    result = density(*arguments)
+def test_log_density_of_empty_batch_is_scalar_zero(log_density, arguments) -> None:
+    result = log_density(*arguments)
 
     assert result.shape == ()
     assert result == 0
 
 
 @pytest.mark.parametrize(
-    ("density", "arguments"),
+    ("log_density", "arguments"),
     [
+        (bernoulli, (jnp.empty((0,), dtype=jnp.int32), -1.0)),
+        (bernoulli_logit, (jnp.empty((0,), dtype=jnp.int32), jnp.nan)),
         (normal, (jnp.empty((0,)), 0.0, 0.0)),
         (half_normal, (jnp.empty((0,)), 0.0)),
         (lognormal, (jnp.empty((0,)), 0.0, 0.0)),
@@ -98,9 +108,9 @@ def test_density_of_empty_batch_is_scalar_zero(density, arguments) -> None:
         (uniform, (jnp.empty((0,)), 0.0, 0.0)),
     ],
 )
-def test_empty_batch_does_not_revalidate_parameters(density, arguments) -> None:
-    eager = density(*arguments)
-    compiled = jax.jit(density)(*arguments)
+def test_empty_batch_does_not_revalidate_parameters(log_density, arguments) -> None:
+    eager = log_density(*arguments)
+    compiled = jax.jit(log_density)(*arguments)
 
     assert eager == 0
     assert compiled == 0
@@ -113,6 +123,8 @@ def test_empty_batch_does_not_revalidate_parameters(density, arguments) -> None:
 def test_probability_functions_use_at_least_float32(dtype, expected_dtype) -> None:
     values = jnp.array([0.0, 1.0], dtype=dtype)
 
+    assert bernoulli_logpmf(values, dtype(0.4)).dtype == jnp.dtype(expected_dtype)
+    assert bernoulli_logit_logpmf(values, dtype(0.2)).dtype == jnp.dtype(expected_dtype)
     assert normal_logpdf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert normal_logcdf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert normal_logsf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
@@ -145,6 +157,8 @@ def test_probability_functions_use_at_least_float32(dtype, expected_dtype) -> No
 def test_probability_functions_promote_integer_inputs_to_float32() -> None:
     values = jnp.array([0, 1], dtype=jnp.int32)
 
+    assert bernoulli_logpmf(values, jnp.int32(1)).dtype == jnp.dtype(jnp.float32)
+    assert bernoulli_logit_logpmf(values, jnp.int32(0)).dtype == jnp.dtype(jnp.float32)
     assert normal_logpdf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
     assert normal_logcdf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
     assert normal_logsf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
@@ -209,6 +223,16 @@ def test_python_scalar_inputs_follow_jax_default_dtype(logpdf, logpdf_arguments,
     assert rng(jax.random.key(0), *rng_arguments).dtype == expected_dtype
 
 
+def test_bernoulli_python_scalars_follow_probability_and_sample_dtypes() -> None:
+    expected_probability_dtype = jnp.asarray(0.0).dtype
+    key = jax.random.key(0)
+
+    assert bernoulli_logpmf(0, 0.4).dtype == expected_probability_dtype
+    assert bernoulli_logit_logpmf(1, 0.2).dtype == expected_probability_dtype
+    assert bernoulli_rng(key, 0.4).dtype == jnp.dtype(jnp.int32)
+    assert bernoulli_logit_rng(key, 0.2).dtype == jnp.dtype(jnp.int32)
+
+
 def test_cumulative_functions_follow_jax_default_dtype_for_python_scalars() -> None:
     expected_dtype = jnp.asarray(0.0).dtype
 
@@ -235,6 +259,10 @@ def test_distribution_functions_support_float64() -> None:
     values = jnp.array([0.0, 1.0], dtype=jnp.float64)
     key = jax.random.key(0)
 
+    assert bernoulli_logpmf(values, jnp.float64(0.4)).dtype == jnp.dtype(jnp.float64)
+    assert bernoulli_logit_logpmf(values, jnp.float64(0.2)).dtype == jnp.dtype(jnp.float64)
+    assert bernoulli_rng(key, jnp.float64(0.4)).dtype == jnp.dtype(jnp.int32)
+    assert bernoulli_logit_rng(key, jnp.float64(0.2)).dtype == jnp.dtype(jnp.int32)
     assert normal_logpdf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert normal_logcdf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert normal_logsf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
@@ -278,6 +306,10 @@ def test_distribution_functions_support_float64() -> None:
 @pytest.mark.parametrize(
     ("function", "arguments"),
     [
+        (bernoulli_logpmf, (jnp.array([0, 1]), 0.4)),
+        (bernoulli, (jnp.array([0, 1]), 0.4)),
+        (bernoulli_logit_logpmf, (jnp.array([0, 1]), 0.2)),
+        (bernoulli_logit, (jnp.array([0, 1]), 0.2)),
         (normal_logpdf, (jnp.array([0.0, 1.0]), 0.5, 2.0)),
         (normal, (jnp.array([0.0, 1.0]), 0.5, 2.0)),
         (normal_logcdf, (jnp.array([0.0, 1.0]), 0.5, 2.0)),
@@ -325,6 +357,8 @@ def test_probability_functions_can_be_jitted(function, arguments) -> None:
 def test_rngs_return_scalar_for_scalar_parameters() -> None:
     key = jax.random.key(0)
 
+    assert bernoulli_rng(key, 0.4).shape == ()
+    assert bernoulli_logit_rng(key, 0.2).shape == ()
     assert normal_rng(key, 0.0, 1.0).shape == ()
     assert half_normal_rng(key, 1.0).shape == ()
     assert lognormal_rng(key, 0.0, 1.0).shape == ()
@@ -490,6 +524,8 @@ def test_rngs_compute_with_float32_for_low_precision_parameters(dtype) -> None:
 
 def test_rngs_can_be_jitted() -> None:
     key = jax.random.key(0)
+    compiled_bernoulli = jax.jit(partial(bernoulli_rng, probability=0.4, sample_shape=(2,)))
+    compiled_bernoulli_logit = jax.jit(partial(bernoulli_logit_rng, logits=0.2, sample_shape=(2,)))
     compiled_normal = jax.jit(partial(normal_rng, location=0.0, scale=1.0, sample_shape=(2,)))
     compiled_half_normal = jax.jit(partial(half_normal_rng, scale=1.0, sample_shape=(2,)))
     compiled_lognormal = jax.jit(partial(lognormal_rng, location=0.0, scale=1.0, sample_shape=(2,)))
@@ -504,6 +540,8 @@ def test_rngs_can_be_jitted() -> None:
     )
     compiled_uniform = jax.jit(partial(uniform_rng, lower=0.0, upper=1.0, sample_shape=(2,)))
 
+    assert jnp.array_equal(compiled_bernoulli(key), bernoulli_rng(key, 0.4, sample_shape=(2,)))
+    assert jnp.array_equal(compiled_bernoulli_logit(key), bernoulli_logit_rng(key, 0.2, sample_shape=(2,)))
     assert jnp.array_equal(compiled_normal(key), normal_rng(key, 0.0, 1.0, sample_shape=(2,)))
     assert jnp.array_equal(compiled_half_normal(key), half_normal_rng(key, 1.0, sample_shape=(2,)))
     assert jnp.array_equal(compiled_lognormal(key), lognormal_rng(key, 0.0, 1.0, sample_shape=(2,)))
@@ -520,6 +558,8 @@ def test_rngs_can_be_jitted() -> None:
 def test_rngs_can_be_vectorized_over_keys() -> None:
     keys = jax.random.split(jax.random.key(0), 3)
 
+    bernoulli_result = jax.vmap(bernoulli_rng, in_axes=(0, None))(keys, 0.4)
+    bernoulli_logit_result = jax.vmap(bernoulli_logit_rng, in_axes=(0, None))(keys, 0.2)
     normal_result = jax.vmap(normal_rng, in_axes=(0, None, None))(keys, 0.0, 1.0)
     half_normal_result = jax.vmap(half_normal_rng, in_axes=(0, None))(keys, 1.0)
     lognormal_result = jax.vmap(lognormal_rng, in_axes=(0, None, None))(keys, 0.0, 1.0)
@@ -531,6 +571,8 @@ def test_rngs_can_be_vectorized_over_keys() -> None:
     laplace_result = jax.vmap(laplace_rng, in_axes=(0, None, None))(keys, 0.0, 1.0)
     student_result = jax.vmap(student_t_rng, in_axes=(0, None, None, None))(keys, 5.0, 0.0, 1.0)
     uniform_result = jax.vmap(uniform_rng, in_axes=(0, None, None))(keys, 0.0, 1.0)
+    expected_bernoulli = jnp.stack([bernoulli_rng(key, 0.4) for key in keys])
+    expected_bernoulli_logit = jnp.stack([bernoulli_logit_rng(key, 0.2) for key in keys])
     expected_normal = jnp.stack([normal_rng(key, 0.0, 1.0) for key in keys])
     expected_half_normal = jnp.stack([half_normal_rng(key, 1.0) for key in keys])
     expected_lognormal = jnp.stack([lognormal_rng(key, 0.0, 1.0) for key in keys])
@@ -543,6 +585,8 @@ def test_rngs_can_be_vectorized_over_keys() -> None:
     expected_student = jnp.stack([student_t_rng(key, 5.0, 0.0, 1.0) for key in keys])
     expected_uniform = jnp.stack([uniform_rng(key, 0.0, 1.0) for key in keys])
 
+    assert jnp.array_equal(bernoulli_result, expected_bernoulli)
+    assert jnp.array_equal(bernoulli_logit_result, expected_bernoulli_logit)
     assert jnp.array_equal(normal_result, expected_normal)
     assert jnp.array_equal(half_normal_result, expected_half_normal)
     assert jnp.allclose(lognormal_result, expected_lognormal)
@@ -590,6 +634,8 @@ def test_rng_rejects_negative_sample_shape() -> None:
 @pytest.mark.parametrize(
     ("function", "arguments", "argument_name"),
     [
+        (bernoulli_rng, (jax.random.key(0), 0.4 + 0.0j), "probability"),
+        (bernoulli_logit_rng, (jax.random.key(0), 0.2 + 0.0j), "logits"),
         (normal_logpdf, (0.0, 0.0, 1.0 + 0.0j), "scale"),
         (normal_logcdf, (0.0, 0.0, 1.0 + 0.0j), "scale"),
         (normal_logsf, (0.0, 0.0, 1.0 + 0.0j), "scale"),

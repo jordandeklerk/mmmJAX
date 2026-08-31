@@ -97,6 +97,8 @@ _SMOOTH_REFERENCE_CASES = (
 
 def test_jax_references_cover_every_distribution() -> None:
     assert set(JAX_REFERENCES) == {
+        "bernoulli",
+        "bernoulli_logit",
         "beta",
         "cauchy",
         "exponential",
@@ -111,14 +113,71 @@ def test_jax_references_cover_every_distribution() -> None:
     }
 
 
+def test_bernoulli_log_probability_references_match_public_operations() -> None:
+    values = jnp.array([[0], [1]])
+    probabilities = jnp.array([0.0, 0.2, 0.8, 1.0])
+    logits = jnp.array([-17.0, 0.0, 17.0])
+
+    probability_reference = JAX_REFERENCES["bernoulli"]
+    logit_reference = JAX_REFERENCES["bernoulli_logit"]
+
+    expected_probability = jax_stats.bernoulli.logpmf(values, probabilities)
+    expected_logits = special.log_expit(
+        np.where(np.asarray(values) == 1, np.asarray(logits), -np.asarray(logits)).astype(np.float64)
+    )
+
+    assert jnp.array_equal(
+        probability_reference.elementwise_log_probability(values, probabilities),
+        expected_probability,
+    )
+    np.testing.assert_allclose(
+        logit_reference.elementwise_log_probability(values, logits),
+        expected_logits,
+        rtol=3e-6,
+        atol=0,
+    )
+
+
+def test_bernoulli_rng_references_match_public_operations() -> None:
+    probabilities = jnp.array([0.0, 0.2, 0.8, 1.0])
+    logits = jnp.array([-17.0, 0.0, 17.0])
+    key = jax.random.key(0)
+
+    probability_reference = JAX_REFERENCES["bernoulli"]
+    logit_reference = JAX_REFERENCES["bernoulli_logit"]
+
+    expected_probability_samples = jax.random.bernoulli(
+        key,
+        probabilities,
+        shape=(4, 4),
+        mode="high",
+    ).astype(jnp.int32)
+    categorical_logits = jnp.stack((jnp.zeros_like(logits), logits), axis=-1)
+    expected_logit_samples = jax.random.categorical(
+        key,
+        categorical_logits,
+        shape=(4, 3),
+        mode="high",
+    ).astype(jnp.int32)
+
+    assert jnp.array_equal(
+        probability_reference.rng(key, probabilities, sample_shape=(4,)),
+        expected_probability_samples,
+    )
+    assert jnp.array_equal(
+        logit_reference.rng(key, logits, sample_shape=(4,)),
+        expected_logit_samples,
+    )
+
+
 @pytest.mark.parametrize("case", _SMOOTH_REFERENCE_CASES, ids=lambda case: case.name)
 def test_mmmjax_logpdf_matches_jax_and_scipy(case: _SmoothReferenceCase) -> None:
     reference = JAX_REFERENCES[case.name]
     implementation = getattr(mmmjax, f"{case.name}_logpdf")
 
     result = implementation(*case.arguments)
-    jax_result = reference.logpdf(*case.arguments)
-    compiled_jax_result = jax.jit(reference.logpdf)(*case.arguments)
+    jax_result = reference.elementwise_log_probability(*case.arguments)
+    compiled_jax_result = jax.jit(reference.elementwise_log_probability)(*case.arguments)
 
     _assert_close(result, case.scipy_logpdf)
     _assert_close(result, jax_result)
@@ -127,7 +186,7 @@ def test_mmmjax_logpdf_matches_jax_and_scipy(case: _SmoothReferenceCase) -> None
 
 @pytest.mark.parametrize("case", _SMOOTH_REFERENCE_CASES, ids=lambda case: case.name)
 def test_mmmjax_reverse_mode_matches_jax(case: _SmoothReferenceCase) -> None:
-    reference = JAX_REFERENCES[case.name].logpdf
+    reference = JAX_REFERENCES[case.name].elementwise_log_probability
     implementation = getattr(mmmjax, f"{case.name}_logpdf")
     argnums = tuple(range(len(case.arguments)))
 
@@ -140,7 +199,7 @@ def test_mmmjax_reverse_mode_matches_jax(case: _SmoothReferenceCase) -> None:
 
 @pytest.mark.parametrize("case", _SMOOTH_REFERENCE_CASES, ids=lambda case: case.name)
 def test_mmmjax_forward_mode_matches_jax(case: _SmoothReferenceCase) -> None:
-    reference = JAX_REFERENCES[case.name].logpdf
+    reference = JAX_REFERENCES[case.name].elementwise_log_probability
     implementation = getattr(mmmjax, f"{case.name}_logpdf")
     argnums = tuple(range(len(case.arguments)))
 
