@@ -87,19 +87,7 @@ def gamma(
         Complete normalized log density, including constants, summed across
         every dimension of the broadcast result.
     """
-    log_densities = gamma_logpdf(value, shape, rate)
-    log_density = jnp.sum(log_densities)
-
-    # Only empty results need a separate check because no element can carry nan into the sum
-    if log_densities.size:
-        return log_density
-
-    shape_array = jnp.asarray(shape)
-    rate_array = jnp.asarray(rate)
-    valid_parameters = jnp.all(jnp.isfinite(shape_array) & (shape_array > 0)) & jnp.all(
-        jnp.isfinite(rate_array) & (rate_array > 0)
-    )
-    return jnp.where(valid_parameters, log_density, jnp.nan)
+    return jnp.sum(gamma_logpdf(value, shape, rate))
 
 
 def gamma_logcdf(

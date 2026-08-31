@@ -81,17 +81,7 @@ def uniform(
         Complete normalized log density, including constants, summed across
         every dimension of the broadcast result.
     """
-    log_densities = uniform_logpdf(value, lower, upper)
-    log_density = jnp.sum(log_densities)
-
-    # Only empty results need a separate check because no element can carry nan into the sum
-    if log_densities.size:
-        return log_density
-
-    lower_array, upper_array = _promote_inexact(("lower", lower), ("upper", upper))
-    finite_bounds = jnp.all(jnp.isfinite(lower_array)) & jnp.all(jnp.isfinite(upper_array))
-    valid_bounds = finite_bounds & jnp.all(lower_array < upper_array)
-    return jnp.where(valid_bounds, log_density, jnp.nan)
+    return jnp.sum(uniform_logpdf(value, lower, upper))
 
 
 def uniform_logcdf(

@@ -78,17 +78,7 @@ def normal(
         Complete normalized log density, including constants, summed across
         every dimension of the broadcast result.
     """
-    log_densities = normal_logpdf(value, location, scale)
-    log_density = jnp.sum(log_densities)
-
-    # Only empty results need a separate check because no element can carry nan into the sum
-    if log_densities.size:
-        return log_density
-
-    location_array = jnp.asarray(location)
-    scale_array = jnp.asarray(scale)
-    valid_parameters = jnp.all(jnp.isfinite(location_array)) & jnp.all(jnp.isfinite(scale_array) & (scale_array > 0))
-    return jnp.where(valid_parameters, log_density, jnp.nan)
+    return jnp.sum(normal_logpdf(value, location, scale))
 
 
 def normal_logcdf(

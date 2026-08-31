@@ -224,22 +224,7 @@ def student_t(
         Complete normalized log density, including constants, summed across
         every dimension of the broadcast result.
     """
-    log_densities = student_t_logpdf(value, degrees_of_freedom, location, scale)
-    log_density = jnp.sum(log_densities)
-
-    # Only empty results need a separate check because no element can carry nan into the sum
-    if log_densities.size:
-        return log_density
-
-    degrees_array = jnp.asarray(degrees_of_freedom)
-    location_array = jnp.asarray(location)
-    scale_array = jnp.asarray(scale)
-    valid_parameters = (
-        jnp.all(jnp.isfinite(degrees_array) & (degrees_array > 0))
-        & jnp.all(jnp.isfinite(location_array))
-        & jnp.all(jnp.isfinite(scale_array) & (scale_array > 0))
-    )
-    return jnp.where(valid_parameters, log_density, jnp.nan)
+    return jnp.sum(student_t_logpdf(value, degrees_of_freedom, location, scale))
 
 
 def student_t_rng(

@@ -89,19 +89,7 @@ def laplace(
         Complete normalized log density, including constants, summed across
         every dimension of the broadcast result.
     """
-    log_densities = laplace_logpdf(value, location, scale)
-    log_density = jnp.sum(log_densities)
-
-    # Only empty results need a separate check because no element can carry nan into the sum
-    if log_densities.size:
-        return log_density
-
-    location_array, scale_array = _promote_inexact(
-        ("location", location),
-        ("scale", scale),
-    )
-    valid_parameters = jnp.all(jnp.isfinite(location_array)) & jnp.all(jnp.isfinite(scale_array) & (scale_array > 0))
-    return jnp.where(valid_parameters, log_density, jnp.nan)
+    return jnp.sum(laplace_logpdf(value, location, scale))
 
 
 def laplace_logcdf(

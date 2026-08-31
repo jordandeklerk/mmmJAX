@@ -68,16 +68,7 @@ def half_normal(value: ArrayLike, scale: ArrayLike) -> jax.Array:
         Complete normalized log density, including constants, summed across
         every dimension of the broadcast result.
     """
-    log_densities = half_normal_logpdf(value, scale)
-    log_density = jnp.sum(log_densities)
-
-    # Only empty results need a separate check because no element can carry nan into the sum
-    if log_densities.size:
-        return log_density
-
-    scale_array = jnp.asarray(scale)
-    valid_scale = jnp.all(jnp.isfinite(scale_array) & (scale_array > 0))
-    return jnp.where(valid_scale, log_density, jnp.nan)
+    return jnp.sum(half_normal_logpdf(value, scale))
 
 
 def half_normal_logcdf(value: ArrayLike, scale: ArrayLike) -> jax.Array:

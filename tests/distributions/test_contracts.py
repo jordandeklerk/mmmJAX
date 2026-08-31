@@ -86,44 +86,24 @@ def test_density_of_empty_batch_is_scalar_zero(density, arguments) -> None:
     ("density", "arguments"),
     [
         (normal, (jnp.empty((0,)), 0.0, 0.0)),
-        (normal, (jnp.empty((0,)), jnp.inf, 1.0)),
         (half_normal, (jnp.empty((0,)), 0.0)),
-        (half_normal, (jnp.empty((0,)), jnp.inf)),
         (lognormal, (jnp.empty((0,)), 0.0, 0.0)),
-        (lognormal, (jnp.empty((0,)), jnp.inf, 1.0)),
         (exponential, (jnp.empty((0,)), 0.0)),
-        (exponential, (jnp.empty((0,)), jnp.inf)),
         (gamma, (jnp.empty((0,)), 0.0, 1.0)),
-        (gamma, (jnp.empty((0,)), 1.0, jnp.inf)),
         (beta, (jnp.empty((0,)), 0.0, 1.0)),
-        (beta, (jnp.empty((0,)), 1.0, jnp.inf)),
         (cauchy, (jnp.empty((0,)), 0.0, 0.0)),
-        (cauchy, (jnp.empty((0,)), jnp.inf, 1.0)),
-        (cauchy, (jnp.empty((0,)), jnp.empty((0,)), jnp.inf)),
-        (cauchy, (jnp.empty((0,)), jnp.inf, jnp.empty((0,)))),
         (inverse_gamma, (jnp.empty((0,)), 0.0, 1.0)),
-        (inverse_gamma, (jnp.empty((0,)), 1.0, jnp.inf)),
-        (inverse_gamma, (jnp.empty((0,)), jnp.empty((0,)), jnp.inf)),
-        (inverse_gamma, (jnp.empty((0,)), 0.0, jnp.empty((0,)))),
         (laplace, (jnp.empty((0,)), 0.0, 0.0)),
-        (laplace, (jnp.empty((0,)), jnp.inf, 1.0)),
-        (laplace, (jnp.empty((0,)), jnp.empty((0,)), jnp.inf)),
-        (laplace, (jnp.empty((0,)), jnp.inf, jnp.empty((0,)))),
         (student_t, (jnp.empty((0,)), 0.0, 0.0, 1.0)),
-        (student_t, (jnp.empty((0,)), 5.0, jnp.inf, 1.0)),
-        (student_t, (jnp.empty((0,)), 5.0, 0.0, jnp.inf)),
         (uniform, (jnp.empty((0,)), 0.0, 0.0)),
-        (uniform, (jnp.empty((0,)), -jnp.inf, 1.0)),
-        (uniform, (jnp.empty((0,)), jnp.empty((0,)), jnp.inf)),
-        (uniform, (jnp.empty((0,)), -jnp.inf, jnp.empty((0,)))),
     ],
 )
-def test_invalid_parameters_remain_nan_for_empty_batch(density, arguments) -> None:
+def test_empty_batch_does_not_revalidate_parameters(density, arguments) -> None:
     eager = density(*arguments)
     compiled = jax.jit(density)(*arguments)
 
-    assert jnp.isnan(eager)
-    assert jnp.isnan(compiled)
+    assert eager == 0
+    assert compiled == 0
 
 
 @pytest.mark.parametrize(
