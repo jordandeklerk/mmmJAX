@@ -325,11 +325,19 @@ def _prepare_binomial_counts(
     integer_trials = jnp.asarray(trials, dtype=count_dtype)
 
     if jnp.issubdtype(value.dtype, jnp.floating):
-        value_in_range = value < jnp.asarray(count_limit, dtype=value.dtype)
+        value_range_dtype = jnp.promote_types(value.dtype, jnp.float32)
+        value_in_range = jnp.asarray(value, dtype=value_range_dtype) < jnp.asarray(
+            count_limit,
+            dtype=value_range_dtype,
+        )
     else:
         value_in_range = jnp.ones_like(value, dtype=jnp.bool_)
     if jnp.issubdtype(trials.dtype, jnp.floating):
-        trials_in_range = trials < jnp.asarray(count_limit, dtype=trials.dtype)
+        trials_range_dtype = jnp.promote_types(trials.dtype, jnp.float32)
+        trials_in_range = jnp.asarray(trials, dtype=trials_range_dtype) < jnp.asarray(
+            count_limit,
+            dtype=trials_range_dtype,
+        )
     else:
         trials_in_range = jnp.ones_like(trials, dtype=jnp.bool_)
 
