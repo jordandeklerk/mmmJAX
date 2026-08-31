@@ -280,12 +280,19 @@ def main() -> None:
     selected_implementations = set(arguments.implementations)
     selected_operations = set(arguments.operations)
     selected_log_probability_operations = selected_operations.intersection(LOG_PROBABILITY_OPERATIONS)
+    selects_concentrated_poisson_rng = (
+        "concentrated" in arguments.inputs
+        and "rng" in selected_operations
+        and bool({"poisson", "poisson_log"}.intersection(selected_distributions))
+    )
     _print_environment(dtype, arguments)
     if "concentrated" in arguments.inputs and "jax" in selected_implementations:
         print(
             "note=public JAX is omitted from concentrated inputs because it is not numerically equivalent "
             "for those benchmark inputs"
         )
+    if selects_concentrated_poisson_rng:
+        print("note=concentrated Poisson RNG is omitted because its float64 rate exceeds the int32 output range")
     unsupported_log_probability_distributions = selected_distributions - LOG_PROBABILITY_DISTRIBUTIONS
     if selected_log_probability_operations and unsupported_log_probability_distributions:
         omitted = ", ".join(sorted(unsupported_log_probability_distributions))
@@ -336,6 +343,11 @@ def main() -> None:
                     )
 
     if not results:
+        if selects_concentrated_poisson_rng:
+            raise SystemExit(
+                "Concentrated Poisson RNG is unavailable because the float64 rate exceeds the int32 output range; "
+                "use --inputs ordinary or choose logpmf, log_density, or value_and_grad"
+            )
         raise SystemExit("No benchmark cases match the selected distributions and inputs")
     _print_results(results)
     _print_comparisons(results)
