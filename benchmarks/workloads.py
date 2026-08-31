@@ -14,6 +14,9 @@ from mmmjax.distributions import (
     beta,
     beta_logpdf,
     beta_rng,
+    cauchy,
+    cauchy_logpdf,
+    cauchy_rng,
     exponential,
     exponential_logcdf,
     exponential_logpdf,
@@ -147,6 +150,11 @@ DISTRIBUTIONS = (
         supports_concentrated_inputs=True,
     ),
     DistributionSpec(
+        name="cauchy",
+        value_range=(-2.0, 2.0),
+        parameter_values=(0.2, 1.3),
+    ),
+    DistributionSpec(
         name="exponential",
         value_range=(0.1, 2.0),
         parameter_values=(1.3,),
@@ -198,6 +206,7 @@ DISTRIBUTIONS = (
 IMPLEMENTATIONS: dict[str, dict[str, DistributionFunctions]] = {
     "mmmjax": {
         "beta": DistributionFunctions(beta_logpdf, beta, beta_rng),
+        "cauchy": DistributionFunctions(cauchy_logpdf, cauchy, cauchy_rng),
         "exponential": DistributionFunctions(
             exponential_logpdf,
             exponential,
