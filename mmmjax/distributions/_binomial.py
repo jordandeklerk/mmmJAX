@@ -36,8 +36,9 @@ def binomial_logpmf(
         Numbers of successes at which to evaluate the probability mass.
     trials
         Numbers of independent trials. Values must be finite nonnegative
-        integers. Enable JAX 64-bit mode when large-count calculations require
-        more than float32 precision.
+        integers that fit in JAX's active signed integer dtype. Enable JAX
+        64-bit mode for larger counts or when calculations require more than
+        float32 precision.
     probability
         Success probabilities in the closed interval from zero to one.
 
@@ -183,8 +184,9 @@ def binomial_logit_logpmf(
         Numbers of successes at which to evaluate the probability mass.
     trials
         Numbers of independent trials. Values must be finite nonnegative
-        integers. Enable JAX 64-bit mode when large-count calculations require
-        more than float32 precision.
+        integers that fit in JAX's active signed integer dtype. Enable JAX
+        64-bit mode for larger counts or when calculations require more than
+        float32 precision.
     logits
         Log odds of success.
 
@@ -316,13 +318,29 @@ def _prepare_binomial_counts(
     *,
     dtype: DTypeLike,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
-    integer_value = jnp.isfinite(value) & (value == jnp.floor(value))
-    valid_trials = jnp.isfinite(trials) & (trials >= 0) & (trials == jnp.floor(trials))
-    supported = integer_value & (value >= 0) & (value <= trials)
+    count_dtype = jax.dtypes.canonicalize_dtype(jnp.int64)
+    count_bits = jax.dtypes.itemsize_bits(count_dtype)
+    count_limit = 2 ** (count_bits - 1)
+    integer_value = jnp.asarray(value, dtype=count_dtype)
+    integer_trials = jnp.asarray(trials, dtype=count_dtype)
 
-    valid_counts = supported & valid_trials
-    safe_value = jnp.where(valid_counts, value, jnp.zeros_like(value))
-    safe_trials = jnp.where(valid_counts, trials, jnp.zeros_like(trials))
+    if jnp.issubdtype(value.dtype, jnp.floating):
+        value_in_range = value < jnp.asarray(count_limit, dtype=value.dtype)
+    else:
+        value_in_range = jnp.ones_like(value, dtype=jnp.bool_)
+    if jnp.issubdtype(trials.dtype, jnp.floating):
+        trials_in_range = trials < jnp.asarray(count_limit, dtype=trials.dtype)
+    else:
+        trials_in_range = jnp.ones_like(trials, dtype=jnp.bool_)
+
+    exact_value = value_in_range & jnp.isfinite(value) & (value == jnp.asarray(integer_value, dtype=value.dtype))
+    exact_trials = trials_in_range & jnp.isfinite(trials) & (trials == jnp.asarray(integer_trials, dtype=trials.dtype))
+    valid_trials = exact_trials & (integer_trials >= 0)
+    supported = exact_value & (integer_value >= 0) & valid_trials & (integer_value <= integer_trials)
+
+    # Count arithmetic stays integer so mixed input dtypes cannot erase adjacent large counts
+    safe_value = jnp.where(supported, integer_value, jnp.zeros_like(integer_value))
+    safe_trials = jnp.where(supported, integer_trials, jnp.zeros_like(integer_trials))
     safe_failures = safe_trials - safe_value
 
     successes = jnp.asarray(safe_value, dtype=dtype)

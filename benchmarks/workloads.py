@@ -20,6 +20,12 @@ from mmmjax.distributions import (
     beta,
     beta_logpdf,
     beta_rng,
+    binomial,
+    binomial_logit,
+    binomial_logit_logpmf,
+    binomial_logit_rng,
+    binomial_logpmf,
+    binomial_rng,
     cauchy,
     cauchy_logpdf,
     cauchy_rng,
@@ -111,6 +117,7 @@ class DistributionSpec:
     log_probability_operation: str = "logpdf"
     outcomes: tuple[int, ...] = ()
     supports_concentrated_inputs: bool = False
+    gradient_parameter_indices: tuple[int, ...] | None = None
 
     def __post_init__(self) -> None:
         """Validate the operation name and value source."""
@@ -122,6 +129,19 @@ class DistributionSpec:
         has_outcomes = bool(self.outcomes)
         if has_value_range == has_outcomes:
             raise ValueError("exactly one of value_range or outcomes must define benchmark values")
+        if self.gradient_parameter_indices is not None:
+            if not self.gradient_parameter_indices:
+                raise ValueError("gradient_parameter_indices must contain at least one parameter index")
+            if len(set(self.gradient_parameter_indices)) != len(self.gradient_parameter_indices):
+                raise ValueError("gradient_parameter_indices must not contain duplicate indices")
+            invalid_indices = tuple(
+                index for index in self.gradient_parameter_indices if index < 0 or index >= len(self.parameter_values)
+            )
+            if invalid_indices:
+                raise ValueError(
+                    "gradient_parameter_indices must refer to parameter_values, "
+                    f"got invalid indices {invalid_indices} for {len(self.parameter_values)} parameters"
+                )
 
 
 @dataclass(frozen=True)
@@ -181,6 +201,23 @@ DISTRIBUTIONS = (
         value_range=(0.05, 0.95),
         parameter_values=(2.5, 3.5),
         supports_concentrated_inputs=True,
+    ),
+    # Trial counts are observed data, so only probability parameters are differentiated
+    DistributionSpec(
+        name="binomial",
+        value_range=None,
+        parameter_values=(100.0, 0.35),
+        log_probability_operation="logpmf",
+        outcomes=(0, 20, 35, 50, 100),
+        gradient_parameter_indices=(1,),
+    ),
+    DistributionSpec(
+        name="binomial_logit",
+        value_range=None,
+        parameter_values=(100.0, -0.6),
+        log_probability_operation="logpmf",
+        outcomes=(0, 20, 35, 50, 100),
+        gradient_parameter_indices=(1,),
     ),
     DistributionSpec(
         name="cauchy",
@@ -245,6 +282,12 @@ IMPLEMENTATIONS: dict[str, dict[str, DistributionFunctions]] = {
             bernoulli_logit_rng,
         ),
         "beta": DistributionFunctions(beta_logpdf, beta, beta_rng),
+        "binomial": DistributionFunctions(binomial_logpmf, binomial, binomial_rng),
+        "binomial_logit": DistributionFunctions(
+            binomial_logit_logpmf,
+            binomial_logit,
+            binomial_logit_rng,
+        ),
         "cauchy": DistributionFunctions(cauchy_logpdf, cauchy, cauchy_rng),
         "exponential": DistributionFunctions(
             exponential_logpdf,
@@ -510,7 +553,10 @@ def make_operations(
 ) -> tuple[BenchmarkOperation, ...]:
     """Build elementwise, summed, gradient, and sampling operations for one implementation."""
     # Observed values are data, so model inference only differentiates parameters
-    parameter_indices = tuple(range(1, len(arguments)))
+    if distribution.gradient_parameter_indices is None:
+        parameter_indices = tuple(range(1, len(arguments)))
+    else:
+        parameter_indices = tuple(index + 1 for index in distribution.gradient_parameter_indices)
     parameters = arguments[1:]
     return (
         BenchmarkOperation(

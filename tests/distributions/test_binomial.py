@@ -245,6 +245,24 @@ def test_binomial_logpmf_preserves_adjacent_integer_counts_before_float_conversi
     assert jnp.isneginf(binomial_logit_logpmf(value, trials, jnp.inf))
 
 
+def test_binomial_logpmf_preserves_adjacent_counts_across_mixed_dtypes() -> None:
+    trials = jnp.int32(16_777_217)
+    value = jnp.float32(16_777_216)
+
+    assert jnp.isneginf(binomial_logpmf(value, trials, 1.0))
+    assert jnp.isneginf(binomial_logit_logpmf(value, trials, jnp.inf))
+
+
+def test_binomial_logpmf_rejects_float_count_at_signed_integer_limit() -> None:
+    dtype = jnp.float64 if jax.config.x64_enabled else jnp.float32
+    count_bits = 64 if jax.config.x64_enabled else 32
+    trials = dtype(2 ** (count_bits - 1))
+    value = jnp.nextafter(trials, dtype(0))
+
+    assert jnp.isnan(binomial_logpmf(value, trials, 0.5))
+    assert jnp.isnan(binomial_logit_logpmf(value, trials, 0.0))
+
+
 @pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
 def test_binomial_logpmf_matches_scipy_for_large_central_count_in_float64() -> None:
     value = jnp.int64(500_000)

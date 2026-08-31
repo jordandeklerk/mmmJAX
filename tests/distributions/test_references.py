@@ -100,6 +100,8 @@ def test_jax_references_cover_every_distribution() -> None:
         "bernoulli",
         "bernoulli_logit",
         "beta",
+        "binomial",
+        "binomial_logit",
         "cauchy",
         "exponential",
         "gamma",
@@ -166,6 +168,66 @@ def test_bernoulli_rng_references_match_public_operations() -> None:
     )
     assert jnp.array_equal(
         logit_reference.rng(key, logits, sample_shape=(4,)),
+        expected_logit_samples,
+    )
+
+
+def test_binomial_log_probability_references_match_public_operations() -> None:
+    values = jnp.array([[0], [4], [7], [20]])
+    trials = jnp.asarray(20.0)
+    probabilities = jnp.array([0.2, 0.35, 0.8])
+    logits = jnp.array([-2.0, -0.6, 2.0])
+
+    probability_reference = JAX_REFERENCES["binomial"]
+    logit_reference = JAX_REFERENCES["binomial_logit"]
+
+    expected_probability = jax_stats.binom.logpmf(values, trials, probabilities)
+    expected_logits = jax_stats.binom.logpmf(values, trials, jax.nn.sigmoid(logits))
+
+    assert jnp.array_equal(
+        probability_reference.elementwise_log_probability(values, trials, probabilities),
+        expected_probability,
+    )
+    assert jnp.allclose(
+        logit_reference.elementwise_log_probability(values, trials, logits),
+        expected_logits,
+        rtol=3e-6,
+        atol=3e-6,
+    )
+
+
+def test_binomial_rng_references_match_public_operations() -> None:
+    trials = jnp.array([20.0, 100.0])
+    probabilities = jnp.array([0.2, 0.8])
+    logits = jnp.array([-2.0, 2.0])
+    key = jax.random.key(0)
+
+    probability_reference = JAX_REFERENCES["binomial"]
+    logit_reference = JAX_REFERENCES["binomial_logit"]
+
+    expected_probability_samples = jax.random.binomial(
+        key,
+        trials,
+        probabilities,
+        shape=(4, 2),
+        dtype=jnp.float32,
+    ).astype(jnp.int32)
+    rare_probability = jnp.exp(jax.nn.log_sigmoid(-jnp.abs(logits)))
+    rare_outcomes = jax.random.binomial(
+        key,
+        trials,
+        rare_probability,
+        shape=(4, 2),
+        dtype=jnp.float32,
+    )
+    expected_logit_samples = jnp.where(logits > 0, trials - rare_outcomes, rare_outcomes).astype(jnp.int32)
+
+    assert jnp.array_equal(
+        probability_reference.rng(key, trials, probabilities, sample_shape=(4,)),
+        expected_probability_samples,
+    )
+    assert jnp.array_equal(
+        logit_reference.rng(key, trials, logits, sample_shape=(4,)),
         expected_logit_samples,
     )
 
