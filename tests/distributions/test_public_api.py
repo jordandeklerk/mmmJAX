@@ -4,6 +4,12 @@ import mmmjax
 import mmmjax.distributions as distributions
 
 DISTRIBUTION_EXPORTS = [
+    "bernoulli",
+    "bernoulli_logit",
+    "bernoulli_logit_logpmf",
+    "bernoulli_logit_rng",
+    "bernoulli_logpmf",
+    "bernoulli_rng",
     "beta",
     "beta_logpdf",
     "beta_rng",

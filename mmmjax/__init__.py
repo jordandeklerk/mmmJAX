@@ -1,6 +1,12 @@
 """Bayesian marketing mix modeling expressed entirely in JAX."""
 
 from mmmjax.distributions import (
+    bernoulli,
+    bernoulli_logit,
+    bernoulli_logit_logpmf,
+    bernoulli_logit_rng,
+    bernoulli_logpmf,
+    bernoulli_rng,
     beta,
     beta_logpdf,
     beta_rng,
@@ -64,6 +70,12 @@ __all__ = [
     "Positive",
     "Real",
     "UpperBound",
+    "bernoulli",
+    "bernoulli_logit",
+    "bernoulli_logit_logpmf",
+    "bernoulli_logit_rng",
+    "bernoulli_logpmf",
+    "bernoulli_rng",
     "beta",
     "beta_logpdf",
     "beta_rng",
