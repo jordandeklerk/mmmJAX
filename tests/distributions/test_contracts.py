@@ -603,6 +603,8 @@ def test_rng_rejects_negative_sample_shape() -> None:
         (exponential_logcdf, (1.0, 1.0 + 0.0j), "rate"),
         (exponential_logsf, (1.0, 1.0 + 0.0j), "rate"),
         (gamma_logpdf, (1.0, 1.0 + 0.0j, 1.0), "shape"),
+        (gamma_logcdf, (1.0, 1.0 + 0.0j, 1.0), "shape"),
+        (gamma_logsf, (1.0, 1.0 + 0.0j, 1.0), "shape"),
         (beta_logpdf, (0.5, 1.0 + 0.0j, 1.0), "alpha"),
         (inverse_gamma_logpdf, (1.0, 1.0 + 0.0j, 1.0), "shape"),
         (inverse_gamma_logcdf, (1.0, 1.0 + 0.0j, 1.0), "shape"),
@@ -623,6 +625,8 @@ def test_rng_rejects_negative_sample_shape() -> None:
         (student_t_logpdf, (0.0, 5.0 + 0.0j, 0.0, 1.0), "degrees_of_freedom"),
         (student_t_rng, (jax.random.key(0), 5.0, 0.0, 1.0 + 0.0j), "scale"),
         (uniform_logpdf, (0.0, 0.0 + 0.0j, 1.0), "lower"),
+        (uniform_logcdf, (0.0, 0.0 + 0.0j, 1.0), "lower"),
+        (uniform_logsf, (0.0, 0.0 + 0.0j, 1.0), "lower"),
         (uniform_rng, (jax.random.key(0), 0.0, 1.0 + 0.0j), "upper"),
     ],
 )

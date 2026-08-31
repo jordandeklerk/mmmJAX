@@ -129,7 +129,7 @@ def half_normal_logsf(value: ArrayLike, scale: ArrayLike) -> jax.Array:
     -------
     jax.Array
         Log survival probabilities with the broadcast shape of the arguments.
-        Values below zero produce zero. A nonpositive or nonfinite scale
+        Values at or below zero produce zero. A nonpositive or nonfinite scale
         produces ``nan``.
     """
     value_array, scale_array = _promote_inexact(("value", value), ("scale", scale))
