@@ -64,6 +64,12 @@ from mmmjax.distributions import (
     normal_logpdf,
     normal_logsf,
     normal_rng,
+    poisson,
+    poisson_log,
+    poisson_log_logpmf,
+    poisson_log_rng,
+    poisson_logpmf,
+    poisson_rng,
     student_t,
     student_t_logpdf,
     student_t_rng,
@@ -220,6 +226,22 @@ DISTRIBUTIONS = (
         gradient_parameter_indices=(1,),
     ),
     DistributionSpec(
+        name="poisson",
+        value_range=None,
+        parameter_values=(4.5,),
+        log_probability_operation="logpmf",
+        outcomes=(0, 1, 3, 10, 25),
+        supports_concentrated_inputs=True,
+    ),
+    DistributionSpec(
+        name="poisson_log",
+        value_range=None,
+        parameter_values=(1.5,),
+        log_probability_operation="logpmf",
+        outcomes=(0, 1, 3, 10, 25),
+        supports_concentrated_inputs=True,
+    ),
+    DistributionSpec(
         name="cauchy",
         value_range=(-2.0, 2.0),
         parameter_values=(0.2, 1.3),
@@ -287,6 +309,12 @@ IMPLEMENTATIONS: dict[str, dict[str, DistributionFunctions]] = {
             binomial_logit_logpmf,
             binomial_logit,
             binomial_logit_rng,
+        ),
+        "poisson": DistributionFunctions(poisson_logpmf, poisson, poisson_rng),
+        "poisson_log": DistributionFunctions(
+            poisson_log_logpmf,
+            poisson_log,
+            poisson_log_rng,
         ),
         "cauchy": DistributionFunctions(cauchy_logpdf, cauchy, cauchy_rng),
         "exponential": DistributionFunctions(
@@ -408,7 +436,24 @@ def make_arguments(
     if not distribution.supports_concentrated_inputs:
         raise ValueError(f"{distribution.name} does not define concentrated benchmark inputs")
 
-    concentrated_shape = jnp.asarray(1e8 if dtype == jnp.dtype(jnp.float32) else 1e12, dtype=dtype)
+    concentration = 10_000_000 if dtype == jnp.dtype(jnp.float32) else 1_000_000_000_000_000
+    if distribution.name in {"poisson", "poisson_log"}:
+        count_dtype = jnp.int32 if dtype == jnp.dtype(jnp.float32) else jnp.int64
+        standard_deviation = math.isqrt(concentration)
+        value = jnp.rint(
+            jnp.linspace(
+                concentration - 2 * standard_deviation,
+                concentration + 2 * standard_deviation,
+                element_count,
+                dtype=dtype,
+            )
+        ).astype(count_dtype)
+        value = value.reshape(profile.value_shape)
+        rate = jnp.full(profile.parameter_shape, concentration, dtype=dtype)
+        parameter = jnp.log(rate) if distribution.name == "poisson_log" else rate
+        return value, parameter
+
+    concentrated_shape = jnp.asarray(concentration, dtype=dtype)
     displacement = jnp.linspace(-1e-4, 1e-4, element_count, dtype=dtype).reshape(profile.value_shape)
     shape = jnp.full(profile.parameter_shape, concentrated_shape, dtype=dtype)
     if distribution.name == "beta":
@@ -633,6 +678,8 @@ def make_benchmark_operation(
         if input_set == "tail" or (input_set == "concentrated" and not distribution.supports_concentrated_inputs):
             return None
         if input_set == "concentrated" and implementation == "jax":
+            return None
+        if input_set == "concentrated" and operation == "rng" and distribution.name in {"poisson", "poisson_log"}:
             return None
 
         arguments = make_arguments(distribution, profile, input_set, dtype)

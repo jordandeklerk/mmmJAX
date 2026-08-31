@@ -40,6 +40,11 @@ def _binomial_logit_logpmf(
     return log_coefficient + value * jax.nn.log_sigmoid(logits) + (trials - value) * jax.nn.log_sigmoid(-logits)
 
 
+def _poisson_log_logpmf(value: jax.Array, log_rate: jax.Array) -> jax.Array:
+    # Staying on the log scale avoids an exp/log round trip in the native JAX baseline
+    return value * log_rate - jnp.exp(log_rate) - gammaln(value + 1)
+
+
 def _exponential_logpdf(value: jax.Array, rate: jax.Array) -> jax.Array:
     return stats.expon.logpdf(value, loc=0, scale=1 / rate)
 
@@ -216,6 +221,25 @@ def _binomial_logit_rng(
     return jnp.where(logits > 0, trials - rare_outcomes, rare_outcomes).astype(jnp.int32)
 
 
+def _poisson_rng(
+    key: jax.Array,
+    rate: jax.Array,
+    *,
+    sample_shape: tuple[int, ...] = (),
+) -> jax.Array:
+    shape, _ = _random_metadata(sample_shape, rate)
+    return jax.random.poisson(key, rate, shape=shape, dtype=jnp.int32)
+
+
+def _poisson_log_rng(
+    key: jax.Array,
+    log_rate: jax.Array,
+    *,
+    sample_shape: tuple[int, ...] = (),
+) -> jax.Array:
+    return _poisson_rng(key, jnp.exp(log_rate), sample_shape=sample_shape)
+
+
 def _beta_rng(
     key: jax.Array,
     alpha: jax.Array,
@@ -363,6 +387,8 @@ JAX_REFERENCES: dict[str, JaxReference] = {
     "beta": JaxReference(stats.beta.logpdf, _beta_rng),
     "binomial": JaxReference(stats.binom.logpmf, _binomial_rng),
     "binomial_logit": JaxReference(_binomial_logit_logpmf, _binomial_logit_rng),
+    "poisson": JaxReference(stats.poisson.logpmf, _poisson_rng),
+    "poisson_log": JaxReference(_poisson_log_logpmf, _poisson_log_rng),
     "cauchy": JaxReference(stats.cauchy.logpdf, _cauchy_rng),
     "exponential": JaxReference(
         _exponential_logpdf,

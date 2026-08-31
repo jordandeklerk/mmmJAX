@@ -14,11 +14,19 @@ Filters can be passed directly, for example:
 pixi run benchmark-distributions --profiles vector --distributions normal
 ```
 
-Bernoulli and Binomial probability and logit parameterizations cycle valid integer outcomes across the sample dimensions:
+Bernoulli, Binomial, and Poisson parameterizations cycle valid integer outcomes across the sample dimensions:
 
 ```console
-pixi run benchmark-distributions --profiles vector --distributions bernoulli bernoulli_logit binomial binomial_logit --operations logpmf log_density value_and_grad rng
+pixi run benchmark-distributions --profiles vector --distributions bernoulli bernoulli_logit binomial binomial_logit poisson poisson_log --operations logpmf log_density value_and_grad rng
 ```
+
+Large-count Poisson inputs exercise the stable deviance calculation near the mode:
+
+```console
+pixi run benchmark-distributions --profiles vector --distributions poisson poisson_log --inputs concentrated --operations logpmf log_density value_and_grad
+```
+
+These inputs spread counts across roughly two standard deviations around rates of `1e7` for float32 and `1e15` for float64. The values remain exactly representable while still exposing cancellation in the direct formula. Public JAX is omitted because its result is not numerically equivalent at these values. Random sampling remains in the ordinary workload because the float64 concentrated rate exceeds the `int32` output range.
 
 Exponential, Gamma, Half Normal, Inverse Gamma, Laplace, Normal, LogNormal, and Uniform log-CDF and log-survival benchmarks are opt-in:
 
