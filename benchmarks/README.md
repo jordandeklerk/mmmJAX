@@ -6,12 +6,18 @@ Run the distribution benchmarks from the repository root:
 pixi run benchmark-distributions
 ```
 
-The default suite measures cache-cleared JIT compilation and synchronized warm execution for mmmJAX and equivalent public JAX operations. It covers elementwise and summed log densities, parameter value-and-gradients, and random sampling.
+The default suite measures cache-cleared JIT compilation and synchronized warm execution for mmmJAX and equivalent public JAX operations. It covers elementwise log densities or masses, summed log density, parameter gradients, and random sampling.
 
 Filters can be passed directly, for example:
 
 ```console
 pixi run benchmark-distributions --profiles vector --distributions normal
+```
+
+Bernoulli and Binomial probability and logit parameterizations cycle valid integer outcomes across the sample dimensions:
+
+```console
+pixi run benchmark-distributions --profiles vector --distributions bernoulli bernoulli_logit binomial binomial_logit --operations logpmf log_density value_and_grad rng
 ```
 
 Exponential, Gamma, Half Normal, Inverse Gamma, Laplace, Normal, LogNormal, and Uniform log-CDF and log-survival benchmarks are opt-in:

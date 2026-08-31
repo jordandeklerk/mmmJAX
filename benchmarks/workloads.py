@@ -11,9 +11,21 @@ import jax.numpy as jnp
 from benchmarks._timing import Arguments, BenchmarkFunction
 from benchmarks.references import JAX_REFERENCES
 from mmmjax.distributions import (
+    bernoulli,
+    bernoulli_logit,
+    bernoulli_logit_logpmf,
+    bernoulli_logit_rng,
+    bernoulli_logpmf,
+    bernoulli_rng,
     beta,
     beta_logpdf,
     beta_rng,
+    binomial,
+    binomial_logit,
+    binomial_logit_logpmf,
+    binomial_logit_rng,
+    binomial_logpmf,
+    binomial_rng,
     cauchy,
     cauchy_logpdf,
     cauchy_rng,
@@ -74,7 +86,7 @@ class BenchmarkProfile:
     sample_shape: tuple[int, ...]
 
     def __post_init__(self) -> None:
-        """Validate that density values and RNG draws use the same shape."""
+        """Validate that observed values and RNG draws use the same shape."""
         expected_value_shape = self.sample_shape + self.parameter_shape
         if self.value_shape != expected_value_shape:
             raise ValueError(
@@ -88,8 +100,8 @@ class BenchmarkProfile:
 class DistributionFunctions:
     """Store one implementation of the public distribution operations."""
 
-    logpdf: Kernel
-    density: Kernel
+    elementwise_log_probability: Kernel
+    summed_log_probability: Kernel
     rng: Kernel
     logcdf: Kernel | None = None
     logsf: Kernel | None = None
@@ -100,9 +112,36 @@ class DistributionSpec:
     """Describe benchmark inputs for a distribution."""
 
     name: str
-    value_range: tuple[float, float]
+    value_range: tuple[float, float] | None
     parameter_values: tuple[float, ...]
+    log_probability_operation: str = "logpdf"
+    outcomes: tuple[int, ...] = ()
     supports_concentrated_inputs: bool = False
+    gradient_parameter_indices: tuple[int, ...] | None = None
+
+    def __post_init__(self) -> None:
+        """Validate the operation name and value source."""
+        if self.log_probability_operation not in {"logpdf", "logpmf"}:
+            raise ValueError(
+                f"log_probability_operation must be 'logpdf' or 'logpmf', got {self.log_probability_operation!r}"
+            )
+        has_value_range = self.value_range is not None
+        has_outcomes = bool(self.outcomes)
+        if has_value_range == has_outcomes:
+            raise ValueError("exactly one of value_range or outcomes must define benchmark values")
+        if self.gradient_parameter_indices is not None:
+            if not self.gradient_parameter_indices:
+                raise ValueError("gradient_parameter_indices must contain at least one parameter index")
+            if len(set(self.gradient_parameter_indices)) != len(self.gradient_parameter_indices):
+                raise ValueError("gradient_parameter_indices must not contain duplicate indices")
+            invalid_indices = tuple(
+                index for index in self.gradient_parameter_indices if index < 0 or index >= len(self.parameter_values)
+            )
+            if invalid_indices:
+                raise ValueError(
+                    "gradient_parameter_indices must refer to parameter_values, "
+                    f"got invalid indices {invalid_indices} for {len(self.parameter_values)} parameters"
+                )
 
 
 @dataclass(frozen=True)
@@ -144,10 +183,41 @@ PROFILES: dict[str, BenchmarkProfile] = {
 
 DISTRIBUTIONS = (
     DistributionSpec(
+        name="bernoulli",
+        value_range=None,
+        parameter_values=(0.35,),
+        log_probability_operation="logpmf",
+        outcomes=(0, 1),
+    ),
+    DistributionSpec(
+        name="bernoulli_logit",
+        value_range=None,
+        parameter_values=(-0.6,),
+        log_probability_operation="logpmf",
+        outcomes=(0, 1),
+    ),
+    DistributionSpec(
         name="beta",
         value_range=(0.05, 0.95),
         parameter_values=(2.5, 3.5),
         supports_concentrated_inputs=True,
+    ),
+    # Trial counts are observed data, so only probability parameters are differentiated
+    DistributionSpec(
+        name="binomial",
+        value_range=None,
+        parameter_values=(100.0, 0.35),
+        log_probability_operation="logpmf",
+        outcomes=(0, 20, 35, 50, 100),
+        gradient_parameter_indices=(1,),
+    ),
+    DistributionSpec(
+        name="binomial_logit",
+        value_range=None,
+        parameter_values=(100.0, -0.6),
+        log_probability_operation="logpmf",
+        outcomes=(0, 20, 35, 50, 100),
+        gradient_parameter_indices=(1,),
     ),
     DistributionSpec(
         name="cauchy",
@@ -205,7 +275,19 @@ DISTRIBUTIONS = (
 
 IMPLEMENTATIONS: dict[str, dict[str, DistributionFunctions]] = {
     "mmmjax": {
+        "bernoulli": DistributionFunctions(bernoulli_logpmf, bernoulli, bernoulli_rng),
+        "bernoulli_logit": DistributionFunctions(
+            bernoulli_logit_logpmf,
+            bernoulli_logit,
+            bernoulli_logit_rng,
+        ),
         "beta": DistributionFunctions(beta_logpdf, beta, beta_rng),
+        "binomial": DistributionFunctions(binomial_logpmf, binomial, binomial_rng),
+        "binomial_logit": DistributionFunctions(
+            binomial_logit_logpmf,
+            binomial_logit,
+            binomial_logit_rng,
+        ),
         "cauchy": DistributionFunctions(cauchy_logpdf, cauchy, cauchy_rng),
         "exponential": DistributionFunctions(
             exponential_logpdf,
@@ -267,8 +349,8 @@ IMPLEMENTATIONS: dict[str, dict[str, DistributionFunctions]] = {
     },
     "jax": {
         name: DistributionFunctions(
-            reference.logpdf,
-            reference.density,
+            reference.elementwise_log_probability,
+            reference.summed_log_probability,
             reference.rng,
             logcdf=reference.logcdf,
             logsf=reference.logsf,
@@ -277,7 +359,7 @@ IMPLEMENTATIONS: dict[str, dict[str, DistributionFunctions]] = {
     },
 }
 
-DEFAULT_OPERATIONS = ("logpdf", "density", "value_and_grad", "rng")
+DEFAULT_OPERATIONS = ("logpdf", "logpmf", "log_density", "value_and_grad", "rng")
 LOG_PROBABILITY_OPERATIONS = (
     "logcdf",
     "logcdf_value_and_grad",
@@ -299,12 +381,27 @@ def make_arguments(
 ) -> Arguments:
     """Build one profile's values and distribution parameters."""
     if input_set not in {"ordinary", "concentrated"}:
-        raise ValueError(f"density benchmarks do not support {input_set} inputs")
+        raise ValueError(f"log-probability benchmarks do not support {input_set} inputs")
 
     element_count = math.prod(profile.value_shape)
     if input_set == "ordinary":
-        lower, upper = distribution.value_range
-        value = jnp.linspace(lower, upper, element_count, dtype=dtype).reshape(profile.value_shape)
+        if distribution.outcomes:
+            outcomes = jnp.asarray(distribution.outcomes, dtype=jnp.int32)
+            sample_count = math.prod(profile.sample_shape)
+            parameter_count = math.prod(profile.parameter_shape)
+            sample_indices = jnp.arange(sample_count, dtype=jnp.int32).reshape(
+                profile.sample_shape + (1,) * len(profile.parameter_shape)
+            )
+            parameter_indices = jnp.arange(parameter_count, dtype=jnp.int32).reshape(
+                (1,) * len(profile.sample_shape) + profile.parameter_shape
+            )
+            outcome_indices = (sample_indices + parameter_indices) % len(distribution.outcomes)
+            value = outcomes[outcome_indices]
+        else:
+            if distribution.value_range is None:
+                raise ValueError(f"{distribution.name} does not define ordinary benchmark values")
+            lower, upper = distribution.value_range
+            value = jnp.linspace(lower, upper, element_count, dtype=dtype).reshape(profile.value_shape)
         parameters = _make_parameters(distribution, profile, dtype)
         return (value, *parameters)
 
@@ -410,6 +507,8 @@ def make_log_probability_arguments(
     if distribution.name == "uniform":
         if input_set == "ordinary":
             lower, upper = _make_parameters(distribution, profile, dtype)
+            if distribution.value_range is None:
+                raise ValueError("uniform does not define ordinary benchmark values")
             value = jnp.linspace(
                 *distribution.value_range,
                 element_count,
@@ -447,21 +546,35 @@ def make_log_probability_arguments(
 
 def make_operations(
     functions: DistributionFunctions,
+    distribution: DistributionSpec,
     profile: BenchmarkProfile,
     arguments: Arguments,
     implementation: str,
 ) -> tuple[BenchmarkOperation, ...]:
     """Build elementwise, summed, gradient, and sampling operations for one implementation."""
     # Observed values are data, so model inference only differentiates parameters
-    parameter_indices = tuple(range(1, len(arguments)))
+    if distribution.gradient_parameter_indices is None:
+        parameter_indices = tuple(range(1, len(arguments)))
+    else:
+        parameter_indices = tuple(index + 1 for index in distribution.gradient_parameter_indices)
     parameters = arguments[1:]
     return (
-        BenchmarkOperation(implementation, "logpdf", functions.logpdf, arguments),
-        BenchmarkOperation(implementation, "density", functions.density, arguments),
+        BenchmarkOperation(
+            implementation,
+            distribution.log_probability_operation,
+            functions.elementwise_log_probability,
+            arguments,
+        ),
+        BenchmarkOperation(
+            implementation,
+            "log_density",
+            functions.summed_log_probability,
+            arguments,
+        ),
         BenchmarkOperation(
             implementation,
             "value_and_grad",
-            jax.value_and_grad(functions.density, argnums=parameter_indices),
+            jax.value_and_grad(functions.summed_log_probability, argnums=parameter_indices),
             arguments,
         ),
         BenchmarkOperation(
@@ -523,7 +636,7 @@ def make_benchmark_operation(
             return None
 
         arguments = make_arguments(distribution, profile, input_set, dtype)
-        candidates = make_operations(functions, profile, arguments, implementation)
+        candidates = make_operations(functions, distribution, profile, arguments, implementation)
     else:
         if input_set == "concentrated" or distribution.name not in LOG_PROBABILITY_DISTRIBUTIONS:
             return None

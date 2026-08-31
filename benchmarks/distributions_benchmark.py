@@ -245,7 +245,8 @@ def _parse_args() -> argparse.Namespace:
         )
     if "concentrated" in arguments.inputs and not has_default_operation:
         parser.error(
-            "--inputs concentrated requires logpdf, density, value_and_grad, or rng; "
+            "--inputs concentrated requires an elementwise log-probability operation, "
+            "log_density, value_and_grad, or rng; "
             "log-CDF and log-survival operations support ordinary and tail inputs"
         )
     if has_log_probability_operation and not LOG_PROBABILITY_DISTRIBUTIONS.intersection(arguments.distributions):

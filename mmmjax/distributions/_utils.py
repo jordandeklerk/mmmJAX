@@ -8,6 +8,25 @@ from jax.scipy.special import digamma, gammaln
 from jax.typing import ArrayLike
 
 
+def _as_real_array(name: str, value: ArrayLike) -> jax.Array:
+    try:
+        array = jnp.asarray(value)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(
+            f"distribution argument {name!r} must be real numeric and array-like, got {type(value).__name__}"
+        ) from exc
+
+    is_real_numeric = (
+        array.dtype == jnp.dtype(jnp.bool_)
+        or jnp.issubdtype(array.dtype, jnp.integer)
+        or jnp.issubdtype(array.dtype, jnp.floating)
+    )
+    if not is_real_numeric:
+        raise TypeError(f"distribution argument {name!r} must have a real numeric dtype, got {array.dtype}")
+
+    return array
+
+
 def _random_shape(sample_shape: tuple[int, ...], *parameters: jax.Array) -> tuple[int, ...]:
     if not isinstance(sample_shape, tuple):
         raise TypeError(f"sample_shape must be a tuple of nonnegative integers, got {type(sample_shape).__name__}")
@@ -49,24 +68,7 @@ def _random_shape(sample_shape: tuple[int, ...], *parameters: jax.Array) -> tupl
 def _promote_inexact(
     *arguments: tuple[str, ArrayLike],
 ) -> tuple[jax.Array, ...]:
-    values: list[ArrayLike] = []
-    for name, value in arguments:
-        try:
-            argument_dtype = jnp.result_type(value)
-        except (TypeError, ValueError) as exc:
-            raise TypeError(
-                f"distribution argument {name!r} must be real numeric and array-like, got {type(value).__name__}"
-            ) from exc
-
-        is_real_numeric = (
-            argument_dtype == jnp.dtype(jnp.bool_)
-            or jnp.issubdtype(argument_dtype, jnp.integer)
-            or jnp.issubdtype(argument_dtype, jnp.floating)
-        )
-        if not is_real_numeric:
-            raise TypeError(f"distribution argument {name!r} must have a real numeric dtype, got {argument_dtype}")
-
-        values.append(value)
+    values = [_as_real_array(name, value) for name, value in arguments]
 
     dtype = jnp.result_type(*values)
     if not jnp.issubdtype(dtype, jnp.inexact):

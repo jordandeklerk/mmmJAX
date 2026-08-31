@@ -4,9 +4,21 @@ import mmmjax
 import mmmjax.distributions as distributions
 
 DISTRIBUTION_EXPORTS = [
+    "bernoulli",
+    "bernoulli_logit",
+    "bernoulli_logit_logpmf",
+    "bernoulli_logit_rng",
+    "bernoulli_logpmf",
+    "bernoulli_rng",
     "beta",
     "beta_logpdf",
     "beta_rng",
+    "binomial",
+    "binomial_logit",
+    "binomial_logit_logpmf",
+    "binomial_logit_rng",
+    "binomial_logpmf",
+    "binomial_rng",
     "cauchy",
     "cauchy_logpdf",
     "cauchy_rng",
