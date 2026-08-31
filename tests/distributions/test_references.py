@@ -29,6 +29,11 @@ _SMOOTH_REFERENCE_CASES = (
         scipy_logpdf=stats.beta.logpdf([0.1, 0.8], [0.5, 5.0], [3.0, 0.8]),
     ),
     _SmoothReferenceCase(
+        name="cauchy",
+        arguments=(jnp.array([-2.0, 3.0]), jnp.array([-0.5, 2.0]), jnp.array([0.8, 3.0])),
+        scipy_logpdf=stats.cauchy.logpdf([-2.0, 3.0], loc=[-0.5, 2.0], scale=[0.8, 3.0]),
+    ),
+    _SmoothReferenceCase(
         name="exponential",
         arguments=(jnp.array([0.1, 2.0]), jnp.array([0.5, 3.0])),
         scipy_logpdf=stats.expon.logpdf([0.1, 2.0], scale=1 / np.array([0.5, 3.0])),
@@ -93,6 +98,7 @@ _SMOOTH_REFERENCE_CASES = (
 def test_jax_references_cover_every_distribution() -> None:
     assert set(JAX_REFERENCES) == {
         "beta",
+        "cauchy",
         "exponential",
         "gamma",
         "half_normal",
@@ -638,6 +644,11 @@ def test_mmmjax_lognormal_deep_tail_gradients_match_scipy_mills_ratio(operation:
             "beta",
             (jnp.full((2, 1), 2.5), jnp.full((3,), 3.5)),
             id="beta",
+        ),
+        pytest.param(
+            "cauchy",
+            (jnp.full((2, 1), 0.2), jnp.full((3,), 1.3)),
+            id="cauchy",
         ),
         pytest.param("exponential", (jnp.full((2, 3), 1.3),), id="exponential"),
         pytest.param(

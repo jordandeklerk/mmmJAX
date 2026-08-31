@@ -10,6 +10,9 @@ from mmmjax import (
     beta,
     beta_logpdf,
     beta_rng,
+    cauchy,
+    cauchy_logpdf,
+    cauchy_rng,
     exponential,
     exponential_logcdf,
     exponential_logpdf,
@@ -65,6 +68,7 @@ from mmmjax import (
         (exponential, (jnp.empty((0,)), 1.0)),
         (gamma, (jnp.empty((0,)), 1.0, 1.0)),
         (beta, (jnp.empty((0,)), 1.0, 1.0)),
+        (cauchy, (jnp.empty((0,)), 0.0, 1.0)),
         (inverse_gamma, (jnp.empty((0,)), 1.0, 1.0)),
         (laplace, (jnp.empty((0,)), 0.0, 1.0)),
         (student_t, (jnp.empty((0,)), 5.0, 0.0, 1.0)),
@@ -93,6 +97,10 @@ def test_density_of_empty_batch_is_scalar_zero(density, arguments) -> None:
         (gamma, (jnp.empty((0,)), 1.0, jnp.inf)),
         (beta, (jnp.empty((0,)), 0.0, 1.0)),
         (beta, (jnp.empty((0,)), 1.0, jnp.inf)),
+        (cauchy, (jnp.empty((0,)), 0.0, 0.0)),
+        (cauchy, (jnp.empty((0,)), jnp.inf, 1.0)),
+        (cauchy, (jnp.empty((0,)), jnp.empty((0,)), jnp.inf)),
+        (cauchy, (jnp.empty((0,)), jnp.inf, jnp.empty((0,)))),
         (inverse_gamma, (jnp.empty((0,)), 0.0, 1.0)),
         (inverse_gamma, (jnp.empty((0,)), 1.0, jnp.inf)),
         (inverse_gamma, (jnp.empty((0,)), jnp.empty((0,)), jnp.inf)),
@@ -141,6 +149,7 @@ def test_probability_functions_use_at_least_float32(dtype, expected_dtype) -> No
     assert gamma_logcdf(values + 1, dtype(1.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert gamma_logsf(values + 1, dtype(1.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert beta_logpdf(values, dtype(1.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
+    assert cauchy_logpdf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert inverse_gamma_logpdf(values + 1, dtype(1.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert inverse_gamma_logcdf(values + 1, dtype(1.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert inverse_gamma_logsf(values + 1, dtype(1.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
@@ -172,6 +181,7 @@ def test_probability_functions_promote_integer_inputs_to_float32() -> None:
     assert gamma_logcdf(values + 1, 1, 1).dtype == jnp.dtype(jnp.float32)
     assert gamma_logsf(values + 1, 1, 1).dtype == jnp.dtype(jnp.float32)
     assert beta_logpdf(values, 1, 1).dtype == jnp.dtype(jnp.float32)
+    assert cauchy_logpdf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
     assert inverse_gamma_logpdf(values + 1, 1, 1).dtype == jnp.dtype(jnp.float32)
     assert inverse_gamma_logcdf(values + 1, 1, 1).dtype == jnp.dtype(jnp.float32)
     assert inverse_gamma_logsf(values + 1, 1, 1).dtype == jnp.dtype(jnp.float32)
@@ -193,6 +203,7 @@ def test_probability_functions_promote_integer_inputs_to_float32() -> None:
         pytest.param(exponential_logpdf, (1.0, 1.0), exponential_rng, (1.0,), id="exponential"),
         pytest.param(gamma_logpdf, (1.0, 1.0, 1.0), gamma_rng, (1.0, 1.0), id="gamma"),
         pytest.param(beta_logpdf, (0.5, 1.0, 1.0), beta_rng, (1.0, 1.0), id="beta"),
+        pytest.param(cauchy_logpdf, (0.0, 0.0, 1.0), cauchy_rng, (0.0, 1.0), id="cauchy"),
         pytest.param(
             inverse_gamma_logpdf,
             (1.0, 1.0, 1.0),
@@ -260,6 +271,7 @@ def test_distribution_functions_support_float64() -> None:
     assert gamma_logcdf(values + 1, 1.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert gamma_logsf(values + 1, 1.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert beta_logpdf(values, 1.0, 1.0).dtype == jnp.dtype(jnp.float64)
+    assert cauchy_logpdf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert inverse_gamma_logpdf(values + 1, 1.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert inverse_gamma_logcdf(values + 1, 1.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert inverse_gamma_logsf(values + 1, 1.0, 1.0).dtype == jnp.dtype(jnp.float64)
@@ -276,6 +288,7 @@ def test_distribution_functions_support_float64() -> None:
     assert exponential_rng(key, jnp.float64(1.0)).dtype == jnp.dtype(jnp.float64)
     assert gamma_rng(key, jnp.float64(1.0), jnp.float64(1.0)).dtype == jnp.dtype(jnp.float64)
     assert beta_rng(key, jnp.float64(1.0), jnp.float64(1.0)).dtype == jnp.dtype(jnp.float64)
+    assert cauchy_rng(key, jnp.float64(0.0), jnp.float64(1.0)).dtype == jnp.dtype(jnp.float64)
     assert inverse_gamma_rng(key, jnp.float64(1.0), jnp.float64(1.0)).dtype == jnp.dtype(jnp.float64)
     assert laplace_rng(key, jnp.float64(0.0), jnp.float64(1.0)).dtype == jnp.dtype(jnp.float64)
     assert student_t_rng(key, jnp.float64(5.0), jnp.float64(0.0), jnp.float64(1.0)).dtype == jnp.dtype(jnp.float64)
@@ -307,6 +320,8 @@ def test_distribution_functions_support_float64() -> None:
         (gamma_logsf, (jnp.array([0.5, 1.0]), 2.0, 1.5)),
         (beta_logpdf, (jnp.array([0.25, 0.75]), 2.0, 1.5)),
         (beta, (jnp.array([0.25, 0.75]), 2.0, 1.5)),
+        (cauchy_logpdf, (jnp.array([0.0, 1.0]), 0.5, 2.0)),
+        (cauchy, (jnp.array([0.0, 1.0]), 0.5, 2.0)),
         (inverse_gamma_logpdf, (jnp.array([0.5, 1.0]), 2.0, 1.5)),
         (inverse_gamma, (jnp.array([0.5, 1.0]), 2.0, 1.5)),
         (inverse_gamma_logcdf, (jnp.array([0.5, 1.0]), 2.0, 1.5)),
@@ -336,6 +351,7 @@ def test_rngs_return_scalar_for_scalar_parameters() -> None:
     assert exponential_rng(key, 1.0).shape == ()
     assert gamma_rng(key, 1.0, 1.0).shape == ()
     assert beta_rng(key, 1.0, 1.0).shape == ()
+    assert cauchy_rng(key, 0.0, 1.0).shape == ()
     assert inverse_gamma_rng(key, 1.0, 1.0).shape == ()
     assert laplace_rng(key, 0.0, 1.0).shape == ()
     assert student_t_rng(key, 5.0, 0.0, 1.0).shape == ()
@@ -353,6 +369,7 @@ def test_rngs_return_nan_for_invalid_parameters() -> None:
     gamma_rate_result = gamma_rng(key, 1.0, jnp.array([1.0, 0.0, -1.0, jnp.inf, jnp.nan]))
     beta_alpha_result = beta_rng(key, jnp.array([1.0, 0.0, -1.0, jnp.inf, jnp.nan]), 1.0)
     beta_beta_result = beta_rng(key, 1.0, jnp.array([1.0, 0.0, -1.0, jnp.inf, jnp.nan]))
+    cauchy_result = cauchy_rng(key, jnp.array([0.0, 0.0, jnp.inf]), jnp.array([1.0, 0.0, 1.0]))
     inverse_gamma_shape_result = inverse_gamma_rng(
         key,
         jnp.array([1.0, 0.0, -1.0, jnp.inf, jnp.nan]),
@@ -399,6 +416,8 @@ def test_rngs_return_nan_for_invalid_parameters() -> None:
     assert jnp.all(jnp.isnan(beta_alpha_result[1:]))
     assert jnp.isfinite(beta_beta_result[0])
     assert jnp.all(jnp.isnan(beta_beta_result[1:]))
+    assert jnp.isfinite(cauchy_result[0])
+    assert jnp.all(jnp.isnan(cauchy_result[1:]))
     assert jnp.isfinite(inverse_gamma_shape_result[0])
     assert jnp.all(jnp.isnan(inverse_gamma_shape_result[1:]))
     assert jnp.isfinite(inverse_gamma_scale_result[0])
@@ -439,6 +458,9 @@ def test_rngs_compute_with_float32_for_low_precision_parameters(dtype) -> None:
         shape=(2,),
         dtype=jnp.float32,
     )
+    expected_cauchy = location.astype(jnp.float32) + scale.astype(jnp.float32) * jax.random.cauchy(
+        key, shape=(2,), dtype=jnp.float32
+    )
     expected_inverse_gamma = jnp.exp(
         jnp.log(rate.astype(jnp.float32))
         - jax.random.loggamma(key, scale.astype(jnp.float32), shape=(2,), dtype=jnp.float32)
@@ -456,6 +478,7 @@ def test_rngs_compute_with_float32_for_low_precision_parameters(dtype) -> None:
     exponential_result = exponential_rng(key, rate)
     gamma_result = gamma_rng(key, scale, rate)
     beta_result = beta_rng(key, scale, rate)
+    cauchy_result = cauchy_rng(key, location, scale)
     inverse_gamma_result = inverse_gamma_rng(key, scale, rate)
     laplace_result = laplace_rng(key, location, scale)
     student_result = student_t_rng(key, degrees, location, scale)
@@ -467,6 +490,7 @@ def test_rngs_compute_with_float32_for_low_precision_parameters(dtype) -> None:
     assert exponential_result.dtype == jnp.dtype(jnp.float32)
     assert gamma_result.dtype == jnp.dtype(jnp.float32)
     assert beta_result.dtype == jnp.dtype(jnp.float32)
+    assert cauchy_result.dtype == jnp.dtype(jnp.float32)
     assert inverse_gamma_result.dtype == jnp.dtype(jnp.float32)
     assert laplace_result.dtype == jnp.dtype(jnp.float32)
     assert student_result.dtype == jnp.dtype(jnp.float32)
@@ -477,6 +501,7 @@ def test_rngs_compute_with_float32_for_low_precision_parameters(dtype) -> None:
     assert jnp.array_equal(exponential_result, expected_exponential)
     assert jnp.array_equal(gamma_result, expected_gamma)
     assert jnp.array_equal(beta_result, expected_beta)
+    assert jnp.array_equal(cauchy_result, expected_cauchy)
     assert jnp.array_equal(inverse_gamma_result, expected_inverse_gamma)
     assert jnp.array_equal(laplace_result, expected_laplace)
     assert jnp.all(jnp.isfinite(student_result))
@@ -491,6 +516,7 @@ def test_rngs_can_be_jitted() -> None:
     compiled_exponential = jax.jit(partial(exponential_rng, rate=1.0, sample_shape=(2,)))
     compiled_gamma = jax.jit(partial(gamma_rng, shape=2.0, rate=1.0, sample_shape=(2,)))
     compiled_beta = jax.jit(partial(beta_rng, alpha=2.0, beta=1.0, sample_shape=(2,)))
+    compiled_cauchy = jax.jit(partial(cauchy_rng, location=0.0, scale=1.0, sample_shape=(2,)))
     compiled_inverse_gamma = jax.jit(partial(inverse_gamma_rng, shape=2.0, scale=1.0, sample_shape=(2,)))
     compiled_laplace = jax.jit(partial(laplace_rng, location=0.0, scale=1.0, sample_shape=(2,)))
     compiled_student = jax.jit(
@@ -504,6 +530,7 @@ def test_rngs_can_be_jitted() -> None:
     assert jnp.array_equal(compiled_exponential(key), exponential_rng(key, 1.0, sample_shape=(2,)))
     assert jnp.allclose(compiled_gamma(key), gamma_rng(key, 2.0, 1.0, sample_shape=(2,)))
     assert jnp.allclose(compiled_beta(key), beta_rng(key, 2.0, 1.0, sample_shape=(2,)))
+    assert jnp.array_equal(compiled_cauchy(key), cauchy_rng(key, 0.0, 1.0, sample_shape=(2,)))
     assert jnp.allclose(compiled_inverse_gamma(key), inverse_gamma_rng(key, 2.0, 1.0, sample_shape=(2,)))
     assert jnp.array_equal(compiled_laplace(key), laplace_rng(key, 0.0, 1.0, sample_shape=(2,)))
     assert jnp.allclose(compiled_student(key), student_t_rng(key, 5.0, 0.0, 1.0, sample_shape=(2,)))
@@ -519,6 +546,7 @@ def test_rngs_can_be_vectorized_over_keys() -> None:
     exponential_result = jax.vmap(exponential_rng, in_axes=(0, None))(keys, 1.0)
     gamma_result = jax.vmap(gamma_rng, in_axes=(0, None, None))(keys, 2.0, 1.0)
     beta_result = jax.vmap(beta_rng, in_axes=(0, None, None))(keys, 2.0, 1.0)
+    cauchy_result = jax.vmap(cauchy_rng, in_axes=(0, None, None))(keys, 0.0, 1.0)
     inverse_gamma_result = jax.vmap(inverse_gamma_rng, in_axes=(0, None, None))(keys, 2.0, 1.0)
     laplace_result = jax.vmap(laplace_rng, in_axes=(0, None, None))(keys, 0.0, 1.0)
     student_result = jax.vmap(student_t_rng, in_axes=(0, None, None, None))(keys, 5.0, 0.0, 1.0)
@@ -529,6 +557,7 @@ def test_rngs_can_be_vectorized_over_keys() -> None:
     expected_exponential = jnp.stack([exponential_rng(key, 1.0) for key in keys])
     expected_gamma = jnp.stack([gamma_rng(key, 2.0, 1.0) for key in keys])
     expected_beta = jnp.stack([beta_rng(key, 2.0, 1.0) for key in keys])
+    expected_cauchy = jnp.stack([cauchy_rng(key, 0.0, 1.0) for key in keys])
     expected_inverse_gamma = jnp.stack([inverse_gamma_rng(key, 2.0, 1.0) for key in keys])
     expected_laplace = jnp.stack([laplace_rng(key, 0.0, 1.0) for key in keys])
     expected_student = jnp.stack([student_t_rng(key, 5.0, 0.0, 1.0) for key in keys])
@@ -540,6 +569,7 @@ def test_rngs_can_be_vectorized_over_keys() -> None:
     assert jnp.array_equal(exponential_result, expected_exponential)
     assert jnp.allclose(gamma_result, expected_gamma)
     assert jnp.array_equal(beta_result, expected_beta)
+    assert jnp.array_equal(cauchy_result, expected_cauchy)
     assert jnp.allclose(inverse_gamma_result, expected_inverse_gamma)
     assert jnp.array_equal(laplace_result, expected_laplace)
     assert jnp.array_equal(student_result, expected_student)
@@ -606,6 +636,8 @@ def test_rng_rejects_negative_sample_shape() -> None:
         (exponential_rng, (jax.random.key(0), 1.0 + 0.0j), "rate"),
         (gamma_rng, (jax.random.key(0), 1.0, 1.0 + 0.0j), "rate"),
         (beta_rng, (jax.random.key(0), 1.0, 1.0 + 0.0j), "beta"),
+        (cauchy_logpdf, (0.0, 0.0, 1.0 + 0.0j), "scale"),
+        (cauchy_rng, (jax.random.key(0), 0.0, 1.0 + 0.0j), "scale"),
         (inverse_gamma_rng, (jax.random.key(0), 1.0, 1.0 + 0.0j), "scale"),
         (laplace_rng, (jax.random.key(0), 0.0, 1.0 + 0.0j), "scale"),
         (student_t_logpdf, (0.0, 5.0 + 0.0j, 0.0, 1.0), "degrees_of_freedom"),

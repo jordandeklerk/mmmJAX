@@ -168,6 +168,17 @@ def _beta_rng(
     return jax.random.beta(key, alpha, beta, shape=shape, dtype=dtype)
 
 
+def _cauchy_rng(
+    key: jax.Array,
+    location: jax.Array,
+    scale: jax.Array,
+    *,
+    sample_shape: tuple[int, ...] = (),
+) -> jax.Array:
+    shape, dtype = _random_metadata(sample_shape, location, scale)
+    return location + scale * jax.random.cauchy(key, shape=shape, dtype=dtype)
+
+
 def _exponential_rng(
     key: jax.Array,
     rate: jax.Array,
@@ -289,6 +300,7 @@ def _random_metadata(
 
 JAX_REFERENCES: dict[str, JaxReference] = {
     "beta": JaxReference(stats.beta.logpdf, _beta_rng),
+    "cauchy": JaxReference(stats.cauchy.logpdf, _cauchy_rng),
     "exponential": JaxReference(
         _exponential_logpdf,
         _exponential_rng,
