@@ -9,6 +9,12 @@ from mmmjax.distributions._bernoulli import bernoulli_rng as bernoulli_rng
 from mmmjax.distributions._beta import beta as beta
 from mmmjax.distributions._beta import beta_logpdf as beta_logpdf
 from mmmjax.distributions._beta import beta_rng as beta_rng
+from mmmjax.distributions._binomial import binomial as binomial
+from mmmjax.distributions._binomial import binomial_logit as binomial_logit
+from mmmjax.distributions._binomial import binomial_logit_logpmf as binomial_logit_logpmf
+from mmmjax.distributions._binomial import binomial_logit_rng as binomial_logit_rng
+from mmmjax.distributions._binomial import binomial_logpmf as binomial_logpmf
+from mmmjax.distributions._binomial import binomial_rng as binomial_rng
 from mmmjax.distributions._cauchy import cauchy as cauchy
 from mmmjax.distributions._cauchy import cauchy_logpdf as cauchy_logpdf
 from mmmjax.distributions._cauchy import cauchy_rng as cauchy_rng
@@ -66,6 +72,12 @@ __all__ = [
     "beta",
     "beta_logpdf",
     "beta_rng",
+    "binomial",
+    "binomial_logit",
+    "binomial_logit_logpmf",
+    "binomial_logit_rng",
+    "binomial_logpmf",
+    "binomial_rng",
     "cauchy",
     "cauchy_logpdf",
     "cauchy_rng",
