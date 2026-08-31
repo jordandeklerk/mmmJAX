@@ -60,6 +60,12 @@ from mmmjax import (
     normal_logpdf,
     normal_logsf,
     normal_rng,
+    poisson,
+    poisson_log,
+    poisson_log_logpmf,
+    poisson_log_rng,
+    poisson_logpmf,
+    poisson_rng,
     student_t,
     student_t_logpdf,
     student_t_rng,
@@ -78,6 +84,8 @@ from mmmjax import (
         (bernoulli_logit, (jnp.empty((0,), dtype=jnp.int32), 0.0)),
         (binomial, (jnp.empty((0,), dtype=jnp.int32), 5, 0.4)),
         (binomial_logit, (jnp.empty((0,), dtype=jnp.int32), 5, 0.0)),
+        (poisson, (jnp.empty((0,), dtype=jnp.int32), 2.0)),
+        (poisson_log, (jnp.empty((0,), dtype=jnp.int32), 0.5)),
         (normal, (jnp.empty((0,)), 0.0, 1.0)),
         (half_normal, (jnp.empty((0,)), 1.0)),
         (lognormal, (jnp.empty((0,)), 0.0, 1.0)),
@@ -105,6 +113,8 @@ def test_log_density_of_empty_batch_is_scalar_zero(log_density, arguments) -> No
         (bernoulli_logit, (jnp.empty((0,), dtype=jnp.int32), jnp.nan)),
         (binomial, (jnp.empty((0,), dtype=jnp.int32), -1, -1.0)),
         (binomial_logit, (jnp.empty((0,), dtype=jnp.int32), -1, jnp.nan)),
+        (poisson, (jnp.empty((0,), dtype=jnp.int32), -1.0)),
+        (poisson_log, (jnp.empty((0,), dtype=jnp.int32), jnp.nan)),
         (normal, (jnp.empty((0,)), 0.0, 0.0)),
         (half_normal, (jnp.empty((0,)), 0.0)),
         (lognormal, (jnp.empty((0,)), 0.0, 0.0)),
@@ -137,6 +147,8 @@ def test_probability_functions_use_at_least_float32(dtype, expected_dtype) -> No
     assert bernoulli_logit_logpmf(values, dtype(0.2)).dtype == jnp.dtype(expected_dtype)
     assert binomial_logpmf(values, 1, dtype(0.4)).dtype == jnp.dtype(expected_dtype)
     assert binomial_logit_logpmf(values, 1, dtype(0.2)).dtype == jnp.dtype(expected_dtype)
+    assert poisson_logpmf(values, dtype(2.0)).dtype == jnp.dtype(expected_dtype)
+    assert poisson_log_logpmf(values, dtype(0.5)).dtype == jnp.dtype(expected_dtype)
     assert normal_logpdf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert normal_logcdf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert normal_logsf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
@@ -173,6 +185,8 @@ def test_probability_functions_promote_integer_inputs_to_float32() -> None:
     assert bernoulli_logit_logpmf(values, jnp.int32(0)).dtype == jnp.dtype(jnp.float32)
     assert binomial_logpmf(values, 1, jnp.int32(1)).dtype == jnp.dtype(jnp.float32)
     assert binomial_logit_logpmf(values, 1, jnp.int32(0)).dtype == jnp.dtype(jnp.float32)
+    assert poisson_logpmf(values, jnp.int32(2)).dtype == jnp.dtype(jnp.float32)
+    assert poisson_log_logpmf(values, jnp.int32(0)).dtype == jnp.dtype(jnp.float32)
     assert normal_logpdf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
     assert normal_logcdf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
     assert normal_logsf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
@@ -249,6 +263,10 @@ def test_discrete_python_scalars_follow_probability_and_sample_dtypes() -> None:
     assert binomial_logit_logpmf(1, 5, 0.2).dtype == expected_probability_dtype
     assert binomial_rng(key, 5, 0.4).dtype == jnp.dtype(jnp.int32)
     assert binomial_logit_rng(key, 5, 0.2).dtype == jnp.dtype(jnp.int32)
+    assert poisson_logpmf(1, 2.0).dtype == expected_probability_dtype
+    assert poisson_log_logpmf(1, 0.5).dtype == expected_probability_dtype
+    assert poisson_rng(key, 2.0).dtype == jnp.dtype(jnp.int32)
+    assert poisson_log_rng(key, 0.5).dtype == jnp.dtype(jnp.int32)
 
 
 def test_cumulative_functions_follow_jax_default_dtype_for_python_scalars() -> None:
@@ -285,6 +303,10 @@ def test_distribution_functions_support_float64() -> None:
     assert binomial_logit_logpmf(values, 5, jnp.float64(0.2)).dtype == jnp.dtype(jnp.float64)
     assert binomial_rng(key, 5, jnp.float64(0.4)).dtype == jnp.dtype(jnp.int32)
     assert binomial_logit_rng(key, 5, jnp.float64(0.2)).dtype == jnp.dtype(jnp.int32)
+    assert poisson_logpmf(values, jnp.float64(2.0)).dtype == jnp.dtype(jnp.float64)
+    assert poisson_log_logpmf(values, jnp.float64(0.5)).dtype == jnp.dtype(jnp.float64)
+    assert poisson_rng(key, jnp.float64(2.0)).dtype == jnp.dtype(jnp.int32)
+    assert poisson_log_rng(key, jnp.float64(0.5)).dtype == jnp.dtype(jnp.int32)
     assert normal_logpdf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert normal_logcdf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert normal_logsf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
@@ -336,6 +358,10 @@ def test_distribution_functions_support_float64() -> None:
         (binomial, (jnp.array([0, 1]), 5, 0.4)),
         (binomial_logit_logpmf, (jnp.array([0, 1]), 5, 0.2)),
         (binomial_logit, (jnp.array([0, 1]), 5, 0.2)),
+        (poisson_logpmf, (jnp.array([0, 1]), 2.0)),
+        (poisson, (jnp.array([0, 1]), 2.0)),
+        (poisson_log_logpmf, (jnp.array([0, 1]), 0.5)),
+        (poisson_log, (jnp.array([0, 1]), 0.5)),
         (normal_logpdf, (jnp.array([0.0, 1.0]), 0.5, 2.0)),
         (normal, (jnp.array([0.0, 1.0]), 0.5, 2.0)),
         (normal_logcdf, (jnp.array([0.0, 1.0]), 0.5, 2.0)),
@@ -387,6 +413,8 @@ def test_rngs_return_scalar_for_scalar_parameters() -> None:
     assert bernoulli_logit_rng(key, 0.2).shape == ()
     assert binomial_rng(key, 5, 0.4).shape == ()
     assert binomial_logit_rng(key, 5, 0.2).shape == ()
+    assert poisson_rng(key, 2.0).shape == ()
+    assert poisson_log_rng(key, 0.5).shape == ()
     assert normal_rng(key, 0.0, 1.0).shape == ()
     assert half_normal_rng(key, 1.0).shape == ()
     assert lognormal_rng(key, 0.0, 1.0).shape == ()
