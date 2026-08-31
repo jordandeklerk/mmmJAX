@@ -3,8 +3,9 @@
 import jax
 import jax.numpy as jnp
 from jax.scipy.special import digamma
-from jax.typing import ArrayLike, DTypeLike
+from jax.typing import ArrayLike
 
+from mmmjax.distributions._discrete import _prepare_nonnegative_count
 from mmmjax.distributions._utils import (
     _as_real_array,
     _gamma_shape_normalizer,
@@ -47,7 +48,7 @@ def poisson_logpmf(value: ArrayLike, rate: ArrayLike) -> jax.Array:
     """
     value_array = _as_real_array("value", value)
     (rate_array,) = _promote_inexact(("rate", rate))
-    count, supported = _prepare_poisson_count(value_array, dtype=rate_array.dtype)
+    count, supported = _prepare_nonnegative_count(value_array, dtype=rate_array.dtype)
 
     valid_rate = jnp.isfinite(rate_array) & (rate_array >= 0)
     safe_rate = jnp.where(valid_rate, rate_array, jnp.ones_like(rate_array))
@@ -161,7 +162,7 @@ def poisson_log_logpmf(value: ArrayLike, log_rate: ArrayLike) -> jax.Array:
     """
     value_array = _as_real_array("value", value)
     (log_rate_array,) = _promote_inexact(("log_rate", log_rate))
-    count, supported = _prepare_poisson_count(value_array, dtype=log_rate_array.dtype)
+    count, supported = _prepare_nonnegative_count(value_array, dtype=log_rate_array.dtype)
 
     valid_log_rate = ~jnp.isnan(log_rate_array)
     safe_log_rate = jnp.where(valid_log_rate, log_rate_array, jnp.zeros_like(log_rate_array))
@@ -242,22 +243,6 @@ def poisson_log_rng(
         jnp.exp(log_rate_array),
         sample_shape=sample_shape,
     )
-
-
-def _prepare_poisson_count(
-    value: jax.Array,
-    *,
-    dtype: DTypeLike,
-) -> tuple[jax.Array, jax.Array]:
-    if value.dtype == jnp.dtype(jnp.bool_) or jnp.issubdtype(value.dtype, jnp.integer):
-        supported = value >= 0
-    else:
-        supported = jnp.isfinite(value) & (value >= 0) & (value == jnp.floor(value))
-
-    # Support is checked before conversion so parameter dtype cannot round fractional counts onto the support
-    safe_value = jnp.where(supported, value, jnp.zeros_like(value))
-    count = jnp.asarray(safe_value, dtype=dtype)
-    return count, supported
 
 
 @jax.custom_jvp
