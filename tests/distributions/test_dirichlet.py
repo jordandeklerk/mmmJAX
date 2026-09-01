@@ -103,6 +103,149 @@ def test_dirichlet_logpdf_gradients_match_analytic_result() -> None:
     np.testing.assert_allclose(concentration_gradient, expected_concentration_gradient, rtol=3e-6, atol=3e-6)
 
 
+def test_dirichlet_logpdf_is_stable_for_concentrated_large_simplex() -> None:
+    event_size = 465
+    value = jnp.full((event_size,), 1 / event_size, dtype=jnp.float32)
+    concentration = jnp.full((event_size,), 1e8, dtype=jnp.float32)
+    reference_value = np.full(event_size, 1 / event_size, dtype=np.float64)
+    reference_concentration = np.full(event_size, 1e8, dtype=np.float64)
+    expected_log_density = stats.dirichlet.logpdf(reference_value, reference_concentration)
+    expected_gradient = special.digamma(event_size * 1e8) - special.digamma(1e8) + np.log(1 / event_size)
+
+    result, gradient = jax.jit(jax.value_and_grad(dirichlet_logpdf, argnums=1))(
+        value,
+        concentration,
+    )
+
+    np.testing.assert_allclose(result, expected_log_density, rtol=2e-7)
+    np.testing.assert_allclose(gradient, expected_gradient, rtol=3e-7)
+
+
+def test_dirichlet_logpdf_is_stable_below_component_cutoff() -> None:
+    event_size = 465
+    value = jnp.full((event_size,), 1 / event_size, dtype=jnp.float32)
+    concentration = jnp.full((event_size,), 7.9, dtype=jnp.float32)
+    expected = stats.dirichlet.logpdf(
+        np.full(event_size, 1 / event_size, dtype=np.float64),
+        np.full(event_size, 7.9, dtype=np.float64),
+    )
+
+    result = dirichlet_logpdf(value, concentration)
+
+    np.testing.assert_allclose(result, expected, rtol=2e-7)
+
+
+def test_concentrated_two_component_dirichlet_matches_beta() -> None:
+    value = jnp.asarray(0.5001000165939331, dtype=jnp.float32)
+    concentration = jnp.array([1e8, 1e8], dtype=jnp.float32)
+
+    def dirichlet_from_first_component(first_component, shape):
+        simplex = jnp.stack((first_component, 1 - first_component))
+        return dirichlet_logpdf(simplex, shape)
+
+    def beta_from_shapes(first_component, shape):
+        return beta_logpdf(first_component, shape[0], shape[1])
+
+    zero_concentration_tangent = jnp.zeros_like(concentration)
+    dirichlet_value, dirichlet_tangent = jax.jvp(
+        dirichlet_from_first_component,
+        (value, concentration),
+        (jnp.ones_like(value), zero_concentration_tangent),
+    )
+    beta_value, beta_tangent = jax.jvp(
+        beta_from_shapes,
+        (value, concentration),
+        (jnp.ones_like(value), zero_concentration_tangent),
+    )
+    dirichlet_gradient = jax.grad(dirichlet_from_first_component, argnums=1)(value, concentration)
+    beta_gradient = jax.grad(beta_from_shapes, argnums=1)(value, concentration)
+
+    np.testing.assert_allclose(dirichlet_value, beta_value, rtol=3e-7)
+    np.testing.assert_allclose(dirichlet_tangent, beta_tangent, rtol=3e-7)
+    np.testing.assert_allclose(dirichlet_gradient, beta_gradient, rtol=3e-7)
+
+
+def test_dirichlet_logpdf_has_correct_second_derivatives() -> None:
+    value = jnp.array([0.2, 0.3, 0.5])
+    concentration = jnp.array([20.0, 30.0, 50.0])
+    value_array = np.asarray(value, dtype=np.float64)
+    concentration_array = np.asarray(concentration, dtype=np.float64)
+    concentration_sum = np.sum(concentration_array)
+
+    expected_value_hessian = np.diag(-(concentration_array - 1) / np.square(value_array))
+    expected_cross_derivative = np.diag(1 / value_array)
+    expected_concentration_hessian = np.full(
+        (3, 3),
+        special.polygamma(1, concentration_sum),
+    )
+    expected_concentration_hessian[np.diag_indices(3)] -= special.polygamma(
+        1,
+        concentration_array,
+    )
+
+    value_hessian = jax.hessian(dirichlet_logpdf, argnums=0)(value, concentration)
+    cross_derivative = jax.jacfwd(
+        jax.grad(dirichlet_logpdf, argnums=0),
+        argnums=1,
+    )(value, concentration)
+    concentration_hessian = jax.hessian(dirichlet_logpdf, argnums=1)(
+        value,
+        concentration,
+    )
+
+    np.testing.assert_allclose(value_hessian, expected_value_hessian, rtol=3e-6, atol=1e-7)
+    np.testing.assert_allclose(cross_derivative, expected_cross_derivative, rtol=3e-6, atol=3e-7)
+    np.testing.assert_allclose(
+        concentration_hessian,
+        expected_concentration_hessian,
+        rtol=3e-6,
+        atol=1e-7,
+    )
+
+
+def test_dirichlet_logpdf_handles_concentration_sum_overflow() -> None:
+    maximum = jnp.finfo(jnp.float32).max
+    value = jnp.array([0.5, 0.5])
+    concentration = jnp.array([maximum, maximum])
+
+    result, gradient = jax.value_and_grad(dirichlet_logpdf, argnums=1)(
+        value,
+        concentration,
+    )
+    expected = beta_logpdf(value[0], concentration[0], concentration[1])
+    expected_gradient = jax.grad(lambda shape: beta_logpdf(value[0], shape[0], shape[1]))(concentration)
+
+    assert jnp.isfinite(result)
+    assert jnp.all(jnp.isfinite(gradient))
+    np.testing.assert_allclose(result, expected, rtol=3e-6)
+    np.testing.assert_allclose(gradient, expected_gradient, rtol=3e-6)
+
+
+def test_dirichlet_logpdf_mixes_standard_and_stable_batches_under_vmap() -> None:
+    values = jnp.array(
+        [
+            [0.2, 0.3, 0.5],
+            [1 / 3, 1 / 3, 1 / 3],
+        ]
+    )
+    concentrations = jnp.array(
+        [
+            [1.0, 2.0, 3.0],
+            [1e8, 1e8, 1e8],
+        ]
+    )
+
+    batched_value, batched_gradient = jax.jit(
+        jax.value_and_grad(lambda shape: jnp.sum(dirichlet_logpdf(values, shape)))
+    )(concentrations)
+    mapped_values, mapped_gradients = jax.jit(jax.vmap(jax.value_and_grad(dirichlet_logpdf, argnums=1)))(
+        values, concentrations
+    )
+
+    np.testing.assert_allclose(batched_value, jnp.sum(mapped_values), rtol=3e-6)
+    np.testing.assert_allclose(batched_gradient, mapped_gradients, rtol=3e-6)
+
+
 def test_dirichlet_logpdf_uses_boundary_limits() -> None:
     value = jnp.array([0.0, 1.0])
     concentrations = jnp.array(
@@ -118,6 +261,100 @@ def test_dirichlet_logpdf_uses_boundary_limits() -> None:
     assert jnp.isposinf(result[0])
     assert jnp.allclose(result[1], jnp.log(2.0))
     assert jnp.isneginf(result[2])
+
+
+def test_dirichlet_logpdf_uses_stable_finite_boundary_limit() -> None:
+    value = jnp.array([0.0, 0.5, 0.5])
+    concentration = jnp.array([1.0, 1e8, 1e8])
+    expected = stats.dirichlet.logpdf(
+        np.array([0.0, 0.5, 0.5], dtype=np.float64),
+        np.array([1.0, 1e8, 1e8], dtype=np.float64),
+    )
+
+    result = jax.jit(dirichlet_logpdf)(value, concentration)
+
+    np.testing.assert_allclose(result, expected, rtol=3e-6)
+
+
+def test_dirichlet_logpdf_preserves_defined_boundary_derivatives() -> None:
+    value = jnp.array([0.0, 0.5, 0.5])
+    concentration = jnp.array([1.0, 1e8, 1e8])
+    expected_value_gradient = (np.asarray(concentration[1:]) - 1) / np.asarray(value[1:])
+    expected_concentration_gradient = (
+        special.digamma(np.sum(np.asarray(concentration, dtype=np.float64)))
+        - special.digamma(np.asarray(concentration[1:], dtype=np.float64))
+        + np.log(np.asarray(value[1:], dtype=np.float64))
+    )
+
+    value_gradient, concentration_gradient = jax.grad(
+        dirichlet_logpdf,
+        argnums=(0, 1),
+    )(value, concentration)
+    _, zero_tangent = jax.jvp(
+        dirichlet_logpdf,
+        (value, concentration),
+        (jnp.zeros_like(value), jnp.zeros_like(concentration)),
+    )
+    _, positive_concentration_tangent = jax.jvp(
+        dirichlet_logpdf,
+        (value, concentration),
+        (jnp.zeros_like(value), jnp.array([0.0, 1.0, 0.0])),
+    )
+
+    assert value_gradient[0] == 0
+    assert concentration_gradient[0] == 0
+    assert zero_tangent == 0
+    np.testing.assert_allclose(value_gradient[1:], expected_value_gradient, rtol=3e-6)
+    np.testing.assert_allclose(
+        concentration_gradient[1:],
+        expected_concentration_gradient,
+        rtol=3e-6,
+    )
+    np.testing.assert_allclose(
+        positive_concentration_tangent,
+        expected_concentration_gradient[0],
+        rtol=3e-6,
+    )
+
+
+def test_dirichlet_logpdf_boundary_jvp_is_zero_preserving_below_cutoff() -> None:
+    value = jnp.array([0.0, 1.0])
+    concentration = jnp.array([1.0, 2.0])
+
+    result, zero_tangent = jax.jvp(
+        dirichlet_logpdf,
+        (value, concentration),
+        (jnp.zeros_like(value), jnp.zeros_like(concentration)),
+    )
+    _, positive_concentration_tangent = jax.jvp(
+        dirichlet_logpdf,
+        (value, concentration),
+        (jnp.zeros_like(value), jnp.array([0.0, 1.0])),
+    )
+
+    np.testing.assert_allclose(result, jnp.log(2.0), rtol=3e-6)
+    assert zero_tangent == 0
+    np.testing.assert_allclose(positive_concentration_tangent, 0.5, rtol=3e-6)
+
+
+@pytest.mark.parametrize("first_concentration", [0.5, 2.0])
+def test_nonfinite_dirichlet_boundary_gradients_match_beta(first_concentration: float) -> None:
+    value = jnp.array([0.0, 1.0])
+    concentration = jnp.array([first_concentration, 20.0])
+
+    result = dirichlet_logpdf(value, concentration)
+    gradient = jax.grad(dirichlet_logpdf, argnums=1)(value, concentration)
+    expected = beta_logpdf(value[0], concentration[0], concentration[1])
+    expected_gradient = jnp.asarray(
+        jax.grad(beta_logpdf, argnums=(1, 2))(
+            value[0],
+            concentration[0],
+            concentration[1],
+        )
+    )
+
+    assert jnp.array_equal(result, expected)
+    assert jnp.array_equal(gradient, expected_gradient)
 
 
 def test_dirichlet_logpdf_marks_path_dependent_boundary_limit_as_nan() -> None:
@@ -157,10 +394,20 @@ def test_dirichlet_logpdf_rejects_invalid_concentration_before_support_check() -
     assert jnp.all(jnp.isnan(result))
 
 
-def test_single_component_dirichlet_has_zero_log_density() -> None:
-    result = jax.jit(dirichlet_logpdf)(jnp.ones((2, 1)), jnp.array([0.5]))
+@pytest.mark.parametrize("concentration", [0.5, 1.0, 2.0, 1e8])
+def test_single_component_dirichlet_has_zero_log_density(concentration: float) -> None:
+    value = jnp.ones((1,))
+    shape = jnp.array([concentration])
 
-    assert jnp.array_equal(result, jnp.zeros(2))
+    result, shape_gradient = jax.value_and_grad(dirichlet_logpdf, argnums=1)(
+        value,
+        shape,
+    )
+    value_gradient = jax.grad(dirichlet_logpdf, argnums=0)(value, shape)
+
+    assert result == 0
+    assert shape_gradient[0] == 0
+    np.testing.assert_allclose(value_gradient, concentration - 1, rtol=3e-6)
 
 
 def test_dirichlet_logpdf_handles_empty_batch() -> None:
