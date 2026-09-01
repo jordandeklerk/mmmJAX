@@ -14,6 +14,7 @@ from mmmjax.distributions._utils import (
     _gamma_shape_log_derivative,
     _gamma_shape_normalizer,
     _promote_inexact,
+    _random_shape,
     _stable_log_ratio,
     _weighted_log_ratio_deviance,
 )
@@ -131,6 +132,61 @@ def dirichlet(
         every broadcast batch dimension.
     """
     return jnp.sum(dirichlet_logpdf(value, concentration))
+
+
+def dirichlet_rng(
+    key: jax.Array,
+    concentration: ArrayLike,
+    *,
+    sample_shape: tuple[int, ...] = (),
+) -> jax.Array:
+    """Draw samples from a Dirichlet distribution using a JAX random key.
+
+    Parameters
+    ----------
+    key
+        JAX random key controlling the draw. Reusing a key repeats the same
+        sample. Use ``jax.random.split`` to create keys for new random
+        operations.
+    concentration
+        Positive concentration parameters. The final axis contains the
+        Dirichlet event and every leading axis is a batch dimension.
+    sample_shape
+        Independent sample dimensions prepended to the concentration batch
+        shape. The tuple must be static when the function is JIT-compiled.
+
+    Returns
+    -------
+    jax.Array
+        Random simplex values with shape
+        ``sample_shape + concentration.shape``. An event containing a
+        nonpositive or nonfinite concentration produces ``nan``.
+    """
+    (concentration_array,) = _promote_inexact(("concentration", concentration))
+    if concentration_array.ndim == 0:
+        raise ValueError("concentration must include a final Dirichlet event axis, got shape ()")
+    if concentration_array.shape[-1] == 0:
+        raise ValueError(f"Dirichlet event size must be positive, got concentration.shape={concentration_array.shape}")
+
+    output_batch_shape = _random_shape(sample_shape, concentration_array[..., 0])
+    valid_concentration = jnp.all(
+        jnp.isfinite(concentration_array) & (concentration_array > 0),
+        axis=-1,
+    )
+    # Keep invalid events out of JAX's Gamma sampler
+    safe_concentration = jnp.where(
+        valid_concentration[..., None],
+        concentration_array,
+        jnp.ones_like(concentration_array),
+    )
+
+    samples = jax.random.dirichlet(
+        key,
+        safe_concentration,
+        shape=output_batch_shape,
+        dtype=concentration_array.dtype,
+    )
+    return jnp.where(valid_concentration[..., None], samples, jnp.nan)
 
 
 def _dirichlet_logpdf(

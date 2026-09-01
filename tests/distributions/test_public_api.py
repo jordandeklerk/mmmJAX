@@ -24,6 +24,7 @@ DISTRIBUTION_EXPORTS = [
     "cauchy_rng",
     "dirichlet",
     "dirichlet_logpdf",
+    "dirichlet_rng",
     "exponential",
     "exponential_logcdf",
     "exponential_logpdf",

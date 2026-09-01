@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from scipy import special, stats
 
-from mmmjax import Simplex, beta_logpdf, dirichlet, dirichlet_logpdf
+from mmmjax import Simplex, beta_logpdf, dirichlet, dirichlet_logpdf, dirichlet_rng
 
 
 def test_dirichlet_logpdf_matches_known_value() -> None:
@@ -62,6 +62,146 @@ def test_dirichlet_returns_scalar_sum() -> None:
 
     assert result.shape == ()
     assert jnp.allclose(result, 2 * jnp.log(2.0))
+
+
+def test_dirichlet_rng_matches_jax_sampler() -> None:
+    key = jax.random.key(31)
+    concentration = jnp.array([[0.5, 1.5, 2.5], [3.0, 2.0, 1.0]])
+    sample_shape = (4,)
+
+    result = dirichlet_rng(key, concentration, sample_shape=sample_shape)
+    expected = jax.random.dirichlet(
+        key,
+        concentration,
+        shape=sample_shape + concentration.shape[:-1],
+        dtype=concentration.dtype,
+    )
+
+    assert jnp.array_equal(result, expected)
+
+
+def test_dirichlet_rng_preserves_sample_batch_and_event_axes() -> None:
+    concentration = jnp.linspace(0.5, 2.0, 2 * 465).reshape(2, 465)
+
+    result = dirichlet_rng(
+        jax.random.key(0),
+        concentration,
+        sample_shape=(3, 4),
+    )
+
+    assert result.shape == (3, 4, 2, 465)
+    assert jnp.all(jnp.isfinite(result))
+    assert jnp.all(result >= 0)
+    np.testing.assert_allclose(jnp.sum(result, axis=-1), 1, rtol=3e-6, atol=3e-6)
+
+
+def test_dirichlet_rng_matches_analytic_moments() -> None:
+    sample_size = 30_000
+    concentration = jnp.array([2.0, 3.0, 5.0])
+    concentration_sum = np.sum(np.asarray(concentration, dtype=np.float64))
+    expected_mean = np.asarray(concentration, dtype=np.float64) / concentration_sum
+    variance = (
+        np.asarray(concentration, dtype=np.float64)
+        * (concentration_sum - np.asarray(concentration, dtype=np.float64))
+        / (concentration_sum**2 * (concentration_sum + 1))
+    )
+
+    samples = dirichlet_rng(
+        jax.random.key(7),
+        concentration,
+        sample_shape=(sample_size,),
+    )
+    sample_array = np.asarray(samples)
+    sample_mean = np.mean(sample_array, axis=0)
+    centered_samples = sample_array - expected_mean
+    centered_products = centered_samples[:, :, None] * centered_samples[:, None, :]
+    sample_covariance = np.mean(centered_products, axis=0)
+    standard_error = np.sqrt(variance / sample_size)
+    covariance_standard_error = np.std(centered_products, axis=0, ddof=1) / np.sqrt(sample_size)
+    expected_covariance = (np.diag(expected_mean) - np.outer(expected_mean, expected_mean)) / (concentration_sum + 1)
+
+    assert np.all(np.abs(sample_mean - expected_mean) <= 6 * standard_error)
+    assert np.all(np.abs(sample_covariance - expected_covariance) <= 6 * covariance_standard_error)
+
+
+def test_dirichlet_rng_stays_on_simplex_for_tiny_concentrations() -> None:
+    samples = dirichlet_rng(
+        jax.random.key(0),
+        jnp.full((3,), 1e-5),
+        sample_shape=(100,),
+    )
+
+    assert jnp.all(jnp.isfinite(samples))
+    np.testing.assert_allclose(jnp.sum(samples, axis=-1), 1, rtol=1e-5)
+    np.testing.assert_allclose(jnp.max(samples, axis=-1), 1, rtol=1e-4)
+
+
+def test_dirichlet_rng_marks_an_invalid_event_as_nan() -> None:
+    concentrations = jnp.array(
+        [
+            [1.0, 2.0, 3.0],
+            [0.0, 2.0, 3.0],
+            [-1.0, 2.0, 3.0],
+            [jnp.inf, 2.0, 3.0],
+            [jnp.nan, 2.0, 3.0],
+        ]
+    )
+
+    result = jax.jit(lambda key, shape: dirichlet_rng(key, shape, sample_shape=(2,)))(jax.random.key(0), concentrations)
+
+    assert result.shape == (2, 5, 3)
+    assert jnp.all(jnp.isfinite(result[:, 0]))
+    np.testing.assert_allclose(
+        jnp.sum(result[:, 0], axis=-1),
+        1,
+        rtol=3e-6,
+        atol=3e-6,
+    )
+    assert jnp.all(jnp.isnan(result[:, 1:]))
+
+
+def test_dirichlet_rng_supports_jit_and_vmap_over_keys() -> None:
+    concentration = jnp.array([0.5, 1.5, 2.5])
+    keys = jax.random.split(jax.random.key(0), 3)
+    compiled = jax.jit(lambda key: dirichlet_rng(key, concentration, sample_shape=(5,)))
+
+    result = jax.vmap(compiled)(keys)
+    expected = jnp.stack([dirichlet_rng(key, concentration, sample_shape=(5,)) for key in keys])
+
+    assert result.shape == (3, 5, 3)
+    np.testing.assert_allclose(result, expected, rtol=3e-6, atol=3e-6)
+
+
+def test_single_component_dirichlet_rng_returns_one() -> None:
+    result = dirichlet_rng(
+        jax.random.key(0),
+        jnp.array([2.5]),
+        sample_shape=(8,),
+    )
+
+    assert jnp.array_equal(result, jnp.ones((8, 1)))
+
+
+@pytest.mark.parametrize("dtype", [jnp.float16, jnp.bfloat16])
+def test_dirichlet_rng_uses_float32_for_low_precision_inputs(dtype) -> None:
+    result = dirichlet_rng(
+        jax.random.key(0),
+        jnp.ones(3, dtype=dtype),
+    )
+
+    assert result.dtype == jnp.dtype(jnp.float32)
+
+
+@pytest.mark.parametrize(
+    ("concentration", "message"),
+    [
+        (1.0, "concentration must include a final Dirichlet event axis"),
+        (jnp.empty((0,)), "Dirichlet event size must be positive"),
+    ],
+)
+def test_dirichlet_rng_rejects_invalid_event_shapes(concentration, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        dirichlet_rng(jax.random.key(0), concentration)
 
 
 def test_dirichlet_logpdf_broadcasts_leading_axes() -> None:
