@@ -48,6 +48,12 @@ from mmmjax.distributions._lognormal import lognormal_logcdf as lognormal_logcdf
 from mmmjax.distributions._lognormal import lognormal_logpdf as lognormal_logpdf
 from mmmjax.distributions._lognormal import lognormal_logsf as lognormal_logsf
 from mmmjax.distributions._lognormal import lognormal_rng as lognormal_rng
+from mmmjax.distributions._negative_binomial import negative_binomial as negative_binomial
+from mmmjax.distributions._negative_binomial import negative_binomial_log as negative_binomial_log
+from mmmjax.distributions._negative_binomial import negative_binomial_log_logpmf as negative_binomial_log_logpmf
+from mmmjax.distributions._negative_binomial import negative_binomial_log_rng as negative_binomial_log_rng
+from mmmjax.distributions._negative_binomial import negative_binomial_logpmf as negative_binomial_logpmf
+from mmmjax.distributions._negative_binomial import negative_binomial_rng as negative_binomial_rng
 from mmmjax.distributions._normal import normal as normal
 from mmmjax.distributions._normal import normal_logcdf as normal_logcdf
 from mmmjax.distributions._normal import normal_logpdf as normal_logpdf
@@ -117,6 +123,12 @@ __all__ = [
     "lognormal_logpdf",
     "lognormal_logsf",
     "lognormal_rng",
+    "negative_binomial",
+    "negative_binomial_log",
+    "negative_binomial_log_logpmf",
+    "negative_binomial_log_rng",
+    "negative_binomial_logpmf",
+    "negative_binomial_rng",
     "normal",
     "normal_logcdf",
     "normal_logpdf",
