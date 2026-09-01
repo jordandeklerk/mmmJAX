@@ -14,11 +14,13 @@ Filters can be passed directly, for example:
 pixi run benchmark-distributions --profiles vector --distributions normal
 ```
 
-Bernoulli, Binomial, and Poisson parameterizations cycle valid integer outcomes across the sample dimensions:
+Bernoulli, Binomial, Negative Binomial, and Poisson parameterizations cycle valid integer outcomes across the sample dimensions:
 
 ```console
-pixi run benchmark-distributions --profiles vector --distributions bernoulli bernoulli_logit binomial binomial_logit poisson poisson_log --operations logpmf log_density value_and_grad rng
+pixi run benchmark-distributions --profiles vector --distributions bernoulli bernoulli_logit binomial binomial_logit negative_binomial negative_binomial_log poisson poisson_log --operations logpmf log_density value_and_grad rng
 ```
+
+JAX does not provide a Negative Binomial sampler, so its sampling baseline composes public Gamma and Poisson random functions.
 
 Large-count Poisson inputs exercise the stable deviance calculation near the mode:
 

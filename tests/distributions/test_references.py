@@ -109,6 +109,8 @@ def test_jax_references_cover_every_distribution() -> None:
         "inverse_gamma",
         "laplace",
         "lognormal",
+        "negative_binomial",
+        "negative_binomial_log",
         "normal",
         "poisson",
         "poisson_log",
@@ -232,6 +234,90 @@ def test_binomial_rng_references_match_public_operations() -> None:
         logit_reference.rng(key, trials, logits, sample_shape=(4,)),
         expected_logit_samples,
     )
+
+
+def test_negative_binomial_log_probability_references_match_jax_and_scipy() -> None:
+    values = jnp.array([[0], [1], [4], [12]])
+    means = jnp.array([0.2, 1.0, 4.5, 20.0])
+    log_means = jnp.array([-2.0, 0.0, 1.5, 3.0])
+    concentrations = jnp.array([0.5, 1.0, 2.5, 10.0])
+
+    mean_reference = JAX_REFERENCES["negative_binomial"]
+    log_mean_reference = JAX_REFERENCES["negative_binomial_log"]
+    mean_probability = concentrations / (concentrations + means)
+    log_mean_probability = jax.nn.sigmoid(jnp.log(concentrations) - log_means)
+    mean_result = mean_reference.elementwise_log_probability(values, means, concentrations)
+    log_mean_result = log_mean_reference.elementwise_log_probability(values, log_means, concentrations)
+
+    assert jnp.array_equal(
+        mean_result,
+        jax_stats.nbinom.logpmf(values, concentrations, mean_probability),
+    )
+    assert jnp.array_equal(
+        log_mean_result,
+        jax_stats.nbinom.logpmf(values, concentrations, log_mean_probability),
+    )
+    np.testing.assert_allclose(
+        mean_result,
+        stats.nbinom.logpmf(values, concentrations, mean_probability),
+        rtol=3e-6,
+        atol=3e-6,
+    )
+    np.testing.assert_allclose(
+        log_mean_result,
+        stats.nbinom.logpmf(values, concentrations, log_mean_probability),
+        rtol=3e-6,
+        atol=3e-6,
+    )
+
+
+def test_negative_binomial_rng_references_use_gamma_poisson_mixture() -> None:
+    key = jax.random.key(0)
+    means = jnp.array([0.5, 3.0, 20.0])
+    log_means = jnp.log(means)
+    concentrations = jnp.array([0.7, 2.5, 10.0])
+    gamma_key, poisson_key = jax.random.split(key)
+    parameter_dtype = jnp.result_type(means, concentrations)
+    unit_rate_draw = jax.random.gamma(
+        gamma_key,
+        concentrations,
+        shape=(4, 3),
+        dtype=parameter_dtype,
+    )
+    expected_mean = jax.random.poisson(
+        poisson_key,
+        unit_rate_draw * (means / concentrations),
+        shape=(4, 3),
+        dtype=jnp.int32,
+    )
+    expected_log_mean = jax.random.poisson(
+        poisson_key,
+        unit_rate_draw * (jnp.exp(log_means) / concentrations),
+        shape=(4, 3),
+        dtype=jnp.int32,
+    )
+
+    mean_reference = JAX_REFERENCES["negative_binomial"]
+    log_mean_reference = JAX_REFERENCES["negative_binomial_log"]
+    mean_result = mean_reference.rng(key, means, concentrations, sample_shape=(4,))
+    log_mean_result = log_mean_reference.rng(key, log_means, concentrations, sample_shape=(4,))
+    compiled_mean_result = jax.jit(partial(mean_reference.rng, sample_shape=(4,)))(
+        key,
+        means,
+        concentrations,
+    )
+    compiled_log_mean_result = jax.jit(partial(log_mean_reference.rng, sample_shape=(4,)))(
+        key,
+        log_means,
+        concentrations,
+    )
+
+    assert mean_result.dtype == jnp.dtype(jnp.int32)
+    assert log_mean_result.dtype == jnp.dtype(jnp.int32)
+    assert jnp.array_equal(mean_result, expected_mean)
+    assert jnp.array_equal(log_mean_result, expected_log_mean)
+    assert jnp.array_equal(compiled_mean_result, expected_mean)
+    assert jnp.array_equal(compiled_log_mean_result, expected_log_mean)
 
 
 def test_poisson_log_probability_references_match_public_operations() -> None:
