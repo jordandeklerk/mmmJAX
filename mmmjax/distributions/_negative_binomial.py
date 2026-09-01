@@ -13,6 +13,7 @@ from mmmjax.distributions._utils import (
     _as_real_array,
     _gamma_shape_log_derivative,
     _promote_inexact,
+    _random_shape,
     _weighted_log_ratio_deviance,
 )
 
@@ -111,6 +112,49 @@ def negative_binomial(
     return jnp.sum(negative_binomial_logpmf(value, mean, concentration))
 
 
+def negative_binomial_rng(
+    key: jax.Array,
+    mean: ArrayLike,
+    concentration: ArrayLike,
+    *,
+    sample_shape: tuple[int, ...] = (),
+) -> jax.Array:
+    """Draw Negative Binomial outcomes using a JAX random key.
+
+    Parameters
+    ----------
+    key
+        JAX random key controlling the draw. Reusing a key repeats the same
+        sample. Use ``jax.random.split`` to create keys for new random
+        operations.
+    mean
+        Finite positive mean parameter.
+    concentration
+        Finite positive concentration parameter.
+    sample_shape
+        Independent sample dimensions prepended to the broadcast parameter
+        shape. The tuple must be static when the function is JIT-compiled.
+
+    Returns
+    -------
+    jax.Array
+        Integer outcomes with shape ``sample_shape + broadcast_shape``. The
+        caller must choose parameters whose latent Poisson rates and outcomes
+        fit in ``int32``.
+    """
+    mean_array, concentration_array = _promote_inexact(
+        ("mean", mean),
+        ("concentration", concentration),
+    )
+    output_shape = _random_shape(sample_shape, mean_array, concentration_array)
+    return _negative_binomial_log_mean_rng(
+        key,
+        jnp.log(mean_array),
+        concentration_array,
+        output_shape=output_shape,
+    )
+
+
 def negative_binomial_log_logpmf(
     value: ArrayLike,
     log_mean: ArrayLike,
@@ -205,6 +249,49 @@ def negative_binomial_log(
         dimension of the broadcast result.
     """
     return jnp.sum(negative_binomial_log_logpmf(value, log_mean, concentration))
+
+
+def negative_binomial_log_rng(
+    key: jax.Array,
+    log_mean: ArrayLike,
+    concentration: ArrayLike,
+    *,
+    sample_shape: tuple[int, ...] = (),
+) -> jax.Array:
+    """Draw log-mean Negative Binomial outcomes using a JAX random key.
+
+    Parameters
+    ----------
+    key
+        JAX random key controlling the draw. Reusing a key repeats the same
+        sample. Use ``jax.random.split`` to create keys for new random
+        operations.
+    log_mean
+        Finite logarithm of the Negative Binomial mean.
+    concentration
+        Finite positive concentration parameter.
+    sample_shape
+        Independent sample dimensions prepended to the broadcast parameter
+        shape. The tuple must be static when the function is JIT-compiled.
+
+    Returns
+    -------
+    jax.Array
+        Integer outcomes with shape ``sample_shape + broadcast_shape``. The
+        caller must choose parameters whose latent Poisson rates and outcomes
+        fit in ``int32``.
+    """
+    log_mean_array, concentration_array = _promote_inexact(
+        ("log_mean", log_mean),
+        ("concentration", concentration),
+    )
+    output_shape = _random_shape(sample_shape, log_mean_array, concentration_array)
+    return _negative_binomial_log_mean_rng(
+        key,
+        log_mean_array,
+        concentration_array,
+        output_shape=output_shape,
+    )
 
 
 @jax.custom_jvp
@@ -436,6 +523,30 @@ def _stable_negative_binomial_log_mass(
         zero_count_log_mass,
     )
     return jnp.where(positive_count, interior_log_mass, zero_count_log_mass)
+
+
+def _negative_binomial_log_mean_rng(
+    key: jax.Array,
+    log_mean: jax.Array,
+    concentration: jax.Array,
+    *,
+    output_shape: tuple[int, ...],
+) -> jax.Array:
+    gamma_key, poisson_key = jax.random.split(key)
+    log_unit_rate = jax.random.loggamma(
+        gamma_key,
+        concentration,
+        shape=output_shape,
+        dtype=concentration.dtype,
+    )
+    # Scaling in log space keeps the Gamma-Poisson mixture stable in the tails
+    latent_rate = jnp.exp(log_unit_rate + log_mean - jnp.log(concentration))
+    return jax.random.poisson(
+        poisson_key,
+        latent_rate,
+        shape=output_shape,
+        dtype=jnp.int32,
+    )
 
 
 def _negative_binomial_concentration_derivative(

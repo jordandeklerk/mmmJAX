@@ -11,7 +11,9 @@ from mmmjax.distributions._negative_binomial import (
     negative_binomial,
     negative_binomial_log,
     negative_binomial_log_logpmf,
+    negative_binomial_log_rng,
     negative_binomial_logpmf,
+    negative_binomial_rng,
 )
 from mmmjax.distributions._poisson import poisson_log_logpmf
 
@@ -662,3 +664,148 @@ def test_negative_binomial_functions_reject_complex_arguments(arguments, name: s
 def test_negative_binomial_log_functions_reject_complex_arguments(arguments, name: str) -> None:
     with pytest.raises(TypeError, match=rf"argument '{name}'.*real numeric dtype"):
         negative_binomial_log_logpmf(*arguments)
+
+
+def test_negative_binomial_rng_matches_gamma_poisson_mixture() -> None:
+    key = jax.random.key(42)
+    means = jnp.array([0.5, 3.0, 20.0], dtype=jnp.float32)
+    concentrations = jnp.array([0.7, 2.5, 10.0], dtype=jnp.float32)
+    gamma_key, poisson_key = jax.random.split(key)
+    log_unit_rate = jax.random.loggamma(
+        gamma_key,
+        concentrations,
+        shape=(4, 3),
+        dtype=jnp.float32,
+    )
+    latent_rate = jnp.exp(log_unit_rate + jnp.log(means) - jnp.log(concentrations))
+    expected = jax.random.poisson(
+        poisson_key,
+        latent_rate,
+        shape=(4, 3),
+        dtype=jnp.int32,
+    )
+
+    result = negative_binomial_rng(key, means, concentrations, sample_shape=(4,))
+
+    assert result.shape == (4, 3)
+    assert result.dtype == jnp.dtype(jnp.int32)
+    assert jnp.array_equal(result, expected)
+    assert jnp.all(result >= 0)
+
+
+def test_negative_binomial_log_rng_matches_mean_rng() -> None:
+    key = jax.random.key(7)
+    means = jnp.array([0.2, 2.0, 10.0])
+    concentrations = jnp.array([0.5, 3.0, 20.0])
+
+    result = negative_binomial_log_rng(
+        key,
+        jnp.log(means),
+        concentrations,
+        sample_shape=(8,),
+    )
+    expected = negative_binomial_rng(
+        key,
+        means,
+        concentrations,
+        sample_shape=(8,),
+    )
+
+    assert jnp.array_equal(result, expected)
+
+
+def test_negative_binomial_rng_uses_broadcast_parameter_shape() -> None:
+    means = jnp.ones((2, 1))
+    concentrations = jnp.ones(3)
+
+    result = negative_binomial_rng(
+        jax.random.key(0),
+        means,
+        concentrations,
+        sample_shape=(4, 5),
+    )
+
+    assert result.shape == (4, 5, 2, 3)
+
+
+def test_negative_binomial_rng_matches_distribution_moments() -> None:
+    means = jnp.array([0.5, 4.0, 20.0])
+    concentrations = jnp.array([0.25, 3.0, 1_000_000.0])
+    expected_variances = means + jnp.square(means) / concentrations
+
+    samples = negative_binomial_rng(
+        jax.random.key(11),
+        means,
+        concentrations,
+        sample_shape=(50_000,),
+    )
+
+    assert jnp.allclose(jnp.mean(samples, axis=0), means, rtol=0, atol=0.08)
+    assert jnp.allclose(jnp.var(samples, axis=0), expected_variances, rtol=0.03, atol=0.03)
+
+
+def test_negative_binomial_rng_avoids_underflowing_gamma_scale() -> None:
+    concentration = jnp.asarray(jnp.finfo(jnp.float32).max)
+
+    samples = negative_binomial_rng(
+        jax.random.key(3),
+        mean=jnp.float32(1),
+        concentration=concentration,
+        sample_shape=(128,),
+    )
+
+    assert jnp.float32(1) / concentration == 0
+    assert jnp.any(samples > 0)
+
+
+@pytest.mark.parametrize(
+    ("function", "parameter"),
+    [
+        (negative_binomial_rng, 2.5),
+        (negative_binomial_log_rng, jnp.log(2.5)),
+    ],
+)
+def test_negative_binomial_rngs_can_be_jitted_and_vectorized(function, parameter) -> None:
+    key = jax.random.key(21)
+    concentration = 1.5
+    compiled = jax.jit(
+        lambda current_key, value, current_concentration: function(
+            current_key,
+            value,
+            current_concentration,
+            sample_shape=(4,),
+        )
+    )(key, parameter, concentration)
+    eager = function(key, parameter, concentration, sample_shape=(4,))
+    keys = jax.random.split(key, 3)
+    vectorized = jax.vmap(lambda current_key: function(current_key, parameter, concentration))(keys)
+    expected = jnp.stack([function(current_key, parameter, concentration) for current_key in keys])
+
+    assert jnp.array_equal(compiled, eager)
+    assert jnp.array_equal(vectorized, expected)
+
+
+def test_negative_binomial_rng_rejects_incompatible_parameter_shapes() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"parameter shapes cannot be broadcast together: \(\(2,\), \(3,\)\)",
+    ):
+        negative_binomial_rng(
+            jax.random.key(0),
+            jnp.ones(2),
+            jnp.ones(3),
+        )
+
+
+@pytest.mark.parametrize(
+    ("function", "arguments", "name"),
+    [
+        (negative_binomial_rng, (2.0 + 0.0j, 1.5), "mean"),
+        (negative_binomial_rng, (2.0, 1.5 + 0.0j), "concentration"),
+        (negative_binomial_log_rng, (0.5 + 0.0j, 1.5), "log_mean"),
+        (negative_binomial_log_rng, (0.5, 1.5 + 0.0j), "concentration"),
+    ],
+)
+def test_negative_binomial_rngs_reject_complex_arguments(function, arguments, name: str) -> None:
+    with pytest.raises(TypeError, match=rf"argument '{name}'.*real numeric dtype"):
+        function(jax.random.key(0), *arguments)
