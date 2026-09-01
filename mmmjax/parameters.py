@@ -1,6 +1,7 @@
 """Parameter declarations and their inference-space mappings."""
 
 from dataclasses import dataclass
+from math import prod
 from typing import Protocol, cast, runtime_checkable
 
 import jax
@@ -13,6 +14,7 @@ __all__ = [
     "Parameterization",
     "Positive",
     "Real",
+    "Simplex",
     "UpperBound",
 ]
 
@@ -381,6 +383,91 @@ class Interval:
         return _initialize(key, shape=self.position_shape, dtype=self.dtype)
 
 
+@dataclass(frozen=True, slots=True)
+class Simplex:
+    r"""Positive weights that sum to one along the final axis.
+
+    The final dimension of ``shape`` is the simplex event dimension. Any
+    leading dimensions represent independent simplexes. A simplex with
+    :math:`K` weights is represented by :math:`K - 1` unconstrained values
+    using the isometric log-ratio transform.
+
+    ``unconstrain`` assumes every simplex is strictly positive and sums to
+    one. Support validation belongs at the eager model boundary so this
+    numerical kernel remains safe to use with traced JAX arrays. Softmax can
+    round weights to zero for extreme finite positions.
+    """
+
+    shape: tuple[int, ...]
+    dtype: DTypeLike = float
+
+    def __post_init__(self) -> None:
+        """Normalize metadata and require a simplex event dimension."""
+        _validate_shape(self.shape)
+        if not self.shape:
+            raise ValueError("shape must include a final simplex dimension, got ()")
+        object.__setattr__(self, "dtype", _canonicalize_dtype(self.dtype))
+
+    @property
+    def position_shape(self) -> tuple[int, ...]:
+        """Shape of the parameter in unconstrained inference space."""
+        return (*self.shape[:-1], self.shape[-1] - 1)
+
+    def constrain(self, position: ArrayLike) -> jax.Array:
+        """Map isometric log-ratio coordinates to simplex weights."""
+        position = _as_array(
+            position,
+            name="position",
+            shape=self.position_shape,
+            dtype=self.dtype,
+        )
+        return jax.nn.softmax(_simplex_logits(position), axis=-1)
+
+    def unconstrain(self, parameter: ArrayLike) -> jax.Array:
+        """Map simplex weights to isometric log-ratio coordinates."""
+        parameter = _as_array(
+            parameter,
+            name="parameter",
+            shape=self.shape,
+            dtype=self.dtype,
+        )
+        log_parameter = jnp.log(parameter)
+        dimensions = jnp.arange(1, self.shape[-1], dtype=parameter.dtype)
+        cumulative_log_weights = jnp.cumsum(log_parameter[..., :-1], axis=-1)
+        return (cumulative_log_weights - dimensions * log_parameter[..., 1:]) / jnp.sqrt(dimensions * (dimensions + 1))
+
+    def log_density_adjustment(self, position: ArrayLike) -> jax.Array:
+        """Return the scalar log absolute Jacobian determinant."""
+        position = _as_array(
+            position,
+            name="position",
+            shape=self.position_shape,
+            dtype=self.dtype,
+        )
+        log_weights = jax.nn.log_softmax(_simplex_logits(position), axis=-1)
+        event_size = jnp.asarray(self.shape[-1], dtype=position.dtype)
+        return jnp.sum(log_weights) + prod(self.shape[:-1]) * 0.5 * jnp.log(event_size)
+
+    def initialize(self, key: jax.Array) -> jax.Array:
+        """Draw an unconstrained initial position uniformly from ``[-2, 2)``."""
+        return _initialize(key, shape=self.position_shape, dtype=self.dtype)
+
+
+def _simplex_logits(position: jax.Array) -> jax.Array:
+    dimensions = jnp.arange(1, position.shape[-1] + 1, dtype=position.dtype)
+    coordinates = position / jnp.sqrt(dimensions * (dimensions + 1))
+    tail_sums = jax.lax.cumsum(
+        coordinates,
+        axis=position.ndim - 1,
+        reverse=True,
+    )
+    zero = jnp.zeros((*position.shape[:-1], 1), dtype=position.dtype)
+    return jnp.concatenate((tail_sums, zero), axis=-1) - jnp.concatenate(
+        (zero, dimensions * coordinates),
+        axis=-1,
+    )
+
+
 def _validate_shape(shape: tuple[int, ...]) -> None:
     if not isinstance(shape, tuple):
         raise TypeError(f"shape must be a tuple of positive integers, got {type(shape).__name__}")
@@ -411,6 +498,9 @@ def _canonicalize_dtype(dtype: DTypeLike) -> DTypeLike:
         raise TypeError(f"dtype must be a floating-point dtype, got {dtype!r}") from exc
     if not jnp.issubdtype(requested_dtype, jnp.floating):
         raise TypeError(f"dtype must be a floating-point dtype, got {requested_dtype}")
+    # Parameter transforms need float32 precision for stable round trips
+    if jax.dtypes.itemsize_bits(requested_dtype) < 32:
+        requested_dtype = jnp.dtype(jnp.float32)
     canonical_dtype = jax.dtypes.canonicalize_dtype(requested_dtype)
     if requested_dtype == jnp.dtype(jnp.float64) and not follows_jax_default and canonical_dtype != requested_dtype:
         raise ValueError(
