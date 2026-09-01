@@ -76,7 +76,7 @@ from mmmjax.distributions import (
     uniform_rng,
 )
 from mmmjax.model import Model
-from mmmjax.parameters import Interval, LowerBound, Parameterization, Positive, Real, UpperBound
+from mmmjax.parameters import Interval, LowerBound, Parameterization, Positive, Real, Simplex, UpperBound
 
 __version__ = "0.0.1"
 
@@ -87,6 +87,7 @@ __all__ = [
     "Parameterization",
     "Positive",
     "Real",
+    "Simplex",
     "UpperBound",
     "bernoulli",
     "bernoulli_logit",

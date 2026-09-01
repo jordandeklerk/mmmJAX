@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from mmmjax import Interval, LowerBound, Parameterization, Positive, Real, UpperBound
+from mmmjax import Interval, LowerBound, Parameterization, Positive, Real, Simplex, UpperBound
 
 
 @pytest.mark.parametrize(
@@ -164,6 +164,184 @@ def test_bounded_adjustment_matches_transform_jacobian(parameterization: Paramet
     adjustment = parameterization.log_density_adjustment(position)
 
     assert jnp.allclose(adjustment, log_absolute_determinant)
+
+
+def test_simplex_matches_known_isometric_log_ratio_values() -> None:
+    parameterization = Simplex(shape=(3,))
+    position = jnp.array([jnp.sqrt(2.0) * jnp.log(2.0), 0.0])
+
+    parameter = parameterization.constrain(position)
+    adjustment = parameterization.log_density_adjustment(position)
+
+    assert jnp.allclose(parameter, jnp.array([4 / 7, 1 / 7, 2 / 7]))
+    assert jnp.allclose(adjustment, jnp.log(8 / 343) + 0.5 * jnp.log(3.0))
+
+
+def test_simplex_inference_space_round_trip() -> None:
+    parameterization = Simplex(shape=(2, 4))
+    position = jnp.array(
+        [
+            [-1.0, 0.25, 0.75],
+            [0.5, -0.75, 1.25],
+        ]
+    )
+
+    result = parameterization.unconstrain(parameterization.constrain(position))
+
+    assert jnp.allclose(result, position, rtol=2e-6, atol=2e-6)
+
+
+def test_simplex_model_space_round_trip() -> None:
+    parameterization = Simplex(shape=(2, 4))
+    parameter = jnp.array(
+        [
+            [0.1, 0.2, 0.3, 0.4],
+            [0.4, 0.3, 0.2, 0.1],
+        ]
+    )
+
+    result = parameterization.constrain(parameterization.unconstrain(parameter))
+
+    assert jnp.allclose(result, parameter, rtol=2e-6, atol=2e-6)
+
+
+def test_simplex_uses_final_axis_as_event_dimension() -> None:
+    parameterization = Simplex(shape=(8, 465))
+    position = parameterization.initialize(jax.random.key(0))
+
+    parameter = jax.jit(parameterization.constrain)(position)
+
+    assert parameterization.position_shape == (8, 464)
+    assert position.shape == (8, 464)
+    assert parameter.shape == (8, 465)
+    assert jnp.all(parameter > 0)
+    assert jnp.allclose(jnp.sum(parameter, axis=-1), jnp.ones(8), rtol=2e-6, atol=2e-6)
+
+
+def test_single_weight_simplex_has_empty_inference_dimension() -> None:
+    parameterization = Simplex(shape=(2, 1))
+    position = parameterization.initialize(jax.random.key(0))
+
+    parameter = parameterization.constrain(position)
+    unconstrained = parameterization.unconstrain(parameter)
+    adjustment = parameterization.log_density_adjustment(position)
+
+    assert parameterization.position_shape == (2, 0)
+    assert position.shape == (2, 0)
+    assert jnp.array_equal(parameter, jnp.ones((2, 1)))
+    assert unconstrained.shape == (2, 0)
+    assert adjustment == 0
+
+
+def test_simplex_adjustment_matches_transform_jacobian() -> None:
+    parameterization = Simplex(shape=(4,))
+    position = jnp.array([-0.75, 0.25, 1.0])
+    jacobian = jax.jacfwd(lambda value: parameterization.constrain(value)[:-1])(position)
+    _, log_absolute_determinant = jnp.linalg.slogdet(jacobian)
+
+    adjustment = parameterization.log_density_adjustment(position)
+
+    assert jnp.allclose(adjustment, log_absolute_determinant, rtol=2e-6, atol=2e-6)
+
+
+def test_batched_simplex_adjustment_sums_each_event() -> None:
+    batched = Simplex(shape=(2, 4))
+    single = Simplex(shape=(4,))
+    position = jnp.array(
+        [
+            [-0.75, 0.25, 1.0],
+            [0.5, -1.0, 0.75],
+        ]
+    )
+
+    result = batched.log_density_adjustment(position)
+    expected = sum(single.log_density_adjustment(item) for item in position)
+
+    assert result.shape == ()
+    assert jnp.allclose(result, expected)
+
+
+def test_simplex_can_be_jitted_vectorized_and_differentiated() -> None:
+    parameterization = Simplex(shape=(4,))
+    positions = jnp.array(
+        [
+            [-1.0, 0.0, 1.0],
+            [0.5, -0.5, 0.25],
+        ]
+    )
+    target = partial(_target, parameterization)
+
+    constrained = jax.jit(jax.vmap(parameterization.constrain))(positions)
+    gradients = jax.jit(jax.vmap(jax.grad(target)))(positions)
+
+    assert constrained.shape == (2, 4)
+    assert jnp.all(jnp.isfinite(constrained))
+    assert jnp.all(jnp.isfinite(gradients))
+
+
+def test_simplex_requires_an_event_dimension() -> None:
+    with pytest.raises(ValueError, match=r"shape must include a final simplex dimension, got \(\)"):
+        Simplex(shape=())
+
+
+@pytest.mark.parametrize(
+    ("method_name", "value", "message"),
+    [
+        ("constrain", jnp.ones(4), r"position must have shape \(3,\), got \(4,\)"),
+        ("unconstrain", jnp.ones(3), r"parameter must have shape \(4,\), got \(3,\)"),
+    ],
+)
+def test_simplex_rejects_wrong_value_shape(method_name: str, value: jax.Array, message: str) -> None:
+    method = getattr(Simplex(shape=(4,)), method_name)
+
+    with pytest.raises(ValueError, match=message):
+        method(value)
+
+
+def test_simplex_preserves_float32_dtype() -> None:
+    parameterization = Simplex(shape=(3,), dtype=jnp.float32)
+    position = jnp.array([-0.5, 0.5], dtype=jnp.float32)
+
+    parameter = parameterization.constrain(position)
+
+    assert parameterization.dtype == jnp.dtype(jnp.float32)
+    assert parameterization.initialize(jax.random.key(0)).dtype == jnp.dtype(jnp.float32)
+    assert parameter.dtype == jnp.dtype(jnp.float32)
+    assert parameterization.unconstrain(parameter).dtype == jnp.dtype(jnp.float32)
+    assert parameterization.log_density_adjustment(position).dtype == jnp.dtype(jnp.float32)
+
+
+@pytest.mark.parametrize("dtype", [jnp.float16, jnp.bfloat16])
+@pytest.mark.parametrize(
+    ("parameterization_type", "bound_arguments", "shape"),
+    [
+        (Real, (), (2,)),
+        (Positive, (), (2,)),
+        (LowerBound, (0.0,), (2,)),
+        (UpperBound, (1.0,), (2,)),
+        (Interval, (0.0, 1.0), (2,)),
+        (Simplex, (), (8, 465)),
+    ],
+)
+def test_parameterizations_use_float32_for_low_precision_requests(
+    parameterization_type,
+    bound_arguments,
+    shape,
+    dtype,
+) -> None:
+    parameterization = parameterization_type(*bound_arguments, shape=shape, dtype=dtype)
+    position = parameterization.initialize(jax.random.key(0))
+
+    parameter = parameterization.constrain(position)
+    unconstrained = parameterization.unconstrain(parameter)
+    adjustment = parameterization.log_density_adjustment(position)
+
+    assert parameterization.dtype == jnp.dtype(jnp.float32)
+    assert position.dtype == jnp.dtype(jnp.float32)
+    assert parameter.dtype == jnp.dtype(jnp.float32)
+    assert unconstrained.dtype == jnp.dtype(jnp.float32)
+    assert adjustment.dtype == jnp.dtype(jnp.float32)
+    assert jnp.allclose(unconstrained, position, rtol=2e-5, atol=2e-5)
 
 
 @pytest.mark.parametrize(
