@@ -15,6 +15,12 @@ from mmmjax.distributions._binomial import binomial_logit_logpmf as binomial_log
 from mmmjax.distributions._binomial import binomial_logit_rng as binomial_logit_rng
 from mmmjax.distributions._binomial import binomial_logpmf as binomial_logpmf
 from mmmjax.distributions._binomial import binomial_rng as binomial_rng
+from mmmjax.distributions._categorical import categorical as categorical
+from mmmjax.distributions._categorical import categorical_logit as categorical_logit
+from mmmjax.distributions._categorical import categorical_logit_logpmf as categorical_logit_logpmf
+from mmmjax.distributions._categorical import categorical_logit_rng as categorical_logit_rng
+from mmmjax.distributions._categorical import categorical_logpmf as categorical_logpmf
+from mmmjax.distributions._categorical import categorical_rng as categorical_rng
 from mmmjax.distributions._cauchy import cauchy as cauchy
 from mmmjax.distributions._cauchy import cauchy_logpdf as cauchy_logpdf
 from mmmjax.distributions._cauchy import cauchy_rng as cauchy_rng
@@ -93,6 +99,12 @@ __all__ = [
     "binomial_logit_rng",
     "binomial_logpmf",
     "binomial_rng",
+    "categorical",
+    "categorical_logit",
+    "categorical_logit_logpmf",
+    "categorical_logit_rng",
+    "categorical_logpmf",
+    "categorical_rng",
     "cauchy",
     "cauchy_logpdf",
     "cauchy_rng",

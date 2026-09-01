@@ -13,6 +13,7 @@ from scipy import special, stats
 
 import mmmjax
 from benchmarks.references import JAX_REFERENCES
+from benchmarks.workloads import DISTRIBUTIONS
 
 
 @dataclass(frozen=True)
@@ -95,28 +96,8 @@ _SMOOTH_REFERENCE_CASES = (
 )
 
 
-def test_jax_references_cover_every_distribution() -> None:
-    assert set(JAX_REFERENCES) == {
-        "bernoulli",
-        "bernoulli_logit",
-        "beta",
-        "binomial",
-        "binomial_logit",
-        "cauchy",
-        "exponential",
-        "gamma",
-        "half_normal",
-        "inverse_gamma",
-        "laplace",
-        "lognormal",
-        "negative_binomial",
-        "negative_binomial_log",
-        "normal",
-        "poisson",
-        "poisson_log",
-        "student_t",
-        "uniform",
-    }
+def test_jax_references_cover_every_benchmark_distribution() -> None:
+    assert set(JAX_REFERENCES) == {distribution.name for distribution in DISTRIBUTIONS}
 
 
 def test_bernoulli_log_probability_references_match_public_operations() -> None:
@@ -232,6 +213,63 @@ def test_binomial_rng_references_match_public_operations() -> None:
     )
     assert jnp.array_equal(
         logit_reference.rng(key, trials, logits, sample_shape=(4,)),
+        expected_logit_samples,
+    )
+
+
+def test_categorical_log_probability_references_match_public_operations() -> None:
+    values = jnp.array([[0], [2]])
+    probabilities = jnp.array(
+        [
+            [0.1, 0.2, 0.3, 0.4],
+            [0.4, 0.3, 0.2, 0.1],
+            [0.25, 0.25, 0.25, 0.25],
+        ]
+    )
+    logits = jnp.log(probabilities) + jnp.array([[10.0], [-5.0], [2.0]])
+    indicators = jax.nn.one_hot(values, probabilities.shape[-1])
+
+    probability_reference = JAX_REFERENCES["categorical"]
+    logit_reference = JAX_REFERENCES["categorical_logit"]
+    expected_probability = jnp.sum(indicators * jnp.log(probabilities), axis=-1)
+    expected_logits = jnp.sum(indicators * jax.nn.log_softmax(logits, axis=-1), axis=-1)
+
+    assert jnp.array_equal(
+        probability_reference.elementwise_log_probability(values, probabilities),
+        expected_probability,
+    )
+    assert jnp.array_equal(
+        logit_reference.elementwise_log_probability(values, logits),
+        expected_logits,
+    )
+
+
+def test_categorical_rng_references_match_public_operations() -> None:
+    key = jax.random.key(0)
+    probabilities = jnp.array([[0.1, 0.2, 0.3, 0.4], [0.4, 0.3, 0.2, 0.1]])
+    logits = jnp.array([[2.0, -1.0, 0.5, 0.0], [-4.0, 3.0, 1.0, 2.0]])
+
+    probability_reference = JAX_REFERENCES["categorical"]
+    logit_reference = JAX_REFERENCES["categorical_logit"]
+    expected_probability_samples = jax.random.categorical(
+        key,
+        jnp.log(probabilities),
+        shape=(4, 2),
+        mode="high",
+    ).astype(jnp.int32)
+    expected_logit_samples = jax.random.categorical(
+        key,
+        logits,
+        shape=(4, 2),
+        mode="high",
+    ).astype(jnp.int32)
+
+    assert jnp.array_equal(
+        probability_reference.rng(key, probabilities, sample_shape=(4,)),
+        expected_probability_samples,
+    )
+    assert jnp.array_equal(
+        logit_reference.rng(key, logits, sample_shape=(4,)),
         expected_logit_samples,
     )
 

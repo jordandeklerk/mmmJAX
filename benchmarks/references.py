@@ -40,6 +40,14 @@ def _binomial_logit_logpmf(
     return log_coefficient + value * jax.nn.log_sigmoid(logits) + (trials - value) * jax.nn.log_sigmoid(-logits)
 
 
+def _categorical_logpmf(value: jax.Array, probabilities: jax.Array) -> jax.Array:
+    return _select_categorical_log_probability(value, jnp.log(probabilities))
+
+
+def _categorical_logit_logpmf(value: jax.Array, logits: jax.Array) -> jax.Array:
+    return _select_categorical_log_probability(value, jax.nn.log_softmax(logits, axis=-1))
+
+
 def _negative_binomial_logpmf(
     value: jax.Array,
     mean: jax.Array,
@@ -237,6 +245,29 @@ def _binomial_logit_rng(
     rare_probability = jnp.exp(jax.nn.log_sigmoid(-jnp.abs(logits)))
     rare_outcomes = jax.random.binomial(key, trials, rare_probability, shape=shape, dtype=dtype)
     return jnp.where(logits > 0, trials - rare_outcomes, rare_outcomes).astype(jnp.int32)
+
+
+def _categorical_rng(
+    key: jax.Array,
+    probabilities: jax.Array,
+    *,
+    sample_shape: tuple[int, ...] = (),
+) -> jax.Array:
+    return _categorical_logit_rng(
+        key,
+        jnp.log(probabilities),
+        sample_shape=sample_shape,
+    )
+
+
+def _categorical_logit_rng(
+    key: jax.Array,
+    logits: jax.Array,
+    *,
+    sample_shape: tuple[int, ...] = (),
+) -> jax.Array:
+    shape = sample_shape + logits.shape[:-1]
+    return jax.random.categorical(key, logits, shape=shape, mode="high").astype(jnp.int32)
 
 
 def _negative_binomial_rng(
@@ -437,12 +468,22 @@ def _random_metadata(
     return sample_shape + parameter_shape, jnp.result_type(*parameters)
 
 
+def _select_categorical_log_probability(value: jax.Array, log_probabilities: jax.Array) -> jax.Array:
+    batch_shape = jnp.broadcast_shapes(value.shape, log_probabilities.shape[:-1])
+    event_size = log_probabilities.shape[-1]
+    value = jnp.broadcast_to(value, batch_shape).astype(jnp.int32)
+    log_probabilities = jnp.broadcast_to(log_probabilities, (*batch_shape, event_size))
+    return jnp.take_along_axis(log_probabilities, value[..., None], axis=-1)[..., 0]
+
+
 JAX_REFERENCES: dict[str, JaxReference] = {
     "bernoulli": JaxReference(stats.bernoulli.logpmf, _bernoulli_rng),
     "bernoulli_logit": JaxReference(_bernoulli_logit_logpmf, _bernoulli_logit_rng),
     "beta": JaxReference(stats.beta.logpdf, _beta_rng),
     "binomial": JaxReference(stats.binom.logpmf, _binomial_rng),
     "binomial_logit": JaxReference(_binomial_logit_logpmf, _binomial_logit_rng),
+    "categorical": JaxReference(_categorical_logpmf, _categorical_rng),
+    "categorical_logit": JaxReference(_categorical_logit_logpmf, _categorical_logit_rng),
     "negative_binomial": JaxReference(_negative_binomial_logpmf, _negative_binomial_rng),
     "negative_binomial_log": JaxReference(
         _negative_binomial_log_logpmf,
