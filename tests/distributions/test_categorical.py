@@ -4,9 +4,16 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from scipy import stats
+from scipy import special, stats
 
-from mmmjax import bernoulli_logpmf, categorical, categorical_logpmf
+from mmmjax import (
+    bernoulli_logit_logpmf,
+    bernoulli_logpmf,
+    categorical,
+    categorical_logit,
+    categorical_logit_logpmf,
+    categorical_logpmf,
+)
 
 
 def test_categorical_logpmf_matches_scipy_multinomial_reference() -> None:
@@ -95,7 +102,17 @@ def test_categorical_logpmf_handles_zero_probabilities() -> None:
     assert jnp.array_equal(gradient, jnp.array([1.0, 0.0, 0.0]))
 
 
-def test_categorical_logpmf_requires_supported_integer_categories() -> None:
+@pytest.mark.parametrize(
+    ("function", "parameters"),
+    [
+        (categorical_logpmf, jnp.array([0.2, 0.3, 0.5])),
+        (categorical_logit_logpmf, jnp.array([-1.0, 0.0, 1.0])),
+    ],
+)
+def test_categorical_logpmfs_require_supported_integer_categories(
+    function,
+    parameters,
+) -> None:
     values = jnp.array(
         [
             -jnp.inf,
@@ -110,7 +127,7 @@ def test_categorical_logpmf_requires_supported_integer_categories() -> None:
         ]
     )
 
-    result = categorical_logpmf(values, jnp.array([0.2, 0.3, 0.5]))
+    result = function(values, parameters)
 
     assert jnp.all(jnp.isneginf(result[jnp.array([0, 1, 3, 6, 7])]))
     assert jnp.all(jnp.isfinite(result[jnp.array([2, 4, 5])]))
@@ -177,10 +194,13 @@ def test_single_category_categorical_has_zero_log_mass() -> None:
 def test_categorical_handles_empty_batch() -> None:
     values = jnp.empty((0,), dtype=jnp.int32)
 
-    result = categorical_logpmf(values, jnp.array([0.2, 0.3, 0.5]))
+    probability_result = categorical_logpmf(values, jnp.array([0.2, 0.3, 0.5]))
+    logit_result = categorical_logit_logpmf(values, jnp.array([-1.0, 0.0, 1.0]))
 
-    assert result.shape == (0,)
+    assert probability_result.shape == (0,)
+    assert logit_result.shape == (0,)
     assert categorical(values, jnp.array([0.2, 0.3, 0.5])) == 0
+    assert categorical_logit(values, jnp.array([-1.0, 0.0, 1.0])) == 0
 
 
 def test_categorical_logpmf_composes_with_jit_and_vmap() -> None:
@@ -190,6 +210,162 @@ def test_categorical_logpmf_composes_with_jit_and_vmap() -> None:
     compiled = jax.jit(categorical_logpmf)(values, probabilities)
     mapped = jax.vmap(categorical_logpmf)(values, probabilities)
     expected = jnp.array([jnp.log(0.2), jnp.log(0.2)])
+
+    np.testing.assert_allclose(compiled, expected, rtol=3e-6)
+    np.testing.assert_allclose(mapped, expected, rtol=3e-6)
+
+
+def test_categorical_logit_logpmf_matches_scipy_log_softmax() -> None:
+    values = np.array([0, 2, 1])
+    logits = np.array(
+        [
+            [2.0, -1.0, 0.5],
+            [-4.0, 3.0, 1.0],
+            [0.2, 0.8, -0.5],
+        ],
+        dtype=np.float32,
+    )
+    expected = special.log_softmax(logits.astype(np.float64), axis=-1)[
+        np.arange(values.size),
+        values,
+    ]
+
+    result = categorical_logit_logpmf(values, logits)
+
+    np.testing.assert_allclose(result, expected, rtol=3e-6, atol=3e-6)
+
+
+def test_categorical_logit_matches_probability_parameterization() -> None:
+    values = jnp.array([0, 2, 1])
+    probabilities = jnp.array(
+        [
+            [0.2, 0.3, 0.5],
+            [0.1, 0.7, 0.2],
+            [0.6, 0.1, 0.3],
+        ]
+    )
+    logits = jnp.log(probabilities) + jnp.array([[100.0], [-50.0], [2.5]])
+
+    result = categorical_logit_logpmf(values, logits)
+    expected = categorical_logpmf(values, probabilities)
+
+    np.testing.assert_allclose(result, expected, rtol=3e-6, atol=3e-6)
+
+
+def test_categorical_logit_logpmf_broadcasts_batch_axes() -> None:
+    values = jnp.array([[0], [2]])
+    logits = jnp.array(
+        [
+            [2.0, -1.0, 0.5],
+            [-4.0, 3.0, 1.0],
+            [0.2, 0.8, -0.5],
+            [1.0, 1.0, 1.0],
+        ]
+    )
+    expected = special.log_softmax(np.asarray(logits, dtype=np.float64), axis=-1)[:, [0, 2]].T
+
+    result = categorical_logit_logpmf(values, logits)
+
+    assert result.shape == (2, 4)
+    np.testing.assert_allclose(result, expected, rtol=3e-6, atol=3e-6)
+
+
+def test_two_category_categorical_logit_matches_bernoulli_logit() -> None:
+    values = jnp.array([0, 1])
+    logits = jnp.array([-1000.0, -2.0, 0.0, 3.0, 1000.0])
+    categorical_logits = jnp.stack((jnp.zeros_like(logits), logits), axis=-1)
+
+    result = categorical_logit_logpmf(values[:, None], categorical_logits)
+    expected = bernoulli_logit_logpmf(values[:, None], logits)
+
+    np.testing.assert_allclose(result, expected, rtol=3e-6, atol=3e-6)
+
+
+def test_categorical_logit_logpmf_is_stable_for_extreme_finite_logits() -> None:
+    logits = jnp.array([1000.0, 0.0, -1000.0])
+
+    result = categorical_logit_logpmf(jnp.arange(3), logits)
+
+    np.testing.assert_allclose(result, jnp.array([0.0, -1000.0, -2000.0]), rtol=3e-6)
+
+
+def test_categorical_logit_logpmf_supports_masked_categories() -> None:
+    logits = jnp.array([0.0, -jnp.inf, jnp.log(2.0)])
+    expected = jnp.array([-jnp.log(3.0), -jnp.inf, jnp.log(2 / 3)])
+
+    result = categorical_logit_logpmf(jnp.arange(3), logits)
+
+    np.testing.assert_allclose(result, expected, rtol=3e-6)
+
+
+def test_categorical_logit_logpmf_supports_one_available_category() -> None:
+    logits = jnp.array([-jnp.inf, 2.0, -jnp.inf])
+
+    result = categorical_logit_logpmf(jnp.arange(3), logits)
+
+    assert jnp.isneginf(result[0])
+    assert result[1] == 0
+    assert jnp.isneginf(result[2])
+
+
+def test_categorical_logit_logpmf_rejects_undefined_logit_events() -> None:
+    logits = jnp.array(
+        [
+            [0.0, -jnp.inf, 1.0],
+            [0.0, jnp.inf, 1.0],
+            [0.0, jnp.nan, 1.0],
+            [-jnp.inf, -jnp.inf, -jnp.inf],
+        ]
+    )
+
+    result = categorical_logit_logpmf(3, logits)
+
+    assert jnp.isneginf(result[0])
+    assert jnp.all(jnp.isnan(result[1:]))
+
+
+def test_categorical_logit_derivatives_match_closed_form() -> None:
+    logits = jnp.array([-1.0, 0.5, 2.0])
+    probabilities = jax.nn.softmax(logits)
+    expected_gradient = jnp.array([0.0, 1.0, 0.0]) - probabilities
+    expected_hessian = -(jnp.diag(probabilities) - jnp.outer(probabilities, probabilities))
+
+    gradient = jax.jit(jax.grad(categorical_logit_logpmf, argnums=1))(
+        1,
+        logits,
+    )
+    hessian = jax.jit(jax.hessian(categorical_logit_logpmf, argnums=1))(
+        1,
+        logits,
+    )
+
+    np.testing.assert_allclose(gradient, expected_gradient, rtol=3e-6, atol=3e-6)
+    np.testing.assert_allclose(hessian, expected_hessian, rtol=3e-6, atol=3e-6)
+
+
+def test_categorical_logit_sums_log_masses() -> None:
+    values = jnp.array([0, 2, 2, 1])
+    logits = jnp.array([0.2, -0.5, 1.3])
+    expected = jnp.sum(jax.nn.log_softmax(logits)[values])
+
+    result = categorical_logit(values, logits)
+
+    assert result.shape == ()
+    np.testing.assert_allclose(result, expected, rtol=3e-6)
+
+
+def test_categorical_logit_logpmf_composes_with_jit_and_vmap() -> None:
+    values = jnp.array([0, 2])
+    logits = jnp.array([[2.0, -1.0, 0.5], [-4.0, 3.0, 1.0]])
+    expected = jnp.array(
+        [
+            jax.nn.log_softmax(logits[0])[0],
+            jax.nn.log_softmax(logits[1])[2],
+        ]
+    )
+
+    compiled = jax.jit(categorical_logit_logpmf)(values, logits)
+    mapped = jax.vmap(categorical_logit_logpmf)(values, logits)
 
     np.testing.assert_allclose(compiled, expected, rtol=3e-6)
     np.testing.assert_allclose(mapped, expected, rtol=3e-6)
@@ -216,40 +392,72 @@ def test_categorical_logpmf_rejects_invalid_shapes(
         categorical_logpmf(value, probabilities)
 
 
+@pytest.mark.parametrize(
+    ("value", "logits", "message"),
+    [
+        (0, 1.0, "logits must include a final Categorical event axis"),
+        (0, jnp.empty((0,)), "Categorical event size must be positive"),
+        (
+            jnp.ones(2),
+            jnp.ones((3, 4)),
+            "Categorical batch shapes must be broadcastable",
+        ),
+    ],
+)
+def test_categorical_logit_logpmf_rejects_invalid_shapes(
+    value,
+    logits,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        categorical_logit_logpmf(value, logits)
+
+
 @pytest.mark.parametrize("dtype", [jnp.float16, jnp.bfloat16])
-def test_categorical_logpmf_uses_float32_for_low_precision_inputs(dtype) -> None:
-    result = categorical_logpmf(
+def test_categorical_logpmfs_use_float32_for_low_precision_inputs(dtype) -> None:
+    probability_result = categorical_logpmf(
         1,
         jnp.array([0.2, 0.3, 0.5], dtype=dtype),
     )
+    logit_result = categorical_logit_logpmf(
+        1,
+        jnp.array([-1.0, 0.0, 1.0], dtype=dtype),
+    )
 
-    assert result.dtype == jnp.dtype(jnp.float32)
+    assert probability_result.dtype == jnp.dtype(jnp.float32)
+    assert logit_result.dtype == jnp.dtype(jnp.float32)
 
 
 @pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
 def test_categorical_observations_do_not_control_parameter_dtype() -> None:
-    result = categorical_logpmf(
+    probability_result = categorical_logpmf(
         jnp.int64(1),
         jnp.array([0.2, 0.3, 0.5], dtype=jnp.float32),
     )
+    logit_result = categorical_logit_logpmf(
+        jnp.int64(1),
+        jnp.array([-1.0, 0.0, 1.0], dtype=jnp.float32),
+    )
 
-    assert result.dtype == jnp.dtype(jnp.float32)
+    assert probability_result.dtype == jnp.dtype(jnp.float32)
+    assert logit_result.dtype == jnp.dtype(jnp.float32)
 
 
 @pytest.mark.parametrize(
-    ("value", "probabilities", "argument_name"),
+    ("function", "arguments", "argument_name"),
     [
-        (0.0 + 0.0j, jnp.array([0.2, 0.8]), "value"),
-        (0, jnp.array([0.2 + 0.0j, 0.8 + 0.0j]), "probabilities"),
+        (categorical_logpmf, (0.0 + 0.0j, jnp.array([0.2, 0.8])), "value"),
+        (categorical_logpmf, (0, jnp.array([0.2 + 0.0j, 0.8 + 0.0j])), "probabilities"),
+        (categorical_logit_logpmf, (0, jnp.array([0.0 + 0.0j, 1.0 + 0.0j])), "logits"),
     ],
 )
 def test_categorical_functions_reject_complex_arguments(
-    value,
-    probabilities,
+    function,
+    arguments,
     argument_name: str,
 ) -> None:
     with pytest.raises(
         TypeError,
         match=rf"argument '{argument_name}' must have a real numeric dtype, got complex",
     ):
-        categorical_logpmf(value, probabilities)
+        function(*arguments)
