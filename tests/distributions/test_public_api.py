@@ -19,6 +19,8 @@ DISTRIBUTION_EXPORTS = [
     "binomial_logit_rng",
     "binomial_logpmf",
     "binomial_rng",
+    "categorical",
+    "categorical_logpmf",
     "cauchy",
     "cauchy_logpdf",
     "cauchy_rng",
