@@ -13,6 +13,7 @@ from scipy import special, stats
 
 import mmmjax
 from benchmarks.references import JAX_REFERENCES
+from benchmarks.workloads import DISTRIBUTIONS
 
 
 @dataclass(frozen=True)
@@ -95,30 +96,8 @@ _SMOOTH_REFERENCE_CASES = (
 )
 
 
-def test_jax_references_cover_every_distribution() -> None:
-    assert set(JAX_REFERENCES) == {
-        "bernoulli",
-        "bernoulli_logit",
-        "beta",
-        "binomial",
-        "binomial_logit",
-        "categorical",
-        "categorical_logit",
-        "cauchy",
-        "exponential",
-        "gamma",
-        "half_normal",
-        "inverse_gamma",
-        "laplace",
-        "lognormal",
-        "negative_binomial",
-        "negative_binomial_log",
-        "normal",
-        "poisson",
-        "poisson_log",
-        "student_t",
-        "uniform",
-    }
+def test_jax_references_cover_every_benchmark_distribution() -> None:
+    assert set(JAX_REFERENCES) == {distribution.name for distribution in DISTRIBUTIONS}
 
 
 def test_bernoulli_log_probability_references_match_public_operations() -> None:

@@ -179,19 +179,19 @@ PROFILES: dict[str, BenchmarkProfile] = {
         parameter_shape=(),
         sample_shape=(32,),
     ),
-    # Five years of weekly observations across eight geos
+    # A grouped workload with one parameter per group
     "likelihood": BenchmarkProfile(
         value_shape=(260, 8),
         parameter_shape=(8,),
         sample_shape=(260,),
     ),
-    # Geo-level parameters for 465 channels with channel-wise hyperparameters
+    # A wide workload with parameters shared across leading batches
     "channel_prior": BenchmarkProfile(
         value_shape=(8, 465),
         parameter_shape=(465,),
         sample_shape=(8,),
     ),
-    # Weekly geo-channel values remain opt-in because this is nearly one million terms
+    # A large nested workload that remains opt-in because it has nearly one million terms
     "stress": BenchmarkProfile(
         value_shape=(260, 8, 465),
         parameter_shape=(8, 465),

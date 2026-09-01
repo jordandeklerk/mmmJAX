@@ -56,6 +56,13 @@ def categorical_logpmf(
         jnp.full_like(probability_array, 1 / category_count),
     )
 
+    # Validate before broadcasting so shared parameters are not rechecked for every observation
+    safe_probability = jnp.broadcast_to(
+        safe_probability,
+        (*value_array.shape, category_count),
+    )
+    valid_probability = jnp.broadcast_to(valid_probability, value_array.shape)
+
     selected_probability = jnp.take_along_axis(
         safe_probability,
         safe_index[..., None],
@@ -183,6 +190,13 @@ def categorical_logit_logpmf(
     )
     log_probabilities = jax.nn.log_softmax(safe_logits, axis=-1)
 
+    # Normalize before broadcasting so shared logits are not recomputed for every observation
+    log_probabilities = jnp.broadcast_to(
+        log_probabilities,
+        (*value_array.shape, logits_array.shape[-1]),
+    )
+    valid_logits = jnp.broadcast_to(valid_logits, value_array.shape)
+
     selected_log_probability = jnp.take_along_axis(
         log_probabilities,
         safe_index[..., None],
@@ -275,10 +289,6 @@ def _prepare_categorical_inputs(
 
     category_count = parameter_array.shape[-1]
     value_array = jnp.broadcast_to(value_array, batch_shape)
-    parameter_array = jnp.broadcast_to(
-        parameter_array,
-        (*batch_shape, category_count),
-    )
     supported = (
         jnp.isfinite(value_array)
         & (value_array == jnp.floor(value_array))

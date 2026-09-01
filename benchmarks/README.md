@@ -4,9 +4,9 @@ The distribution benchmarks compare mmmJAX with equivalent public JAX operations
 cache-cleared JIT compilation and synchronized warm execution for elementwise log probabilities,
 summed log density, parameter gradients, and random sampling.
 
-Compilation timings are descriptive. Warm execution comparisons report the ratio of the JAX median
-to the mmmJAX median, so a value above one means mmmJAX had the lower median in that run. Read ratios
-alongside the reported median absolute deviations.
+Compilation timings are descriptive. Warm execution comparisons report the percentage difference
+between the mmmJAX and public-JAX medians. Read comparisons alongside the reported median absolute
+deviations.
 
 ## Running the benchmarks
 
@@ -29,6 +29,16 @@ All command-line options are available through:
 ```console
 pixi run benchmark-distributions --help
 ```
+
+## Reading the results
+
+The report begins with the runtime, device, precision, and measurement settings. Results are then
+grouped by profile, input set, dtype, and value count so those details are not repeated in every row.
+
+The warm execution table reports the median, median absolute deviation (MAD), throughput, and timed
+iterations for each implementation. When both implementations are present, the final column states
+whether the mmmJAX median was shorter or longer than the JAX median in that run. The compilation
+table is kept separate because cache-cleared compilation and warm execution measure different costs.
 
 ## Profiles
 
