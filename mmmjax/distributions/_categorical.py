@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 
-from mmmjax.distributions._utils import _as_real_array, _promote_inexact
+from mmmjax.distributions._utils import _as_real_array, _promote_inexact, _random_shape
 
 
 def categorical_logpmf(
@@ -94,6 +94,43 @@ def categorical(
     return jnp.sum(categorical_logpmf(value, probabilities))
 
 
+def categorical_rng(
+    key: jax.Array,
+    probabilities: ArrayLike,
+    *,
+    sample_shape: tuple[int, ...] = (),
+) -> jax.Array:
+    """Draw Categorical outcomes using a JAX random key.
+
+    Parameters
+    ----------
+    key
+        JAX random key controlling the draw. Reusing a key repeats the same
+        sample. Use ``jax.random.split`` to create keys for new random
+        operations.
+    probabilities
+        Category probabilities. The final axis contains the categories and
+        every leading axis is a batch dimension. A zero probability is never
+        drawn when another category has positive probability. The caller
+        must provide valid probability vectors because invalid values do not
+        have a defined sampling result.
+    sample_shape
+        Independent sample dimensions prepended to the probability batch
+        shape. The tuple must be static when the function is JIT-compiled.
+
+    Returns
+    -------
+    jax.Array
+        Zero-based integer categories with shape
+        ``sample_shape + probabilities.shape[:-1]``.
+    """
+    (probability_array,) = _promote_inexact(("probabilities", probabilities))
+    _validate_categorical_event_axis(probability_array, parameter_name="probabilities")
+
+    # JAX samples categories from logits, and log(0) = -inf keeps zero-probability categories out of the draw
+    return _draw_categorical(key, jnp.log(probability_array), sample_shape)
+
+
 def categorical_logit_logpmf(
     value: ArrayLike,
     logits: ArrayLike,
@@ -116,6 +153,9 @@ def categorical_logit_logpmf(
         Unnormalized category log probabilities. The final axis contains the
         categories and every leading axis is a batch dimension. A ``-inf``
         logit masks that category when another category has finite weight.
+        A ``+inf`` logit produces ``nan`` following JAX's ``log_softmax``
+        semantics. Use finite logits or ``-inf`` masks when an event should
+        remain well defined.
 
     Returns
     -------
@@ -148,13 +188,8 @@ def categorical_logit_logpmf(
         safe_index[..., None],
         axis=-1,
     )[..., 0]
-    supported_log_probability = jnp.where(
-        supported,
-        selected_log_probability,
-        jnp.zeros_like(selected_log_probability),
-    )
 
-    log_mass = jnp.where(supported, supported_log_probability, -jnp.inf)
+    log_mass = jnp.where(supported, selected_log_probability, -jnp.inf)
     log_mass = jnp.where(jnp.isnan(value_array), jnp.nan, log_mass)
     return jnp.where(valid_logits, log_mass, jnp.nan)
 
@@ -182,6 +217,41 @@ def categorical_logit(
     return jnp.sum(categorical_logit_logpmf(value, logits))
 
 
+def categorical_logit_rng(
+    key: jax.Array,
+    logits: ArrayLike,
+    *,
+    sample_shape: tuple[int, ...] = (),
+) -> jax.Array:
+    """Draw logit-parameterized Categorical outcomes using a JAX random key.
+
+    Parameters
+    ----------
+    key
+        JAX random key controlling the draw. Reusing a key repeats the same
+        sample. Use ``jax.random.split`` to create keys for new random
+        operations.
+    logits
+        Unnormalized category log probabilities. The final axis contains the
+        categories and every leading axis is a batch dimension. A ``-inf``
+        logit is never drawn when another category has finite weight. The
+        caller must not provide ``nan`` or ``+inf``, or an event with no
+        finite logit, because they do not have a defined sampling result.
+    sample_shape
+        Independent sample dimensions prepended to the logit batch shape. The
+        tuple must be static when the function is JIT-compiled.
+
+    Returns
+    -------
+    jax.Array
+        Zero-based integer categories with shape
+        ``sample_shape + logits.shape[:-1]``.
+    """
+    (logits_array,) = _promote_inexact(("logits", logits))
+    _validate_categorical_event_axis(logits_array, parameter_name="logits")
+    return _draw_categorical(key, logits_array, sample_shape)
+
+
 def _prepare_categorical_inputs(
     value: ArrayLike,
     parameters: ArrayLike,
@@ -190,10 +260,7 @@ def _prepare_categorical_inputs(
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
     value_array = _as_real_array("value", value)
     (parameter_array,) = _promote_inexact((parameter_name, parameters))
-    if parameter_array.ndim == 0:
-        raise ValueError(f"{parameter_name} must include a final Categorical event axis, got shape ()")
-    if parameter_array.shape[-1] == 0:
-        raise ValueError(f"Categorical event size must be positive, got {parameter_name}.shape={parameter_array.shape}")
+    _validate_categorical_event_axis(parameter_array, parameter_name=parameter_name)
 
     try:
         batch_shape = jnp.broadcast_shapes(
@@ -224,3 +291,28 @@ def _prepare_categorical_inputs(
         jnp.zeros_like(value_array),
     ).astype(jnp.int32)
     return value_array, parameter_array, supported, safe_index
+
+
+def _draw_categorical(
+    key: jax.Array,
+    logits_array: jax.Array,
+    sample_shape: tuple[int, ...],
+) -> jax.Array:
+    output_shape = _random_shape(sample_shape, logits_array[..., 0])
+
+    # Remove large common offsets before adding Gumbel noise
+    centered_logits = logits_array - jnp.max(logits_array, axis=-1, keepdims=True)
+    samples = jax.random.categorical(
+        key,
+        centered_logits,
+        shape=output_shape,
+        mode="high",
+    )
+    return samples.astype(jnp.int32)
+
+
+def _validate_categorical_event_axis(parameter_array: jax.Array, *, parameter_name: str) -> None:
+    if parameter_array.ndim == 0:
+        raise ValueError(f"{parameter_name} must include a final Categorical event axis, got shape ()")
+    if parameter_array.shape[-1] == 0:
+        raise ValueError(f"Categorical event size must be positive, got {parameter_name}.shape={parameter_array.shape}")
