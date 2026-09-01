@@ -1,4 +1,4 @@
-"""Define distribution benchmark workloads."""
+"""Define distribution benchmark cases."""
 
 import functools
 import math
@@ -8,8 +8,6 @@ from dataclasses import dataclass
 import jax
 import jax.numpy as jnp
 
-from benchmarks._timing import Arguments, BenchmarkFunction
-from benchmarks.references import JAX_REFERENCES
 from mmmjax.distributions import (
     bernoulli,
     bernoulli_logit,
@@ -91,6 +89,9 @@ from mmmjax.distributions import (
     uniform_logsf,
     uniform_rng,
 )
+
+from .common import Arguments, BenchmarkFunction
+from .references import JAX_REFERENCES
 
 Kernel = Callable[..., jax.Array]
 
@@ -632,13 +633,18 @@ def make_log_probability_arguments(
         return value, lower, upper
 
     if input_set == "ordinary":
-        lower, upper = -2.0, 2.0
+        standardized_lower, standardized_upper = -2.0, 2.0
     elif operation == "logcdf":
-        lower, upper = -8.0, -2.0
+        standardized_lower, standardized_upper = -8.0, -2.0
     else:
-        lower, upper = 2.0, 8.0
+        standardized_lower, standardized_upper = 2.0, 8.0
 
-    standardized = jnp.linspace(lower, upper, element_count, dtype=dtype).reshape(profile.value_shape)
+    standardized = jnp.linspace(
+        standardized_lower,
+        standardized_upper,
+        element_count,
+        dtype=dtype,
+    ).reshape(profile.value_shape)
     location, scale = _make_parameters(distribution, profile, dtype)
     transformed = location + scale * standardized
     value = jnp.exp(transformed) if distribution.name == "lognormal" else transformed

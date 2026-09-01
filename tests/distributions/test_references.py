@@ -12,8 +12,8 @@ from jax.scipy import stats as jax_stats
 from scipy import special, stats
 
 import mmmjax
+from benchmarks.cases import DISTRIBUTIONS
 from benchmarks.references import JAX_REFERENCES
-from benchmarks.workloads import DISTRIBUTIONS
 
 
 @dataclass(frozen=True)
