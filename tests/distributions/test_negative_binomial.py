@@ -7,15 +7,15 @@ import pytest
 from jax.scipy.stats import nbinom as jax_negative_binomial_distribution
 from scipy import special, stats
 
-from mmmjax.distributions._negative_binomial import (
+from mmmjax import (
     negative_binomial,
     negative_binomial_log,
     negative_binomial_log_logpmf,
     negative_binomial_log_rng,
     negative_binomial_logpmf,
     negative_binomial_rng,
+    poisson_log_logpmf,
 )
-from mmmjax.distributions._poisson import poisson_log_logpmf
 
 
 def test_negative_binomial_logpmf_matches_scipy_across_support_and_broadcasting() -> None:
