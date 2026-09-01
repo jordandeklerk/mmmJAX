@@ -26,6 +26,12 @@ from mmmjax.distributions import (
     binomial_logit_rng,
     binomial_logpmf,
     binomial_rng,
+    categorical,
+    categorical_logit,
+    categorical_logit_logpmf,
+    categorical_logit_rng,
+    categorical_logpmf,
+    categorical_rng,
     cauchy,
     cauchy_logpdf,
     cauchy_rng,
@@ -125,7 +131,7 @@ class DistributionSpec:
 
     name: str
     value_range: tuple[float, float] | None
-    parameter_values: tuple[float, ...]
+    parameter_values: tuple[float | tuple[float, ...], ...]
     log_probability_operation: str = "logpdf"
     outcomes: tuple[int, ...] = ()
     supports_concentrated_inputs: bool = False
@@ -232,6 +238,20 @@ DISTRIBUTIONS = (
         gradient_parameter_indices=(1,),
     ),
     DistributionSpec(
+        name="categorical",
+        value_range=None,
+        parameter_values=((0.1, 0.2, 0.3, 0.4),),
+        log_probability_operation="logpmf",
+        outcomes=(0, 1, 2, 3),
+    ),
+    DistributionSpec(
+        name="categorical_logit",
+        value_range=None,
+        parameter_values=((-1.0, 0.0, 0.5, 1.0),),
+        log_probability_operation="logpmf",
+        outcomes=(0, 1, 2, 3),
+    ),
+    DistributionSpec(
         name="negative_binomial",
         value_range=None,
         parameter_values=(4.5, 2.5),
@@ -329,6 +349,12 @@ IMPLEMENTATIONS: dict[str, dict[str, DistributionFunctions]] = {
             binomial_logit_logpmf,
             binomial_logit,
             binomial_logit_rng,
+        ),
+        "categorical": DistributionFunctions(categorical_logpmf, categorical, categorical_rng),
+        "categorical_logit": DistributionFunctions(
+            categorical_logit_logpmf,
+            categorical_logit,
+            categorical_logit_rng,
         ),
         "negative_binomial": DistributionFunctions(
             negative_binomial_logpmf,
@@ -730,9 +756,12 @@ def _make_parameters(
     profile: BenchmarkProfile,
     dtype: jnp.dtype,
 ) -> tuple[jax.Array, ...]:
-    return tuple(
-        jnp.full(profile.parameter_shape, parameter, dtype=dtype) for parameter in distribution.parameter_values
-    )
+    parameters = []
+    for parameter_value in distribution.parameter_values:
+        parameter = jnp.asarray(parameter_value, dtype=dtype)
+        # Vector parameters keep their event axes after the benchmark batch axes
+        parameters.append(jnp.broadcast_to(parameter, profile.parameter_shape + parameter.shape))
+    return tuple(parameters)
 
 
 def _sum_values(function: Kernel, *arguments: jax.Array) -> jax.Array:
