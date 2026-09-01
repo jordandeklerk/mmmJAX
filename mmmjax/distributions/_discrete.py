@@ -101,6 +101,17 @@ def _binomial_deviance_contribution(
         linear_deviation,
     )
 
-    # Keep the stable value while preserving the derivative of the exact expression
+    # Preserve the exact derivative when representable and use the stable path through overflow
     direct_contribution = count * raw_log_ratio - linear_deviation
-    return direct_contribution + jax.lax.stop_gradient(stable_contribution - direct_contribution)
+    use_direct_derivative = jnp.isfinite(direct_contribution) & jnp.isfinite(stable_contribution)
+    differentiable_contribution = jnp.where(
+        use_direct_derivative,
+        direct_contribution,
+        stable_contribution,
+    )
+    derivative_correction = jnp.where(
+        use_direct_derivative,
+        stable_contribution - direct_contribution,
+        jnp.zeros_like(stable_contribution),
+    )
+    return differentiable_contribution + jax.lax.stop_gradient(derivative_correction)
