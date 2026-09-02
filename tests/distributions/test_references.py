@@ -12,8 +12,8 @@ from jax.scipy import stats as jax_stats
 from scipy import special, stats
 
 import mmmjax
+from benchmarks.cases import DISTRIBUTIONS, MMM_JAX_FUNCTIONS
 from benchmarks.references import JAX_REFERENCES
-from benchmarks.workloads import DISTRIBUTIONS
 
 
 @dataclass(frozen=True)
@@ -98,6 +98,23 @@ _SMOOTH_REFERENCE_CASES = (
 
 def test_jax_references_cover_every_benchmark_distribution() -> None:
     assert set(JAX_REFERENCES) == {distribution.name for distribution in DISTRIBUTIONS}
+
+
+def test_mmmjax_benchmarks_resolve_the_current_public_api() -> None:
+    for distribution in DISTRIBUTIONS:
+        functions = MMM_JAX_FUNCTIONS[distribution.name]
+        log_probability_name = f"{distribution.name}_{distribution.log_probability_operation}"
+
+        assert functions.elementwise_log_probability is getattr(mmmjax, log_probability_name)
+        assert functions.summed_log_probability is getattr(mmmjax, distribution.name)
+        assert functions.rng is getattr(mmmjax, f"{distribution.name}_rng")
+
+        if distribution.supports_tail_inputs:
+            assert functions.logcdf is getattr(mmmjax, f"{distribution.name}_logcdf")
+            assert functions.logsf is getattr(mmmjax, f"{distribution.name}_logsf")
+        else:
+            assert functions.logcdf is None
+            assert functions.logsf is None
 
 
 def test_bernoulli_log_probability_references_match_public_operations() -> None:

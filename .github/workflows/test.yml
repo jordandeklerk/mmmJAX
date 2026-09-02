@@ -33,6 +33,7 @@ jobs:
             dev
             check
             docs
+            benchmark
       - name: Run tests
         run: pixi run --frozen -e dev tests
       - name: Build package
@@ -43,6 +44,8 @@ jobs:
         run: pixi run --frozen -e check typecheck
       - name: Build documentation
         run: pixi run --frozen -e docs docs
+      - name: Check benchmark discovery
+        run: pixi run --frozen -e benchmark spin asv check -E existing
 
   test:
     name: test (Python ${{ matrix.python-version }})

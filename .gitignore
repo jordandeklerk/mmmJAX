@@ -49,6 +49,9 @@ ENV/
 # Pixi
 .pixi/
 
+# ASV
+/benchmarks/.asv/
+
 # Jupyter
 .ipynb_checkpoints/
 
@@ -68,3 +71,4 @@ docs/source/**/generated/
 /meridian
 /stan
 /math
+/numpy

@@ -1,47 +1,181 @@
-"""Benchmark distribution primitives."""
+"""Compare mmmJAX distribution primitives with public JAX operations."""
 
 import argparse
+import functools
 import math
-import platform
 import textwrap
-from collections.abc import Sequence
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import cast
 
 import jax
 import jax.numpy as jnp
-import jaxlib
 
-from benchmarks._timing import CompiledOperations, TimingSummary, compile_function, measure_executions
-from benchmarks.workloads import (
-    DEFAULT_OPERATIONS,
+from benchmarks.cases import (
     DISTRIBUTIONS,
-    IMPLEMENTATIONS,
-    INPUT_SETS,
-    LOG_PROBABILITY_DISTRIBUTIONS,
-    LOG_PROBABILITY_OPERATIONS,
-    OPERATIONS,
+    MMM_JAX_FUNCTIONS,
     PROFILES,
-    BenchmarkOperation,
+    TAIL_DISTRIBUTIONS,
     BenchmarkProfile,
+    DistributionFunctions,
     DistributionSpec,
-    make_benchmark_operation,
+    make_arguments,
+    make_tail_arguments,
 )
+from benchmarks.common import (
+    Arguments,
+    BenchmarkFunction,
+    BenchmarkResult,
+    CompiledOperations,
+    TimingSummary,
+    compile_function,
+    measure_executions,
+    print_environment,
+    print_notes,
+    print_results,
+    synchronize,
+)
+from benchmarks.references import JAX_REFERENCES
+
+DEFAULT_OPERATIONS = ("logpdf", "logpmf", "log_density", "value_and_grad", "rng")
+TAIL_OPERATIONS = (
+    "logcdf",
+    "logcdf_value_and_grad",
+    "logsf",
+    "logsf_value_and_grad",
+)
+OPERATIONS = DEFAULT_OPERATIONS + TAIL_OPERATIONS
+INPUT_SETS = ("ordinary", "concentrated", "tail")
 
 
 @dataclass(frozen=True)
-class BenchmarkResult:
-    """Store cache-cleared compilation and warm execution measurements."""
+class BenchmarkOperation:
+    """Describe one compiled operation and its arguments."""
 
     implementation: str
-    distribution: str
-    profile: str
-    input_set: str
-    operation: str
-    element_count: int
-    dtype: str
-    compile_timing: TimingSummary
-    execution_timing: TimingSummary
-    iterations: int
+    name: str
+    function: BenchmarkFunction
+    arguments: Arguments
+
+
+IMPLEMENTATIONS: dict[str, dict[str, DistributionFunctions]] = {
+    "mmmjax": MMM_JAX_FUNCTIONS,
+    "jax": {
+        name: DistributionFunctions(
+            reference.elementwise_log_probability,
+            reference.summed_log_probability,
+            reference.rng,
+            logcdf=reference.logcdf,
+            logsf=reference.logsf,
+        )
+        for name, reference in JAX_REFERENCES.items()
+    },
+}
+
+
+def make_operations(
+    functions: DistributionFunctions,
+    distribution: DistributionSpec,
+    profile: BenchmarkProfile,
+    arguments: Arguments,
+    implementation: str,
+) -> tuple[BenchmarkOperation, ...]:
+    """Build elementwise, summed, gradient, and sampling operations for one implementation."""
+    parameters = arguments[1:]
+    return (
+        BenchmarkOperation(
+            implementation,
+            distribution.log_probability_operation,
+            functions.elementwise_log_probability,
+            arguments,
+        ),
+        BenchmarkOperation(
+            implementation,
+            "log_density",
+            functions.summed_log_probability,
+            arguments,
+        ),
+        BenchmarkOperation(
+            implementation,
+            "value_and_grad",
+            jax.value_and_grad(functions.summed_log_probability, argnums=distribution.gradient_argnums),
+            arguments,
+        ),
+        BenchmarkOperation(
+            implementation,
+            "rng",
+            functools.partial(functions.rng, sample_shape=profile.sample_shape),
+            (jax.random.key(0), *parameters),
+        ),
+    )
+
+
+def make_tail_operations(
+    functions: DistributionFunctions,
+    distribution: DistributionSpec,
+    arguments: Arguments,
+    implementation: str,
+    operation: str,
+) -> tuple[BenchmarkOperation, ...]:
+    """Build one tail probability operation and its parameter gradient."""
+    if operation not in {"logcdf", "logsf"}:
+        raise ValueError(f"operation must be 'logcdf' or 'logsf', got {operation!r}")
+
+    function = functions.logcdf if operation == "logcdf" else functions.logsf
+    if function is None:
+        return ()
+
+    summed_function = functools.partial(_sum_values, function)
+    return (
+        BenchmarkOperation(implementation, operation, function, arguments),
+        BenchmarkOperation(
+            implementation,
+            f"{operation}_value_and_grad",
+            jax.value_and_grad(summed_function, argnums=distribution.gradient_argnums),
+            arguments,
+        ),
+    )
+
+
+def make_benchmark_operation(
+    functions: DistributionFunctions,
+    distribution: DistributionSpec,
+    profile: BenchmarkProfile,
+    *,
+    input_set: str,
+    operation: str,
+    dtype: jnp.dtype,
+    implementation: str,
+) -> BenchmarkOperation | None:
+    """Build one supported operation for a distribution workload."""
+    if operation not in OPERATIONS:
+        raise ValueError(f"unknown benchmark operation {operation!r}")
+    if input_set not in INPUT_SETS:
+        raise ValueError(f"unknown benchmark input set {input_set!r}")
+
+    if operation in DEFAULT_OPERATIONS:
+        if input_set == "tail" or (input_set == "concentrated" and not distribution.supports_concentrated_inputs):
+            return None
+        if input_set == "concentrated" and implementation == "jax":
+            return None
+        if input_set == "concentrated" and operation == "rng" and distribution.name in {"poisson", "poisson_log"}:
+            return None
+
+        arguments = make_arguments(distribution, profile, input_set, dtype)
+        candidates = make_operations(functions, distribution, profile, arguments, implementation)
+    else:
+        if input_set == "concentrated" or distribution.name not in TAIL_DISTRIBUTIONS:
+            return None
+
+        tail_function = "logcdf" if operation.startswith("logcdf") else "logsf"
+        arguments = make_tail_arguments(distribution, profile, input_set, tail_function, dtype)
+        candidates = make_tail_operations(functions, distribution, arguments, implementation, tail_function)
+
+    return next((candidate for candidate in candidates if candidate.name == operation), None)
+
+
+def _sum_values(function: Callable[..., jax.Array], *arguments: jax.Array) -> jax.Array:
+    return jnp.sum(function(*arguments))
 
 
 def _benchmark(
@@ -59,7 +193,7 @@ def _benchmark(
     compiled_operations: CompiledOperations = {}
     compile_timings: dict[str, TimingSummary] = {}
     for operation in operations:
-        jax.block_until_ready(operation.arguments)
+        synchronize(operation.arguments)
         compiled, compile_timing = compile_function(
             operation.function,
             operation.arguments,
@@ -90,202 +224,6 @@ def _benchmark(
     )
 
 
-def _print_results(results: list[BenchmarkResult]) -> None:
-    grouped_results: dict[tuple[str, str, str, int], list[BenchmarkResult]] = {}
-    for result in results:
-        key = (result.profile, result.input_set, result.dtype, result.element_count)
-        grouped_results.setdefault(key, []).append(result)
-
-    print("\nResults")
-    for (profile, input_set, dtype, element_count), group in grouped_results.items():
-        print(f"\n{profile} · {input_set} · {dtype} · {element_count:,} values")
-        _print_execution_results(group)
-        _print_compilation_results(group)
-
-
-def _print_execution_results(results: list[BenchmarkResult]) -> None:
-    cases: dict[tuple[str, str], dict[str, BenchmarkResult]] = {}
-    for result in results:
-        cases.setdefault((result.distribution, result.operation), {})[result.implementation] = result
-
-    compares_implementations = any({"mmmjax", "jax"}.issubset(case) for case in cases.values())
-    headings = ["Benchmark", "Implementation", "Median", "MAD", "Throughput", "Iterations"]
-    if compares_implementations:
-        headings.append("Median vs JAX")
-
-    rows = []
-    for (distribution, operation), case in cases.items():
-        benchmark_name = f"{distribution} / {operation}"
-        for implementation_index, (implementation, result) in enumerate(case.items()):
-            median, mad = _format_timing(result.execution_timing)
-            row = [
-                benchmark_name if implementation_index == 0 else "",
-                _format_implementation(implementation),
-                median,
-                mad,
-                _format_throughput(result.element_count, result.execution_timing.median_seconds),
-                f"{result.iterations:,}",
-            ]
-            if compares_implementations:
-                row.append(_format_comparison(case) if implementation == "mmmjax" else "")
-            rows.append(tuple(row))
-
-    print("\nWarm execution")
-    right_aligned = (2, 3, 4, 5)
-    _print_table(tuple(headings), rows, right_aligned=right_aligned)
-
-
-def _print_compilation_results(results: list[BenchmarkResult]) -> None:
-    rows = []
-    previous_case: tuple[str, str] | None = None
-    for result in results:
-        case = (result.distribution, result.operation)
-        median, mad = _format_timing(result.compile_timing)
-        rows.append(
-            (
-                f"{result.distribution} / {result.operation}" if case != previous_case else "",
-                _format_implementation(result.implementation),
-                median,
-                mad,
-            )
-        )
-        previous_case = case
-
-    print("\nCompilation (descriptive)")
-    _print_table(
-        ("Benchmark", "Implementation", "Median", "MAD"),
-        rows,
-        right_aligned=(2, 3),
-    )
-
-
-def _print_table(
-    headings: Sequence[str],
-    rows: Sequence[Sequence[str]],
-    *,
-    right_aligned: Sequence[int] = (),
-) -> None:
-    widths = [max(len(row[index]) for row in [headings, *rows]) for index in range(len(headings))]
-    right_aligned_indices = set(right_aligned)
-
-    def align(value: str, index: int) -> str:
-        if index in right_aligned_indices:
-            return value.rjust(widths[index])
-        return value.ljust(widths[index])
-
-    print("  ".join(align(heading, index) for index, heading in enumerate(headings)).rstrip())
-    print("  ".join("-" * width for width in widths))
-    for row in rows:
-        print("  ".join(align(value, index) for index, value in enumerate(row)).rstrip())
-
-
-def _format_timing(timing: TimingSummary) -> tuple[str, str]:
-    if timing.median_seconds < 1e-6:
-        scale, unit = 1e9, "ns"
-    elif timing.median_seconds < 1e-3:
-        scale, unit = 1e6, "µs"
-    elif timing.median_seconds < 1:
-        scale, unit = 1e3, "ms"
-    else:
-        scale, unit = 1.0, "s"
-    return (
-        f"{timing.median_seconds * scale:.2f} {unit}",
-        f"{timing.mad_seconds * scale:.2f} {unit}",
-    )
-
-
-def _format_throughput(element_count: int, median_seconds: float) -> str:
-    values_per_second = element_count / median_seconds
-    if values_per_second >= 1e9:
-        return f"{values_per_second / 1e9:.2f} G values/s"
-    if values_per_second >= 1e6:
-        return f"{values_per_second / 1e6:.2f} M values/s"
-    if values_per_second >= 1e3:
-        return f"{values_per_second / 1e3:.2f} k values/s"
-    return f"{values_per_second:.2f} values/s"
-
-
-def _format_comparison(case: dict[str, BenchmarkResult]) -> str:
-    if not {"mmmjax", "jax"}.issubset(case):
-        return ""
-
-    mmmjax_seconds = case["mmmjax"].execution_timing.median_seconds
-    jax_seconds = case["jax"].execution_timing.median_seconds
-    difference = (mmmjax_seconds - jax_seconds) / jax_seconds * 100
-    if round(difference, 1) == 0:
-        return "same when rounded"
-    direction = "shorter" if difference < 0 else "longer"
-    return f"{abs(difference):.1f}% {direction}"
-
-
-def _format_implementation(implementation: str) -> str:
-    if implementation == "mmmjax":
-        return "mmmJAX"
-    if implementation == "jax":
-        return "JAX"
-    return implementation
-
-
-def _print_section(title: str, entries: Sequence[tuple[str, str]]) -> None:
-    label_width = max(len(label) for label, _ in entries)
-    print(f"\n{title}")
-    for label, value in entries:
-        print(f"  {label.ljust(label_width)}  {value}")
-
-
-def _print_environment(dtype: jnp.dtype, arguments: argparse.Namespace) -> None:
-    device = jax.local_devices()[0]
-    compile_repeats = f"{arguments.compile_repeats} repeat{'s' if arguments.compile_repeats != 1 else ''}"
-    execution_repeats = f"{arguments.repeats} repeat{'s' if arguments.repeats != 1 else ''}"
-    if arguments.iterations is None:
-        iteration_setting = "automatic iterations"
-    else:
-        iteration_setting = f"{arguments.iterations:,} iteration{'s' if arguments.iterations != 1 else ''}"
-    compares_implementations = len(set(arguments.implementations)) > 1 and any(
-        input_set != "concentrated" for input_set in arguments.inputs
-    )
-    execution_order = "counterbalanced order" if compares_implementations else "single implementation"
-    print("mmmJAX distribution benchmarks")
-    _print_section(
-        "Environment",
-        (
-            ("Runtime", f"Python {platform.python_version()} · JAX {jax.__version__} · jaxlib {jaxlib.__version__}"),
-            ("System", f"{platform.system()} {platform.machine()} · {jax.default_backend()} backend"),
-            (
-                "Device",
-                f"{device.device_kind} · {jax.local_device_count()} local / {jax.device_count()} global · "
-                f"process {jax.process_index() + 1} of {jax.process_count()}",
-            ),
-            ("Precision", f"{dtype.name} · x64 {'enabled' if jax.config.x64_enabled else 'disabled'}"),
-        ),
-    )
-    measurement_entries = [
-        (
-            "Compilation",
-            f"{compile_repeats} · cache cleared · fixed order · median ± MAD",
-        ),
-        (
-            "Execution",
-            f"{execution_repeats} · {iteration_setting} · {execution_order} · median ± MAD",
-        ),
-        ("Throughput", "profile values processed or generated per second"),
-    ]
-    if compares_implementations:
-        measurement_entries.append(("Comparison", "mmmJAX relative to the JAX warm median · descriptive only"))
-    _print_section(
-        "Measurement",
-        tuple(measurement_entries),
-    )
-
-
-def _print_notes(notes: Sequence[str]) -> None:
-    if not notes:
-        return
-    print("\nNotes")
-    for note in notes:
-        print(f"  - {note}")
-
-
 def _parse_args() -> argparse.Namespace:
     distribution_names = tuple(distribution.name for distribution in DISTRIBUTIONS)
     available_values = (
@@ -293,7 +231,7 @@ def _parse_args() -> argparse.Namespace:
         ("distributions", distribution_names),
         ("implementations", tuple(IMPLEMENTATIONS)),
         ("operations", OPERATIONS),
-        ("dtypes", ("float32", "float64")),
+        ("dtype", ("float32", "float64")),
         ("inputs", INPUT_SETS),
     )
     label_width = max(len(label) for label, _ in available_values)
@@ -310,7 +248,7 @@ def _parse_args() -> argparse.Namespace:
         )
 
     parser = argparse.ArgumentParser(
-        prog="benchmark-distributions",
+        prog="spin compare",
         description="Benchmark mmmJAX distribution primitives against equivalent public JAX operations.",
         epilog="\n".join(available_lines),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -396,8 +334,8 @@ def _parse_args() -> argparse.Namespace:
         parser.error("--repeats must be positive")
     selected_operations = set(arguments.operations)
     has_default_operation = bool(selected_operations.intersection(DEFAULT_OPERATIONS))
-    has_log_probability_operation = bool(selected_operations.intersection(LOG_PROBABILITY_OPERATIONS))
-    if "tail" in arguments.inputs and not has_log_probability_operation:
+    has_tail_operation = bool(selected_operations.intersection(TAIL_OPERATIONS))
+    if "tail" in arguments.inputs and not has_tail_operation:
         parser.error(
             "--inputs tail requires a log-CDF or log-survival operation; "
             "choose logcdf, logcdf_value_and_grad, logsf, or logsf_value_and_grad"
@@ -408,8 +346,8 @@ def _parse_args() -> argparse.Namespace:
             "log_density, value_and_grad, or rng; "
             "log-CDF and log-survival operations support ordinary and tail inputs"
         )
-    if has_log_probability_operation and not LOG_PROBABILITY_DISTRIBUTIONS.intersection(arguments.distributions):
-        supported = ", ".join(sorted(LOG_PROBABILITY_DISTRIBUTIONS))
+    if has_tail_operation and not TAIL_DISTRIBUTIONS.intersection(arguments.distributions):
+        supported = ", ".join(sorted(TAIL_DISTRIBUTIONS))
         parser.error(f"log-CDF and log-survival benchmarks are currently available only for {supported}")
 
     compares_implementations = len(set(arguments.implementations)) > 1 and any(
@@ -430,21 +368,31 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     """Run the selected distribution benchmarks."""
     arguments = _parse_args()
-    jax.config.update("jax_enable_compilation_cache", False)
+    update_jax_config = cast(Callable[[str, object], None], jax.config.update)
+    update_jax_config("jax_enable_compilation_cache", False)
     if arguments.dtype == "float64":
-        jax.config.update("jax_enable_x64", True)
+        update_jax_config("jax_enable_x64", True)
     dtype = jnp.dtype(arguments.dtype)
 
     selected_distributions = set(arguments.distributions)
     selected_implementations = set(arguments.implementations)
     selected_operations = set(arguments.operations)
-    selected_log_probability_operations = selected_operations.intersection(LOG_PROBABILITY_OPERATIONS)
+    selected_tail_operations = selected_operations.intersection(TAIL_OPERATIONS)
     selects_concentrated_poisson_rng = (
         "concentrated" in arguments.inputs
         and "rng" in selected_operations
         and bool({"poisson", "poisson_log"}.intersection(selected_distributions))
     )
-    _print_environment(dtype, arguments)
+    compares_implementations = len(set(arguments.implementations)) > 1 and any(
+        input_set != "concentrated" for input_set in arguments.inputs
+    )
+    print_environment(
+        dtype,
+        compile_repeats=arguments.compile_repeats,
+        repeats=arguments.repeats,
+        iterations=arguments.iterations,
+        compares_implementations=compares_implementations,
+    )
     notes = []
     if "concentrated" in arguments.inputs and "jax" in selected_implementations:
         notes.append(
@@ -453,11 +401,11 @@ def main() -> None:
         )
     if selects_concentrated_poisson_rng:
         notes.append("Concentrated Poisson RNG is omitted because its float64 rate exceeds the int32 output range")
-    unsupported_log_probability_distributions = selected_distributions - LOG_PROBABILITY_DISTRIBUTIONS
-    if selected_log_probability_operations and unsupported_log_probability_distributions:
-        omitted = ", ".join(sorted(unsupported_log_probability_distributions))
+    unsupported_tail_distributions = selected_distributions - TAIL_DISTRIBUTIONS
+    if selected_tail_operations and unsupported_tail_distributions:
+        omitted = ", ".join(sorted(unsupported_tail_distributions))
         notes.append(f"Log-CDF and log-survival operations are omitted for distributions without those APIs: {omitted}")
-    _print_notes(notes)
+    print_notes(notes)
 
     results: list[BenchmarkResult] = []
     for profile_name in arguments.profiles:
@@ -510,7 +458,7 @@ def main() -> None:
                 "use --inputs ordinary or choose logpmf, log_density, or value_and_grad"
             )
         raise SystemExit("No benchmark cases match the selected distributions and inputs")
-    _print_results(results)
+    print_results(results)
 
 
 if __name__ == "__main__":

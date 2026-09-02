@@ -1,96 +1,16 @@
-"""Define distribution benchmark workloads."""
+"""Define distribution benchmark cases."""
 
-import functools
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import cast
 
 import jax
 import jax.numpy as jnp
 
-from benchmarks._timing import Arguments, BenchmarkFunction
-from benchmarks.references import JAX_REFERENCES
-from mmmjax.distributions import (
-    bernoulli,
-    bernoulli_logit,
-    bernoulli_logit_logpmf,
-    bernoulli_logit_rng,
-    bernoulli_logpmf,
-    bernoulli_rng,
-    beta,
-    beta_logpdf,
-    beta_rng,
-    binomial,
-    binomial_logit,
-    binomial_logit_logpmf,
-    binomial_logit_rng,
-    binomial_logpmf,
-    binomial_rng,
-    categorical,
-    categorical_logit,
-    categorical_logit_logpmf,
-    categorical_logit_rng,
-    categorical_logpmf,
-    categorical_rng,
-    cauchy,
-    cauchy_logpdf,
-    cauchy_rng,
-    exponential,
-    exponential_logcdf,
-    exponential_logpdf,
-    exponential_logsf,
-    exponential_rng,
-    gamma,
-    gamma_logcdf,
-    gamma_logpdf,
-    gamma_logsf,
-    gamma_rng,
-    half_normal,
-    half_normal_logcdf,
-    half_normal_logpdf,
-    half_normal_logsf,
-    half_normal_rng,
-    inverse_gamma,
-    inverse_gamma_logcdf,
-    inverse_gamma_logpdf,
-    inverse_gamma_logsf,
-    inverse_gamma_rng,
-    laplace,
-    laplace_logcdf,
-    laplace_logpdf,
-    laplace_logsf,
-    laplace_rng,
-    lognormal,
-    lognormal_logcdf,
-    lognormal_logpdf,
-    lognormal_logsf,
-    lognormal_rng,
-    negative_binomial,
-    negative_binomial_log,
-    negative_binomial_log_logpmf,
-    negative_binomial_log_rng,
-    negative_binomial_logpmf,
-    negative_binomial_rng,
-    normal,
-    normal_logcdf,
-    normal_logpdf,
-    normal_logsf,
-    normal_rng,
-    poisson,
-    poisson_log,
-    poisson_log_logpmf,
-    poisson_log_rng,
-    poisson_logpmf,
-    poisson_rng,
-    student_t,
-    student_t_logpdf,
-    student_t_rng,
-    uniform,
-    uniform_logcdf,
-    uniform_logpdf,
-    uniform_logsf,
-    uniform_rng,
-)
+import mmmjax.distributions as distribution_api
+
+from .common import Arguments
 
 Kernel = Callable[..., jax.Array]
 
@@ -135,6 +55,7 @@ class DistributionSpec:
     log_probability_operation: str = "logpdf"
     outcomes: tuple[int, ...] = ()
     supports_concentrated_inputs: bool = False
+    supports_tail_inputs: bool = False
     gradient_parameter_indices: tuple[int, ...] | None = None
 
     def __post_init__(self) -> None:
@@ -161,15 +82,13 @@ class DistributionSpec:
                     f"got invalid indices {invalid_indices} for {len(self.parameter_values)} parameters"
                 )
 
-
-@dataclass(frozen=True)
-class BenchmarkOperation:
-    """Describe one compiled operation and its arguments."""
-
-    implementation: str
-    name: str
-    function: BenchmarkFunction
-    arguments: Arguments
+    @property
+    def gradient_argnums(self) -> tuple[int, ...]:
+        """Return the callable argument positions used for parameter gradients."""
+        # The first argument is observed data and remains fixed during model inference
+        if self.gradient_parameter_indices is None:
+            return tuple(range(1, len(self.parameter_values) + 1))
+        return tuple(index + 1 for index in self.gradient_parameter_indices)
 
 
 PROFILES: dict[str, BenchmarkProfile] = {
@@ -290,38 +209,45 @@ DISTRIBUTIONS = (
         name="exponential",
         value_range=(0.1, 2.0),
         parameter_values=(1.3,),
+        supports_tail_inputs=True,
     ),
     DistributionSpec(
         name="gamma",
         value_range=(0.1, 2.0),
         parameter_values=(2.5, 1.3),
         supports_concentrated_inputs=True,
+        supports_tail_inputs=True,
     ),
     DistributionSpec(
         name="half_normal",
         value_range=(0.1, 2.0),
         parameter_values=(1.3,),
+        supports_tail_inputs=True,
     ),
     DistributionSpec(
         name="inverse_gamma",
         value_range=(0.1, 2.0),
         parameter_values=(3.5, 1.2),
         supports_concentrated_inputs=True,
+        supports_tail_inputs=True,
     ),
     DistributionSpec(
         name="laplace",
         value_range=(-1.0, 1.0),
         parameter_values=(0.2, 1.3),
+        supports_tail_inputs=True,
     ),
     DistributionSpec(
         name="lognormal",
         value_range=(0.1, 2.0),
         parameter_values=(0.2, 0.8),
+        supports_tail_inputs=True,
     ),
     DistributionSpec(
         name="normal",
         value_range=(-1.0, 1.0),
         parameter_values=(0.2, 1.3),
+        supports_tail_inputs=True,
     ),
     DistributionSpec(
         name="student_t",
@@ -332,129 +258,69 @@ DISTRIBUTIONS = (
         name="uniform",
         value_range=(-0.5, 0.5),
         parameter_values=(-1.0, 1.0),
+        supports_tail_inputs=True,
     ),
 )
 
-IMPLEMENTATIONS: dict[str, dict[str, DistributionFunctions]] = {
-    "mmmjax": {
-        "bernoulli": DistributionFunctions(bernoulli_logpmf, bernoulli, bernoulli_rng),
-        "bernoulli_logit": DistributionFunctions(
-            bernoulli_logit_logpmf,
-            bernoulli_logit,
-            bernoulli_logit_rng,
-        ),
-        "beta": DistributionFunctions(beta_logpdf, beta, beta_rng),
-        "binomial": DistributionFunctions(binomial_logpmf, binomial, binomial_rng),
-        "binomial_logit": DistributionFunctions(
-            binomial_logit_logpmf,
-            binomial_logit,
-            binomial_logit_rng,
-        ),
-        "categorical": DistributionFunctions(categorical_logpmf, categorical, categorical_rng),
-        "categorical_logit": DistributionFunctions(
-            categorical_logit_logpmf,
-            categorical_logit,
-            categorical_logit_rng,
-        ),
-        "negative_binomial": DistributionFunctions(
-            negative_binomial_logpmf,
-            negative_binomial,
-            negative_binomial_rng,
-        ),
-        "negative_binomial_log": DistributionFunctions(
-            negative_binomial_log_logpmf,
-            negative_binomial_log,
-            negative_binomial_log_rng,
-        ),
-        "poisson": DistributionFunctions(poisson_logpmf, poisson, poisson_rng),
-        "poisson_log": DistributionFunctions(
-            poisson_log_logpmf,
-            poisson_log,
-            poisson_log_rng,
-        ),
-        "cauchy": DistributionFunctions(cauchy_logpdf, cauchy, cauchy_rng),
-        "exponential": DistributionFunctions(
-            exponential_logpdf,
-            exponential,
-            exponential_rng,
-            logcdf=exponential_logcdf,
-            logsf=exponential_logsf,
-        ),
-        "gamma": DistributionFunctions(
-            gamma_logpdf,
-            gamma,
-            gamma_rng,
-            logcdf=gamma_logcdf,
-            logsf=gamma_logsf,
-        ),
-        "half_normal": DistributionFunctions(
-            half_normal_logpdf,
-            half_normal,
-            half_normal_rng,
-            logcdf=half_normal_logcdf,
-            logsf=half_normal_logsf,
-        ),
-        "inverse_gamma": DistributionFunctions(
-            inverse_gamma_logpdf,
-            inverse_gamma,
-            inverse_gamma_rng,
-            logcdf=inverse_gamma_logcdf,
-            logsf=inverse_gamma_logsf,
-        ),
-        "laplace": DistributionFunctions(
-            laplace_logpdf,
-            laplace,
-            laplace_rng,
-            logcdf=laplace_logcdf,
-            logsf=laplace_logsf,
-        ),
-        "lognormal": DistributionFunctions(
-            lognormal_logpdf,
-            lognormal,
-            lognormal_rng,
-            logcdf=lognormal_logcdf,
-            logsf=lognormal_logsf,
-        ),
-        "normal": DistributionFunctions(
-            normal_logpdf,
-            normal,
-            normal_rng,
-            logcdf=normal_logcdf,
-            logsf=normal_logsf,
-        ),
-        "student_t": DistributionFunctions(student_t_logpdf, student_t, student_t_rng),
-        "uniform": DistributionFunctions(
-            uniform_logpdf,
-            uniform,
-            uniform_rng,
-            logcdf=uniform_logcdf,
-            logsf=uniform_logsf,
-        ),
-    },
-    "jax": {
-        name: DistributionFunctions(
-            reference.elementwise_log_probability,
-            reference.summed_log_probability,
-            reference.rng,
-            logcdf=reference.logcdf,
-            logsf=reference.logsf,
-        )
-        for name, reference in JAX_REFERENCES.items()
-    },
+
+def _distribution_function(name: str) -> Kernel:
+    """Resolve a public operation without breaking benchmarks for older revisions."""
+    function = getattr(distribution_api, name, None)
+    if function is not None:
+        return cast(Kernel, function)
+
+    def unavailable(*args: object, **kwargs: object) -> jax.Array:
+        raise NotImplementedError(f"{name} is unavailable in this mmmJAX revision")
+
+    return unavailable
+
+
+MMM_JAX_FUNCTIONS: dict[str, DistributionFunctions] = {
+    distribution.name: DistributionFunctions(
+        _distribution_function(f"{distribution.name}_{distribution.log_probability_operation}"),
+        _distribution_function(distribution.name),
+        _distribution_function(f"{distribution.name}_rng"),
+        logcdf=(_distribution_function(f"{distribution.name}_logcdf") if distribution.supports_tail_inputs else None),
+        logsf=_distribution_function(f"{distribution.name}_logsf") if distribution.supports_tail_inputs else None,
+    )
+    for distribution in DISTRIBUTIONS
 }
 
-DEFAULT_OPERATIONS = ("logpdf", "logpmf", "log_density", "value_and_grad", "rng")
-LOG_PROBABILITY_OPERATIONS = (
-    "logcdf",
-    "logcdf_value_and_grad",
-    "logsf",
-    "logsf_value_and_grad",
-)
-OPERATIONS = DEFAULT_OPERATIONS + LOG_PROBABILITY_OPERATIONS
-INPUT_SETS = ("ordinary", "concentrated", "tail")
-LOG_PROBABILITY_DISTRIBUTIONS = frozenset(
-    {"exponential", "gamma", "half_normal", "inverse_gamma", "laplace", "lognormal", "normal", "uniform"}
-)
+DISTRIBUTIONS_BY_NAME = {distribution.name: distribution for distribution in DISTRIBUTIONS}
+TAIL_DISTRIBUTIONS = frozenset(distribution.name for distribution in DISTRIBUTIONS if distribution.supports_tail_inputs)
+
+
+def _validate_distribution_cases() -> None:
+    """Validate the relationships between benchmark specifications and functions."""
+    distribution_names = tuple(distribution.name for distribution in DISTRIBUTIONS)
+    if len(DISTRIBUTIONS_BY_NAME) != len(DISTRIBUTIONS):
+        duplicate_names = tuple(sorted({name for name in distribution_names if distribution_names.count(name) > 1}))
+        raise ValueError(f"distribution benchmark names must be unique, got duplicates {duplicate_names}")
+
+    specification_names = set(DISTRIBUTIONS_BY_NAME)
+    function_names = set(MMM_JAX_FUNCTIONS)
+    if specification_names != function_names:
+        missing_functions = tuple(sorted(specification_names - function_names))
+        missing_specifications = tuple(sorted(function_names - specification_names))
+        raise ValueError(
+            "distribution specifications and functions must use the same names, "
+            f"got specifications without functions {missing_functions} "
+            f"and functions without specifications {missing_specifications}"
+        )
+
+    missing_tail_functions = tuple(
+        name
+        for name in sorted(TAIL_DISTRIBUTIONS)
+        if MMM_JAX_FUNCTIONS[name].logcdf is None or MMM_JAX_FUNCTIONS[name].logsf is None
+    )
+    if missing_tail_functions:
+        raise ValueError(
+            "tail benchmark distributions must define both logcdf and logsf functions, "
+            f"got incomplete functions for {missing_tail_functions}"
+        )
+
+
+_validate_distribution_cases()
 
 
 def make_arguments(
@@ -465,7 +331,7 @@ def make_arguments(
 ) -> Arguments:
     """Build one profile's values and distribution parameters."""
     if input_set not in {"ordinary", "concentrated"}:
-        raise ValueError(f"log-probability benchmarks do not support {input_set} inputs")
+        raise ValueError(f"density benchmarks do not support {input_set} inputs")
 
     element_count = math.prod(profile.value_shape)
     if input_set == "ordinary":
@@ -486,7 +352,7 @@ def make_arguments(
                 raise ValueError(f"{distribution.name} does not define ordinary benchmark values")
             lower, upper = distribution.value_range
             value = jnp.linspace(lower, upper, element_count, dtype=dtype).reshape(profile.value_shape)
-        parameters = _make_parameters(distribution, profile, dtype)
+        parameters = make_parameters(distribution, profile, dtype)
         return (value, *parameters)
 
     if not distribution.supports_concentrated_inputs:
@@ -519,7 +385,7 @@ def make_arguments(
     return value, shape, shape
 
 
-def make_log_probability_arguments(
+def make_tail_arguments(
     distribution: DistributionSpec,
     profile: BenchmarkProfile,
     input_set: str,
@@ -527,7 +393,7 @@ def make_log_probability_arguments(
     dtype: jnp.dtype,
 ) -> Arguments:
     """Build ordinary or tail inputs for a log-CDF or log-survival operation."""
-    if distribution.name not in LOG_PROBABILITY_DISTRIBUTIONS:
+    if distribution.name not in TAIL_DISTRIBUTIONS:
         raise ValueError(f"{distribution.name} does not define log-CDF or log-survival benchmark inputs")
     if input_set not in {"ordinary", "tail"}:
         raise ValueError(f"log-CDF and log-survival benchmarks do not support {input_set} inputs")
@@ -537,7 +403,7 @@ def make_log_probability_arguments(
     element_count = math.prod(profile.value_shape)
     if distribution.name == "exponential":
         # Rate-scaled inputs keep the probability range fixed if benchmark rates change
-        (rate,) = _make_parameters(distribution, profile, dtype)
+        (rate,) = make_parameters(distribution, profile, dtype)
         if input_set == "ordinary":
             scaled_value = jnp.linspace(0.1, 3.0, element_count, dtype=dtype)
         else:
@@ -551,7 +417,7 @@ def make_log_probability_arguments(
         return value, rate
 
     if distribution.name == "gamma":
-        shape, rate = _make_parameters(distribution, profile, dtype)
+        shape, rate = make_parameters(distribution, profile, dtype)
         if input_set == "ordinary":
             # Covers roughly the central 4% through 97% for the configured shape of 2.5
             scaled_value = jnp.linspace(0.5, 6.0, element_count, dtype=dtype)
@@ -566,7 +432,7 @@ def make_log_probability_arguments(
         return value, shape, rate
 
     if distribution.name == "half_normal":
-        (scale,) = _make_parameters(distribution, profile, dtype)
+        (scale,) = make_parameters(distribution, profile, dtype)
         if input_set == "ordinary":
             standardized = jnp.linspace(0.023, 2.36, element_count, dtype=dtype)
         elif operation == "logcdf":
@@ -578,7 +444,7 @@ def make_log_probability_arguments(
         return value, scale
 
     if distribution.name == "inverse_gamma":
-        shape, scale = _make_parameters(distribution, profile, dtype)
+        shape, scale = make_parameters(distribution, profile, dtype)
         if input_set == "ordinary":
             # Scaling by scale / value gives the corresponding unit-rate Gamma argument
             scaled_inverse_value = jnp.linspace(0.9, 7.35, element_count, dtype=dtype)
@@ -593,7 +459,7 @@ def make_log_probability_arguments(
         return value, shape, scale
 
     if distribution.name == "laplace" and input_set == "tail":
-        location, scale = _make_parameters(distribution, profile, dtype)
+        location, scale = make_parameters(distribution, profile, dtype)
         negative_log_probability = jnp.linspace(4.0, 32.0, element_count, dtype=dtype)
         log_two = jnp.asarray(math.log(2), dtype=dtype)
 
@@ -607,7 +473,7 @@ def make_log_probability_arguments(
 
     if distribution.name == "uniform":
         if input_set == "ordinary":
-            lower, upper = _make_parameters(distribution, profile, dtype)
+            lower, upper = make_parameters(distribution, profile, dtype)
             if distribution.value_range is None:
                 raise ValueError("uniform does not define ordinary benchmark values")
             value = jnp.linspace(
@@ -632,137 +498,33 @@ def make_log_probability_arguments(
         return value, lower, upper
 
     if input_set == "ordinary":
-        lower, upper = -2.0, 2.0
+        standardized_lower, standardized_upper = -2.0, 2.0
     elif operation == "logcdf":
-        lower, upper = -8.0, -2.0
+        standardized_lower, standardized_upper = -8.0, -2.0
     else:
-        lower, upper = 2.0, 8.0
+        standardized_lower, standardized_upper = 2.0, 8.0
 
-    standardized = jnp.linspace(lower, upper, element_count, dtype=dtype).reshape(profile.value_shape)
-    location, scale = _make_parameters(distribution, profile, dtype)
+    standardized = jnp.linspace(
+        standardized_lower,
+        standardized_upper,
+        element_count,
+        dtype=dtype,
+    ).reshape(profile.value_shape)
+    location, scale = make_parameters(distribution, profile, dtype)
     transformed = location + scale * standardized
     value = jnp.exp(transformed) if distribution.name == "lognormal" else transformed
     return value, location, scale
 
 
-def make_operations(
-    functions: DistributionFunctions,
-    distribution: DistributionSpec,
-    profile: BenchmarkProfile,
-    arguments: Arguments,
-    implementation: str,
-) -> tuple[BenchmarkOperation, ...]:
-    """Build elementwise, summed, gradient, and sampling operations for one implementation."""
-    # Observed values are data, so model inference only differentiates parameters
-    if distribution.gradient_parameter_indices is None:
-        parameter_indices = tuple(range(1, len(arguments)))
-    else:
-        parameter_indices = tuple(index + 1 for index in distribution.gradient_parameter_indices)
-    parameters = arguments[1:]
-    return (
-        BenchmarkOperation(
-            implementation,
-            distribution.log_probability_operation,
-            functions.elementwise_log_probability,
-            arguments,
-        ),
-        BenchmarkOperation(
-            implementation,
-            "log_density",
-            functions.summed_log_probability,
-            arguments,
-        ),
-        BenchmarkOperation(
-            implementation,
-            "value_and_grad",
-            jax.value_and_grad(functions.summed_log_probability, argnums=parameter_indices),
-            arguments,
-        ),
-        BenchmarkOperation(
-            implementation,
-            "rng",
-            functools.partial(functions.rng, sample_shape=profile.sample_shape),
-            (jax.random.key(0), *parameters),
-        ),
-    )
-
-
-def make_log_probability_operations(
-    functions: DistributionFunctions,
-    arguments: Arguments,
-    implementation: str,
-    operation: str,
-) -> tuple[BenchmarkOperation, ...]:
-    """Build one log-probability operation and its parameter gradient."""
-    if operation not in {"logcdf", "logsf"}:
-        raise ValueError(f"operation must be 'logcdf' or 'logsf', got {operation!r}")
-
-    function = functions.logcdf if operation == "logcdf" else functions.logsf
-    if function is None:
-        return ()
-
-    parameter_indices = tuple(range(1, len(arguments)))
-    summed_function = functools.partial(_sum_values, function)
-    return (
-        BenchmarkOperation(implementation, operation, function, arguments),
-        BenchmarkOperation(
-            implementation,
-            f"{operation}_value_and_grad",
-            jax.value_and_grad(summed_function, argnums=parameter_indices),
-            arguments,
-        ),
-    )
-
-
-def make_benchmark_operation(
-    functions: DistributionFunctions,
-    distribution: DistributionSpec,
-    profile: BenchmarkProfile,
-    *,
-    input_set: str,
-    operation: str,
-    dtype: jnp.dtype,
-    implementation: str,
-) -> BenchmarkOperation | None:
-    """Build one supported operation for a distribution workload."""
-    if operation not in OPERATIONS:
-        raise ValueError(f"unknown benchmark operation {operation!r}")
-    if input_set not in INPUT_SETS:
-        raise ValueError(f"unknown benchmark input set {input_set!r}")
-
-    if operation in DEFAULT_OPERATIONS:
-        if input_set == "tail" or (input_set == "concentrated" and not distribution.supports_concentrated_inputs):
-            return None
-        if input_set == "concentrated" and implementation == "jax":
-            return None
-        if input_set == "concentrated" and operation == "rng" and distribution.name in {"poisson", "poisson_log"}:
-            return None
-
-        arguments = make_arguments(distribution, profile, input_set, dtype)
-        candidates = make_operations(functions, distribution, profile, arguments, implementation)
-    else:
-        if input_set == "concentrated" or distribution.name not in LOG_PROBABILITY_DISTRIBUTIONS:
-            return None
-
-        log_probability = "logcdf" if operation.startswith("logcdf") else "logsf"
-        arguments = make_log_probability_arguments(distribution, profile, input_set, log_probability, dtype)
-        candidates = make_log_probability_operations(functions, arguments, implementation, log_probability)
-
-    return next((candidate for candidate in candidates if candidate.name == operation), None)
-
-
-def _make_parameters(
+def make_parameters(
     distribution: DistributionSpec,
     profile: BenchmarkProfile,
     dtype: jnp.dtype,
 ) -> tuple[jax.Array, ...]:
+    """Build broadcast parameters for one distribution workload."""
     parameters = []
     for parameter_value in distribution.parameter_values:
         parameter = jnp.asarray(parameter_value, dtype=dtype)
         # Vector parameters keep their event axes after the benchmark batch axes
         parameters.append(jnp.broadcast_to(parameter, profile.parameter_shape + parameter.shape))
     return tuple(parameters)
-
-
-def _sum_values(function: Kernel, *arguments: jax.Array) -> jax.Array:
-    return jnp.sum(function(*arguments))
