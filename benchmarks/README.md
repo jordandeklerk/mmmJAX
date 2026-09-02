@@ -25,6 +25,10 @@ spin bench
 Use `--quick` to check each benchmark once, `-t` to select a suite or benchmark, and `--compare`
 to compare committed revisions. These options can be combined as needed.
 
+> [!NOTE]
+> Full suite and revision comparisons can take several minutes. Use `--quick` when you only need to
+> check that the benchmarks execute.
+
 For example, run the `ElementwiseLogProbability` benchmark class with:
 
 ```console
@@ -95,6 +99,11 @@ standard density, gradient, and sampling operations. Filters can narrow the comp
 ```console
 spin compare --profiles vector --distributions normal
 ```
+
+> [!IMPORTANT]
+> mmmJAX applies stricter parameter checks and numerical safeguards than some JAX references, so the
+> two sides do not always perform exactly the same work. This can explain some overhead, but a stable
+> slowdown should still be investigated rather than accepted by default.
 
 The report separates cache-cleared JIT compilation from synchronized warm execution. Compilation
 timings are descriptive. Warm results report the median, median absolute deviation, throughput,
