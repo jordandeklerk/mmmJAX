@@ -26,15 +26,17 @@ pixi run benchmark-run
 ASV asks for machine information the first time a run starts. Generated environments and results
 are stored under `benchmarks/.asv/` and are not committed.
 
-The initial ASV suites separate density evaluation (`bench_density`), log-density gradients
-(`bench_grad`), and random sampling (`bench_random`). They cover ordinary float32 inputs for the
-`vector`, `likelihood`, and `channel_prior` profiles. ASV tracks mmmJAX across commits and does not
-use public JAX as a timing baseline.
+The ASV suites separate density evaluation (`bench_density`), log-density gradients (`bench_grad`),
+random sampling (`bench_random`), and tail probabilities (`bench_tail`). Density, gradient, and
+sampling benchmarks use ordinary float32 inputs. Tail benchmarks measure log-CDF, log-survival, and
+their parameter gradients on float32 tail inputs. Every suite covers the `vector`, `likelihood`, and
+`channel_prior` profiles. ASV tracks mmmJAX across commits and does not use public JAX as a timing
+baseline.
 
 Pass an ASV benchmark filter after the Pixi task to check one suite:
 
 ```console
-pixi run benchmark-quick -b bench_grad
+pixi run benchmark-quick -b bench_tail
 ```
 
 ## Paired implementation comparisons
