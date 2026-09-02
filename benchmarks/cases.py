@@ -35,6 +35,25 @@ class BenchmarkProfile:
 
 
 @dataclass(frozen=True)
+class EventProfile:
+    """Describe a workload with a final event axis."""
+
+    sample_shape: tuple[int, ...]
+    batch_shape: tuple[int, ...]
+    event_size: int
+
+    @property
+    def parameter_shape(self) -> tuple[int, ...]:
+        """Return the batched vector parameter shape."""
+        return (*self.batch_shape, self.event_size)
+
+    @property
+    def value_shape(self) -> tuple[int, ...]:
+        """Return the sampled event shape."""
+        return (*self.sample_shape, *self.parameter_shape)
+
+
+@dataclass(frozen=True)
 class DistributionFunctions:
     """Store one implementation of the public distribution operations."""
 
@@ -91,6 +110,15 @@ class DistributionSpec:
         return tuple(index + 1 for index in self.gradient_parameter_indices)
 
 
+@dataclass(frozen=True)
+class EventDistributionSpec:
+    """Describe benchmark metadata for an event distribution."""
+
+    name: str
+    log_probability_operation: str
+    gradient_argnums: tuple[int, ...]
+
+
 PROFILES: dict[str, BenchmarkProfile] = {
     # A small vector that checks scalar parameter broadcasting
     "vector": BenchmarkProfile(
@@ -116,6 +144,13 @@ PROFILES: dict[str, BenchmarkProfile] = {
         parameter_shape=(8, 465),
         sample_shape=(260,),
     ),
+}
+
+EVENT_PROFILES: dict[str, EventProfile] = {
+    "vector": EventProfile(sample_shape=(), batch_shape=(), event_size=32),
+    "likelihood": EventProfile(sample_shape=(260,), batch_shape=(8,), event_size=4),
+    "channel_prior": EventProfile(sample_shape=(8,), batch_shape=(), event_size=465),
+    "stress": EventProfile(sample_shape=(260,), batch_shape=(8,), event_size=465),
 }
 
 DISTRIBUTIONS = (
@@ -262,6 +297,14 @@ DISTRIBUTIONS = (
     ),
 )
 
+EVENT_DISTRIBUTIONS = (
+    EventDistributionSpec(
+        name="dirichlet",
+        log_probability_operation="logpdf",
+        gradient_argnums=(1,),
+    ),
+)
+
 
 def _distribution_function(name: str) -> Kernel:
     """Resolve a public operation without breaking benchmarks for older revisions."""
@@ -285,6 +328,13 @@ MMM_JAX_FUNCTIONS: dict[str, DistributionFunctions] = {
     )
     for distribution in DISTRIBUTIONS
 }
+
+DIRICHLET_FUNCTIONS = DistributionFunctions(
+    _distribution_function("dirichlet_logpdf"),
+    _distribution_function("dirichlet"),
+    _distribution_function("dirichlet_rng"),
+)
+EVENT_MMM_JAX_FUNCTIONS = {"dirichlet": DIRICHLET_FUNCTIONS}
 
 DISTRIBUTIONS_BY_NAME = {distribution.name: distribution for distribution in DISTRIBUTIONS}
 TAIL_DISTRIBUTIONS = frozenset(distribution.name for distribution in DISTRIBUTIONS if distribution.supports_tail_inputs)
@@ -317,6 +367,33 @@ def _validate_distribution_cases() -> None:
         raise ValueError(
             "tail benchmark distributions must define both logcdf and logsf functions, "
             f"got incomplete functions for {missing_tail_functions}"
+        )
+
+    event_distribution_names = tuple(distribution.name for distribution in EVENT_DISTRIBUTIONS)
+    overlapping_names = tuple(sorted(set(distribution_names).intersection(event_distribution_names)))
+    if overlapping_names:
+        raise ValueError(f"standard and event benchmark distribution names must be distinct, got {overlapping_names}")
+
+    event_specification_names = set(event_distribution_names)
+    event_function_names = set(EVENT_MMM_JAX_FUNCTIONS)
+    if event_specification_names != event_function_names:
+        missing_functions = tuple(sorted(event_specification_names - event_function_names))
+        missing_specifications = tuple(sorted(event_function_names - event_specification_names))
+        raise ValueError(
+            "event distribution specifications and functions must use the same names, "
+            f"got specifications without functions {missing_functions} "
+            f"and functions without specifications {missing_specifications}"
+        )
+
+    profile_names = set(PROFILES)
+    event_profile_names = set(EVENT_PROFILES)
+    if profile_names != event_profile_names:
+        missing_event_profiles = tuple(sorted(profile_names - event_profile_names))
+        missing_standard_profiles = tuple(sorted(event_profile_names - profile_names))
+        raise ValueError(
+            "standard and event benchmark profiles must use the same names, "
+            f"got standard profiles without event profiles {missing_event_profiles} "
+            f"and event profiles without standard profiles {missing_standard_profiles}"
         )
 
 
@@ -528,3 +605,24 @@ def make_parameters(
         # Vector parameters keep their event axes after the benchmark batch axes
         parameters.append(jnp.broadcast_to(parameter, profile.parameter_shape + parameter.shape))
     return tuple(parameters)
+
+
+def make_dirichlet_arguments(
+    profile: EventProfile,
+    dtype: jnp.dtype,
+) -> tuple[jax.Array, jax.Array]:
+    """Build valid simplex values and concentrations for one event profile."""
+    concentration = jnp.linspace(
+        0.5,
+        3.0,
+        math.prod(profile.parameter_shape),
+        dtype=dtype,
+    ).reshape(profile.parameter_shape)
+    positive_values = jnp.linspace(
+        0.5,
+        1.5,
+        math.prod(profile.value_shape),
+        dtype=dtype,
+    ).reshape(profile.value_shape)
+    value = positive_values / jnp.sum(positive_values, axis=-1, keepdims=True)
+    return value, concentration
