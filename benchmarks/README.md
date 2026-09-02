@@ -16,15 +16,13 @@ pixi shell -e benchmark
 
 Run all remaining commands from this Pixi shell.
 
-| Task | Command |
-| --- | --- |
-| Benchmark the current checkout | `spin bench` |
-| Check each benchmark once | `spin bench --quick` |
-| Run one suite | `spin bench -t bench_tail` |
-| Run one benchmark class | `spin bench -t bench_density.ElementwiseLogProbability` |
-| Compare committed `main` and `HEAD` | `spin bench --compare main` |
-| Compare one suite across revisions | `spin bench --compare main -t bench_tail` |
-| Compare mmmJAX with public JAX | `spin compare` |
+- Benchmark the current checkout: `spin bench`
+- Check each benchmark once: `spin bench --quick`
+- Run one suite: `spin bench -t bench_tail`
+- Run one benchmark class: `spin bench -t bench_density.ElementwiseLogProbability`
+- Compare committed `main` and `HEAD`: `spin bench --compare main`
+- Compare one suite across revisions: `spin bench --compare main -t bench_tail`
+- Compare mmmJAX with public JAX: `spin compare`
 
 Use `spin bench --help` and `spin compare --help` for all available options.
 
@@ -48,24 +46,20 @@ Generated `.asv` artifacts are ignored by Git. Local machine metadata lives in
 
 ## What is measured
 
-| Suite | Measurement |
-| --- | --- |
-| `bench_density` | Elementwise log probabilities and summed log densities |
-| `bench_grad` | Log densities and their parameter gradients |
-| `bench_random` | Random sampling |
-| `bench_tail` | Log-CDFs, log-survival functions, and their parameter gradients |
+- `bench_density`: Elementwise log probabilities and summed log densities
+- `bench_grad`: Log densities and their parameter gradients
+- `bench_random`: Random sampling
+- `bench_tail`: Log-CDFs, log-survival functions, and their parameter gradients
 
 The ASV suites use float32 inputs and cover the `vector`, `likelihood`, and `channel_prior`
 profiles. The `stress` profile remains opt-in for paired comparisons.
 
 ### Profiles
 
-| Profile | Value shape | Parameter batch shape | Purpose |
-| --- | --- | --- | --- |
-| `vector` | `(32,)` | `()` | Flat workload with scalar parameter broadcasting |
-| `likelihood` | `(260, 8)` | `(8,)` | Grouped workload with one parameter per group |
-| `channel_prior` | `(8, 465)` | `(465,)` | Wide parameter batch broadcast across groups |
-| `stress` | `(260, 8, 465)` | `(8, 465)` | Large nested parameter structure |
+- `vector`: Values `(32,)` and scalar parameters for basic broadcasting
+- `likelihood`: Values `(260, 8)` and parameters `(8,)` for grouped workloads
+- `channel_prior`: Values `(8, 465)` and parameters `(465,)` for wide batches shared across groups
+- `stress`: Values `(260, 8, 465)` and parameters `(8, 465)` for large nested structures
 
 Categorical parameters append their event axis to the parameter batch shape. For example, the
 `channel_prior` profile uses parameters shaped `(465, K)` and values shaped `(8, 465)`.
