@@ -1,49 +1,21 @@
 """Benchmark Dirichlet operations with an explicit event axis."""
 
 import functools
-import math
 from collections.abc import Callable
-from dataclasses import dataclass
 
 import jax
 import jax.numpy as jnp
 
-from benchmarks.cases import DIRICHLET_FUNCTIONS
+from benchmarks.cases import DIRICHLET_FUNCTIONS, EVENT_PROFILES, make_dirichlet_arguments
 from benchmarks.common import Arguments, BenchmarkFunction, compile_and_warm, synchronize
 
 
-@dataclass(frozen=True)
-class _EventProfile:
-    """Describe one batched Dirichlet workload."""
-
-    sample_shape: tuple[int, ...]
-    batch_shape: tuple[int, ...]
-    event_size: int
-
-    @property
-    def concentration_shape(self) -> tuple[int, ...]:
-        """Return the batched concentration shape."""
-        return (*self.batch_shape, self.event_size)
-
-    @property
-    def value_shape(self) -> tuple[int, ...]:
-        """Return the sampled simplex shape."""
-        return (*self.sample_shape, *self.concentration_shape)
-
-
-_PROFILES = {
-    "vector": _EventProfile(sample_shape=(), batch_shape=(), event_size=32),
-    "likelihood": _EventProfile(sample_shape=(260,), batch_shape=(), event_size=8),
-    "channel_prior": _EventProfile(sample_shape=(8,), batch_shape=(), event_size=465),
-}
-
-
 class _DirichletBenchmark:
-    version = "1"
+    version = "2"
     # Batch short device calls so scheduler noise does not dominate each sample
     number = 100
     repeat = 5
-    params = tuple(_PROFILES)
+    params = ("vector", "likelihood", "channel_prior")
     param_names = ("profile",)
     operation_name = ""
 
@@ -57,8 +29,8 @@ class _DirichletBenchmark:
         if self._case == case:
             return
 
-        profile = _PROFILES[profile_name]
-        value, concentration = _make_arguments(profile)
+        profile = EVENT_PROFILES[profile_name]
+        value, concentration = make_dirichlet_arguments(profile, jnp.dtype(jnp.float32))
 
         function: BenchmarkFunction
         if self.operation_name == "elementwise":
@@ -125,21 +97,3 @@ class DirichletSampling(_DirichletBenchmark):
     def time_sampling(self, profile_name: str) -> None:
         """Measure one synchronized sampling call."""
         synchronize(self.compiled(*self.arguments))
-
-
-def _make_arguments(profile: _EventProfile) -> tuple[jax.Array, jax.Array]:
-    """Build valid simplex values and concentrations for one event profile."""
-    concentration = jnp.linspace(
-        0.5,
-        3.0,
-        math.prod(profile.concentration_shape),
-        dtype=jnp.float32,
-    ).reshape(profile.concentration_shape)
-    positive_values = jnp.linspace(
-        0.5,
-        1.5,
-        math.prod(profile.value_shape),
-        dtype=jnp.float32,
-    ).reshape(profile.value_shape)
-    value = positive_values / jnp.sum(positive_values, axis=-1, keepdims=True)
-    return value, concentration

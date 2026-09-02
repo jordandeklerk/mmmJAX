@@ -48,6 +48,38 @@ def _categorical_logit_logpmf(value: jax.Array, logits: jax.Array) -> jax.Array:
     return _select_categorical_log_probability(value, jax.nn.log_softmax(logits, axis=-1))
 
 
+def _dirichlet_logpdf(value: jax.Array, concentration: jax.Array) -> jax.Array:
+    if concentration.ndim == 0:
+        raise ValueError("Dirichlet reference concentration must include a final event axis")
+
+    sample_ndim = value.ndim - concentration.ndim
+    if sample_ndim < 0 or value.shape[sample_ndim:] != concentration.shape:
+        raise ValueError(
+            "Dirichlet reference values must have shape sample_shape + concentration.shape, "
+            f"got value.shape={value.shape} and concentration.shape={concentration.shape}"
+        )
+
+    if concentration.ndim == 1:
+        return stats.dirichlet.logpdf(jnp.moveaxis(value, -1, 0), concentration)
+
+    batch_shape = concentration.shape[:-1]
+    sample_shape = value.shape[:sample_ndim]
+    event_axis = value.ndim - 1
+    batch_axes = tuple(range(sample_ndim, event_axis))
+    sample_axes = tuple(range(sample_ndim))
+
+    # JAX handles shared samples but needs vmap for each batched concentration vector
+    event_first = jnp.transpose(value, (*batch_axes, event_axis, *sample_axes))
+    batched_values = event_first.reshape(math.prod(batch_shape), concentration.shape[-1], *sample_shape)
+    batched_concentration = concentration.reshape(math.prod(batch_shape), concentration.shape[-1])
+    log_density = jax.vmap(stats.dirichlet.logpdf)(batched_values, batched_concentration)
+
+    batch_first_shape = (*batch_shape, *sample_shape)
+    batch_first_log_density = log_density.reshape(batch_first_shape)
+    output_axes = (*range(len(batch_shape), len(batch_first_shape)), *range(len(batch_shape)))
+    return jnp.transpose(batch_first_log_density, output_axes)
+
+
 def _negative_binomial_logpmf(
     value: jax.Array,
     mean: jax.Array,
@@ -270,6 +302,20 @@ def _categorical_logit_rng(
     return jax.random.categorical(key, logits, shape=shape, mode="high").astype(jnp.int32)
 
 
+def _dirichlet_rng(
+    key: jax.Array,
+    concentration: jax.Array,
+    *,
+    sample_shape: tuple[int, ...] = (),
+) -> jax.Array:
+    return jax.random.dirichlet(
+        key,
+        concentration,
+        shape=sample_shape + concentration.shape[:-1],
+        dtype=concentration.dtype,
+    )
+
+
 def _negative_binomial_rng(
     key: jax.Array,
     mean: jax.Array,
@@ -484,6 +530,7 @@ JAX_REFERENCES: dict[str, JaxReference] = {
     "binomial_logit": JaxReference(_binomial_logit_logpmf, _binomial_logit_rng),
     "categorical": JaxReference(_categorical_logpmf, _categorical_rng),
     "categorical_logit": JaxReference(_categorical_logit_logpmf, _categorical_logit_rng),
+    "dirichlet": JaxReference(_dirichlet_logpdf, _dirichlet_rng),
     "negative_binomial": JaxReference(_negative_binomial_logpmf, _negative_binomial_rng),
     "negative_binomial_log": JaxReference(
         _negative_binomial_log_logpmf,

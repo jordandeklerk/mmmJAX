@@ -13,13 +13,19 @@ import jax.numpy as jnp
 
 from benchmarks.cases import (
     DISTRIBUTIONS,
+    EVENT_DISTRIBUTIONS,
+    EVENT_MMM_JAX_FUNCTIONS,
+    EVENT_PROFILES,
     MMM_JAX_FUNCTIONS,
     PROFILES,
     TAIL_DISTRIBUTIONS,
     BenchmarkProfile,
     DistributionFunctions,
     DistributionSpec,
+    EventDistributionSpec,
+    EventProfile,
     make_arguments,
+    make_dirichlet_arguments,
     make_tail_arguments,
 )
 from benchmarks.common import (
@@ -46,6 +52,8 @@ TAIL_OPERATIONS = (
 )
 OPERATIONS = DEFAULT_OPERATIONS + TAIL_OPERATIONS
 INPUT_SETS = ("ordinary", "concentrated", "tail")
+BenchmarkDistribution = DistributionSpec | EventDistributionSpec
+BenchmarkProfileType = BenchmarkProfile | EventProfile
 
 
 @dataclass(frozen=True)
@@ -59,7 +67,7 @@ class BenchmarkOperation:
 
 
 IMPLEMENTATIONS: dict[str, dict[str, DistributionFunctions]] = {
-    "mmmjax": MMM_JAX_FUNCTIONS,
+    "mmmjax": {**MMM_JAX_FUNCTIONS, **EVENT_MMM_JAX_FUNCTIONS},
     "jax": {
         name: DistributionFunctions(
             reference.elementwise_log_probability,
@@ -75,8 +83,8 @@ IMPLEMENTATIONS: dict[str, dict[str, DistributionFunctions]] = {
 
 def make_operations(
     functions: DistributionFunctions,
-    distribution: DistributionSpec,
-    profile: BenchmarkProfile,
+    distribution: BenchmarkDistribution,
+    profile: BenchmarkProfileType,
     arguments: Arguments,
     implementation: str,
 ) -> tuple[BenchmarkOperation, ...]:
@@ -139,8 +147,8 @@ def make_tail_operations(
 
 def make_benchmark_operation(
     functions: DistributionFunctions,
-    distribution: DistributionSpec,
-    profile: BenchmarkProfile,
+    distribution: BenchmarkDistribution,
+    profile: BenchmarkProfileType,
     *,
     input_set: str,
     operation: str,
@@ -152,6 +160,22 @@ def make_benchmark_operation(
         raise ValueError(f"unknown benchmark operation {operation!r}")
     if input_set not in INPUT_SETS:
         raise ValueError(f"unknown benchmark input set {input_set!r}")
+
+    arguments: Arguments
+    if isinstance(distribution, EventDistributionSpec):
+        if not isinstance(profile, EventProfile):
+            raise TypeError(f"{distribution.name} requires an event profile, got {type(profile).__name__}")
+        if input_set != "ordinary" or operation not in DEFAULT_OPERATIONS:
+            return None
+        if distribution.name != "dirichlet":
+            raise RuntimeError(f"unknown event benchmark distribution {distribution.name!r}")
+
+        arguments = make_dirichlet_arguments(profile, dtype)
+        candidates = make_operations(functions, distribution, profile, arguments, implementation)
+        return next((candidate for candidate in candidates if candidate.name == operation), None)
+
+    if not isinstance(profile, BenchmarkProfile):
+        raise TypeError(f"{distribution.name} requires a scalar profile, got {type(profile).__name__}")
 
     if operation in DEFAULT_OPERATIONS:
         if input_set == "tail" or (input_set == "concentrated" and not distribution.supports_concentrated_inputs):
@@ -179,9 +203,9 @@ def _sum_values(function: Callable[..., jax.Array], *arguments: jax.Array) -> ja
 
 
 def _benchmark(
-    distribution: DistributionSpec,
+    distribution: BenchmarkDistribution,
     profile_name: str,
-    profile: BenchmarkProfile,
+    profile: BenchmarkProfileType,
     input_set: str,
     operations: tuple[BenchmarkOperation, ...],
     dtype: jnp.dtype,
@@ -225,7 +249,8 @@ def _benchmark(
 
 
 def _parse_args() -> argparse.Namespace:
-    distribution_names = tuple(distribution.name for distribution in DISTRIBUTIONS)
+    distributions = (*DISTRIBUTIONS, *EVENT_DISTRIBUTIONS)
+    distribution_names = tuple(distribution.name for distribution in distributions)
     available_values = (
         ("profiles", tuple(PROFILES)),
         ("distributions", distribution_names),
@@ -408,12 +433,17 @@ def main() -> None:
     print_notes(notes)
 
     results: list[BenchmarkResult] = []
+    distributions = (*DISTRIBUTIONS, *EVENT_DISTRIBUTIONS)
     for profile_name in arguments.profiles:
-        profile = PROFILES[profile_name]
         for input_set in arguments.inputs:
-            for distribution in DISTRIBUTIONS:
+            for distribution in distributions:
                 if distribution.name not in selected_distributions:
                     continue
+
+                if isinstance(distribution, EventDistributionSpec):
+                    profile: BenchmarkProfileType = EVENT_PROFILES[profile_name]
+                else:
+                    profile = PROFILES[profile_name]
 
                 for operation_name in OPERATIONS:
                     if operation_name not in selected_operations:

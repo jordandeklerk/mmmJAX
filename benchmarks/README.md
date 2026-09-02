@@ -84,8 +84,8 @@ Categorical parameters append their event axis to the parameter batch shape. For
 `channel_prior` profile uses parameters shaped `(465, K)` and values shaped `(8, 465)`.
 
 Dirichlet uses dedicated event profiles. The `vector` workload uses one 32-component simplex,
-`likelihood` uses 260 draws from a shared 8-component simplex, and `channel_prior` measures eight
-draws from a shared 465-component simplex.
+`likelihood` uses 260 samples across eight batches of four-component simplex vectors, and
+`channel_prior` measures eight draws from a shared 465-component simplex.
 
 ### Reading ASV results
 
@@ -118,6 +118,9 @@ References use public `jax.scipy.stats`, `jax.random`, and JAX array operations.
 are used when no single public function matches an mmmJAX parameterization. SciPy remains an
 independent correctness reference and is not a timing baseline because it does not provide the same
 JIT, automatic differentiation, accelerator, or PRNG execution model.
+
+The Dirichlet reference moves mmmJAX's final event axis to the leading position expected by JAX and
+uses `vmap` only when concentration vectors have batch dimensions.
 
 ## Special workloads
 
@@ -183,5 +186,4 @@ spin bench -t bench_tail --quick
 
 These workloads cover representative shapes and known numerical edge cases, but they do not replace
 the distribution correctness tests. Implementations can also differ outside the measured inputs
-because mmmJAX applies stricter parameter validation. Dirichlet currently runs through ASV only;
-paired JAX comparisons require an adapter for JAX's event-first density interface.
+because mmmJAX applies stricter parameter validation.

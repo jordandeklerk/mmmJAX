@@ -12,7 +12,7 @@ from jax.scipy import stats as jax_stats
 from scipy import special, stats
 
 import mmmjax
-from benchmarks.cases import DIRICHLET_FUNCTIONS, DISTRIBUTIONS, MMM_JAX_FUNCTIONS
+from benchmarks.cases import DIRICHLET_FUNCTIONS, DISTRIBUTIONS, EVENT_DISTRIBUTIONS, MMM_JAX_FUNCTIONS
 from benchmarks.references import JAX_REFERENCES
 
 
@@ -97,7 +97,9 @@ _SMOOTH_REFERENCE_CASES = (
 
 
 def test_jax_references_cover_every_benchmark_distribution() -> None:
-    assert set(JAX_REFERENCES) == {distribution.name for distribution in DISTRIBUTIONS}
+    distributions = (*DISTRIBUTIONS, *EVENT_DISTRIBUTIONS)
+
+    assert set(JAX_REFERENCES) == {distribution.name for distribution in distributions}
 
 
 def test_mmmjax_benchmarks_resolve_the_current_public_api() -> None:
@@ -119,6 +121,79 @@ def test_mmmjax_benchmarks_resolve_the_current_public_api() -> None:
     assert DIRICHLET_FUNCTIONS.elementwise_log_probability is mmmjax.dirichlet_logpdf
     assert DIRICHLET_FUNCTIONS.summed_log_probability is mmmjax.dirichlet
     assert DIRICHLET_FUNCTIONS.rng is mmmjax.dirichlet_rng
+
+
+def test_dirichlet_log_probability_reference_matches_public_jax() -> None:
+    value = jnp.array([[0.2, 0.3, 0.5], [0.1, 0.7, 0.2]])
+    concentration = jnp.array([1.5, 2.5, 3.5])
+    reference = JAX_REFERENCES["dirichlet"].elementwise_log_probability
+
+    result = reference(value, concentration)
+    expected = jax_stats.dirichlet.logpdf(jnp.moveaxis(value, -1, 0), concentration)
+
+    assert jnp.array_equal(result, expected)
+
+
+def test_dirichlet_log_probability_reference_batches_concentrations() -> None:
+    positive_values = jnp.linspace(0.5, 1.5, 2 * 3 * 4).reshape(2, 3, 4)
+    value = positive_values / jnp.sum(positive_values, axis=-1, keepdims=True)
+    concentration = jnp.linspace(0.5, 3.0, 3 * 4).reshape(3, 4)
+    reference = JAX_REFERENCES["dirichlet"].elementwise_log_probability
+
+    result = reference(value, concentration)
+    expected = jnp.stack(
+        [
+            jax_stats.dirichlet.logpdf(jnp.moveaxis(value[:, index], -1, 0), concentration[index])
+            for index in range(concentration.shape[0])
+        ],
+        axis=-1,
+    )
+
+    np.testing.assert_allclose(result, expected, rtol=3e-6, atol=3e-6)
+
+    result_gradient = jax.grad(lambda alpha: jnp.sum(reference(value, alpha)))(concentration)
+    expected_gradient = jax.grad(
+        lambda alpha: sum(
+            jnp.sum(jax_stats.dirichlet.logpdf(jnp.moveaxis(value[:, index], -1, 0), alpha[index]))
+            for index in range(alpha.shape[0])
+        )
+    )(concentration)
+
+    np.testing.assert_allclose(result_gradient, expected_gradient, rtol=3e-6, atol=3e-6)
+
+
+def test_dirichlet_log_probability_reference_restores_multiple_batch_axes() -> None:
+    positive_values = jnp.linspace(0.5, 1.5, 2 * 3 * 2 * 3 * 4).reshape(2, 3, 2, 3, 4)
+    value = positive_values / jnp.sum(positive_values, axis=-1, keepdims=True)
+    concentration = jnp.linspace(0.5, 3.0, 2 * 3 * 4).reshape(2, 3, 4)
+    reference = JAX_REFERENCES["dirichlet"].elementwise_log_probability
+
+    result = reference(value, concentration)
+    expected = np.empty((2, 3, 2, 3), dtype=np.float32)
+    for first_batch_index in range(concentration.shape[0]):
+        for second_batch_index in range(concentration.shape[1]):
+            expected[:, :, first_batch_index, second_batch_index] = jax_stats.dirichlet.logpdf(
+                jnp.moveaxis(value[:, :, first_batch_index, second_batch_index], -1, 0),
+                concentration[first_batch_index, second_batch_index],
+            )
+
+    np.testing.assert_allclose(result, expected, rtol=3e-6, atol=3e-6)
+
+
+def test_dirichlet_rng_reference_matches_public_jax() -> None:
+    key = jax.random.key(0)
+    concentration = jnp.linspace(0.5, 3.0, 3 * 4).reshape(3, 4)
+    reference = JAX_REFERENCES["dirichlet"].rng
+
+    result = reference(key, concentration, sample_shape=(2,))
+    expected = jax.random.dirichlet(
+        key,
+        concentration,
+        shape=(2, 3),
+        dtype=concentration.dtype,
+    )
+
+    assert jnp.array_equal(result, expected)
 
 
 def test_bernoulli_log_probability_references_match_public_operations() -> None:
