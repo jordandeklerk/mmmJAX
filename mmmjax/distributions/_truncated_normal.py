@@ -1,5 +1,7 @@
 """Truncated Normal distribution functions."""
 
+from typing import cast
+
 import jax
 import jax.numpy as jnp
 from jax.scipy.stats import truncnorm as jax_truncnorm
@@ -87,17 +89,20 @@ def truncated_normal_logpdf(
     finite_upper = jnp.isfinite(safe_upper)
     two_sided = finite_lower & finite_upper
 
-    two_sided_lower = jnp.where(two_sided, safe_lower, -jnp.ones_like(safe_lower))
-    two_sided_upper = jnp.where(two_sided, safe_upper, jnp.ones_like(safe_upper))
-    standardized_lower = _standardize(two_sided_lower, safe_location, safe_scale)
-    standardized_upper = _standardize(two_sided_upper, safe_location, safe_scale)
-    two_sided_log_density = jax_truncnorm.logpdf(
-        safe_value,
+    two_sided_active = valid_parameters & two_sided & ~outside_support & ~jnp.isnan(value_array)
+    two_sided_value = jnp.where(two_sided_active, safe_value, jnp.zeros_like(safe_value))
+    two_sided_location = jnp.where(two_sided_active, safe_location, jnp.zeros_like(safe_location))
+    two_sided_scale = jnp.where(two_sided_active, safe_scale, jnp.ones_like(safe_scale))
+    two_sided_lower = jnp.where(two_sided_active, safe_lower, -jnp.ones_like(safe_lower))
+    two_sided_upper = jnp.where(two_sided_active, safe_upper, jnp.ones_like(safe_upper))
+    standardized_value = _standardize(two_sided_value, two_sided_location, two_sided_scale)
+    standardized_lower = _standardize(two_sided_lower, two_sided_location, two_sided_scale)
+    standardized_upper = _standardize(two_sided_upper, two_sided_location, two_sided_scale)
+    two_sided_log_density = _two_sided_logpdf(
+        standardized_value,
         standardized_lower,
         standardized_upper,
-        loc=safe_location,
-        scale=safe_scale,
-    )
+    ) - jnp.log(two_sided_scale)
 
     normal_log_density = _normal_logpdf_kernel(safe_value, safe_location, safe_scale)
     lower_log_density = normal_log_density - _normal_logsf_kernel(safe_lower, safe_location, safe_scale)
@@ -113,6 +118,7 @@ def truncated_normal_logpdf(
     )
 
     supported_log_density = jnp.where(outside_support, -jnp.inf, log_density)
+    supported_log_density = jnp.where(jnp.isnan(value_array), jnp.nan, supported_log_density)
     return jnp.where(valid_parameters, supported_log_density, jnp.nan)
 
 
@@ -145,3 +151,30 @@ def truncated_normal(
         every dimension of the broadcast result.
     """
     return jnp.sum(truncated_normal_logpdf(value, location, scale, lower, upper))
+
+
+# Public JAX tail values are stable, but its autodiff rule can return nonfinite gradients
+@jax.custom_jvp
+def _two_sided_logpdf(
+    value: jax.Array,
+    lower: jax.Array,
+    upper: jax.Array,
+) -> jax.Array:
+    return cast(jax.Array, jax_truncnorm.logpdf(value, lower, upper))
+
+
+@_two_sided_logpdf.defjvp
+def _two_sided_logpdf_jvp(
+    primals: tuple[jax.Array, jax.Array, jax.Array],
+    tangents: tuple[jax.Array, jax.Array, jax.Array],
+) -> tuple[jax.Array, jax.Array]:
+    value, lower, upper = primals
+    value_tangent, lower_tangent, upper_tangent = tangents
+    log_density = _two_sided_logpdf(value, lower, upper)
+
+    # Endpoint density ratios are the analytic derivatives of the normalizing mass
+    squared_value = jnp.square(value)
+    lower_weight = jnp.exp(log_density + 0.5 * (squared_value - jnp.square(lower)))
+    upper_weight = jnp.exp(log_density + 0.5 * (squared_value - jnp.square(upper)))
+    log_density_tangent = -value * value_tangent + lower_weight * lower_tangent - upper_weight * upper_tangent
+    return log_density, log_density_tangent

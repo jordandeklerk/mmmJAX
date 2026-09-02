@@ -135,6 +135,33 @@ def test_truncated_normal_logpdf_derivatives_match_closed_form(arguments) -> Non
     np.testing.assert_allclose(reverse, expected, rtol=3e-6, atol=3e-6)
 
 
+def test_truncated_normal_logpdf_derivatives_are_finite_in_same_side_tail() -> None:
+    arguments = jnp.array([6.05, 0.0, 1.0, 6.0, 6.1])
+    expected = _scipy_logpdf_gradient(arguments)
+
+    def evaluate(current):
+        return truncated_normal_logpdf(*current)
+
+    forward = jax.jit(jax.jacfwd(evaluate))(arguments)
+    reverse = jax.jit(jax.jacrev(evaluate))(arguments)
+
+    np.testing.assert_allclose(forward, expected, rtol=3e-6, atol=1e-4)
+    np.testing.assert_allclose(reverse, expected, rtol=3e-6, atol=1e-4)
+
+
+def test_truncated_normal_logpdf_supports_higher_order_tail_derivatives() -> None:
+    arguments = jnp.array([6.05, 0.0, 1.0, 6.0, 6.1])
+
+    def evaluate(current):
+        return truncated_normal_logpdf(*current)
+
+    reverse_over_reverse = jax.jit(jax.jacrev(jax.grad(evaluate)))(arguments)
+    forward_over_reverse = jax.jit(jax.hessian(evaluate))(arguments)
+
+    assert jnp.all(jnp.isfinite(reverse_over_reverse))
+    np.testing.assert_allclose(reverse_over_reverse, forward_over_reverse, rtol=3e-5, atol=3e-4)
+
+
 def test_truncated_normal_can_be_vectorized_over_datasets() -> None:
     values = jnp.array([[-0.5, 0.25], [0.75, 1.5]])
     locations = jnp.array([0.0, 0.5])
