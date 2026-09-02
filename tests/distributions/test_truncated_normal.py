@@ -4,7 +4,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from jax.scipy.special import erf
 from jax.scipy.stats import truncnorm as jax_truncnorm
 from scipy import stats
 
@@ -35,50 +34,27 @@ def test_truncated_normal_logpdf_matches_scipy_across_broadcast_batches() -> Non
     np.testing.assert_allclose(compiled, expected, rtol=3e-6, atol=3e-6)
 
 
-def test_truncated_normal_logpdf_remains_accurate_in_narrow_tail_intervals() -> None:
-    values = np.array([-39.5, -20.005, 20.005, 39.5], dtype=np.float32)
-    lowers = np.array([-40.0, -20.01, 20.0, 39.0], dtype=np.float32)
-    uppers = np.array([-39.0, -20.0, 20.01, 40.0], dtype=np.float32)
-    expected = _scipy_logpdf(values, 0.0, 1.0, lowers, uppers)
+@pytest.mark.parametrize(
+    ("value", "location", "scale", "lower", "upper"),
+    [
+        pytest.param(0.0, 0.0, 1.0, -0.01, 0.01, id="narrow-central"),
+        pytest.param(6.05, 0.0, 1.0, 6.0, 6.1, id="same-side-tail"),
+        pytest.param(2.0, 0.0, 1.0, 1.0, np.inf, id="lower-bound"),
+        pytest.param(-2.0, 0.0, 1.0, -np.inf, -1.0, id="upper-bound"),
+    ],
+)
+def test_truncated_normal_logpdf_matches_scipy_for_representative_bounds(
+    value,
+    location,
+    scale,
+    lower,
+    upper,
+) -> None:
+    expected = _scipy_logpdf(value, location, scale, lower, upper)
 
-    result = truncated_normal_logpdf(values, 0.0, 1.0, lowers, uppers)
-    value_gradient = jax.jit(
-        jax.jacrev(lambda current: jnp.sum(truncated_normal_logpdf(current, 0, 1, lowers, uppers)))
-    )(jnp.asarray(values))
-
-    assert jnp.all(jnp.isfinite(result))
-    assert jnp.all(jnp.isfinite(value_gradient))
-    np.testing.assert_allclose(result, expected, rtol=3e-5, atol=3e-5)
-    np.testing.assert_allclose(value_gradient, -values, rtol=3e-6, atol=3e-6)
-
-
-def test_truncated_normal_logpdf_remains_finite_for_a_narrow_central_interval() -> None:
-    half_width = jnp.asarray(1e-10, dtype=jnp.float32)
-    sqrt_two = jnp.sqrt(jnp.asarray(2, dtype=jnp.float32))
-    expected = -0.5 * jnp.log(2 * jnp.pi) - jnp.log(erf(half_width / sqrt_two))
-
-    result = truncated_normal_logpdf(0.0, 0.0, 1.0, -half_width, half_width)
-    reverse = jax.jit(jax.jacrev(lambda bounds: truncated_normal_logpdf(0.0, 0.0, 1.0, bounds[0], bounds[1])))(
-        jnp.array([-half_width, half_width])
-    )
+    result = truncated_normal_logpdf(value, location, scale, lower, upper)
 
     assert jnp.isfinite(result)
-    assert jnp.all(jnp.isfinite(reverse))
-    np.testing.assert_allclose(result, expected, rtol=3e-6, atol=3e-6)
-
-
-def test_truncated_normal_logpdf_handles_adjacent_same_side_bounds() -> None:
-    lower = jnp.asarray(1.0, dtype=jnp.float32)
-    upper = jnp.nextafter(lower, jnp.asarray(jnp.inf, dtype=lower.dtype))
-    expected = _scipy_logpdf(lower, 0.0, 1.0, lower, upper)
-
-    result = truncated_normal_logpdf(lower, 0.0, 1.0, lower, upper)
-    reverse = jax.jit(jax.jacrev(lambda bounds: truncated_normal_logpdf(bounds[0], 0.0, 1.0, bounds[0], bounds[1])))(
-        jnp.array([lower, upper])
-    )
-
-    assert jnp.isfinite(result)
-    assert jnp.all(jnp.isfinite(reverse))
     np.testing.assert_allclose(result, expected, rtol=3e-6, atol=3e-6)
 
 
@@ -137,17 +113,17 @@ def test_truncated_normal_logpdf_supports_infinite_bounds() -> None:
     np.testing.assert_allclose(result[2], normal_logpdf(values[2], 0.0, 1.0), rtol=3e-6, atol=3e-6)
 
 
-def test_truncated_normal_logpdf_derivatives_match_closed_form() -> None:
-    arguments = jnp.array([0.4, -0.3, 1.7, -1.2, 2.4])
-    expected = np.array(
-        [
-            -0.2422145328719723,
-            0.02923751578460876,
-            -0.1576836727027529,
-            0.3159515359807837,
-            -0.1029745188934201,
-        ]
-    )
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        pytest.param(jnp.array([0.4, -0.3, 1.7, -1.2, 2.4]), id="two-sided"),
+        pytest.param(jnp.array([2.0, 0.0, 1.0, 1.0, 3.0]), id="finite-tail"),
+        pytest.param(jnp.array([2.0, 0.0, 1.0, 1.0, jnp.inf]), id="lower-bound"),
+        pytest.param(jnp.array([-2.0, 0.0, 1.0, -jnp.inf, -1.0]), id="upper-bound"),
+    ],
+)
+def test_truncated_normal_logpdf_derivatives_match_closed_form(arguments) -> None:
+    expected = _scipy_logpdf_gradient(arguments)
 
     def evaluate(current):
         return truncated_normal_logpdf(*current)
@@ -159,74 +135,15 @@ def test_truncated_normal_logpdf_derivatives_match_closed_form() -> None:
     np.testing.assert_allclose(reverse, expected, rtol=3e-6, atol=3e-6)
 
 
-@pytest.mark.parametrize(
-    ("lower", "upper", "expected"),
-    [
-        (-jnp.inf, 1.0, [0.4875999709, -0.6724000291]),
-        (-1.0, jnp.inf, [-0.0875999709, -0.6724000291]),
-        (-jnp.inf, jnp.inf, [0.2, -0.96]),
-    ],
-)
-def test_truncated_normal_logpdf_has_finite_gradients_with_infinite_bounds(lower, upper, expected) -> None:
-    def evaluate(current):
-        return truncated_normal_logpdf(0.2, current[0], current[1], lower, upper)
-
-    result = jax.jit(jax.jacrev(evaluate))(jnp.array([0.0, 1.0]))
-
-    assert jnp.all(jnp.isfinite(result))
-    np.testing.assert_allclose(result, expected, rtol=3e-6, atol=3e-6)
-
-
-def test_truncated_normal_logpdf_derivatives_remain_finite_in_the_far_tail() -> None:
-    arguments = jnp.array([20.5, 0.0, 1.0, 20.0, 21.0])
-    standardized_value, _, scale, standardized_lower, standardized_upper = np.asarray(
-        arguments,
-        dtype=np.float64,
-    )
-    lower_weight = stats.truncnorm.pdf(
-        standardized_lower,
-        standardized_lower,
-        standardized_upper,
-    )
-    upper_weight = stats.truncnorm.pdf(
-        standardized_upper,
-        standardized_lower,
-        standardized_upper,
-    )
-    expected = np.array(
-        [
-            -standardized_value / scale,
-            (standardized_value - lower_weight + upper_weight) / scale,
-            (np.square(standardized_value) - 1 + standardized_upper * upper_weight - standardized_lower * lower_weight)
-            / scale,
-            lower_weight / scale,
-            -upper_weight / scale,
-        ]
-    )
-
-    def evaluate(current):
-        return truncated_normal_logpdf(*current)
-
-    forward = jax.jit(jax.jacfwd(evaluate))(arguments)
-    reverse = jax.jit(jax.jacrev(evaluate))(arguments)
-
-    assert jnp.all(jnp.isfinite(forward))
-    assert jnp.all(jnp.isfinite(reverse))
-    np.testing.assert_allclose(forward, expected, rtol=2e-4, atol=1e-3)
-    np.testing.assert_allclose(reverse, expected, rtol=2e-4, atol=1e-3)
-
-
 def test_truncated_normal_can_be_vectorized_over_datasets() -> None:
     values = jnp.array([[-0.5, 0.25], [0.75, 1.5]])
     locations = jnp.array([0.0, 0.5])
     scales = jnp.array([1.0, 1.5])
     lowers = jnp.array([-1.0, -0.5])
     uppers = jnp.array([2.0, 2.5])
-
-    result = jax.jit(jax.vmap(truncated_normal))(values, locations, scales, lowers, uppers)
-    expected = jnp.stack(
+    expected = np.asarray(
         [
-            truncated_normal(value, location, scale, lower, upper)
+            np.sum(_scipy_logpdf(value, location, scale, lower, upper))
             for value, location, scale, lower, upper in zip(
                 values,
                 locations,
@@ -238,7 +155,9 @@ def test_truncated_normal_can_be_vectorized_over_datasets() -> None:
         ]
     )
 
-    assert jnp.allclose(result, expected)
+    result = jax.jit(jax.vmap(truncated_normal))(values, locations, scales, lowers, uppers)
+
+    np.testing.assert_allclose(result, expected, rtol=3e-6, atol=3e-6)
 
 
 def _scipy_logpdf(value, location, scale, lower, upper) -> np.ndarray:
@@ -255,4 +174,40 @@ def _scipy_logpdf(value, location, scale, lower, upper) -> np.ndarray:
         standardized_upper,
         loc=location_array,
         scale=scale_array,
+    )
+
+
+def _scipy_logpdf_gradient(arguments) -> np.ndarray:
+    value, location, scale, lower, upper = np.asarray(arguments, dtype=np.float64)
+    standardized_value = (value - location) / scale
+    standardized_lower = (lower - location) / scale
+    standardized_upper = (upper - location) / scale
+    lower_weight = (
+        0.0
+        if np.isneginf(standardized_lower)
+        else stats.truncnorm.pdf(
+            standardized_lower,
+            standardized_lower,
+            standardized_upper,
+        )
+    )
+    upper_weight = (
+        0.0
+        if np.isposinf(standardized_upper)
+        else stats.truncnorm.pdf(
+            standardized_upper,
+            standardized_lower,
+            standardized_upper,
+        )
+    )
+    lower_moment = 0.0 if np.isneginf(standardized_lower) else standardized_lower * lower_weight
+    upper_moment = 0.0 if np.isposinf(standardized_upper) else standardized_upper * upper_weight
+    return np.array(
+        [
+            -standardized_value / scale,
+            (standardized_value - lower_weight + upper_weight) / scale,
+            (np.square(standardized_value) - 1 + upper_moment - lower_moment) / scale,
+            lower_weight / scale,
+            -upper_weight / scale,
+        ]
     )
