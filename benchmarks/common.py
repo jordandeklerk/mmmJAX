@@ -62,6 +62,17 @@ def compile_function(
     return compiled, _summarize_timings(compile_timings)
 
 
+def compile_and_warm(
+    function: BenchmarkFunction,
+    arguments: Arguments,
+) -> Callable[..., object]:
+    """Compile a function and finish its warm-up call before timing."""
+    synchronize(arguments)
+    compiled = jax.jit(function).lower(*arguments).compile()
+    synchronize(compiled(*arguments))
+    return compiled
+
+
 def measure_executions(
     compiled_operations: CompiledOperations,
     *,

@@ -1,29 +1,30 @@
 """Compare mmmJAX distribution primitives with public JAX operations."""
 
 import argparse
+import functools
 import math
 import textwrap
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import cast
 
 import jax
 import jax.numpy as jnp
 
 from benchmarks.cases import (
-    DEFAULT_OPERATIONS,
     DISTRIBUTIONS,
-    IMPLEMENTATIONS,
-    INPUT_SETS,
     LOG_PROBABILITY_DISTRIBUTIONS,
-    LOG_PROBABILITY_OPERATIONS,
-    OPERATIONS,
+    MMM_JAX_FUNCTIONS,
     PROFILES,
-    BenchmarkOperation,
     BenchmarkProfile,
+    DistributionFunctions,
     DistributionSpec,
-    make_benchmark_operation,
+    make_arguments,
+    make_log_probability_arguments,
 )
 from benchmarks.common import (
+    Arguments,
+    BenchmarkFunction,
     BenchmarkResult,
     CompiledOperations,
     TimingSummary,
@@ -34,6 +35,147 @@ from benchmarks.common import (
     print_results,
     synchronize,
 )
+from benchmarks.references import JAX_REFERENCES
+
+DEFAULT_OPERATIONS = ("logpdf", "logpmf", "log_density", "value_and_grad", "rng")
+LOG_PROBABILITY_OPERATIONS = (
+    "logcdf",
+    "logcdf_value_and_grad",
+    "logsf",
+    "logsf_value_and_grad",
+)
+OPERATIONS = DEFAULT_OPERATIONS + LOG_PROBABILITY_OPERATIONS
+INPUT_SETS = ("ordinary", "concentrated", "tail")
+
+
+@dataclass(frozen=True)
+class BenchmarkOperation:
+    """Describe one compiled operation and its arguments."""
+
+    implementation: str
+    name: str
+    function: BenchmarkFunction
+    arguments: Arguments
+
+
+IMPLEMENTATIONS: dict[str, dict[str, DistributionFunctions]] = {
+    "mmmjax": MMM_JAX_FUNCTIONS,
+    "jax": {
+        name: DistributionFunctions(
+            reference.elementwise_log_probability,
+            reference.summed_log_probability,
+            reference.rng,
+            logcdf=reference.logcdf,
+            logsf=reference.logsf,
+        )
+        for name, reference in JAX_REFERENCES.items()
+    },
+}
+
+
+def make_operations(
+    functions: DistributionFunctions,
+    distribution: DistributionSpec,
+    profile: BenchmarkProfile,
+    arguments: Arguments,
+    implementation: str,
+) -> tuple[BenchmarkOperation, ...]:
+    """Build elementwise, summed, gradient, and sampling operations for one implementation."""
+    parameters = arguments[1:]
+    return (
+        BenchmarkOperation(
+            implementation,
+            distribution.log_probability_operation,
+            functions.elementwise_log_probability,
+            arguments,
+        ),
+        BenchmarkOperation(
+            implementation,
+            "log_density",
+            functions.summed_log_probability,
+            arguments,
+        ),
+        BenchmarkOperation(
+            implementation,
+            "value_and_grad",
+            jax.value_and_grad(functions.summed_log_probability, argnums=distribution.gradient_argnums),
+            arguments,
+        ),
+        BenchmarkOperation(
+            implementation,
+            "rng",
+            functools.partial(functions.rng, sample_shape=profile.sample_shape),
+            (jax.random.key(0), *parameters),
+        ),
+    )
+
+
+def make_log_probability_operations(
+    functions: DistributionFunctions,
+    arguments: Arguments,
+    implementation: str,
+    operation: str,
+) -> tuple[BenchmarkOperation, ...]:
+    """Build one log-probability operation and its parameter gradient."""
+    if operation not in {"logcdf", "logsf"}:
+        raise ValueError(f"operation must be 'logcdf' or 'logsf', got {operation!r}")
+
+    function = functions.logcdf if operation == "logcdf" else functions.logsf
+    if function is None:
+        return ()
+
+    parameter_indices = tuple(range(1, len(arguments)))
+    summed_function = functools.partial(_sum_values, function)
+    return (
+        BenchmarkOperation(implementation, operation, function, arguments),
+        BenchmarkOperation(
+            implementation,
+            f"{operation}_value_and_grad",
+            jax.value_and_grad(summed_function, argnums=parameter_indices),
+            arguments,
+        ),
+    )
+
+
+def make_benchmark_operation(
+    functions: DistributionFunctions,
+    distribution: DistributionSpec,
+    profile: BenchmarkProfile,
+    *,
+    input_set: str,
+    operation: str,
+    dtype: jnp.dtype,
+    implementation: str,
+) -> BenchmarkOperation | None:
+    """Build one supported operation for a distribution workload."""
+    if operation not in OPERATIONS:
+        raise ValueError(f"unknown benchmark operation {operation!r}")
+    if input_set not in INPUT_SETS:
+        raise ValueError(f"unknown benchmark input set {input_set!r}")
+
+    if operation in DEFAULT_OPERATIONS:
+        if input_set == "tail" or (input_set == "concentrated" and not distribution.supports_concentrated_inputs):
+            return None
+        if input_set == "concentrated" and implementation == "jax":
+            return None
+        if input_set == "concentrated" and operation == "rng" and distribution.name in {"poisson", "poisson_log"}:
+            return None
+
+        arguments = make_arguments(distribution, profile, input_set, dtype)
+        candidates = make_operations(functions, distribution, profile, arguments, implementation)
+    else:
+        if input_set == "concentrated" or distribution.name not in LOG_PROBABILITY_DISTRIBUTIONS:
+            return None
+
+        log_probability = "logcdf" if operation.startswith("logcdf") else "logsf"
+        arguments = make_log_probability_arguments(distribution, profile, input_set, log_probability, dtype)
+        candidates = make_log_probability_operations(functions, arguments, implementation, log_probability)
+
+    return next((candidate for candidate in candidates if candidate.name == operation), None)
+
+
+def _sum_values(function: Callable[..., jax.Array], *arguments: jax.Array) -> jax.Array:
+    return jnp.sum(function(*arguments))
 
 
 def _benchmark(

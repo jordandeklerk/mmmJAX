@@ -5,8 +5,8 @@ from collections.abc import Callable
 import jax
 import jax.numpy as jnp
 
-from benchmarks.cases import DISTRIBUTIONS, IMPLEMENTATIONS, PROFILES, make_benchmark_operation
-from benchmarks.common import Arguments, synchronize
+from benchmarks.cases import DISTRIBUTIONS, MMM_JAX_FUNCTIONS, PROFILES, make_arguments
+from benchmarks.common import Arguments, BenchmarkFunction, compile_and_warm, synchronize
 
 
 class _DensityBenchmark:
@@ -23,27 +23,29 @@ class _DensityBenchmark:
     def setup(self, distribution_name: str, profile_name: str) -> None:
         """Prepare and warm one compiled density operation."""
         distribution = next(distribution for distribution in DISTRIBUTIONS if distribution.name == distribution_name)
-        operation_name = (
-            distribution.log_probability_operation if self.operation_name == "elementwise" else self.operation_name
-        )
-        operation = make_benchmark_operation(
-            IMPLEMENTATIONS["mmmjax"][distribution_name],
+        functions = MMM_JAX_FUNCTIONS[distribution_name]
+        arguments = make_arguments(
             distribution,
             PROFILES[profile_name],
-            input_set="ordinary",
-            operation=operation_name,
-            dtype=jnp.dtype(jnp.float32),
-            implementation="mmmjax",
+            "ordinary",
+            jnp.dtype(jnp.float32),
         )
-        if operation is None:
-            raise RuntimeError(
-                f"density benchmark operation {operation_name!r} is unavailable for {distribution_name!r}"
-            )
 
-        self.arguments = operation.arguments
-        synchronize(self.arguments)
-        self.compiled = jax.jit(operation.function).lower(*self.arguments).compile()
-        synchronize(self.compiled(*self.arguments))
+        function: BenchmarkFunction
+        if self.operation_name == "elementwise":
+            function = functions.elementwise_log_probability
+        elif self.operation_name == "log_density":
+            function = functions.summed_log_probability
+        elif self.operation_name == "value_and_grad":
+            function = jax.value_and_grad(
+                functions.summed_log_probability,
+                argnums=distribution.gradient_argnums,
+            )
+        else:
+            raise RuntimeError(f"unknown density benchmark operation {self.operation_name!r}")
+
+        self.arguments = arguments
+        self.compiled = compile_and_warm(function, self.arguments)
 
 
 class ElementwiseLogProbability(_DensityBenchmark):
