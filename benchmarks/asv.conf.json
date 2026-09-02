@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "project": "mmmjax",
+  "project_url": "https://github.com/jordandeklerk/mmmJAX",
+  "repo": "..",
+  "branches": ["HEAD"],
+  "dvcs": "git",
+  "environment_type": "virtualenv",
+  "show_commit_url": "https://github.com/jordandeklerk/mmmJAX/commit/",
+  "benchmark_dir": ".",
+  "env_dir": ".asv/env",
+  "results_dir": ".asv/results",
+  "html_dir": ".asv/html"
+}

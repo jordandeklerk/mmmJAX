@@ -49,6 +49,9 @@ ENV/
 # Pixi
 .pixi/
 
+# ASV
+/benchmarks/.asv/
+
 # Jupyter
 .ipynb_checkpoints/
 

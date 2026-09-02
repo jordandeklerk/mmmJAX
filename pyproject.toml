@@ -45,6 +45,9 @@ test = [
     "pytest-timeout",
     "scipy>=1.14",
 ]
+benchmark = [
+    "asv>=0.6.6,<0.7",
+]
 doc = [
     "sphinx>=8,<9",
     "sphinx-immaterial>=0.13.9",

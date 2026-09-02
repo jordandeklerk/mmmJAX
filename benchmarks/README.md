@@ -1,14 +1,44 @@
 # Benchmarks
 
-The distribution benchmarks compare mmmJAX with equivalent public JAX operations. They report
-cache-cleared JIT compilation and synchronized warm execution for elementwise log probabilities,
-summed log density, parameter gradients, and random sampling.
+mmmJAX has two complementary benchmark workflows. ASV tracks performance across commits, while the
+comparison command measures mmmJAX and equivalent public JAX operations in the same run.
 
-Compilation timings are descriptive. Warm execution comparisons report the percentage difference
-between the mmmJAX and public-JAX medians. Read comparisons alongside the reported median absolute
-deviations.
+## ASV regression benchmarks
 
-## Running the benchmarks
+Check that ASV can discover and validate the benchmark suite:
+
+```console
+pixi run benchmark-check
+```
+
+Run every benchmark once to catch execution errors without saving results:
+
+```console
+pixi run benchmark-quick
+```
+
+Record full benchmark results in an ASV-managed environment:
+
+```console
+pixi run benchmark-run
+```
+
+ASV asks for machine information the first time a run starts. Generated environments and results
+are stored under `benchmarks/.asv/` and are not committed.
+
+The initial `bench_density` suite measures synchronized warm execution for elementwise log
+probabilities, summed log densities, and parameter gradients. It covers ordinary float32 inputs for
+the `vector`, `likelihood`, and `channel_prior` profiles. ASV tracks mmmJAX across commits and does
+not use public JAX as a timing baseline.
+
+## Paired implementation comparisons
+
+The comparison command reports cache-cleared JIT compilation and synchronized warm execution for
+mmmJAX and equivalent public JAX operations. Compilation timings are descriptive. Warm execution
+comparisons report the percentage difference between the medians and should be read alongside the
+reported median absolute deviations.
+
+### Running comparisons
 
 Run the default suite from the repository root:
 
@@ -30,7 +60,7 @@ All command-line options are available through:
 pixi run benchmark-distributions --help
 ```
 
-## Reading the results
+### Reading the results
 
 The report begins with the runtime, device, precision, and measurement settings. Results are then
 grouped by profile, input set, dtype, and value count so those details are not repeated in every row.
@@ -40,7 +70,7 @@ iterations for each implementation. When both implementations are present, the f
 whether the mmmJAX median was shorter or longer than the JAX median in that run. The compilation
 table is kept separate because cache-cleared compilation and warm execution measure different costs.
 
-## Profiles
+### Profiles
 
 | Profile | Value shape | Parameter batch shape | Purpose |
 | --- | --- | --- | --- |
@@ -53,7 +83,7 @@ Categorical parameters append their category event axis to the parameter batch s
 the `channel_prior` profile uses parameters shaped `(465, K)` while generating values shaped
 `(8, 465)`.
 
-## Discrete distributions
+### Discrete distributions
 
 Discrete workloads cycle valid integer outcomes across the sample and parameter batch dimensions:
 
@@ -69,7 +99,7 @@ pixi run benchmark-distributions \
 JAX does not provide a Negative Binomial sampler, so that sampling baseline composes public Gamma and
 Poisson random functions.
 
-## Large-count Poisson inputs
+### Large-count Poisson inputs
 
 Concentrated Poisson inputs exercise the stable deviance calculation near the mode:
 
@@ -86,7 +116,7 @@ float64. They remain exactly representable while exposing cancellation in the di
 JAX is omitted because its calculation is not numerically equivalent at these values. Sampling stays
 in the ordinary workload because the concentrated float64 rate exceeds the `int32` output range.
 
-## CDF and survival functions
+### CDF and survival functions
 
 Log-CDF and log-survival benchmarks are opt-in:
 
@@ -116,7 +146,7 @@ JAX does not provide Laplace or Uniform log-CDF and log-survival functions. Thei
 the corresponding public CDFs and evaluate reflected CDFs for survival probabilities to avoid
 upper-tail cancellation.
 
-## Reference implementations
+### Reference implementations
 
 Every registered workload has an equivalent implementation built from public JAX APIs. Some use a
 single `jax.scipy.stats` or `jax.random` function. Others compose public JAX operations when no single

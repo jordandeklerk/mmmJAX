@@ -1,4 +1,4 @@
-"""Run distribution primitive benchmarks."""
+"""Compare mmmJAX distribution primitives with public JAX operations."""
 
 import argparse
 import math
