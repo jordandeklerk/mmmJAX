@@ -67,7 +67,7 @@ Generated `.asv` artifacts are ignored by Git. Local machine metadata lives in
 - `bench_density`: Elementwise log probabilities and summed log densities
 - `bench_event`: Dirichlet and Multinomial log probabilities, parameter gradients, and sampling
 - `bench_grad`: Log densities and their parameter gradients
-- `bench_random`: Random sampling
+- `bench_random`: Random sampling for distributions with supported samplers
 - `bench_tail`: Log-CDFs, log-survival functions, and their parameter gradients
 
 The ASV suites use float32 inputs and cover the `vector`, `likelihood`, and `channel_prior`

@@ -102,6 +102,14 @@ def test_jax_references_cover_every_benchmark_distribution() -> None:
     assert set(JAX_REFERENCES) == {distribution.name for distribution in distributions}
 
 
+def test_benchmark_sampling_capabilities_match_jax_references() -> None:
+    for distribution in DISTRIBUTIONS:
+        assert (JAX_REFERENCES[distribution.name].rng is not None) == distribution.supports_sampling
+
+    for distribution in EVENT_DISTRIBUTIONS:
+        assert JAX_REFERENCES[distribution.name].rng is not None
+
+
 def test_mmmjax_benchmarks_resolve_the_current_public_api() -> None:
     for distribution in DISTRIBUTIONS:
         functions = MMM_JAX_FUNCTIONS[distribution.name]
@@ -109,7 +117,10 @@ def test_mmmjax_benchmarks_resolve_the_current_public_api() -> None:
 
         assert functions.elementwise_log_probability is getattr(mmmjax, log_probability_name)
         assert functions.summed_log_probability is getattr(mmmjax, distribution.name)
-        assert functions.rng is getattr(mmmjax, f"{distribution.name}_rng")
+        if distribution.supports_sampling:
+            assert functions.rng is getattr(mmmjax, f"{distribution.name}_rng")
+        else:
+            assert functions.rng is None
 
         if distribution.supports_tail_inputs:
             assert functions.logcdf is getattr(mmmjax, f"{distribution.name}_logcdf")
@@ -134,6 +145,26 @@ def test_dirichlet_log_probability_reference_matches_public_jax() -> None:
 
     result = reference(value, concentration)
     expected = jax_stats.dirichlet.logpdf(jnp.moveaxis(value, -1, 0), concentration)
+
+    assert jnp.array_equal(result, expected)
+
+
+def test_truncated_normal_log_probability_reference_uses_natural_bounds() -> None:
+    value = jnp.array([-0.5, 0.25])
+    location = jnp.array([0.0, 0.5])
+    scale = jnp.array([1.0, 1.5])
+    lower = jnp.array([-1.0, -0.75])
+    upper = jnp.array([1.25, 2.0])
+    reference = JAX_REFERENCES["truncated_normal"].elementwise_log_probability
+
+    result = reference(value, location, scale, lower, upper)
+    expected = jax_stats.truncnorm.logpdf(
+        value,
+        (lower - location) / scale,
+        (upper - location) / scale,
+        loc=location,
+        scale=scale,
+    )
 
     assert jnp.array_equal(result, expected)
 
