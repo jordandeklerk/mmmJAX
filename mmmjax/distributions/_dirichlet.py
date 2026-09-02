@@ -13,6 +13,7 @@ from mmmjax.distributions._utils import (
     _asymptotic_gamma_shape_normalizer,
     _gamma_shape_log_derivative,
     _gamma_shape_normalizer,
+    _is_valid_simplex,
     _promote_inexact,
     _random_shape,
     _stable_log_ratio,
@@ -90,12 +91,7 @@ def dirichlet_logpdf(
     concentration_array = jnp.broadcast_to(concentration_array, output_shape)
 
     valid_concentration = jnp.all(jnp.isfinite(concentration_array) & (concentration_array > 0), axis=-1)
-    finite_nonnegative_value = jnp.all(jnp.isfinite(value_array) & (value_array >= 0), axis=-1)
-    tolerance = jnp.asarray(
-        1e-8 if jax.dtypes.itemsize_bits(value_array.dtype) == 64 else 1e-6,
-        dtype=value_array.dtype,
-    )
-    on_simplex = finite_nonnegative_value & (jnp.abs(jnp.sum(value_array, axis=-1) - 1) <= tolerance)
+    on_simplex = _is_valid_simplex(value_array)
 
     safe_event = valid_concentration & on_simplex
     safe_concentration = jnp.where(safe_event[..., None], concentration_array, jnp.ones_like(concentration_array))

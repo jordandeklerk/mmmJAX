@@ -80,6 +80,15 @@ def _promote_inexact(
     return tuple(jnp.asarray(value, dtype=dtype) for value in values)
 
 
+def _is_valid_simplex(value: jax.Array) -> jax.Array:
+    """Return whether each final-axis vector is a finite probability simplex."""
+    tolerance = jnp.asarray(
+        1e-8 if jax.dtypes.itemsize_bits(value.dtype) == 64 else 1e-6,
+        dtype=value.dtype,
+    )
+    return jnp.all(jnp.isfinite(value) & (value >= 0), axis=-1) & (jnp.abs(jnp.sum(value, axis=-1) - 1) <= tolerance)
+
+
 def _gamma_shape_normalizer(shape: jax.Array) -> jax.Array:
     dtype_bits = jax.dtypes.itemsize_bits(shape.dtype)
     asymptotic_threshold = jnp.asarray(64 if dtype_bits == 64 else 8, dtype=shape.dtype)

@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 
-from mmmjax.distributions._utils import _as_real_array, _promote_inexact, _random_shape
+from mmmjax.distributions._utils import _as_real_array, _is_valid_simplex, _promote_inexact, _random_shape
 
 
 def categorical_logpmf(
@@ -42,14 +42,7 @@ def categorical_logpmf(
         parameter_name="probabilities",
     )
     category_count = probability_array.shape[-1]
-    tolerance = jnp.asarray(
-        1e-8 if jax.dtypes.itemsize_bits(probability_array.dtype) == 64 else 1e-6,
-        dtype=probability_array.dtype,
-    )
-    valid_probability = jnp.all(
-        jnp.isfinite(probability_array) & (probability_array >= 0),
-        axis=-1,
-    ) & (jnp.abs(jnp.sum(probability_array, axis=-1) - 1) <= tolerance)
+    valid_probability = _is_valid_simplex(probability_array)
     safe_probability = jnp.where(
         valid_probability[..., None],
         probability_array,
