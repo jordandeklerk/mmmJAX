@@ -26,10 +26,16 @@ pixi run benchmark-run
 ASV asks for machine information the first time a run starts. Generated environments and results
 are stored under `benchmarks/.asv/` and are not committed.
 
-The initial ASV suites measure synchronized warm execution for elementwise log probabilities,
-summed log densities, parameter gradients, and random sampling. They cover ordinary float32 inputs
-for the `vector`, `likelihood`, and `channel_prior` profiles. ASV tracks mmmJAX across commits and
-does not use public JAX as a timing baseline.
+The initial ASV suites separate density evaluation (`bench_density`), log-density gradients
+(`bench_grad`), and random sampling (`bench_random`). They cover ordinary float32 inputs for the
+`vector`, `likelihood`, and `channel_prior` profiles. ASV tracks mmmJAX across commits and does not
+use public JAX as a timing baseline.
+
+Pass an ASV benchmark filter after the Pixi task to check one suite:
+
+```console
+pixi run benchmark-quick -b bench_grad
+```
 
 ## Paired implementation comparisons
 

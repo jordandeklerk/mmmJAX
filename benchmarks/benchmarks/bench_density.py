@@ -2,7 +2,6 @@
 
 from collections.abc import Callable
 
-import jax
 import jax.numpy as jnp
 
 from benchmarks.cases import DISTRIBUTIONS, MMM_JAX_FUNCTIONS, PROFILES, make_arguments
@@ -36,11 +35,6 @@ class _DensityBenchmark:
             function = functions.elementwise_log_probability
         elif self.operation_name == "log_density":
             function = functions.summed_log_probability
-        elif self.operation_name == "value_and_grad":
-            function = jax.value_and_grad(
-                functions.summed_log_probability,
-                argnums=distribution.gradient_argnums,
-            )
         else:
             raise RuntimeError(f"unknown density benchmark operation {self.operation_name!r}")
 
@@ -65,14 +59,4 @@ class SummedLogDensity(_DensityBenchmark):
 
     def time_log_density(self, distribution_name: str, profile_name: str) -> None:
         """Measure one synchronized summed density call."""
-        synchronize(self.compiled(*self.arguments))
-
-
-class ParameterGradient(_DensityBenchmark):
-    """Measure parameter value-and-gradient execution."""
-
-    operation_name = "value_and_grad"
-
-    def time_value_and_grad(self, distribution_name: str, profile_name: str) -> None:
-        """Measure one synchronized value-and-gradient call."""
         synchronize(self.compiled(*self.arguments))
