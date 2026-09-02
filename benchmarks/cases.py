@@ -119,6 +119,14 @@ class EventDistributionSpec:
     gradient_argnums: tuple[int, ...]
 
 
+@dataclass(frozen=True)
+class EventArguments:
+    """Store density and sampling arguments for an event workload."""
+
+    log_probability: Arguments
+    sampling_parameters: Arguments
+
+
 PROFILES: dict[str, BenchmarkProfile] = {
     # A small vector that checks scalar parameter broadcasting
     "vector": BenchmarkProfile(
@@ -303,6 +311,16 @@ EVENT_DISTRIBUTIONS = (
         log_probability_operation="logpdf",
         gradient_argnums=(1,),
     ),
+    EventDistributionSpec(
+        name="multinomial",
+        log_probability_operation="logpmf",
+        gradient_argnums=(1,),
+    ),
+    EventDistributionSpec(
+        name="multinomial_logit",
+        log_probability_operation="logpmf",
+        gradient_argnums=(1,),
+    ),
 )
 
 
@@ -329,14 +347,17 @@ MMM_JAX_FUNCTIONS: dict[str, DistributionFunctions] = {
     for distribution in DISTRIBUTIONS
 }
 
-DIRICHLET_FUNCTIONS = DistributionFunctions(
-    _distribution_function("dirichlet_logpdf"),
-    _distribution_function("dirichlet"),
-    _distribution_function("dirichlet_rng"),
-)
-EVENT_MMM_JAX_FUNCTIONS = {"dirichlet": DIRICHLET_FUNCTIONS}
+EVENT_MMM_JAX_FUNCTIONS: dict[str, DistributionFunctions] = {
+    distribution.name: DistributionFunctions(
+        _distribution_function(f"{distribution.name}_{distribution.log_probability_operation}"),
+        _distribution_function(distribution.name),
+        _distribution_function(f"{distribution.name}_rng"),
+    )
+    for distribution in EVENT_DISTRIBUTIONS
+}
 
 DISTRIBUTIONS_BY_NAME = {distribution.name: distribution for distribution in DISTRIBUTIONS}
+EVENT_DISTRIBUTIONS_BY_NAME = {distribution.name: distribution for distribution in EVENT_DISTRIBUTIONS}
 TAIL_DISTRIBUTIONS = frozenset(distribution.name for distribution in DISTRIBUTIONS if distribution.supports_tail_inputs)
 
 
@@ -370,6 +391,12 @@ def _validate_distribution_cases() -> None:
         )
 
     event_distribution_names = tuple(distribution.name for distribution in EVENT_DISTRIBUTIONS)
+    if len(EVENT_DISTRIBUTIONS_BY_NAME) != len(EVENT_DISTRIBUTIONS):
+        duplicate_names = tuple(
+            sorted({name for name in event_distribution_names if event_distribution_names.count(name) > 1})
+        )
+        raise ValueError(f"event distribution benchmark names must be unique, got duplicates {duplicate_names}")
+
     overlapping_names = tuple(sorted(set(distribution_names).intersection(event_distribution_names)))
     if overlapping_names:
         raise ValueError(f"standard and event benchmark distribution names must be distinct, got {overlapping_names}")
@@ -626,3 +653,53 @@ def make_dirichlet_arguments(
     ).reshape(profile.value_shape)
     value = positive_values / jnp.sum(positive_values, axis=-1, keepdims=True)
     return value, concentration
+
+
+def make_multinomial_arguments(
+    profile: EventProfile,
+    dtype: jnp.dtype,
+    *,
+    logits: bool,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    """Build count events, category parameters, and trial totals."""
+    positive_weights = jnp.linspace(
+        0.5,
+        1.5,
+        math.prod(profile.parameter_shape),
+        dtype=dtype,
+    ).reshape(profile.parameter_shape)
+    probabilities = positive_weights / jnp.sum(positive_weights, axis=-1, keepdims=True)
+    parameters = jnp.log(probabilities) if logits else probabilities
+
+    trials = jnp.full(profile.batch_shape, 100, dtype=jnp.int32)
+    category = jnp.arange(profile.event_size, dtype=jnp.int32)
+    count = 100 // profile.event_size + (category < 100 % profile.event_size)
+    value = jnp.broadcast_to(count, profile.value_shape)
+    return value, parameters, trials
+
+
+def make_event_arguments(
+    distribution: EventDistributionSpec,
+    profile: EventProfile,
+    dtype: jnp.dtype,
+) -> EventArguments:
+    """Build density and sampling inputs for one event distribution."""
+    if distribution.name == "dirichlet":
+        value, concentration = make_dirichlet_arguments(profile, dtype)
+        return EventArguments(
+            log_probability=(value, concentration),
+            sampling_parameters=(concentration,),
+        )
+
+    if distribution.name in {"multinomial", "multinomial_logit"}:
+        value, parameters, trials = make_multinomial_arguments(
+            profile,
+            dtype,
+            logits=distribution.name == "multinomial_logit",
+        )
+        return EventArguments(
+            log_probability=(value, parameters),
+            sampling_parameters=(parameters, trials),
+        )
+
+    raise ValueError(f"unknown event benchmark distribution {distribution.name!r}")

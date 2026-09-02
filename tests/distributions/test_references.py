@@ -12,7 +12,7 @@ from jax.scipy import stats as jax_stats
 from scipy import special, stats
 
 import mmmjax
-from benchmarks.cases import DIRICHLET_FUNCTIONS, DISTRIBUTIONS, EVENT_DISTRIBUTIONS, MMM_JAX_FUNCTIONS
+from benchmarks.cases import DISTRIBUTIONS, EVENT_DISTRIBUTIONS, EVENT_MMM_JAX_FUNCTIONS, MMM_JAX_FUNCTIONS
 from benchmarks.references import JAX_REFERENCES
 
 
@@ -118,9 +118,13 @@ def test_mmmjax_benchmarks_resolve_the_current_public_api() -> None:
             assert functions.logcdf is None
             assert functions.logsf is None
 
-    assert DIRICHLET_FUNCTIONS.elementwise_log_probability is mmmjax.dirichlet_logpdf
-    assert DIRICHLET_FUNCTIONS.summed_log_probability is mmmjax.dirichlet
-    assert DIRICHLET_FUNCTIONS.rng is mmmjax.dirichlet_rng
+    for distribution in EVENT_DISTRIBUTIONS:
+        functions = EVENT_MMM_JAX_FUNCTIONS[distribution.name]
+        log_probability_name = f"{distribution.name}_{distribution.log_probability_operation}"
+
+        assert functions.elementwise_log_probability is getattr(mmmjax, log_probability_name)
+        assert functions.summed_log_probability is getattr(mmmjax, distribution.name)
+        assert functions.rng is getattr(mmmjax, f"{distribution.name}_rng")
 
 
 def test_dirichlet_log_probability_reference_matches_public_jax() -> None:
@@ -194,6 +198,99 @@ def test_dirichlet_rng_reference_matches_public_jax() -> None:
     )
 
     assert jnp.array_equal(result, expected)
+
+
+def test_multinomial_log_probability_references_match_public_operations() -> None:
+    values = jnp.array([[[2, 1, 3]], [[1, 4, 1]]])
+    probabilities = jnp.array(
+        [
+            [0.2, 0.3, 0.5],
+            [0.1, 0.25, 0.65],
+            [0.4, 0.4, 0.2],
+            [0.6, 0.1, 0.3],
+        ]
+    )
+    logits = jnp.log(probabilities)
+    probability_reference = JAX_REFERENCES["multinomial"].elementwise_log_probability
+    logit_reference = JAX_REFERENCES["multinomial_logit"].elementwise_log_probability
+
+    probability_result = probability_reference(values, probabilities)
+    logit_result = logit_reference(values, logits)
+    expected = np.array(
+        [
+            [
+                stats.multinomial.logpmf(value[0], n=np.sum(value), p=probability)
+                for probability in np.asarray(probabilities)
+            ]
+            for value in np.asarray(values)
+        ]
+    )
+    public_jax = jax_stats.multinomial.logpmf(
+        values[0, 0],
+        jnp.sum(values[0, 0]),
+        probabilities[0],
+    )
+
+    np.testing.assert_allclose(probability_result, expected, rtol=3e-6, atol=3e-6)
+    np.testing.assert_allclose(logit_result, expected, rtol=3e-6, atol=3e-6)
+    np.testing.assert_allclose(probability_result[0, 0], public_jax, rtol=3e-6, atol=3e-6)
+
+
+def test_multinomial_log_probability_reference_gradients_match_closed_form() -> None:
+    values = jnp.array([[2, 1, 3], [1, 4, 1]])
+    probabilities = jnp.array([0.2, 0.3, 0.5])
+    logits = jnp.log(probabilities)
+    category_counts = jnp.sum(values, axis=0)
+    total_count = jnp.sum(values)
+
+    probability_gradient = jax.grad(JAX_REFERENCES["multinomial"].summed_log_probability, argnums=1)(
+        values,
+        probabilities,
+    )
+    logit_gradient = jax.grad(JAX_REFERENCES["multinomial_logit"].summed_log_probability, argnums=1)(
+        values,
+        logits,
+    )
+
+    np.testing.assert_allclose(probability_gradient, category_counts / probabilities, rtol=3e-6, atol=3e-6)
+    np.testing.assert_allclose(
+        logit_gradient,
+        category_counts - total_count * probabilities,
+        rtol=3e-6,
+        atol=3e-6,
+    )
+
+
+def test_multinomial_rng_references_match_public_jax() -> None:
+    key = jax.random.key(0)
+    probabilities = jnp.array([[0.2, 0.3, 0.5], [0.1, 0.25, 0.65]])
+    logits = jnp.log(probabilities)
+    trials = jnp.array([5, 11])
+    probability_reference = JAX_REFERENCES["multinomial"].rng
+    logit_reference = JAX_REFERENCES["multinomial_logit"].rng
+
+    probability_result = probability_reference(key, probabilities, trials, sample_shape=(4,))
+    logit_result = logit_reference(key, logits, trials, sample_shape=(4,))
+    expected_probability = jax.random.multinomial(
+        key,
+        trials,
+        probabilities,
+        shape=(4, 2, 3),
+        dtype=probabilities.dtype,
+    ).astype(jnp.int32)
+    logit_probabilities = jax.nn.softmax(logits, axis=-1)
+    expected_logit = jax.random.multinomial(
+        key,
+        trials,
+        logit_probabilities,
+        shape=(4, 2, 3),
+        dtype=logits.dtype,
+    ).astype(jnp.int32)
+
+    assert jnp.array_equal(probability_result, expected_probability)
+    assert jnp.array_equal(logit_result, expected_logit)
+    assert jnp.array_equal(jnp.sum(probability_result, axis=-1), jnp.broadcast_to(trials, (4, 2)))
+    assert jnp.array_equal(jnp.sum(logit_result, axis=-1), jnp.broadcast_to(trials, (4, 2)))
 
 
 def test_bernoulli_log_probability_references_match_public_operations() -> None:
