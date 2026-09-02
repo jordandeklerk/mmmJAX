@@ -16,13 +16,32 @@ pixi shell -e benchmark
 
 Run all remaining commands from this Pixi shell.
 
-- Benchmark the current checkout: `spin bench`
-- Check each benchmark once: `spin bench --quick`
-- Run one suite: `spin bench -t bench_tail`
-- Run one benchmark class: `spin bench -t bench_density.ElementwiseLogProbability`
-- Compare committed `main` and `HEAD`: `spin bench --compare main`
-- Compare one suite across revisions: `spin bench --compare main -t bench_tail`
-- Compare mmmJAX with public JAX: `spin compare`
+Benchmark the current checkout, or run each benchmark once to check that it executes:
+
+```console
+spin bench
+spin bench --quick
+```
+
+Pass an ASV expression to run one suite or benchmark class:
+
+```console
+spin bench -t bench_tail
+spin bench -t bench_density.ElementwiseLogProbability
+```
+
+Compare committed `main` and `HEAD`, with an optional benchmark filter:
+
+```console
+spin bench --compare main
+spin bench --compare main -t bench_tail
+```
+
+Compare mmmJAX with equivalent public JAX operations:
+
+```console
+spin compare
+```
 
 Use `spin bench --help` and `spin compare --help` for all available options.
 
