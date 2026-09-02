@@ -107,8 +107,7 @@ spin compare --profiles vector --distributions normal
 
 > [!IMPORTANT]
 > mmmJAX applies stricter parameter checks and numerical safeguards than some JAX references, so the
-> two sides do not always perform exactly the same work. This can explain some overhead, but a stable
-> slowdown should still be investigated rather than accepted by default.
+> two sides do not always perform exactly the same work.
 
 The report separates cache-cleared JIT compilation from synchronized warm execution. Compilation
 timings are descriptive. Warm results report the median, median absolute deviation, throughput,
