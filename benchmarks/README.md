@@ -65,6 +65,7 @@ Generated `.asv` artifacts are ignored by Git. Local machine metadata lives in
 ## What is measured
 
 - `bench_density`: Elementwise log probabilities and summed log densities
+- `bench_event`: Dirichlet log probabilities, concentration gradients, and sampling
 - `bench_grad`: Log densities and their parameter gradients
 - `bench_random`: Random sampling
 - `bench_tail`: Log-CDFs, log-survival functions, and their parameter gradients
@@ -81,6 +82,10 @@ profiles. The `stress` profile remains opt-in for paired comparisons.
 
 Categorical parameters append their event axis to the parameter batch shape. For example, the
 `channel_prior` profile uses parameters shaped `(465, K)` and values shaped `(8, 465)`.
+
+Dirichlet uses dedicated event profiles. The `vector` workload uses one 32-component simplex,
+`likelihood` uses 260 draws from a shared 8-component simplex, and `channel_prior` measures eight
+draws from a shared 465-component simplex.
 
 ### Reading ASV results
 
@@ -178,5 +183,5 @@ spin bench -t bench_tail --quick
 
 These workloads cover representative shapes and known numerical edge cases, but they do not replace
 the distribution correctness tests. Implementations can also differ outside the measured inputs
-because mmmJAX applies stricter parameter validation. Dirichlet is not yet registered because its
-multivariate event axis requires a dedicated workload shape.
+because mmmJAX applies stricter parameter validation. Dirichlet currently runs through ASV only;
+paired JAX comparisons require an adapter for JAX's event-first density interface.

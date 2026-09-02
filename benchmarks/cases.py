@@ -286,6 +286,12 @@ MMM_JAX_FUNCTIONS: dict[str, DistributionFunctions] = {
     for distribution in DISTRIBUTIONS
 }
 
+DIRICHLET_FUNCTIONS = DistributionFunctions(
+    _distribution_function("dirichlet_logpdf"),
+    _distribution_function("dirichlet"),
+    _distribution_function("dirichlet_rng"),
+)
+
 DISTRIBUTIONS_BY_NAME = {distribution.name: distribution for distribution in DISTRIBUTIONS}
 TAIL_DISTRIBUTIONS = frozenset(distribution.name for distribution in DISTRIBUTIONS if distribution.supports_tail_inputs)
 

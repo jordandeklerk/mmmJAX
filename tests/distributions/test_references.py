@@ -12,7 +12,7 @@ from jax.scipy import stats as jax_stats
 from scipy import special, stats
 
 import mmmjax
-from benchmarks.cases import DISTRIBUTIONS, MMM_JAX_FUNCTIONS
+from benchmarks.cases import DIRICHLET_FUNCTIONS, DISTRIBUTIONS, MMM_JAX_FUNCTIONS
 from benchmarks.references import JAX_REFERENCES
 
 
@@ -115,6 +115,10 @@ def test_mmmjax_benchmarks_resolve_the_current_public_api() -> None:
         else:
             assert functions.logcdf is None
             assert functions.logsf is None
+
+    assert DIRICHLET_FUNCTIONS.elementwise_log_probability is mmmjax.dirichlet_logpdf
+    assert DIRICHLET_FUNCTIONS.summed_log_probability is mmmjax.dirichlet
+    assert DIRICHLET_FUNCTIONS.rng is mmmjax.dirichlet_rng
 
 
 def test_bernoulli_log_probability_references_match_public_operations() -> None:
