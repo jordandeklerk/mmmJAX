@@ -87,6 +87,8 @@ DISTRIBUTION_EXPORTS = [
     "student_t",
     "student_t_logpdf",
     "student_t_rng",
+    "truncated_normal",
+    "truncated_normal_logpdf",
     "uniform",
     "uniform_logcdf",
     "uniform_logpdf",
