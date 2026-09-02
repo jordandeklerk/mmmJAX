@@ -153,9 +153,8 @@ def categorical_logit_logpmf(
         Unnormalized category log probabilities. The final axis contains the
         categories and every leading axis is a batch dimension. A ``-inf``
         logit masks that category when another category has finite weight.
-        A ``+inf`` logit produces ``nan`` following JAX's ``log_softmax``
-        semantics. Use finite logits or ``-inf`` masks when an event should
-        remain well defined.
+        A ``+inf`` logit produces ``nan``. Use finite logits or ``-inf`` masks
+        when an event should remain well defined.
 
     Returns
     -------

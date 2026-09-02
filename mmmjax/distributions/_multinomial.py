@@ -9,6 +9,7 @@ from mmmjax.distributions._utils import (
     _gamma_shape_normalizer,
     _is_valid_simplex,
     _promote_inexact,
+    _random_shape,
     _stable_log_ratio,
     _weighted_log_ratio_deviance,
 )
@@ -36,9 +37,7 @@ def multinomial_logpmf(
     value
         Nonnegative category counts. The final axis contains the categories,
         every leading axis is a batch dimension, and the total count is
-        inferred from each event. Every count and event total must fit in
-        JAX's active signed integer dtype. Enable 64-bit mode for larger
-        counts.
+        inferred from each event.
     probabilities
         Category probabilities. The final axis contains the categories and
         every leading axis is a batch dimension.
@@ -116,6 +115,49 @@ def multinomial(
     return jnp.sum(multinomial_logpmf(value, probabilities))
 
 
+def multinomial_rng(
+    key: jax.Array,
+    probabilities: ArrayLike,
+    trials: ArrayLike,
+    *,
+    sample_shape: tuple[int, ...] = (),
+) -> jax.Array:
+    """Draw Multinomial outcomes using a JAX random key.
+
+    Parameters
+    ----------
+    key
+        JAX random key controlling the draw. Reusing a key repeats the same
+        sample. Use ``jax.random.split`` to create keys for new random
+        operations.
+    probabilities
+        Category probabilities. The final axis contains the categories and
+        every leading axis is a batch dimension. Each vector must be finite,
+        nonnegative, and sum to one.
+    trials
+        Total counts assigned across the categories. Values must be finite
+        nonnegative integers.
+    sample_shape
+        Independent sample dimensions prepended to the broadcast parameter
+        shape. The tuple must be static when the function is JIT-compiled.
+
+    Returns
+    -------
+    jax.Array
+        Integer category counts with shape ``sample_shape + broadcast_shape
+        + (category_count,)``.
+    """
+    trials_array = _as_real_array("trials", trials)
+    (probability_array,) = _promote_inexact(("probabilities", probabilities))
+    _validate_multinomial_event_axis(probability_array, parameter_name="probabilities")
+    return _draw_multinomial(
+        key,
+        trials_array,
+        probability_array,
+        sample_shape=sample_shape,
+    )
+
+
 def multinomial_logit_logpmf(
     value: ArrayLike,
     logits: ArrayLike,
@@ -139,9 +181,7 @@ def multinomial_logit_logpmf(
     value
         Nonnegative category counts. The final axis contains the categories,
         every leading axis is a batch dimension, and the total count is
-        inferred from each event. Every count and event total must fit in
-        JAX's active signed integer dtype. Enable 64-bit mode for larger
-        counts.
+        inferred from each event.
     logits
         Unnormalized category log probabilities. The final axis contains the
         categories and every leading axis is a batch dimension. A ``-inf``
@@ -221,6 +261,51 @@ def multinomial_logit(
     return jnp.sum(multinomial_logit_logpmf(value, logits))
 
 
+def multinomial_logit_rng(
+    key: jax.Array,
+    logits: ArrayLike,
+    trials: ArrayLike,
+    *,
+    sample_shape: tuple[int, ...] = (),
+) -> jax.Array:
+    """Draw logit-parameterized Multinomial outcomes using a JAX random key.
+
+    Parameters
+    ----------
+    key
+        JAX random key controlling the draw. Reusing a key repeats the same
+        sample. Use ``jax.random.split`` to create keys for new random
+        operations.
+    logits
+        Unnormalized category log probabilities. The final axis contains the
+        categories and every leading axis is a batch dimension. A ``-inf``
+        logit is never drawn when another category has finite weight. Each
+        vector must contain at least one finite value and must not contain
+        ``nan`` or ``+inf``.
+    trials
+        Total counts assigned across the categories. Values must be finite
+        nonnegative integers.
+    sample_shape
+        Independent sample dimensions prepended to the broadcast parameter
+        shape. The tuple must be static when the function is JIT-compiled.
+
+    Returns
+    -------
+    jax.Array
+        Integer category counts with shape ``sample_shape + broadcast_shape
+        + (category_count,)``.
+    """
+    trials_array = _as_real_array("trials", trials)
+    (logits_array,) = _promote_inexact(("logits", logits))
+    _validate_multinomial_event_axis(logits_array, parameter_name="logits")
+    return _draw_multinomial(
+        key,
+        trials_array,
+        jax.nn.softmax(logits_array, axis=-1),
+        sample_shape=sample_shape,
+    )
+
+
 def _multinomial_log_mass(
     count: jax.Array,
     total: jax.Array,
@@ -278,6 +363,53 @@ def _multinomial_log_mass(
     )
     log_mass = log_normalizer + jnp.sum(component_contribution, axis=-1) + normalization_correction
     return jnp.where(has_counts, log_mass, jnp.zeros_like(log_mass))
+
+
+def _draw_multinomial(
+    key: jax.Array,
+    trials: jax.Array,
+    probabilities: jax.Array,
+    *,
+    sample_shape: tuple[int, ...],
+) -> jax.Array:
+    event_size = probabilities.shape[-1]
+    output_batch_shape = _random_shape(
+        sample_shape,
+        trials,
+        probabilities[..., 0],
+    )
+    output_shape = (*output_batch_shape, event_size)
+    category = jnp.arange(event_size)
+    largest_category = jnp.argmax(probabilities, axis=-1, keepdims=True)
+    category_order = jnp.where(
+        category == largest_category,
+        event_size - 1,
+        jnp.where(category == event_size - 1, largest_category, category),
+    )
+    ordered_probabilities = jnp.take_along_axis(
+        probabilities,
+        category_order,
+        axis=-1,
+    )
+
+    # Sampling the largest category last keeps float32 rounding from erasing smaller categories
+    ordered_counts = jax.random.multinomial(
+        key,
+        jnp.asarray(trials, dtype=probabilities.dtype),
+        ordered_probabilities,
+        shape=output_shape,
+        dtype=probabilities.dtype,
+    )
+    category_order = jnp.broadcast_to(category_order, output_shape)
+    counts = jnp.take_along_axis(ordered_counts, category_order, axis=-1)
+    return counts.astype(jnp.int32)
+
+
+def _validate_multinomial_event_axis(parameters: jax.Array, *, parameter_name: str) -> None:
+    if parameters.ndim == 0:
+        raise ValueError(f"{parameter_name} must include a final Multinomial event axis, got shape ()")
+    if parameters.shape[-1] == 0:
+        raise ValueError(f"Multinomial event size must be positive, got {parameter_name}.shape={parameters.shape}")
 
 
 def _compensated_event_sum(value: jax.Array) -> tuple[jax.Array, jax.Array]:

@@ -16,12 +16,12 @@ from mmmjax import (
     binomial_logpmf,
     categorical_logit_logpmf,
     categorical_logpmf,
-)
-from mmmjax.distributions._multinomial import (
     multinomial,
     multinomial_logit,
     multinomial_logit_logpmf,
+    multinomial_logit_rng,
     multinomial_logpmf,
+    multinomial_rng,
 )
 
 
@@ -544,6 +544,206 @@ def test_multinomial_logpmfs_preserve_small_counts_beside_float32_boundary() -> 
 
     assert jnp.isneginf(multinomial_logpmf(values, probabilities))
     assert jnp.isneginf(multinomial_logit_logpmf(values, logits))
+
+
+@pytest.mark.parametrize(
+    ("function", "parameters"),
+    [
+        (multinomial_rng, jnp.array([[0.1, 0.2, 0.3, 0.4], [0.4, 0.3, 0.2, 0.1], [0.25] * 4])),
+        (multinomial_logit_rng, jnp.array([[-2.0, -1.0, 0.0, 1.0], [1.0, 0.0, -1.0, -2.0], [0.0] * 4])),
+    ],
+)
+def test_multinomial_rngs_preserve_sample_batch_and_event_axes(function, parameters) -> None:
+    trials = jnp.array([[5], [9]])
+
+    result = function(
+        jax.random.key(4),
+        parameters,
+        trials,
+        sample_shape=(6,),
+    )
+    expected_totals = jnp.broadcast_to(trials, (6, 2, 3))
+
+    assert result.shape == (6, 2, 3, 4)
+    assert result.dtype == jnp.dtype(jnp.int32)
+    assert jnp.all(result >= 0)
+    assert jnp.array_equal(jnp.sum(result, axis=-1), expected_totals)
+
+
+def test_multinomial_rng_matches_jax_when_largest_category_is_last() -> None:
+    key = jax.random.key(8)
+    trials = jnp.array([5, 11])
+    probabilities = jnp.array([[0.2, 0.3, 0.5], [0.1, 0.25, 0.65]])
+    expected = jax.random.multinomial(
+        key,
+        trials.astype(probabilities.dtype),
+        probabilities,
+        shape=(7, 2, 3),
+        dtype=probabilities.dtype,
+    ).astype(jnp.int32)
+
+    result = multinomial_rng(key, probabilities, trials, sample_shape=(7,))
+
+    assert jnp.array_equal(result, expected)
+
+
+def test_multinomial_rng_matches_analytic_moments() -> None:
+    sample_size = 30_000
+    trials = 20
+    probabilities = np.array([0.5, 0.2, 0.3], dtype=np.float64)
+    expected_mean = trials * probabilities
+    expected_covariance = trials * (np.diag(probabilities) - np.outer(probabilities, probabilities))
+
+    samples = np.asarray(
+        multinomial_rng(
+            jax.random.key(7),
+            probabilities.astype(np.float32),
+            trials,
+            sample_shape=(sample_size,),
+        ),
+        dtype=np.float64,
+    )
+    sample_mean = np.mean(samples, axis=0)
+    centered_samples = samples - expected_mean
+    centered_products = centered_samples[:, :, None] * centered_samples[:, None, :]
+    sample_covariance = np.mean(centered_products, axis=0)
+    mean_standard_error = np.sqrt(np.diag(expected_covariance) / sample_size)
+    covariance_standard_error = np.std(centered_products, axis=0, ddof=1) / np.sqrt(sample_size)
+
+    assert np.all(np.abs(sample_mean - expected_mean) <= 6 * mean_standard_error)
+    assert np.all(np.abs(sample_covariance - expected_covariance) <= 6 * covariance_standard_error)
+
+
+def test_multinomial_rngs_handle_zero_trials_and_deterministic_events() -> None:
+    probabilities = jnp.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    logits = jnp.array([[0.0, -jnp.inf, -jnp.inf], [-jnp.inf, -jnp.inf, 0.0]])
+
+    zero_samples = multinomial_rng(
+        jax.random.key(0),
+        probabilities,
+        0,
+        sample_shape=(8,),
+    )
+    deterministic_samples = multinomial_rng(
+        jax.random.key(1),
+        probabilities,
+        11,
+        sample_shape=(8,),
+    )
+    logit_samples = multinomial_logit_rng(
+        jax.random.key(2),
+        logits,
+        11,
+        sample_shape=(8,),
+    )
+
+    assert jnp.array_equal(zero_samples, jnp.zeros((8, 2, 3), dtype=jnp.int32))
+    assert jnp.all(deterministic_samples[:, 0] == jnp.array([11, 0, 0]))
+    assert jnp.all(deterministic_samples[:, 1] == jnp.array([0, 0, 11]))
+    assert jnp.array_equal(logit_samples, deterministic_samples)
+
+
+def test_single_category_multinomial_rng_returns_every_trial() -> None:
+    trials = jnp.array([0, 3, 7])
+
+    probability_result = multinomial_rng(jax.random.key(0), jnp.array([1.0]), trials, sample_shape=(4,))
+    logit_result = multinomial_logit_rng(jax.random.key(1), jnp.array([2.0]), trials, sample_shape=(4,))
+    expected = jnp.broadcast_to(trials, (4, 3))[..., None]
+
+    assert jnp.array_equal(probability_result, expected)
+    assert jnp.array_equal(logit_result, expected)
+
+
+def test_multinomial_rngs_preserve_the_largest_exact_float32_trial_count() -> None:
+    trials = 16_777_216
+
+    probability_result = multinomial_rng(jax.random.key(0), jnp.array([1.0, 0.0]), trials)
+    logit_result = multinomial_logit_rng(jax.random.key(1), jnp.array([0.0, -jnp.inf]), trials)
+    expected = jnp.array([trials, 0], dtype=jnp.int32)
+
+    assert jnp.array_equal(probability_result, expected)
+    assert jnp.array_equal(logit_result, expected)
+
+
+def test_multinomial_logit_rng_preserves_rare_categories_in_either_order() -> None:
+    key = jax.random.key(12)
+    logits = jnp.array([17.0, 0.0])
+
+    result = multinomial_logit_rng(key, logits, 1_000_000, sample_shape=(1_000,))
+    reversed_result = multinomial_logit_rng(key, logits[::-1], 1_000_000, sample_shape=(1_000,))
+
+    assert jnp.array_equal(result, reversed_result[..., ::-1])
+    assert jnp.sum(result[..., 1]) > 0
+
+
+@pytest.mark.parametrize(
+    ("function", "parameters"),
+    [
+        (multinomial_rng, jnp.array([0.2, 0.3, 0.5])),
+        (multinomial_logit_rng, jnp.array([-1.0, 0.5, 2.0])),
+    ],
+)
+def test_multinomial_rngs_support_jit_and_vmap_over_keys(function, parameters) -> None:
+    keys = jax.random.split(jax.random.key(3), 3)
+    compiled = jax.jit(function, static_argnames="sample_shape")(
+        keys[0],
+        parameters,
+        10,
+        sample_shape=(5,),
+    )
+    mapped = jax.vmap(lambda key: function(key, parameters, 10, sample_shape=(5,)))(keys)
+
+    assert jnp.array_equal(compiled, function(keys[0], parameters, 10, sample_shape=(5,)))
+    assert mapped.shape == (3, 5, 3)
+    assert jnp.array_equal(mapped[2], function(keys[2], parameters, 10, sample_shape=(5,)))
+
+
+@pytest.mark.parametrize(
+    ("function", "parameters", "message"),
+    [
+        (multinomial_rng, 0.5, "probabilities must include a final Multinomial event axis"),
+        (multinomial_rng, jnp.empty((0,)), "Multinomial event size must be positive"),
+        (multinomial_logit_rng, 0.5, "logits must include a final Multinomial event axis"),
+        (multinomial_logit_rng, jnp.empty((0,)), "Multinomial event size must be positive"),
+    ],
+)
+def test_multinomial_rngs_raise_targeted_event_shape_errors(function, parameters, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        function(jax.random.key(0), parameters, 5)
+
+
+@pytest.mark.parametrize("dtype", [jnp.float16, jnp.bfloat16])
+def test_multinomial_rngs_compute_with_float32_for_low_precision_inputs(dtype) -> None:
+    key = jax.random.key(5)
+    probabilities = jnp.array([0.25, 0.25, 0.5], dtype=dtype)
+    logits = jnp.array([-1.0, 0.0, 1.0], dtype=dtype)
+
+    probability_result = multinomial_rng(key, probabilities, 10, sample_shape=(32,))
+    logit_result = multinomial_logit_rng(key, logits, 10, sample_shape=(32,))
+
+    assert probability_result.dtype == jnp.dtype(jnp.int32)
+    assert logit_result.dtype == jnp.dtype(jnp.int32)
+    assert jnp.array_equal(
+        probability_result,
+        multinomial_rng(key, probabilities.astype(jnp.float32), 10, sample_shape=(32,)),
+    )
+    assert jnp.array_equal(
+        logit_result,
+        multinomial_logit_rng(key, logits.astype(jnp.float32), 10, sample_shape=(32,)),
+    )
+
+
+@pytest.mark.parametrize(
+    ("function", "parameters", "trials", "argument"),
+    [
+        (multinomial_rng, jnp.array([0.2, 0.3, 0.5]), 5 + 0j, "trials"),
+        (multinomial_rng, jnp.array([0.2 + 0j, 0.3, 0.5]), 5, "probabilities"),
+        (multinomial_logit_rng, jnp.array([0.0 + 0j, 1.0, 2.0]), 5, "logits"),
+    ],
+)
+def test_multinomial_rngs_reject_complex_arguments(function, parameters, trials, argument: str) -> None:
+    with pytest.raises(TypeError, match=rf"distribution argument '{argument}' must have a real numeric dtype"):
+        function(jax.random.key(0), parameters, trials)
 
 
 def _multinomial_logit_reference(value: np.ndarray, logits: np.ndarray) -> np.float64:

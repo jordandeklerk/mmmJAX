@@ -57,6 +57,12 @@ from mmmjax.distributions._lognormal import lognormal_logcdf as lognormal_logcdf
 from mmmjax.distributions._lognormal import lognormal_logpdf as lognormal_logpdf
 from mmmjax.distributions._lognormal import lognormal_logsf as lognormal_logsf
 from mmmjax.distributions._lognormal import lognormal_rng as lognormal_rng
+from mmmjax.distributions._multinomial import multinomial as multinomial
+from mmmjax.distributions._multinomial import multinomial_logit as multinomial_logit
+from mmmjax.distributions._multinomial import multinomial_logit_logpmf as multinomial_logit_logpmf
+from mmmjax.distributions._multinomial import multinomial_logit_rng as multinomial_logit_rng
+from mmmjax.distributions._multinomial import multinomial_logpmf as multinomial_logpmf
+from mmmjax.distributions._multinomial import multinomial_rng as multinomial_rng
 from mmmjax.distributions._negative_binomial import negative_binomial as negative_binomial
 from mmmjax.distributions._negative_binomial import negative_binomial_log as negative_binomial_log
 from mmmjax.distributions._negative_binomial import negative_binomial_log_logpmf as negative_binomial_log_logpmf
@@ -141,6 +147,12 @@ __all__ = [
     "lognormal_logpdf",
     "lognormal_logsf",
     "lognormal_rng",
+    "multinomial",
+    "multinomial_logit",
+    "multinomial_logit_logpmf",
+    "multinomial_logit_rng",
+    "multinomial_logpmf",
+    "multinomial_rng",
     "negative_binomial",
     "negative_binomial_log",
     "negative_binomial_log_logpmf",

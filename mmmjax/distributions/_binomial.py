@@ -35,9 +35,7 @@ def binomial_logpmf(
         Numbers of successes at which to evaluate the probability mass.
     trials
         Numbers of independent trials. Values must be finite nonnegative
-        integers that fit in JAX's active signed integer dtype. Enable JAX
-        64-bit mode for larger counts or when calculations require more than
-        float32 precision.
+        integers.
     probability
         Success probabilities in the closed interval from zero to one.
 
@@ -128,11 +126,8 @@ def binomial_rng(
         sample. Use ``jax.random.split`` to create keys for new random
         operations.
     trials
-        Numbers of independent trials. The caller must provide finite
-        nonnegative integers because invalid values do not have a defined
-        sampling result. With float32 probabilities, counts must not exceed
-        16,777,216. Larger counts require JAX 64-bit mode, and every count
-        must fit in ``int32``.
+        Numbers of independent trials. Values must be finite nonnegative
+        integers.
     probability
         Success probabilities in the closed interval from zero to one. The
         caller must provide valid probabilities because invalid values do not
@@ -183,9 +178,7 @@ def binomial_logit_logpmf(
         Numbers of successes at which to evaluate the probability mass.
     trials
         Numbers of independent trials. Values must be finite nonnegative
-        integers that fit in JAX's active signed integer dtype. Enable JAX
-        64-bit mode for larger counts or when calculations require more than
-        float32 precision.
+        integers.
     logits
         Log odds of success.
 
@@ -277,11 +270,8 @@ def binomial_logit_rng(
         sample. Use ``jax.random.split`` to create keys for new random
         operations.
     trials
-        Numbers of independent trials. The caller must provide finite
-        nonnegative integers because invalid values do not have a defined
-        sampling result. With float32 logits, counts must not exceed
-        16,777,216. Larger counts require JAX 64-bit mode, and every count
-        must fit in ``int32``.
+        Numbers of independent trials. Values must be finite nonnegative
+        integers.
     logits
         Log odds of success. The caller must not provide ``nan`` because it
         does not have a defined sampling result.
