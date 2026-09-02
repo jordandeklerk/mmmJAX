@@ -1,13 +1,13 @@
 # mmmJAX benchmarks
 
 The mmmJAX benchmark suite uses [Airspeed Velocity (ASV)](https://asv.readthedocs.io/) to track
-performance across the numerical workloads that matter for Bayesian marketing mix models. It covers
-distribution evaluation, gradients, sampling, and tail probabilities across representative model
-shapes, with separate comparisons against public JAX operations.
+performance across numerical workloads. It covers distribution evaluation, gradients, sampling,
+and tail probabilities across representative model shapes, with separate comparisons against public
+JAX operations.
 
 ## Running benchmarks
 
-Pixi provides the locked benchmark environment. Install and enter it from the repository root:
+Install and enter the locked benchmark environment from the repository root:
 
 ```console
 pixi install -e benchmark
@@ -16,25 +16,19 @@ pixi shell -e benchmark
 
 Run all remaining commands from this Pixi shell.
 
-Benchmark the current checkout, or run each benchmark once to check that it executes:
+Benchmark the current checkout:
 
 ```console
 spin bench
-spin bench --quick
 ```
 
-Pass an ASV expression to run one suite or benchmark class:
+Use `--quick` to check each benchmark once, `-t` to select a suite or benchmark, and `--compare`
+to compare committed revisions. These options can be combined as needed.
+
+For example, run the `ElementwiseLogProbability` benchmark class with:
 
 ```console
-spin bench -t bench_tail
 spin bench -t bench_density.ElementwiseLogProbability
-```
-
-Compare committed `main` and `HEAD`, with an optional benchmark filter:
-
-```console
-spin bench --compare main
-spin bench --compare main -t bench_tail
 ```
 
 Compare mmmJAX with equivalent public JAX operations:
@@ -45,9 +39,10 @@ spin compare
 
 Use `spin bench --help` and `spin compare --help` for all available options.
 
-Revision comparisons install the committed project source for each revision. The benchmark suite
-and configuration from the current checkout define both runs, so use a clean working tree when those
-files are changing. The managed environment pins JAX and jaxlib through `asv.conf.json`.
+Revision comparisons install only committed project source. Commit package changes before comparing
+them. The benchmark suite and configuration come from the current checkout and define both runs, so
+keep those files clean unless you intentionally want their uncommitted state applied to both
+revisions. The managed environment pins JAX, jaxlib, and ASV Runner through `asv.conf.json`.
 
 ### Result history
 
@@ -87,8 +82,9 @@ Categorical parameters append their event axis to the parameter batch shape. For
 
 ASV counts a parameterized method as one benchmark and expands its parameter combinations in the
 results table. Timings show the sample median followed by half the interquartile range. A large value
-after `±` indicates unstable samples and should be rerun. Density timings exclude compilation and
-include the compiled JAX call and host synchronization.
+after `±` indicates unstable samples and should be rerun. Each sample averages 100 synchronized calls,
+with five samples collected per round. All ASV timings exclude compilation and include the compiled
+JAX call and host synchronization.
 
 ## Comparing with JAX
 
@@ -153,7 +149,8 @@ for the fundamentals. mmmJAX benchmarks should also follow these rules:
 - Keep workload definitions in `cases.py` and shared measurement utilities in `common.py`
 - Use ASV `time_` methods, prepare inputs and compiled functions in `setup`, and synchronize every
   timed JAX result
-- Keep ASV warm-up enabled and keep benchmark runtimes practical
+- Keep ASV warm-up enabled and preserve the shared `number` and `repeat` policy unless measurements
+  justify changing it
 - Keep `params` and `param_names` stable across revisions, and handle unavailable historical cases
   in `setup`
 - Keep every module importable across supported revisions and avoid benchmark prefixes such as

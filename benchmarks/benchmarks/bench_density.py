@@ -9,7 +9,10 @@ from benchmarks.common import Arguments, BenchmarkFunction, compile_and_warm, sy
 
 
 class _DensityBenchmark:
-    version = "1"
+    version = "2"
+    # Batch short device calls so scheduler noise does not dominate each sample
+    number = 100
+    repeat = 5
     params = (
         tuple(distribution.name for distribution in DISTRIBUTIONS),
         ("vector", "likelihood", "channel_prior"),

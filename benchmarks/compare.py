@@ -231,7 +231,7 @@ def _parse_args() -> argparse.Namespace:
         ("distributions", distribution_names),
         ("implementations", tuple(IMPLEMENTATIONS)),
         ("operations", OPERATIONS),
-        ("dtypes", ("float32", "float64")),
+        ("dtype", ("float32", "float64")),
         ("inputs", INPUT_SETS),
     )
     label_width = max(len(label) for label, _ in available_values)

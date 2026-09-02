@@ -3,91 +3,12 @@
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import cast
 
 import jax
 import jax.numpy as jnp
 
-from mmmjax.distributions import (
-    bernoulli,
-    bernoulli_logit,
-    bernoulli_logit_logpmf,
-    bernoulli_logit_rng,
-    bernoulli_logpmf,
-    bernoulli_rng,
-    beta,
-    beta_logpdf,
-    beta_rng,
-    binomial,
-    binomial_logit,
-    binomial_logit_logpmf,
-    binomial_logit_rng,
-    binomial_logpmf,
-    binomial_rng,
-    categorical,
-    categorical_logit,
-    categorical_logit_logpmf,
-    categorical_logit_rng,
-    categorical_logpmf,
-    categorical_rng,
-    cauchy,
-    cauchy_logpdf,
-    cauchy_rng,
-    exponential,
-    exponential_logcdf,
-    exponential_logpdf,
-    exponential_logsf,
-    exponential_rng,
-    gamma,
-    gamma_logcdf,
-    gamma_logpdf,
-    gamma_logsf,
-    gamma_rng,
-    half_normal,
-    half_normal_logcdf,
-    half_normal_logpdf,
-    half_normal_logsf,
-    half_normal_rng,
-    inverse_gamma,
-    inverse_gamma_logcdf,
-    inverse_gamma_logpdf,
-    inverse_gamma_logsf,
-    inverse_gamma_rng,
-    laplace,
-    laplace_logcdf,
-    laplace_logpdf,
-    laplace_logsf,
-    laplace_rng,
-    lognormal,
-    lognormal_logcdf,
-    lognormal_logpdf,
-    lognormal_logsf,
-    lognormal_rng,
-    negative_binomial,
-    negative_binomial_log,
-    negative_binomial_log_logpmf,
-    negative_binomial_log_rng,
-    negative_binomial_logpmf,
-    negative_binomial_rng,
-    normal,
-    normal_logcdf,
-    normal_logpdf,
-    normal_logsf,
-    normal_rng,
-    poisson,
-    poisson_log,
-    poisson_log_logpmf,
-    poisson_log_rng,
-    poisson_logpmf,
-    poisson_rng,
-    student_t,
-    student_t_logpdf,
-    student_t_rng,
-    uniform,
-    uniform_logcdf,
-    uniform_logpdf,
-    uniform_logsf,
-    uniform_rng,
-)
+import mmmjax.distributions as distribution_api
 
 from .common import Arguments
 
@@ -341,100 +262,28 @@ DISTRIBUTIONS = (
     ),
 )
 
+
+def _distribution_function(name: str) -> Kernel:
+    """Resolve a public operation without breaking benchmarks for older revisions."""
+    function = getattr(distribution_api, name, None)
+    if function is not None:
+        return cast(Kernel, function)
+
+    def unavailable(*args: object, **kwargs: object) -> jax.Array:
+        raise NotImplementedError(f"{name} is unavailable in this mmmJAX revision")
+
+    return unavailable
+
+
 MMM_JAX_FUNCTIONS: dict[str, DistributionFunctions] = {
-    "bernoulli": DistributionFunctions(bernoulli_logpmf, bernoulli, bernoulli_rng),
-    "bernoulli_logit": DistributionFunctions(
-        bernoulli_logit_logpmf,
-        bernoulli_logit,
-        bernoulli_logit_rng,
-    ),
-    "beta": DistributionFunctions(beta_logpdf, beta, beta_rng),
-    "binomial": DistributionFunctions(binomial_logpmf, binomial, binomial_rng),
-    "binomial_logit": DistributionFunctions(
-        binomial_logit_logpmf,
-        binomial_logit,
-        binomial_logit_rng,
-    ),
-    "categorical": DistributionFunctions(categorical_logpmf, categorical, categorical_rng),
-    "categorical_logit": DistributionFunctions(
-        categorical_logit_logpmf,
-        categorical_logit,
-        categorical_logit_rng,
-    ),
-    "negative_binomial": DistributionFunctions(
-        negative_binomial_logpmf,
-        negative_binomial,
-        negative_binomial_rng,
-    ),
-    "negative_binomial_log": DistributionFunctions(
-        negative_binomial_log_logpmf,
-        negative_binomial_log,
-        negative_binomial_log_rng,
-    ),
-    "poisson": DistributionFunctions(poisson_logpmf, poisson, poisson_rng),
-    "poisson_log": DistributionFunctions(
-        poisson_log_logpmf,
-        poisson_log,
-        poisson_log_rng,
-    ),
-    "cauchy": DistributionFunctions(cauchy_logpdf, cauchy, cauchy_rng),
-    "exponential": DistributionFunctions(
-        exponential_logpdf,
-        exponential,
-        exponential_rng,
-        logcdf=exponential_logcdf,
-        logsf=exponential_logsf,
-    ),
-    "gamma": DistributionFunctions(
-        gamma_logpdf,
-        gamma,
-        gamma_rng,
-        logcdf=gamma_logcdf,
-        logsf=gamma_logsf,
-    ),
-    "half_normal": DistributionFunctions(
-        half_normal_logpdf,
-        half_normal,
-        half_normal_rng,
-        logcdf=half_normal_logcdf,
-        logsf=half_normal_logsf,
-    ),
-    "inverse_gamma": DistributionFunctions(
-        inverse_gamma_logpdf,
-        inverse_gamma,
-        inverse_gamma_rng,
-        logcdf=inverse_gamma_logcdf,
-        logsf=inverse_gamma_logsf,
-    ),
-    "laplace": DistributionFunctions(
-        laplace_logpdf,
-        laplace,
-        laplace_rng,
-        logcdf=laplace_logcdf,
-        logsf=laplace_logsf,
-    ),
-    "lognormal": DistributionFunctions(
-        lognormal_logpdf,
-        lognormal,
-        lognormal_rng,
-        logcdf=lognormal_logcdf,
-        logsf=lognormal_logsf,
-    ),
-    "normal": DistributionFunctions(
-        normal_logpdf,
-        normal,
-        normal_rng,
-        logcdf=normal_logcdf,
-        logsf=normal_logsf,
-    ),
-    "student_t": DistributionFunctions(student_t_logpdf, student_t, student_t_rng),
-    "uniform": DistributionFunctions(
-        uniform_logpdf,
-        uniform,
-        uniform_rng,
-        logcdf=uniform_logcdf,
-        logsf=uniform_logsf,
-    ),
+    distribution.name: DistributionFunctions(
+        _distribution_function(f"{distribution.name}_{distribution.log_probability_operation}"),
+        _distribution_function(distribution.name),
+        _distribution_function(f"{distribution.name}_rng"),
+        logcdf=(_distribution_function(f"{distribution.name}_logcdf") if distribution.supports_tail_inputs else None),
+        logsf=_distribution_function(f"{distribution.name}_logsf") if distribution.supports_tail_inputs else None,
+    )
+    for distribution in DISTRIBUTIONS
 }
 
 DISTRIBUTIONS_BY_NAME = {distribution.name: distribution for distribution in DISTRIBUTIONS}

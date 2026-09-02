@@ -5209,11 +5209,12 @@ packages:
 - pypi: ./
   name: mmmjax
   version: 0.0.1
-  sha256: 2a9aaa812bc5f0dd8f7511ac230885d898fe65e4c60bf59e54689a07b7cd5b59
+  sha256: be4833ca71b52c0275048cef97507cab819bd0fe44ca799e789c19c383a20642
   requires_dist:
   - jax>=0.10.0,<0.11
   - jaxtyping>=0.2.36
   - asv>=0.6.6,<0.7 ; extra == 'benchmark'
+  - asv-runner==0.3.1 ; extra == 'benchmark'
   - spin>=0.18,<0.19 ; extra == 'benchmark'
   - prek ; extra == 'dev'
   - ruff>=0.16.4 ; extra == 'dev'

@@ -10,9 +10,12 @@
   "dvcs": "git",
   "environment_type": "virtualenv",
   "matrix": {
-    "build": [],
-    "jax": ["0.10.2"],
-    "jaxlib": ["0.10.2"]
+    "req": {
+      "asv-runner": ["0.3.1"],
+      "build": [],
+      "jax": ["0.10.2"],
+      "jaxlib": ["0.10.2"]
+    }
   },
   "show_commit_url": "https://github.com/jordandeklerk/mmmJAX/commit/",
   "benchmark_dir": ".",

@@ -17,7 +17,10 @@ from benchmarks.common import Arguments, BenchmarkFunction, compile_and_warm, sy
 
 
 class _TailBenchmark:
-    version = "1"
+    version = "2"
+    # Batch short device calls so scheduler noise does not dominate each sample
+    number = 100
+    repeat = 5
     params = (
         tuple(distribution.name for distribution in DISTRIBUTIONS if distribution.name in TAIL_DISTRIBUTIONS),
         ("vector", "likelihood", "channel_prior"),

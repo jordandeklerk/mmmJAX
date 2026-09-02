@@ -21,6 +21,7 @@ tests = "pytest -vv"
 
 [feature.benchmark.dependencies]
 asv = ">=0.6.6,<0.7"
+asv_runner = "==0.3.1"
 spin = ">=0.18,<0.19"
 
 [feature.benchmark.tasks]
