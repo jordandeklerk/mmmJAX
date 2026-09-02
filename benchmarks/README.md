@@ -1,6 +1,9 @@
 # mmmJAX benchmarks
 
-Benchmarking mmmJAX with [Airspeed Velocity](https://asv.readthedocs.io/).
+The mmmJAX benchmark suite tracks performance across the numerical workloads that matter for
+Bayesian marketing mix models. It measures distribution evaluation, gradients, sampling, and tail
+probabilities across representative model shapes, with separate comparisons against public JAX
+operations.
 
 ## Usage
 
