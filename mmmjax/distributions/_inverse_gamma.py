@@ -49,12 +49,6 @@ def inverse_gamma_logpdf(
         Nonpositive values and either infinity produce ``-inf``. A
         nonpositive or nonfinite shape or scale produces ``nan``. A ``nan``
         value also produces ``nan``.
-
-    Notes
-    -----
-    Highly concentrated distributions can require JAX 64-bit mode. If
-    ``scale`` and ``shape * value`` differ by less than their dtype can
-    represent, that difference cannot be recovered by the density calculation.
     """
     value_array, shape_array, scale_array = _promote_inexact(
         ("value", value),

@@ -65,7 +65,7 @@ Generated `.asv` artifacts are ignored by Git. Local machine metadata lives in
 ## What is measured
 
 - `bench_density`: Elementwise log probabilities and summed log densities
-- `bench_event`: Dirichlet log probabilities, concentration gradients, and sampling
+- `bench_event`: Dirichlet and Multinomial log probabilities, parameter gradients, and sampling
 - `bench_grad`: Log densities and their parameter gradients
 - `bench_random`: Random sampling
 - `bench_tail`: Log-CDFs, log-survival functions, and their parameter gradients
@@ -83,9 +83,10 @@ profiles. The `stress` profile remains opt-in for paired comparisons.
 Categorical parameters append their event axis to the parameter batch shape. For example, the
 `channel_prior` profile uses parameters shaped `(465, K)` and values shaped `(8, 465)`.
 
-Dirichlet uses dedicated event profiles. The `vector` workload uses one 32-component simplex,
-`likelihood` uses 260 samples across eight batches of four-component simplex vectors, and
-`channel_prior` measures eight draws from a shared 465-component simplex.
+Event distributions use dedicated profiles. The `vector` workload has one 32-component event,
+`likelihood` has 260 samples across eight batches of four-component events, and `channel_prior`
+has eight samples from a shared 465-component parameter vector. Multinomial workloads use 100
+trials per event.
 
 ### Reading ASV results
 
@@ -107,8 +108,7 @@ spin compare --profiles vector --distributions normal
 
 > [!IMPORTANT]
 > mmmJAX applies stricter parameter checks and numerical safeguards than some JAX references, so the
-> two sides do not always perform exactly the same work. This can explain some overhead, but a stable
-> slowdown should still be investigated rather than accepted by default.
+> two sides do not always perform exactly the same work.
 
 The report separates cache-cleared JIT compilation from synchronized warm execution. Compilation
 timings are descriptive. Warm results report the median, median absolute deviation, throughput,
@@ -119,8 +119,8 @@ are used when no single public function matches an mmmJAX parameterization. SciP
 independent correctness reference and is not a timing baseline because it does not provide the same
 JIT, automatic differentiation, accelerator, or PRNG execution model.
 
-The Dirichlet reference moves mmmJAX's final event axis to the leading position expected by JAX and
-uses `vmap` only when concentration vectors have batch dimensions.
+Event-distribution references adapt public JAX operations to mmmJAX's final-axis batching contract.
+The Multinomial logit reference composes `softmax` with JAX's probability-parameterized operation.
 
 ## Special workloads
 

@@ -138,9 +138,7 @@ def negative_binomial_rng(
     Returns
     -------
     jax.Array
-        Integer outcomes with shape ``sample_shape + broadcast_shape``. The
-        caller must choose parameters whose latent Poisson rates and outcomes
-        fit in ``int32``.
+        Integer outcomes with shape ``sample_shape + broadcast_shape``.
     """
     mean_array, concentration_array = _promote_inexact(
         ("mean", mean),
@@ -277,9 +275,7 @@ def negative_binomial_log_rng(
     Returns
     -------
     jax.Array
-        Integer outcomes with shape ``sample_shape + broadcast_shape``. The
-        caller must choose parameters whose latent Poisson rates and outcomes
-        fit in ``int32``.
+        Integer outcomes with shape ``sample_shape + broadcast_shape``.
     """
     log_mean_array, concentration_array = _promote_inexact(
         ("log_mean", log_mean),

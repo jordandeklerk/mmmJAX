@@ -25,7 +25,7 @@ from benchmarks.cases import (
     EventDistributionSpec,
     EventProfile,
     make_arguments,
-    make_dirichlet_arguments,
+    make_event_arguments,
     make_tail_arguments,
 )
 from benchmarks.common import (
@@ -87,9 +87,12 @@ def make_operations(
     profile: BenchmarkProfileType,
     arguments: Arguments,
     implementation: str,
+    *,
+    sampling_parameters: Arguments | None = None,
 ) -> tuple[BenchmarkOperation, ...]:
     """Build elementwise, summed, gradient, and sampling operations for one implementation."""
-    parameters = arguments[1:]
+    if sampling_parameters is None:
+        sampling_parameters = arguments[1:]
     return (
         BenchmarkOperation(
             implementation,
@@ -113,7 +116,7 @@ def make_operations(
             implementation,
             "rng",
             functools.partial(functions.rng, sample_shape=profile.sample_shape),
-            (jax.random.key(0), *parameters),
+            (jax.random.key(0), *sampling_parameters),
         ),
     )
 
@@ -167,11 +170,16 @@ def make_benchmark_operation(
             raise TypeError(f"{distribution.name} requires an event profile, got {type(profile).__name__}")
         if input_set != "ordinary" or operation not in DEFAULT_OPERATIONS:
             return None
-        if distribution.name != "dirichlet":
-            raise RuntimeError(f"unknown event benchmark distribution {distribution.name!r}")
 
-        arguments = make_dirichlet_arguments(profile, dtype)
-        candidates = make_operations(functions, distribution, profile, arguments, implementation)
+        event_arguments = make_event_arguments(distribution, profile, dtype)
+        candidates = make_operations(
+            functions,
+            distribution,
+            profile,
+            event_arguments.log_probability,
+            implementation,
+            sampling_parameters=event_arguments.sampling_parameters,
+        )
         return next((candidate for candidate in candidates if candidate.name == operation), None)
 
     if not isinstance(profile, BenchmarkProfile):

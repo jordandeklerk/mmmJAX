@@ -80,6 +80,27 @@ def _dirichlet_logpdf(value: jax.Array, concentration: jax.Array) -> jax.Array:
     return jnp.transpose(batch_first_log_density, output_axes)
 
 
+def _multinomial_logpmf(value: jax.Array, probabilities: jax.Array) -> jax.Array:
+    batch_shape = jnp.broadcast_shapes(value.shape[:-1], probabilities.shape[:-1])
+    event_size = probabilities.shape[-1]
+    event_shape = (*batch_shape, event_size)
+    count = jnp.broadcast_to(value, event_shape)
+    probability = jnp.broadcast_to(probabilities, event_shape)
+    total = jnp.sum(count, axis=-1)
+
+    # vmap keeps JAX's total-count check eventwise while adding mmmJAX's batch contract
+    log_mass = jax.vmap(stats.multinomial.logpmf)(
+        count.reshape(-1, event_size),
+        total.reshape(-1),
+        probability.reshape(-1, event_size),
+    )
+    return log_mass.reshape(batch_shape)
+
+
+def _multinomial_logit_logpmf(value: jax.Array, logits: jax.Array) -> jax.Array:
+    return _multinomial_logpmf(value, jax.nn.softmax(logits, axis=-1))
+
+
 def _negative_binomial_logpmf(
     value: jax.Array,
     mean: jax.Array,
@@ -316,6 +337,42 @@ def _dirichlet_rng(
     )
 
 
+def _multinomial_rng(
+    key: jax.Array,
+    probabilities: jax.Array,
+    trials: jax.Array,
+    *,
+    sample_shape: tuple[int, ...] = (),
+) -> jax.Array:
+    batch_shape = jnp.broadcast_shapes(trials.shape, probabilities.shape[:-1])
+    output_shape = (*sample_shape, *batch_shape, probabilities.shape[-1])
+    return jnp.asarray(
+        jax.random.multinomial(
+            key,
+            trials,
+            probabilities,
+            shape=output_shape,
+            dtype=probabilities.dtype,
+        ),
+        dtype=jnp.int32,
+    )
+
+
+def _multinomial_logit_rng(
+    key: jax.Array,
+    logits: jax.Array,
+    trials: jax.Array,
+    *,
+    sample_shape: tuple[int, ...] = (),
+) -> jax.Array:
+    return _multinomial_rng(
+        key,
+        jax.nn.softmax(logits, axis=-1),
+        trials,
+        sample_shape=sample_shape,
+    )
+
+
 def _negative_binomial_rng(
     key: jax.Array,
     mean: jax.Array,
@@ -531,6 +588,8 @@ JAX_REFERENCES: dict[str, JaxReference] = {
     "categorical": JaxReference(_categorical_logpmf, _categorical_rng),
     "categorical_logit": JaxReference(_categorical_logit_logpmf, _categorical_logit_rng),
     "dirichlet": JaxReference(_dirichlet_logpdf, _dirichlet_rng),
+    "multinomial": JaxReference(_multinomial_logpmf, _multinomial_rng),
+    "multinomial_logit": JaxReference(_multinomial_logit_logpmf, _multinomial_logit_rng),
     "negative_binomial": JaxReference(_negative_binomial_logpmf, _negative_binomial_rng),
     "negative_binomial_log": JaxReference(
         _negative_binomial_log_logpmf,

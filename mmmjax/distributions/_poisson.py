@@ -32,9 +32,8 @@ def poisson_logpmf(value: ArrayLike, rate: ArrayLike) -> jax.Array:
     Parameters
     ----------
     value
-        Counts at which to evaluate the probability mass. With float32 rates,
-        counts above 16,777,216 must be paired with float64 rates in JAX
-        64-bit mode when adjacent integer values must remain distinguishable.
+        Counts at which to evaluate the probability mass. Values must be
+        nonnegative integers.
     rate
         Finite nonnegative rate parameter, equal to both the mean and
         variance.
@@ -78,9 +77,8 @@ def poisson(value: ArrayLike, rate: ArrayLike) -> jax.Array:
     Parameters
     ----------
     value
-        Counts at which to evaluate the probability mass. With float32 rates,
-        counts above 16,777,216 must be paired with float64 rates in JAX
-        64-bit mode when adjacent integer values must remain distinguishable.
+        Counts at which to evaluate the probability mass. Values must be
+        nonnegative integers.
     rate
         Finite nonnegative rate parameter, equal to both the mean and
         variance.
@@ -109,9 +107,7 @@ def poisson_rng(
         sample. Use ``jax.random.split`` to create keys for new random
         operations.
     rate
-        Nonnegative rate parameter. The caller must provide finite rates whose
-        sampled outcomes fit in ``int32`` because invalid or larger values do
-        not have a defined result.
+        Finite nonnegative rate parameter.
     sample_shape
         Independent sample dimensions prepended to the parameter shape. The
         tuple must be static when the function is JIT-compiled.
@@ -145,10 +141,8 @@ def poisson_log_logpmf(value: ArrayLike, log_rate: ArrayLike) -> jax.Array:
     Parameters
     ----------
     value
-        Counts at which to evaluate the probability mass. With float32 log
-        rates, counts above 16,777,216 must be paired with float64 log rates
-        in JAX 64-bit mode when adjacent integer values must remain
-        distinguishable.
+        Counts at which to evaluate the probability mass. Values must be
+        nonnegative integers.
     log_rate
         Logarithm of the Poisson rate. Negative infinity represents a
         degenerate distribution at zero.
@@ -194,10 +188,8 @@ def poisson_log(value: ArrayLike, log_rate: ArrayLike) -> jax.Array:
     Parameters
     ----------
     value
-        Counts at which to evaluate the probability mass. With float32 log
-        rates, counts above 16,777,216 must be paired with float64 log rates
-        in JAX 64-bit mode when adjacent integer values must remain
-        distinguishable.
+        Counts at which to evaluate the probability mass. Values must be
+        nonnegative integers.
     log_rate
         Logarithm of the Poisson rate.
 
@@ -225,9 +217,8 @@ def poisson_log_rng(
         sample. Use ``jax.random.split`` to create keys for new random
         operations.
     log_rate
-        Logarithm of the Poisson rate. The caller must provide values whose
-        exponentiated rates are finite and whose sampled outcomes fit in
-        ``int32``.
+        Logarithm of the Poisson rate. Negative infinity represents a
+        degenerate distribution at zero.
     sample_shape
         Independent sample dimensions prepended to the parameter shape. The
         tuple must be static when the function is JIT-compiled.
