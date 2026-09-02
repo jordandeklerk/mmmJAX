@@ -6,13 +6,14 @@ from collections.abc import Callable
 import jax
 import jax.numpy as jnp
 
-from benchmarks.cases import DISTRIBUTIONS, MMM_JAX_FUNCTIONS, PROFILES, make_parameters
+from benchmarks.cases import DISTRIBUTIONS, DISTRIBUTIONS_BY_NAME, MMM_JAX_FUNCTIONS, PROFILES, make_parameters
 from benchmarks.common import Arguments, compile_and_warm, synchronize
 
 
 class Sampling:
     """Measure synchronized random sampling execution."""
 
+    version = "1"
     params = (
         tuple(distribution.name for distribution in DISTRIBUTIONS),
         ("vector", "likelihood", "channel_prior"),
@@ -21,10 +22,15 @@ class Sampling:
 
     arguments: Arguments
     compiled: Callable[..., object]
+    _case: tuple[str, str] | None = None
 
     def setup(self, distribution_name: str, profile_name: str) -> None:
         """Prepare and warm one compiled sampling operation."""
-        distribution = next(distribution for distribution in DISTRIBUTIONS if distribution.name == distribution_name)
+        case = (distribution_name, profile_name)
+        if self._case == case:
+            return
+
+        distribution = DISTRIBUTIONS_BY_NAME[distribution_name]
         profile = PROFILES[profile_name]
         parameters = make_parameters(
             distribution,
@@ -41,6 +47,7 @@ class Sampling:
 
         self.arguments = arguments
         self.compiled = compile_and_warm(function, self.arguments)
+        self._case = case
 
     def time_sampling(self, distribution_name: str, profile_name: str) -> None:
         """Measure one synchronized sampling call."""

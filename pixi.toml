@@ -21,12 +21,14 @@ tests = "pytest -vv"
 
 [feature.benchmark.dependencies]
 asv = ">=0.6.6,<0.7"
+spin = ">=0.18,<0.19"
 
 [feature.benchmark.tasks]
-benchmark-distributions = "python -m benchmarks.compare"
-benchmark-check = "asv check -E existing --config benchmarks/asv.conf.json"
-benchmark-quick = "asv run --quick --show-stderr --dry-run -E existing --config benchmarks/asv.conf.json"
-benchmark-run = "asv run --show-stderr --config benchmarks/asv.conf.json"
+bench = "spin bench"
+benchmark-distributions = "spin compare"
+benchmark-machine = "spin asv machine --yes"
+benchmark-check = "spin asv check -E existing"
+benchmark-run = "spin asv run --show-stderr"
 
 [feature.docs.dependencies]
 sphinx = ">=8,<9"
@@ -88,7 +90,7 @@ jaxtyping = ">=0.2.36"
 [environments]
 default = { features = ["dev", "build"], solve-group = "default" }
 dev = { features = ["dev", "build"], solve-group = "default" }
-benchmark = { features = ["benchmark", "build"], solve-group = "default" }
+benchmark = { features = ["benchmark", "build"], solve-group = "benchmark" }
 docs = { features = ["docs", "build"], solve-group = "default" }
 check = { features = ["lint", "build"], solve-group = "default" }
 build = { features = ["build"], solve-group = "default" }

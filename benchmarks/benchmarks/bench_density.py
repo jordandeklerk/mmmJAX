@@ -4,11 +4,12 @@ from collections.abc import Callable
 
 import jax.numpy as jnp
 
-from benchmarks.cases import DISTRIBUTIONS, MMM_JAX_FUNCTIONS, PROFILES, make_arguments
+from benchmarks.cases import DISTRIBUTIONS, DISTRIBUTIONS_BY_NAME, MMM_JAX_FUNCTIONS, PROFILES, make_arguments
 from benchmarks.common import Arguments, BenchmarkFunction, compile_and_warm, synchronize
 
 
 class _DensityBenchmark:
+    version = "1"
     params = (
         tuple(distribution.name for distribution in DISTRIBUTIONS),
         ("vector", "likelihood", "channel_prior"),
@@ -18,10 +19,15 @@ class _DensityBenchmark:
 
     arguments: Arguments
     compiled: Callable[..., object]
+    _case: tuple[str, str, str] | None = None
 
     def setup(self, distribution_name: str, profile_name: str) -> None:
         """Prepare and warm one compiled density operation."""
-        distribution = next(distribution for distribution in DISTRIBUTIONS if distribution.name == distribution_name)
+        case = (distribution_name, profile_name, self.operation_name)
+        if self._case == case:
+            return
+
+        distribution = DISTRIBUTIONS_BY_NAME[distribution_name]
         functions = MMM_JAX_FUNCTIONS[distribution_name]
         arguments = make_arguments(
             distribution,
@@ -40,6 +46,7 @@ class _DensityBenchmark:
 
         self.arguments = arguments
         self.compiled = compile_and_warm(function, self.arguments)
+        self._case = case
 
 
 class ElementwiseLogProbability(_DensityBenchmark):

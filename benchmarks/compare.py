@@ -13,14 +13,14 @@ import jax.numpy as jnp
 
 from benchmarks.cases import (
     DISTRIBUTIONS,
-    LOG_PROBABILITY_DISTRIBUTIONS,
     MMM_JAX_FUNCTIONS,
     PROFILES,
+    TAIL_DISTRIBUTIONS,
     BenchmarkProfile,
     DistributionFunctions,
     DistributionSpec,
     make_arguments,
-    make_log_probability_arguments,
+    make_tail_arguments,
 )
 from benchmarks.common import (
     Arguments,
@@ -38,13 +38,13 @@ from benchmarks.common import (
 from benchmarks.references import JAX_REFERENCES
 
 DEFAULT_OPERATIONS = ("logpdf", "logpmf", "log_density", "value_and_grad", "rng")
-LOG_PROBABILITY_OPERATIONS = (
+TAIL_OPERATIONS = (
     "logcdf",
     "logcdf_value_and_grad",
     "logsf",
     "logsf_value_and_grad",
 )
-OPERATIONS = DEFAULT_OPERATIONS + LOG_PROBABILITY_OPERATIONS
+OPERATIONS = DEFAULT_OPERATIONS + TAIL_OPERATIONS
 INPUT_SETS = ("ordinary", "concentrated", "tail")
 
 
@@ -110,13 +110,14 @@ def make_operations(
     )
 
 
-def make_log_probability_operations(
+def make_tail_operations(
     functions: DistributionFunctions,
+    distribution: DistributionSpec,
     arguments: Arguments,
     implementation: str,
     operation: str,
 ) -> tuple[BenchmarkOperation, ...]:
-    """Build one log-probability operation and its parameter gradient."""
+    """Build one tail probability operation and its parameter gradient."""
     if operation not in {"logcdf", "logsf"}:
         raise ValueError(f"operation must be 'logcdf' or 'logsf', got {operation!r}")
 
@@ -124,14 +125,13 @@ def make_log_probability_operations(
     if function is None:
         return ()
 
-    parameter_indices = tuple(range(1, len(arguments)))
     summed_function = functools.partial(_sum_values, function)
     return (
         BenchmarkOperation(implementation, operation, function, arguments),
         BenchmarkOperation(
             implementation,
             f"{operation}_value_and_grad",
-            jax.value_and_grad(summed_function, argnums=parameter_indices),
+            jax.value_and_grad(summed_function, argnums=distribution.gradient_argnums),
             arguments,
         ),
     )
@@ -164,12 +164,12 @@ def make_benchmark_operation(
         arguments = make_arguments(distribution, profile, input_set, dtype)
         candidates = make_operations(functions, distribution, profile, arguments, implementation)
     else:
-        if input_set == "concentrated" or distribution.name not in LOG_PROBABILITY_DISTRIBUTIONS:
+        if input_set == "concentrated" or distribution.name not in TAIL_DISTRIBUTIONS:
             return None
 
-        log_probability = "logcdf" if operation.startswith("logcdf") else "logsf"
-        arguments = make_log_probability_arguments(distribution, profile, input_set, log_probability, dtype)
-        candidates = make_log_probability_operations(functions, arguments, implementation, log_probability)
+        tail_function = "logcdf" if operation.startswith("logcdf") else "logsf"
+        arguments = make_tail_arguments(distribution, profile, input_set, tail_function, dtype)
+        candidates = make_tail_operations(functions, distribution, arguments, implementation, tail_function)
 
     return next((candidate for candidate in candidates if candidate.name == operation), None)
 
@@ -248,7 +248,7 @@ def _parse_args() -> argparse.Namespace:
         )
 
     parser = argparse.ArgumentParser(
-        prog="benchmark-distributions",
+        prog="spin compare",
         description="Benchmark mmmJAX distribution primitives against equivalent public JAX operations.",
         epilog="\n".join(available_lines),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -334,8 +334,8 @@ def _parse_args() -> argparse.Namespace:
         parser.error("--repeats must be positive")
     selected_operations = set(arguments.operations)
     has_default_operation = bool(selected_operations.intersection(DEFAULT_OPERATIONS))
-    has_log_probability_operation = bool(selected_operations.intersection(LOG_PROBABILITY_OPERATIONS))
-    if "tail" in arguments.inputs and not has_log_probability_operation:
+    has_tail_operation = bool(selected_operations.intersection(TAIL_OPERATIONS))
+    if "tail" in arguments.inputs and not has_tail_operation:
         parser.error(
             "--inputs tail requires a log-CDF or log-survival operation; "
             "choose logcdf, logcdf_value_and_grad, logsf, or logsf_value_and_grad"
@@ -346,8 +346,8 @@ def _parse_args() -> argparse.Namespace:
             "log_density, value_and_grad, or rng; "
             "log-CDF and log-survival operations support ordinary and tail inputs"
         )
-    if has_log_probability_operation and not LOG_PROBABILITY_DISTRIBUTIONS.intersection(arguments.distributions):
-        supported = ", ".join(sorted(LOG_PROBABILITY_DISTRIBUTIONS))
+    if has_tail_operation and not TAIL_DISTRIBUTIONS.intersection(arguments.distributions):
+        supported = ", ".join(sorted(TAIL_DISTRIBUTIONS))
         parser.error(f"log-CDF and log-survival benchmarks are currently available only for {supported}")
 
     compares_implementations = len(set(arguments.implementations)) > 1 and any(
@@ -377,7 +377,7 @@ def main() -> None:
     selected_distributions = set(arguments.distributions)
     selected_implementations = set(arguments.implementations)
     selected_operations = set(arguments.operations)
-    selected_log_probability_operations = selected_operations.intersection(LOG_PROBABILITY_OPERATIONS)
+    selected_tail_operations = selected_operations.intersection(TAIL_OPERATIONS)
     selects_concentrated_poisson_rng = (
         "concentrated" in arguments.inputs
         and "rng" in selected_operations
@@ -401,9 +401,9 @@ def main() -> None:
         )
     if selects_concentrated_poisson_rng:
         notes.append("Concentrated Poisson RNG is omitted because its float64 rate exceeds the int32 output range")
-    unsupported_log_probability_distributions = selected_distributions - LOG_PROBABILITY_DISTRIBUTIONS
-    if selected_log_probability_operations and unsupported_log_probability_distributions:
-        omitted = ", ".join(sorted(unsupported_log_probability_distributions))
+    unsupported_tail_distributions = selected_distributions - TAIL_DISTRIBUTIONS
+    if selected_tail_operations and unsupported_tail_distributions:
+        omitted = ", ".join(sorted(unsupported_tail_distributions))
         notes.append(f"Log-CDF and log-survival operations are omitted for distributions without those APIs: {omitted}")
     print_notes(notes)
 

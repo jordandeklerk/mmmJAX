@@ -134,6 +134,7 @@ class DistributionSpec:
     log_probability_operation: str = "logpdf"
     outcomes: tuple[int, ...] = ()
     supports_concentrated_inputs: bool = False
+    supports_tail_inputs: bool = False
     gradient_parameter_indices: tuple[int, ...] | None = None
 
     def __post_init__(self) -> None:
@@ -287,38 +288,45 @@ DISTRIBUTIONS = (
         name="exponential",
         value_range=(0.1, 2.0),
         parameter_values=(1.3,),
+        supports_tail_inputs=True,
     ),
     DistributionSpec(
         name="gamma",
         value_range=(0.1, 2.0),
         parameter_values=(2.5, 1.3),
         supports_concentrated_inputs=True,
+        supports_tail_inputs=True,
     ),
     DistributionSpec(
         name="half_normal",
         value_range=(0.1, 2.0),
         parameter_values=(1.3,),
+        supports_tail_inputs=True,
     ),
     DistributionSpec(
         name="inverse_gamma",
         value_range=(0.1, 2.0),
         parameter_values=(3.5, 1.2),
         supports_concentrated_inputs=True,
+        supports_tail_inputs=True,
     ),
     DistributionSpec(
         name="laplace",
         value_range=(-1.0, 1.0),
         parameter_values=(0.2, 1.3),
+        supports_tail_inputs=True,
     ),
     DistributionSpec(
         name="lognormal",
         value_range=(0.1, 2.0),
         parameter_values=(0.2, 0.8),
+        supports_tail_inputs=True,
     ),
     DistributionSpec(
         name="normal",
         value_range=(-1.0, 1.0),
         parameter_values=(0.2, 1.3),
+        supports_tail_inputs=True,
     ),
     DistributionSpec(
         name="student_t",
@@ -329,6 +337,7 @@ DISTRIBUTIONS = (
         name="uniform",
         value_range=(-0.5, 0.5),
         parameter_values=(-1.0, 1.0),
+        supports_tail_inputs=True,
     ),
 )
 
@@ -428,11 +437,41 @@ MMM_JAX_FUNCTIONS: dict[str, DistributionFunctions] = {
     ),
 }
 
-LOG_PROBABILITY_DISTRIBUTIONS = frozenset(
-    name
-    for name, functions in MMM_JAX_FUNCTIONS.items()
-    if functions.logcdf is not None and functions.logsf is not None
-)
+DISTRIBUTIONS_BY_NAME = {distribution.name: distribution for distribution in DISTRIBUTIONS}
+TAIL_DISTRIBUTIONS = frozenset(distribution.name for distribution in DISTRIBUTIONS if distribution.supports_tail_inputs)
+
+
+def _validate_distribution_cases() -> None:
+    """Validate the relationships between benchmark specifications and functions."""
+    distribution_names = tuple(distribution.name for distribution in DISTRIBUTIONS)
+    if len(DISTRIBUTIONS_BY_NAME) != len(DISTRIBUTIONS):
+        duplicate_names = tuple(sorted({name for name in distribution_names if distribution_names.count(name) > 1}))
+        raise ValueError(f"distribution benchmark names must be unique, got duplicates {duplicate_names}")
+
+    specification_names = set(DISTRIBUTIONS_BY_NAME)
+    function_names = set(MMM_JAX_FUNCTIONS)
+    if specification_names != function_names:
+        missing_functions = tuple(sorted(specification_names - function_names))
+        missing_specifications = tuple(sorted(function_names - specification_names))
+        raise ValueError(
+            "distribution specifications and functions must use the same names, "
+            f"got specifications without functions {missing_functions} "
+            f"and functions without specifications {missing_specifications}"
+        )
+
+    missing_tail_functions = tuple(
+        name
+        for name in sorted(TAIL_DISTRIBUTIONS)
+        if MMM_JAX_FUNCTIONS[name].logcdf is None or MMM_JAX_FUNCTIONS[name].logsf is None
+    )
+    if missing_tail_functions:
+        raise ValueError(
+            "tail benchmark distributions must define both logcdf and logsf functions, "
+            f"got incomplete functions for {missing_tail_functions}"
+        )
+
+
+_validate_distribution_cases()
 
 
 def make_arguments(
@@ -443,7 +482,7 @@ def make_arguments(
 ) -> Arguments:
     """Build one profile's values and distribution parameters."""
     if input_set not in {"ordinary", "concentrated"}:
-        raise ValueError(f"log-probability benchmarks do not support {input_set} inputs")
+        raise ValueError(f"density benchmarks do not support {input_set} inputs")
 
     element_count = math.prod(profile.value_shape)
     if input_set == "ordinary":
@@ -497,7 +536,7 @@ def make_arguments(
     return value, shape, shape
 
 
-def make_log_probability_arguments(
+def make_tail_arguments(
     distribution: DistributionSpec,
     profile: BenchmarkProfile,
     input_set: str,
@@ -505,7 +544,7 @@ def make_log_probability_arguments(
     dtype: jnp.dtype,
 ) -> Arguments:
     """Build ordinary or tail inputs for a log-CDF or log-survival operation."""
-    if distribution.name not in LOG_PROBABILITY_DISTRIBUTIONS:
+    if distribution.name not in TAIL_DISTRIBUTIONS:
         raise ValueError(f"{distribution.name} does not define log-CDF or log-survival benchmark inputs")
     if input_set not in {"ordinary", "tail"}:
         raise ValueError(f"log-CDF and log-survival benchmarks do not support {input_set} inputs")

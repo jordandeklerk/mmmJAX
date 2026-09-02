@@ -1,30 +1,84 @@
-# Benchmarks
+# mmmJAX benchmarks
 
-mmmJAX has two complementary benchmark workflows. ASV tracks performance across commits, while the
-comparison command measures mmmJAX and equivalent public JAX operations in the same run.
+Benchmarking mmmJAX with [Airspeed Velocity](https://asv.readthedocs.io/).
 
-## ASV regression benchmarks
+## Usage
 
-Check that ASV can discover and validate the benchmark suite:
-
-```console
-pixi run benchmark-check
-```
-
-Run every benchmark once to catch execution errors without saving results:
+Pixi provides the locked benchmark environment. Install and enter it from the repository root:
 
 ```console
-pixi run benchmark-quick
+pixi install -e benchmark
+pixi shell -e benchmark
 ```
 
-Record full benchmark results in an ASV-managed environment:
+Run the remaining commands from this Pixi shell. Spin is the main interface for the ASV suite.
+Benchmark the current checkout without recording the results:
 
 ```console
-pixi run benchmark-run
+spin bench
 ```
 
-ASV asks for machine information the first time a run starts. Generated environments and results
-are stored under `benchmarks/.asv/` and are not committed.
+Run each benchmark once to check that the suite executes:
+
+```console
+spin bench --quick
+```
+
+Run a focused suite or benchmark class by passing an ASV expression:
+
+```console
+spin bench -t bench_tail
+spin bench -t bench_density.ElementwiseLogProbability
+```
+
+Use `spin bench --help` to see all available options.
+
+## Comparing revisions
+
+Compare the current `HEAD` with committed `main` in an ASV-managed environment:
+
+```console
+spin bench --compare main
+```
+
+The same benchmark filters work in comparison mode:
+
+```console
+spin bench --compare main -t bench_tail
+```
+
+ASV installs the committed project source for each revision. The benchmark suite and configuration
+from the current checkout define the workload for both runs, so use a clean working tree when those
+files are changing. The managed environment pins JAX and jaxlib through `asv.conf.json` so dependency
+changes do not appear as mmmJAX performance changes.
+
+## Managing ASV results
+
+The `spin asv` command runs lower-level ASV operations from the benchmark directory. Use it to
+record results, inspect historical performance, or build the HTML report:
+
+```console
+spin asv machine --yes
+spin asv run --show-stderr HEAD
+spin asv publish
+spin asv preview
+```
+
+The `.asv` artifacts are ignored by Git. ASV stores local machine metadata in
+`~/.asv-machine.json`.
+
+## Reading ASV results
+
+ASV counts each parameterized method as one benchmark and expands its parameters in the results
+table. For example, the elementwise density benchmark reports every distribution and profile even
+though ASV identifies it as one benchmark.
+
+Timing results show the sample median followed by half the interquartile range. A large value after
+`±` indicates that the samples were spread out and the benchmark should be repeated before drawing
+conclusions. Density timings exclude compilation and include the compiled JAX call and host
+synchronization.
+
+## Benchmark suites
 
 The ASV suites separate density evaluation (`bench_density`), log-density gradients (`bench_grad`),
 random sampling (`bench_random`), and tail probabilities (`bench_tail`). Density, gradient, and
@@ -32,51 +86,6 @@ sampling benchmarks use ordinary float32 inputs. Tail benchmarks measure log-CDF
 their parameter gradients on float32 tail inputs. Every suite covers the `vector`, `likelihood`, and
 `channel_prior` profiles. ASV tracks mmmJAX across commits and does not use public JAX as a timing
 baseline.
-
-Pass an ASV benchmark filter after the Pixi task to check one suite:
-
-```console
-pixi run benchmark-quick -b bench_tail
-```
-
-## Paired implementation comparisons
-
-The comparison command reports cache-cleared JIT compilation and synchronized warm execution for
-mmmJAX and equivalent public JAX operations. Compilation timings are descriptive. Warm execution
-comparisons report the percentage difference between the medians and should be read alongside the
-reported median absolute deviations.
-
-### Running comparisons
-
-Run the default suite from the repository root:
-
-```console
-pixi run benchmark-distributions
-```
-
-The default uses the `channel_prior` profile, float32, ordinary inputs, all distributions, their
-standard density, gradient, and RNG operations, and both implementations. Use filters to run a
-smaller comparison:
-
-```console
-pixi run benchmark-distributions --profiles vector --distributions normal
-```
-
-All command-line options are available through:
-
-```console
-pixi run benchmark-distributions --help
-```
-
-### Reading the results
-
-The report begins with the runtime, device, precision, and measurement settings. Results are then
-grouped by profile, input set, dtype, and value count so those details are not repeated in every row.
-
-The warm execution table reports the median, median absolute deviation (MAD), throughput, and timed
-iterations for each implementation. When both implementations are present, the final column states
-whether the mmmJAX median was shorter or longer than the JAX median in that run. The compilation
-table is kept separate because cache-cleared compilation and warm execution measure different costs.
 
 ### Profiles
 
@@ -91,12 +100,51 @@ Categorical parameters append their category event axis to the parameter batch s
 the `channel_prior` profile uses parameters shaped `(465, K)` while generating values shaped
 `(8, 465)`.
 
+## Paired JAX comparisons
+
+The comparison command reports cache-cleared JIT compilation and synchronized warm execution for
+mmmJAX and equivalent public JAX operations. Compilation timings are descriptive. Warm execution
+comparisons report the percentage difference between the medians and should be read alongside the
+reported median absolute deviations.
+
+### Running comparisons
+
+Run the default suite from the repository root:
+
+```console
+spin compare
+```
+
+The default uses the `channel_prior` profile, float32, ordinary inputs, all distributions, their
+standard density, gradient, and RNG operations, and both implementations. Use filters to run a
+smaller comparison:
+
+```console
+spin compare --profiles vector --distributions normal
+```
+
+All command-line options are available through:
+
+```console
+spin compare --help
+```
+
+### Reading the results
+
+The report begins with the runtime, device, precision, and measurement settings. Results are then
+grouped by profile, input set, dtype, and value count so those details are not repeated in every row.
+
+The warm execution table reports the median, median absolute deviation (MAD), throughput, and timed
+iterations for each implementation. When both implementations are present, the final column states
+whether the mmmJAX median was shorter or longer than the JAX median in that run. The compilation
+table is kept separate because cache-cleared compilation and warm execution measure different costs.
+
 ### Discrete distributions
 
 Discrete workloads cycle valid integer outcomes across the sample and parameter batch dimensions:
 
 ```console
-pixi run benchmark-distributions \
+spin compare \
   --profiles vector \
   --distributions bernoulli bernoulli_logit binomial binomial_logit \
     categorical categorical_logit negative_binomial negative_binomial_log \
@@ -112,7 +160,7 @@ Poisson random functions.
 Concentrated Poisson inputs exercise the stable deviance calculation near the mode:
 
 ```console
-pixi run benchmark-distributions \
+spin compare \
   --profiles vector \
   --distributions poisson poisson_log \
   --inputs concentrated \
@@ -129,7 +177,7 @@ in the ordinary workload because the concentrated float64 rate exceeds the `int3
 Log-CDF and log-survival benchmarks are opt-in:
 
 ```console
-pixi run benchmark-distributions \
+spin compare \
   --distributions exponential gamma half_normal inverse_gamma \
     laplace normal lognormal uniform \
   --operations logcdf logcdf_value_and_grad logsf logsf_value_and_grad \
@@ -168,6 +216,36 @@ benchmark.
 
 Concentrated inputs report only mmmJAX timings when the public JAX calculation is not numerically
 equivalent at the values being measured.
+
+## Writing benchmarks
+
+See ASV's [benchmark-writing guidance](https://asv.readthedocs.io/en/latest/writing_benchmarks.html)
+for the fundamentals. mmmJAX benchmarks should also follow these conventions:
+
+- Put timing modules in `benchmarks/benchmarks/` and name them `bench_*.py`
+- Keep shared workload definitions in `cases.py` and shared measurement utilities in `common.py`
+- Use ASV `time_` methods for regression timings instead of adding custom timers to the ASV suite
+- Prepare arguments, compile functions, and complete the first JAX call in `setup`
+- Synchronize every timed result because JAX execution can be asynchronous
+- Keep `params` and `param_names` stable across the revisions being compared
+- Keep benchmark modules importable with every supported revision and skip unavailable cases in
+  `setup` rather than changing parameter definitions based on the installed mmmJAX version
+- Keep runtimes reasonable so focused development runs remain useful
+
+Each suite has an explicit ASV `version` because its behavior also depends on shared modules.
+Increment the version when changing workload construction, setup, synchronization, or the operation
+being measured. ASV imports every Python module under the configured benchmark directory, regardless
+of its filename, so support modules must remain safe to import and must not expose benchmark prefixes
+such as `time_` or `track_`.
+
+Keep ASV's timing warm-up enabled because early synchronized calls can still be noisy after JAX
+compilation. Before requesting review, return to the repository root, check discovery, and run the
+suite you changed. For example:
+
+```console
+spin asv check -E existing
+spin bench -t bench_tail --quick
+```
 
 ## Scope
 
