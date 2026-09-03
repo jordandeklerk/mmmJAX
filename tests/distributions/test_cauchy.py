@@ -8,8 +8,7 @@ import numpy as np
 import pytest
 from scipy import stats
 
-from mmmjax import cauchy, cauchy_logpdf, cauchy_rng
-from mmmjax.distributions._cauchy import cauchy_logcdf, cauchy_logsf
+from mmmjax import cauchy, cauchy_logcdf, cauchy_logpdf, cauchy_logsf, cauchy_rng
 
 
 @pytest.mark.parametrize(

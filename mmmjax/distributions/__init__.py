@@ -22,7 +22,9 @@ from mmmjax.distributions._categorical import categorical_logit_rng as categoric
 from mmmjax.distributions._categorical import categorical_logpmf as categorical_logpmf
 from mmmjax.distributions._categorical import categorical_rng as categorical_rng
 from mmmjax.distributions._cauchy import cauchy as cauchy
+from mmmjax.distributions._cauchy import cauchy_logcdf as cauchy_logcdf
 from mmmjax.distributions._cauchy import cauchy_logpdf as cauchy_logpdf
+from mmmjax.distributions._cauchy import cauchy_logsf as cauchy_logsf
 from mmmjax.distributions._cauchy import cauchy_rng as cauchy_rng
 from mmmjax.distributions._dirichlet import dirichlet as dirichlet
 from mmmjax.distributions._dirichlet import dirichlet_logpdf as dirichlet_logpdf
@@ -117,7 +119,9 @@ __all__ = [
     "categorical_logpmf",
     "categorical_rng",
     "cauchy",
+    "cauchy_logcdf",
     "cauchy_logpdf",
+    "cauchy_logsf",
     "cauchy_rng",
     "dirichlet",
     "dirichlet_logpdf",
