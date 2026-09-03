@@ -202,6 +202,8 @@ def make_benchmark_operation(
     else:
         if input_set == "concentrated" or distribution.name not in TAIL_DISTRIBUTIONS:
             return None
+        if implementation == "jax" and input_set == "tail" and distribution.name == "cauchy":
+            return None
 
         tail_function = "logcdf" if operation.startswith("logcdf") else "logsf"
         arguments = make_tail_arguments(distribution, profile, input_set, tail_function, dtype)
@@ -396,8 +398,9 @@ def _parse_args() -> argparse.Namespace:
         unavailable = ", ".join(arguments.distributions)
         parser.error(f"RNG benchmarks are unavailable for the selected distributions: {unavailable}")
 
-    compares_implementations = len(set(arguments.implementations)) > 1 and any(
-        input_set != "concentrated" for input_set in arguments.inputs
+    compares_implementations = len(set(arguments.implementations)) > 1 and (
+        "ordinary" in arguments.inputs
+        or ("tail" in arguments.inputs and bool((selected_distributions & TAIL_DISTRIBUTIONS) - {"cauchy"}))
     )
     if compares_implementations and arguments.repeats % 2 != 0:
         parser.error("--repeats must be even when comparing implementations so execution order stays balanced")
@@ -429,8 +432,9 @@ def main() -> None:
         and "rng" in selected_operations
         and bool({"poisson", "poisson_log"}.intersection(selected_distributions))
     )
-    compares_implementations = len(set(arguments.implementations)) > 1 and any(
-        input_set != "concentrated" for input_set in arguments.inputs
+    compares_implementations = len(set(arguments.implementations)) > 1 and (
+        "ordinary" in arguments.inputs
+        or ("tail" in arguments.inputs and bool((selected_distributions & TAIL_DISTRIBUTIONS) - {"cauchy"}))
     )
     print_environment(
         dtype,
@@ -444,6 +448,16 @@ def main() -> None:
         notes.append(
             "Public JAX is omitted from concentrated inputs because it is not numerically equivalent "
             "for those benchmark inputs"
+        )
+    if (
+        "tail" in arguments.inputs
+        and "cauchy" in selected_distributions
+        and selected_tail_operations
+        and "jax" in selected_implementations
+    ):
+        notes.append(
+            "Public JAX is omitted from Cauchy tail inputs because its direct formula is not "
+            "numerically equivalent there"
         )
     if selects_concentrated_poisson_rng:
         notes.append("Concentrated Poisson RNG is omitted because its float64 rate exceeds the int32 output range")

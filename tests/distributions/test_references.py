@@ -12,7 +12,15 @@ from jax.scipy import stats as jax_stats
 from scipy import special, stats
 
 import mmmjax
-from benchmarks.cases import DISTRIBUTIONS, EVENT_DISTRIBUTIONS, EVENT_MMM_JAX_FUNCTIONS, MMM_JAX_FUNCTIONS
+from benchmarks.cases import (
+    DISTRIBUTIONS,
+    DISTRIBUTIONS_BY_NAME,
+    EVENT_DISTRIBUTIONS,
+    EVENT_MMM_JAX_FUNCTIONS,
+    MMM_JAX_FUNCTIONS,
+    PROFILES,
+    make_tail_arguments,
+)
 from benchmarks.references import JAX_REFERENCES
 
 
@@ -108,6 +116,14 @@ def test_benchmark_sampling_capabilities_match_jax_references() -> None:
 
     for distribution in EVENT_DISTRIBUTIONS:
         assert JAX_REFERENCES[distribution.name].rng is not None
+
+
+def test_benchmark_tail_capabilities_match_jax_references() -> None:
+    for distribution in DISTRIBUTIONS:
+        reference = JAX_REFERENCES[distribution.name]
+
+        assert (reference.logcdf is not None) == distribution.supports_tail_inputs
+        assert (reference.logsf is not None) == distribution.supports_tail_inputs
 
 
 def test_mmmjax_benchmarks_resolve_the_current_public_api() -> None:
@@ -681,6 +697,55 @@ def test_mmmjax_normal_log_probabilities_match_jax_and_scipy(operation: str) -> 
         result,
         scipy_reference(np.asarray(values), loc=float(location), scale=float(scale)),
     )
+
+
+@pytest.mark.parametrize("operation", ["logcdf", "logsf"])
+def test_mmmjax_cauchy_log_probabilities_match_jax_and_scipy(operation: str) -> None:
+    values = jnp.array([-6.0, -1.0, 0.4, 2.0, 7.0])
+    location = jnp.asarray(0.4)
+    scale = jnp.asarray(1.7)
+    implementation = getattr(mmmjax, f"cauchy_{operation}")
+    jax_reference = getattr(JAX_REFERENCES["cauchy"], operation)
+    scipy_reference = getattr(stats.cauchy, operation)
+    assert jax_reference is not None
+
+    result = implementation(values, location, scale)
+    jax_result = jax_reference(values, location, scale)
+    scipy_result = scipy_reference(
+        np.asarray(values),
+        loc=float(location),
+        scale=float(scale),
+    )
+
+    _assert_close(result, jax_result)
+    _assert_scipy_tail_close(result, scipy_result)
+
+
+@pytest.mark.parametrize("operation", ["logcdf", "logsf"])
+def test_mmmjax_cauchy_benchmark_tails_match_scipy(operation: str) -> None:
+    distribution = DISTRIBUTIONS_BY_NAME["cauchy"]
+    profile = PROFILES["vector"]
+    arguments = make_tail_arguments(
+        distribution,
+        profile,
+        "tail",
+        operation,
+        jnp.dtype(jnp.float32),
+    )
+    values, location, scale = arguments
+    expected = -jnp.linspace(4.0, 32.0, math.prod(profile.value_shape), dtype=jnp.float32)
+    implementation = getattr(mmmjax, f"cauchy_{operation}")
+    scipy_reference = getattr(stats.cauchy, operation)
+
+    result = implementation(*arguments)
+    scipy_result = scipy_reference(
+        np.asarray(values),
+        loc=float(location),
+        scale=float(scale),
+    )
+
+    _assert_close(result, expected)
+    _assert_scipy_tail_close(result, scipy_result)
 
 
 @pytest.mark.parametrize("operation", ["logcdf", "logsf"])

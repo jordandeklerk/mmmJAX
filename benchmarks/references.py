@@ -641,7 +641,12 @@ JAX_REFERENCES: dict[str, JaxReference] = {
     ),
     "poisson": JaxReference(stats.poisson.logpmf, _poisson_rng),
     "poisson_log": JaxReference(_poisson_log_logpmf, _poisson_log_rng),
-    "cauchy": JaxReference(stats.cauchy.logpdf, _cauchy_rng),
+    "cauchy": JaxReference(
+        stats.cauchy.logpdf,
+        _cauchy_rng,
+        logcdf=stats.cauchy.logcdf,
+        logsf=stats.cauchy.logsf,
+    ),
     "exponential": JaxReference(
         _exponential_logpdf,
         _exponential_rng,
