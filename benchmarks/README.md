@@ -5,6 +5,10 @@ performance across numerical workloads. It covers distribution evaluation, gradi
 and tail probabilities across representative model shapes, with separate comparisons against public
 JAX operations.
 
+These workloads cover representative shapes and known numerical edge cases, but they do not replace
+the distribution correctness tests. Implementations can also differ outside the measured inputs
+because mmmJAX applies stricter parameter validation.
+
 ## Running benchmarks
 
 Install and enter the locked benchmark environment from the repository root:
@@ -181,9 +185,3 @@ Before requesting review, check discovery and run the suite you changed:
 spin asv check -E existing
 spin bench -t bench_tail --quick
 ```
-
-## Scope
-
-These workloads cover representative shapes and known numerical edge cases, but they do not replace
-the distribution correctness tests. Implementations can also differ outside the measured inputs
-because mmmJAX applies stricter parameter validation.

@@ -7,7 +7,15 @@ import pytest
 from jax.scipy.stats import truncnorm as jax_truncnorm
 from scipy import stats
 
-from mmmjax import normal_logpdf, truncated_normal, truncated_normal_logpdf
+from mmmjax import (
+    normal_logcdf,
+    normal_logpdf,
+    normal_logsf,
+    truncated_normal,
+    truncated_normal_logcdf,
+    truncated_normal_logpdf,
+    truncated_normal_logsf,
+)
 
 
 def test_truncated_normal_logpdf_matches_scipy_across_broadcast_batches() -> None:
@@ -68,6 +76,213 @@ def test_truncated_normal_returns_scalar_sum() -> None:
 
     assert result.shape == ()
     assert jnp.allclose(result, expected)
+
+
+@pytest.mark.parametrize(
+    ("function", "reference"),
+    [
+        pytest.param(truncated_normal_logcdf, stats.truncnorm.logcdf, id="logcdf"),
+        pytest.param(truncated_normal_logsf, stats.truncnorm.logsf, id="logsf"),
+    ],
+)
+def test_truncated_normal_log_probabilities_match_scipy_across_broadcast_batches(function, reference) -> None:
+    values = np.array([[-1.25], [0.25], [2.5]], dtype=np.float32)
+    locations = np.array([-0.5, 0.5, 1.0], dtype=np.float32)
+    scales = np.array([0.75, 1.25, 2.0], dtype=np.float32)
+    lowers = np.array([-2.0, -0.75, -1.0], dtype=np.float32)
+    uppers = np.array([0.8, 2.0, 4.0], dtype=np.float32)
+    standardized_lowers = (lowers.astype(np.float64) - locations) / scales
+    standardized_uppers = (uppers.astype(np.float64) - locations) / scales
+    expected = reference(
+        values.astype(np.float64),
+        standardized_lowers,
+        standardized_uppers,
+        loc=locations.astype(np.float64),
+        scale=scales.astype(np.float64),
+    )
+
+    result = function(values, locations, scales, lowers, uppers)
+    compiled = jax.jit(function)(values, locations, scales, lowers, uppers)
+
+    assert result.shape == (3, 3)
+    np.testing.assert_allclose(result, expected, rtol=3e-6, atol=3e-6)
+    np.testing.assert_allclose(compiled, expected, rtol=3e-6, atol=3e-6)
+
+
+@pytest.mark.parametrize(
+    ("value", "location", "scale", "lower", "upper"),
+    [
+        pytest.param(0.0, 0.0, 1.0, -0.01, 0.01, id="narrow-central"),
+        pytest.param(6.05, 0.0, 1.0, 6.0, 6.1, id="right-tail"),
+        pytest.param(-6.05, 0.0, 1.0, -6.1, -6.0, id="left-tail"),
+        pytest.param(2.0, 0.0, 1.0, 1.0, np.inf, id="lower-bound"),
+        pytest.param(-2.0, 0.0, 1.0, -np.inf, -1.0, id="upper-bound"),
+        pytest.param(0.25, 0.0, 1.0, -np.inf, np.inf, id="untruncated"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("function", "upper_tail"),
+    [
+        pytest.param(truncated_normal_logcdf, False, id="logcdf"),
+        pytest.param(truncated_normal_logsf, True, id="logsf"),
+    ],
+)
+def test_truncated_normal_log_probabilities_match_scipy_for_representative_bounds(
+    function,
+    upper_tail: bool,
+    value: float,
+    location: float,
+    scale: float,
+    lower: float,
+    upper: float,
+) -> None:
+    expected = _scipy_log_probability(value, location, scale, lower, upper, upper_tail=upper_tail)
+
+    result = function(value, location, scale, lower, upper)
+
+    assert jnp.isfinite(result)
+    np.testing.assert_allclose(result, expected, rtol=3e-6, atol=3e-6)
+
+
+def test_truncated_normal_log_probabilities_are_complements() -> None:
+    values = jnp.linspace(6.001, 6.099, 21)
+
+    log_cdf = truncated_normal_logcdf(values, 0.0, 1.0, 6.0, 6.1)
+    log_survival = truncated_normal_logsf(values, 0.0, 1.0, 6.0, 6.1)
+
+    assert jnp.allclose(jnp.logaddexp(log_cdf, log_survival), 0, atol=1e-6)
+
+
+def test_truncated_normal_log_probabilities_handle_boundaries_and_nonfinite_values() -> None:
+    values = jnp.array([-jnp.inf, -1.1, -1.0, 0.25, 2.0, 2.1, jnp.inf, jnp.nan])
+
+    log_cdf = truncated_normal_logcdf(values, 0.0, 1.0, -1.0, 2.0)
+    log_survival = truncated_normal_logsf(values, 0.0, 1.0, -1.0, 2.0)
+
+    assert jnp.all(jnp.isneginf(log_cdf[:3]))
+    assert jnp.isfinite(log_cdf[3])
+    assert jnp.all(log_cdf[4:7] == 0)
+    assert jnp.isnan(log_cdf[7])
+    assert jnp.all(log_survival[:3] == 0)
+    assert jnp.isfinite(log_survival[3])
+    assert jnp.all(jnp.isneginf(log_survival[4:7]))
+    assert jnp.isnan(log_survival[7])
+
+
+@pytest.mark.parametrize("function", [truncated_normal_logcdf, truncated_normal_logsf])
+def test_truncated_normal_log_probabilities_reject_invalid_parameters(function) -> None:
+    locations = jnp.array([jnp.inf, -jnp.inf, jnp.nan])
+    scales = jnp.array([0.0, -1.0, jnp.inf, jnp.nan])
+    lowers = jnp.array([0.0, 1.0, jnp.nan, jnp.inf, -jnp.inf])
+    uppers = jnp.array([0.0, 0.0, 1.0, jnp.inf, -jnp.inf])
+
+    invalid_locations = function(100.0, locations, 1.0, -1.0, 1.0)
+    invalid_scales = function(100.0, 0.0, scales, -1.0, 1.0)
+    invalid_bounds = function(100.0, 0.0, 1.0, lowers, uppers)
+
+    assert jnp.all(jnp.isnan(invalid_locations))
+    assert jnp.all(jnp.isnan(invalid_scales))
+    assert jnp.all(jnp.isnan(invalid_bounds))
+
+
+def test_untruncated_log_probabilities_reduce_to_normal() -> None:
+    values = jnp.array([-6.0, -0.5, 0.0, 1.5, 8.0])
+
+    log_cdf = truncated_normal_logcdf(values, 0.5, 1.7, -jnp.inf, jnp.inf)
+    log_survival = truncated_normal_logsf(values, 0.5, 1.7, -jnp.inf, jnp.inf)
+
+    assert jnp.allclose(log_cdf, normal_logcdf(values, 0.5, 1.7), rtol=3e-6, atol=0)
+    assert jnp.allclose(log_survival, normal_logsf(values, 0.5, 1.7), rtol=3e-6, atol=0)
+
+
+@pytest.mark.parametrize(
+    ("function", "upper_tail"),
+    [
+        pytest.param(truncated_normal_logcdf, False, id="logcdf"),
+        pytest.param(truncated_normal_logsf, True, id="logsf"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("arguments", "rtol"),
+    [
+        pytest.param(jnp.array([0.4, -0.3, 1.7, -1.2, 2.4]), 3e-5, id="two-sided"),
+        pytest.param(jnp.array([6.05, 0.0, 1.0, 6.0, 6.1]), 1e-3, id="same-side-tail"),
+        pytest.param(jnp.array([2.0, 0.0, 1.0, 1.0, jnp.inf]), 3e-5, id="lower-bound"),
+        pytest.param(jnp.array([-2.0, 0.0, 1.0, -jnp.inf, -1.0]), 3e-5, id="upper-bound"),
+        pytest.param(jnp.array([0.25, 0.0, 1.0, -jnp.inf, jnp.inf]), 3e-5, id="untruncated"),
+    ],
+)
+def test_truncated_normal_log_probability_derivatives_match_closed_form(
+    function,
+    upper_tail: bool,
+    arguments: jax.Array,
+    rtol: float,
+) -> None:
+    expected = _scipy_log_probability_gradient(arguments, upper_tail=upper_tail)
+
+    def evaluate(current):
+        return function(*current)
+
+    forward = jax.jit(jax.jacfwd(evaluate))(arguments)
+    reverse = jax.jit(jax.jacrev(evaluate))(arguments)
+
+    np.testing.assert_allclose(forward, expected, rtol=rtol, atol=1e-4)
+    np.testing.assert_allclose(reverse, expected, rtol=rtol, atol=1e-4)
+
+
+@pytest.mark.parametrize("function", [truncated_normal_logcdf, truncated_normal_logsf])
+def test_truncated_normal_log_probabilities_support_higher_order_tail_derivatives(function) -> None:
+    arguments = jnp.array([6.05, 0.0, 1.0, 6.0, 6.1])
+
+    def evaluate(current):
+        return function(*current)
+
+    reverse_over_reverse = jax.jit(jax.jacrev(jax.grad(evaluate)))(arguments)
+    forward_over_reverse = jax.jit(jax.hessian(evaluate))(arguments)
+
+    assert jnp.all(jnp.isfinite(reverse_over_reverse))
+    np.testing.assert_allclose(reverse_over_reverse, forward_over_reverse, rtol=3e-5, atol=3e-4)
+
+
+def test_truncated_normal_logcdf_preserves_higher_derivatives_near_the_upper_bound() -> None:
+    arguments = jnp.array([19.999998, 0.0, 1.0, -1.0, 20.0])
+
+    def evaluate(current):
+        return truncated_normal_logcdf(*current)
+
+    result = jax.jit(jax.hessian(evaluate))(arguments)
+
+    assert jnp.all(jnp.isfinite(result))
+
+
+@pytest.mark.parametrize(
+    ("function", "upper_tail"),
+    [
+        pytest.param(truncated_normal_logcdf, False, id="logcdf"),
+        pytest.param(truncated_normal_logsf, True, id="logsf"),
+    ],
+)
+def test_truncated_normal_log_probabilities_vectorize_gradients_over_mixed_bounds(
+    function,
+    upper_tail: bool,
+) -> None:
+    arguments = jnp.array(
+        [
+            [0.4, -0.3, 1.7, -1.2, 2.4],
+            [2.0, 0.0, 1.0, 1.0, jnp.inf],
+            [0.25, 0.0, 1.0, -jnp.inf, jnp.inf],
+        ]
+    )
+    expected = np.stack(
+        [_scipy_log_probability_gradient(current, upper_tail=upper_tail) for current in np.asarray(arguments)]
+    )
+
+    def evaluate(current):
+        return function(*current)
+
+    result = jax.jit(jax.vmap(jax.grad(evaluate)))(arguments)
+
+    np.testing.assert_allclose(result, expected, rtol=3e-5, atol=1e-4)
 
 
 def test_truncated_normal_logpdf_handles_support_boundaries_and_nonfinite_values() -> None:
@@ -201,6 +416,77 @@ def _scipy_logpdf(value, location, scale, lower, upper) -> np.ndarray:
         standardized_upper,
         loc=location_array,
         scale=scale_array,
+    )
+
+
+def _scipy_log_probability(value, location, scale, lower, upper, *, upper_tail: bool) -> np.ndarray:
+    value_array = np.asarray(value, dtype=np.float64)
+    location_array = np.asarray(location, dtype=np.float64)
+    scale_array = np.asarray(scale, dtype=np.float64)
+    lower_array = np.asarray(lower, dtype=np.float64)
+    upper_array = np.asarray(upper, dtype=np.float64)
+    standardized_lower = (lower_array - location_array) / scale_array
+    standardized_upper = (upper_array - location_array) / scale_array
+    function = stats.truncnorm.logsf if upper_tail else stats.truncnorm.logcdf
+    return function(
+        value_array,
+        standardized_lower,
+        standardized_upper,
+        loc=location_array,
+        scale=scale_array,
+    )
+
+
+def _scipy_log_probability_gradient(arguments, *, upper_tail: bool) -> np.ndarray:
+    value, location, scale, lower, upper = np.asarray(arguments, dtype=np.float64)
+    standardized_value = (value - location) / scale
+    standardized_lower = (lower - location) / scale
+    standardized_upper = (upper - location) / scale
+    log_density = stats.truncnorm.logpdf(
+        standardized_value,
+        standardized_lower,
+        standardized_upper,
+    )
+    log_cdf = stats.truncnorm.logcdf(
+        standardized_value,
+        standardized_lower,
+        standardized_upper,
+    )
+    log_survival = stats.truncnorm.logsf(
+        standardized_value,
+        standardized_lower,
+        standardized_upper,
+    )
+    lower_log_weight = stats.truncnorm.logpdf(
+        standardized_lower,
+        standardized_lower,
+        standardized_upper,
+    )
+    upper_log_weight = stats.truncnorm.logpdf(
+        standardized_upper,
+        standardized_lower,
+        standardized_upper,
+    )
+
+    if upper_tail:
+        value_derivative = -np.exp(log_density - log_survival)
+        lower_derivative = np.exp(lower_log_weight)
+        upper_derivative = np.exp(upper_log_weight + log_cdf - log_survival)
+    else:
+        value_derivative = np.exp(log_density - log_cdf)
+        lower_derivative = -np.exp(lower_log_weight + log_survival - log_cdf)
+        upper_derivative = -np.exp(upper_log_weight)
+
+    lower_scale_derivative = 0.0 if np.isneginf(standardized_lower) else standardized_lower * lower_derivative
+    upper_scale_derivative = 0.0 if np.isposinf(standardized_upper) else standardized_upper * upper_derivative
+    return np.array(
+        [
+            value_derivative / scale,
+            -(value_derivative + lower_derivative + upper_derivative) / scale,
+            -(standardized_value * value_derivative + lower_scale_derivative + upper_scale_derivative) / scale,
+            lower_derivative / scale,
+            upper_derivative / scale,
+        ]
     )
 
 

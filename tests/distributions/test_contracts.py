@@ -82,7 +82,9 @@ from mmmjax import (
     student_t_logpdf,
     student_t_rng,
     truncated_normal,
+    truncated_normal_logcdf,
     truncated_normal_logpdf,
+    truncated_normal_logsf,
     uniform,
     uniform_logcdf,
     uniform_logpdf,
@@ -208,6 +210,20 @@ def test_probability_functions_use_at_least_float32(dtype, expected_dtype) -> No
         dtype(-1.0),
         dtype(2.0),
     ).dtype == jnp.dtype(expected_dtype)
+    assert truncated_normal_logcdf(
+        values,
+        dtype(0.0),
+        dtype(1.0),
+        dtype(-1.0),
+        dtype(2.0),
+    ).dtype == jnp.dtype(expected_dtype)
+    assert truncated_normal_logsf(
+        values,
+        dtype(0.0),
+        dtype(1.0),
+        dtype(-1.0),
+        dtype(2.0),
+    ).dtype == jnp.dtype(expected_dtype)
     assert uniform_logpdf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert uniform_logcdf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert uniform_logsf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
@@ -251,6 +267,8 @@ def test_probability_functions_promote_integer_inputs_to_float32() -> None:
     assert laplace_logsf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
     assert student_t_logpdf(values, 5, 0, 1).dtype == jnp.dtype(jnp.float32)
     assert truncated_normal_logpdf(values, 0, 1, -1, 2).dtype == jnp.dtype(jnp.float32)
+    assert truncated_normal_logcdf(values, 0, 1, -1, 2).dtype == jnp.dtype(jnp.float32)
+    assert truncated_normal_logsf(values, 0, 1, -1, 2).dtype == jnp.dtype(jnp.float32)
     assert uniform_logpdf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
     assert uniform_logcdf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
     assert uniform_logsf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
@@ -356,6 +374,8 @@ def test_cumulative_functions_follow_jax_default_dtype_for_python_scalars() -> N
     assert inverse_gamma_logsf(1.0, 1.0, 1.0).dtype == expected_dtype
     assert laplace_logcdf(0.0, 0.0, 1.0).dtype == expected_dtype
     assert laplace_logsf(0.0, 0.0, 1.0).dtype == expected_dtype
+    assert truncated_normal_logcdf(0.0, 0.0, 1.0, -1.0, 2.0).dtype == expected_dtype
+    assert truncated_normal_logsf(0.0, 0.0, 1.0, -1.0, 2.0).dtype == expected_dtype
     assert uniform_logcdf(0.5, 0.0, 1.0).dtype == expected_dtype
     assert uniform_logsf(0.5, 0.0, 1.0).dtype == expected_dtype
 
@@ -410,6 +430,8 @@ def test_distribution_functions_support_float64() -> None:
     assert laplace_logsf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert student_t_logpdf(values, 5.0, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert truncated_normal_logpdf(values, 0.0, 1.0, -1.0, 2.0).dtype == jnp.dtype(jnp.float64)
+    assert truncated_normal_logcdf(values, 0.0, 1.0, -1.0, 2.0).dtype == jnp.dtype(jnp.float64)
+    assert truncated_normal_logsf(values, 0.0, 1.0, -1.0, 2.0).dtype == jnp.dtype(jnp.float64)
     assert uniform_logpdf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert uniform_logcdf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert uniform_logsf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
@@ -485,6 +507,8 @@ def test_distribution_functions_support_float64() -> None:
         (student_t, (jnp.array([0.0, 1.0]), 5.0, 0.5, 2.0)),
         (truncated_normal_logpdf, (jnp.array([0.0, 1.0]), 0.5, 2.0, -1.0, 2.0)),
         (truncated_normal, (jnp.array([0.0, 1.0]), 0.5, 2.0, -1.0, 2.0)),
+        (truncated_normal_logcdf, (jnp.array([0.0, 1.0]), 0.5, 2.0, -1.0, 2.0)),
+        (truncated_normal_logsf, (jnp.array([0.0, 1.0]), 0.5, 2.0, -1.0, 2.0)),
         (uniform_logpdf, (jnp.array([0.0, 1.0]), -0.5, 2.0)),
         (uniform, (jnp.array([0.0, 1.0]), -0.5, 2.0)),
         (uniform_logcdf, (jnp.array([0.0, 1.0]), -0.5, 2.0)),
@@ -830,6 +854,8 @@ def test_rng_rejects_negative_sample_shape() -> None:
         (student_t_logpdf, (0.0, 5.0 + 0.0j, 0.0, 1.0), "degrees_of_freedom"),
         (student_t_rng, (jax.random.key(0), 5.0, 0.0, 1.0 + 0.0j), "scale"),
         (truncated_normal_logpdf, (0.0, 0.0, 1.0, -1.0 + 0.0j, 1.0), "lower"),
+        (truncated_normal_logcdf, (0.0, 0.0, 1.0, -1.0 + 0.0j, 1.0), "lower"),
+        (truncated_normal_logsf, (0.0, 0.0, 1.0, -1.0 + 0.0j, 1.0), "lower"),
         (uniform_logpdf, (0.0, 0.0 + 0.0j, 1.0), "lower"),
         (uniform_logcdf, (0.0, 0.0 + 0.0j, 1.0), "lower"),
         (uniform_logsf, (0.0, 0.0 + 0.0j, 1.0), "lower"),
