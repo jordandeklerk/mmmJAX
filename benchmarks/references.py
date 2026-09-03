@@ -277,6 +277,28 @@ def _truncated_normal_logpdf(
     )
 
 
+def _truncated_normal_rng(
+    key: jax.Array,
+    location: jax.Array,
+    scale: jax.Array,
+    lower: jax.Array,
+    upper: jax.Array,
+    *,
+    sample_shape: tuple[int, ...] = (),
+) -> jax.Array:
+    shape, dtype = _random_metadata(sample_shape, location, scale, lower, upper)
+    standardized_lower = (lower - location) / scale
+    standardized_upper = (upper - location) / scale
+    standard_samples = jax.random.truncated_normal(
+        key,
+        standardized_lower,
+        standardized_upper,
+        shape=shape,
+        dtype=dtype,
+    )
+    return location + scale * standard_samples
+
+
 def _bernoulli_rng(
     key: jax.Array,
     probability: jax.Array,
@@ -663,7 +685,7 @@ JAX_REFERENCES: dict[str, JaxReference] = {
         logsf=stats.norm.logsf,
     ),
     "student_t": JaxReference(stats.t.logpdf, _student_t_rng),
-    "truncated_normal": JaxReference(_truncated_normal_logpdf, None),
+    "truncated_normal": JaxReference(_truncated_normal_logpdf, _truncated_normal_rng),
     "uniform": JaxReference(
         _uniform_logpdf,
         _uniform_rng,

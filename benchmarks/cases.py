@@ -302,7 +302,6 @@ DISTRIBUTIONS = (
         name="truncated_normal",
         value_range=(-0.5, 0.5),
         parameter_values=(0.2, 1.3, -1.0, 1.0),
-        supports_sampling=False,
     ),
     DistributionSpec(
         name="uniform",

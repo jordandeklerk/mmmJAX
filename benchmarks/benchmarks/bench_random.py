@@ -13,7 +13,7 @@ from benchmarks.common import Arguments, compile_and_warm, synchronize
 class Sampling:
     """Measure synchronized random sampling execution."""
 
-    version = "2"
+    version = "3"
     # Batch short device calls so scheduler noise does not dominate each sample
     number = 100
     repeat = 5
