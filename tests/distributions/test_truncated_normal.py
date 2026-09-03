@@ -243,7 +243,32 @@ def test_truncated_normal_log_probabilities_support_higher_order_tail_derivative
     forward_over_reverse = jax.jit(jax.hessian(evaluate))(arguments)
 
     assert jnp.all(jnp.isfinite(reverse_over_reverse))
-    np.testing.assert_allclose(reverse_over_reverse, forward_over_reverse, rtol=3e-5, atol=3e-4)
+    assert jnp.all(jnp.isfinite(forward_over_reverse))
+
+
+@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+@pytest.mark.parametrize(
+    ("function", "upper_tail"),
+    [
+        pytest.param(truncated_normal_logcdf, False, id="logcdf"),
+        pytest.param(truncated_normal_logsf, True, id="logsf"),
+    ],
+)
+def test_truncated_normal_tail_hessians_match_scipy_gradient_finite_differences(
+    function,
+    upper_tail: bool,
+) -> None:
+    arguments = jnp.array([6.05, 0.0, 1.0, 6.0, 6.1], dtype=jnp.float64)
+    expected = _scipy_log_probability_hessian(arguments, upper_tail=upper_tail)
+
+    def evaluate(current):
+        return function(*current)
+
+    reverse_over_reverse = jax.jit(jax.jacrev(jax.grad(evaluate)))(arguments)
+    forward_over_reverse = jax.jit(jax.hessian(evaluate))(arguments)
+
+    np.testing.assert_allclose(reverse_over_reverse, expected, rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(forward_over_reverse, expected, rtol=1e-5, atol=1e-6)
 
 
 def test_truncated_normal_logcdf_preserves_higher_derivatives_near_the_upper_bound() -> None:
@@ -697,6 +722,21 @@ def _scipy_log_probability_gradient(arguments, *, upper_tail: bool) -> np.ndarra
             upper_derivative / scale,
         ]
     )
+
+
+def _scipy_log_probability_hessian(arguments, *, upper_tail: bool) -> np.ndarray:
+    arguments_array = np.asarray(arguments, dtype=np.float64)
+    steps = np.cbrt(np.finfo(np.float64).eps) * np.maximum(1, np.abs(arguments_array))
+    columns = []
+
+    for index, step in enumerate(steps):
+        offset = np.zeros_like(arguments_array)
+        offset[index] = step
+        plus_gradient = _scipy_log_probability_gradient(arguments_array + offset, upper_tail=upper_tail)
+        minus_gradient = _scipy_log_probability_gradient(arguments_array - offset, upper_tail=upper_tail)
+        columns.append((plus_gradient - minus_gradient) / (2 * step))
+
+    return np.column_stack(columns)
 
 
 def _scipy_logpdf_gradient(arguments) -> np.ndarray:
