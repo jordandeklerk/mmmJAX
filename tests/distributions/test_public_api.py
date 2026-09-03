@@ -91,6 +91,7 @@ DISTRIBUTION_EXPORTS = [
     "truncated_normal_logcdf",
     "truncated_normal_logpdf",
     "truncated_normal_logsf",
+    "truncated_normal_rng",
     "uniform",
     "uniform_logcdf",
     "uniform_logpdf",

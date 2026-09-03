@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from jax.scipy.stats import truncnorm as jax_truncnorm
-from scipy import stats
+from scipy import special, stats
 
 from mmmjax import (
     normal_logcdf,
@@ -15,7 +15,9 @@ from mmmjax import (
     truncated_normal_logcdf,
     truncated_normal_logpdf,
     truncated_normal_logsf,
+    truncated_normal_rng,
 )
+from mmmjax.distributions._truncated_normal import _inverse_normal_logcdf
 
 
 def test_truncated_normal_logpdf_matches_scipy_across_broadcast_batches() -> None:
@@ -400,6 +402,213 @@ def test_truncated_normal_can_be_vectorized_over_datasets() -> None:
     result = jax.jit(jax.vmap(truncated_normal))(values, locations, scales, lowers, uppers)
 
     np.testing.assert_allclose(result, expected, rtol=3e-6, atol=3e-6)
+
+
+def test_truncated_normal_rng_matches_scipy_quantiles_including_extreme_tails() -> None:
+    locations = jnp.array([0.5, 1.0, -0.3, 0.3, 0.0, 0.0, 0.0, 0.0])
+    scales = jnp.array([1.2, 0.5, 0.8, 1.5, 1.0, 1.0, 1.0, 1.0])
+    lowers = jnp.array([-1.0, 0.99, 0.0, -jnp.inf, -jnp.inf, 10.0, -11.0, 39.0])
+    uppers = jnp.array([2.0, 1.01, jnp.inf, -1.0, jnp.inf, 11.0, -10.0, 40.0])
+    key = jax.random.key(77)
+    sample_size = 4_096
+    minimum_probability = jnp.asarray(np.finfo(locations.dtype).tiny, dtype=locations.dtype)
+
+    unit_samples = np.asarray(
+        jax.random.uniform(
+            key,
+            shape=(sample_size, 8),
+            dtype=locations.dtype,
+            minval=minimum_probability,
+        ),
+        dtype=np.float64,
+    )
+    locations_numpy = np.asarray(locations, dtype=np.float64)
+    scales_numpy = np.asarray(scales, dtype=np.float64)
+    lowers_numpy = np.asarray(lowers, dtype=np.float64)
+    uppers_numpy = np.asarray(uppers, dtype=np.float64)
+    standardized_lowers = (lowers_numpy - locations_numpy) / scales_numpy
+    standardized_uppers = (uppers_numpy - locations_numpy) / scales_numpy
+    expected = stats.truncnorm.ppf(
+        unit_samples,
+        standardized_lowers,
+        standardized_uppers,
+        loc=locations_numpy,
+        scale=scales_numpy,
+    )
+
+    result = truncated_normal_rng(
+        key,
+        locations,
+        scales,
+        lowers,
+        uppers,
+        sample_shape=(sample_size,),
+    )
+
+    np.testing.assert_allclose(result, expected, rtol=3e-5, atol=3e-5)
+    assert jnp.all(jnp.isfinite(result))
+    assert jnp.all(result[:, jnp.isfinite(lowers)] > lowers[jnp.isfinite(lowers)])
+    assert jnp.all(result[:, jnp.isfinite(uppers)] < uppers[jnp.isfinite(uppers)])
+
+
+@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+def test_inverse_normal_logcdf_matches_scipy_around_tail_approximation_boundary() -> None:
+    log_probabilities = jnp.array([-31.9999, -32.0, -32.0001], dtype=jnp.float64)
+    expected = special.ndtri_exp(np.asarray(log_probabilities))
+
+    result = _inverse_normal_logcdf(log_probabilities)
+
+    np.testing.assert_allclose(result, expected, rtol=2e-14, atol=2e-14)
+
+
+def test_truncated_normal_rng_stays_strictly_inside_narrow_bounds_around_zero() -> None:
+    lowers = jnp.array([0.0, -1e-5])
+    uppers = jnp.array([1e-5, 0.0])
+
+    result = truncated_normal_rng(
+        jax.random.key(13),
+        0.0,
+        1.0,
+        lowers,
+        uppers,
+        sample_shape=(4_096,),
+    )
+
+    # NumPy preserves subnormal endpoint guards that XLA comparisons can flush to zero
+    result_numpy = np.asarray(result)
+    assert np.all(result_numpy > np.asarray(lowers))
+    assert np.all(result_numpy < np.asarray(uppers))
+
+
+def test_truncated_normal_rng_does_not_map_zero_probability_to_an_unbounded_tail() -> None:
+    key = jax.random.key(4)
+    sample_shape = (300_000,)
+    default_uniforms = jax.random.uniform(key, shape=sample_shape, dtype=jnp.float32)
+
+    result = truncated_normal_rng(
+        key,
+        0.0,
+        1.0,
+        -jnp.inf,
+        jnp.inf,
+        sample_shape=sample_shape,
+    )
+
+    assert jnp.any(default_uniforms == 0)
+    assert jnp.all(jnp.isfinite(result))
+    assert jnp.min(result) > -20
+
+
+def test_truncated_normal_rng_uses_broadcast_parameter_shape() -> None:
+    locations = jnp.array([[0.0], [1.0]])
+    scales = jnp.array([0.5, 1.0, 2.0])
+    lowers = jnp.array([[-1.0], [0.0]])
+    uppers = jnp.array([0.5, 2.0, jnp.inf])
+
+    result = truncated_normal_rng(
+        jax.random.key(0),
+        locations,
+        scales,
+        lowers,
+        uppers,
+        sample_shape=(4, 5),
+    )
+
+    assert result.shape == (4, 5, 2, 3)
+    assert jnp.all(jnp.isfinite(result))
+    assert jnp.all(result > lowers)
+    assert jnp.all(result[..., :2] < uppers[:2])
+
+
+def test_truncated_normal_rng_can_be_jitted_with_dynamic_parameters() -> None:
+    locations = jnp.array([0.0, 0.0, 0.0, 0.0])
+    scales = jnp.array([1.0, 1.0, 1.0, 2.0])
+    lowers = jnp.array([-1.0, 10.0, -jnp.inf, -jnp.inf])
+    uppers = jnp.array([2.0, 11.0, -8.0, jnp.inf])
+    key = jax.random.key(5)
+    compiled = jax.jit(
+        lambda current_key, current_location, current_scale, current_lower, current_upper: truncated_normal_rng(
+            current_key,
+            current_location,
+            current_scale,
+            current_lower,
+            current_upper,
+            sample_shape=(32,),
+        )
+    )
+
+    result = compiled(key, locations, scales, lowers, uppers)
+    expected = truncated_normal_rng(key, locations, scales, lowers, uppers, sample_shape=(32,))
+
+    np.testing.assert_allclose(result, expected, rtol=1e-6, atol=1e-6)
+
+
+def test_truncated_normal_rng_has_finite_pathwise_tail_gradients() -> None:
+    key = jax.random.key(5)
+
+    def sample_sum(arguments):
+        return jnp.sum(truncated_normal_rng(key, *arguments, sample_shape=(16,)))
+
+    result = jax.jit(jax.grad(sample_sum))(jnp.array([0.0, 1.0, 6.0, 6.1]))
+
+    assert jnp.all(jnp.isfinite(result))
+
+
+def test_truncated_normal_rng_is_deterministic_for_a_given_key() -> None:
+    key, different_key = jax.random.split(jax.random.key(0))
+
+    first = truncated_normal_rng(key, 0.0, 1.0, 6.0, 6.1, sample_shape=(128,))
+    repeated = truncated_normal_rng(key, 0.0, 1.0, 6.0, 6.1, sample_shape=(128,))
+    different = truncated_normal_rng(different_key, 0.0, 1.0, 6.0, 6.1, sample_shape=(128,))
+
+    assert jnp.array_equal(first, repeated)
+    assert not jnp.array_equal(first, different)
+
+
+def test_truncated_normal_rng_supports_empty_sample_dimension() -> None:
+    result = truncated_normal_rng(
+        jax.random.key(0),
+        jnp.zeros(2),
+        1.0,
+        -1.0,
+        2.0,
+        sample_shape=(0, 3),
+    )
+
+    assert result.shape == (0, 3, 2)
+
+
+def test_truncated_normal_rng_rejects_invalid_parameters() -> None:
+    locations = jnp.array([0.0, jnp.inf, 0.0, 0.0, 0.0, 0.0, 0.0])
+    scales = jnp.array([1.0, 1.0, 0.0, -1.0, jnp.inf, 1.0, 1.0])
+    lowers = jnp.array([-1.0, -1.0, -1.0, -1.0, -1.0, 0.0, jnp.nan])
+    uppers = jnp.array([1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0])
+
+    result = truncated_normal_rng(
+        jax.random.key(0),
+        locations,
+        scales,
+        lowers,
+        uppers,
+        sample_shape=(4,),
+    )
+
+    assert jnp.all(jnp.isfinite(result[:, 0]))
+    assert jnp.all(jnp.isnan(result[:, 1:]))
+
+
+def test_truncated_normal_rng_rejects_incompatible_parameter_shapes() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"parameter shapes cannot be broadcast together: \(\(2,\), \(3,\), \(\), \(\)\)",
+    ):
+        truncated_normal_rng(
+            jax.random.key(0),
+            jnp.zeros(2),
+            jnp.ones(3),
+            -1.0,
+            1.0,
+        )
 
 
 def _scipy_logpdf(value, location, scale, lower, upper) -> np.ndarray:
