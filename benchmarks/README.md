@@ -5,6 +5,10 @@ performance across numerical workloads. It covers distribution evaluation, gradi
 and tail probabilities across representative model shapes, with separate comparisons against public
 JAX operations.
 
+These workloads cover representative shapes and known numerical edge cases, but they do not replace
+the distribution correctness tests. Implementations can also differ outside the measured inputs
+because mmmJAX applies stricter parameter validation.
+
 ## Running benchmarks
 
 Install and enter the locked benchmark environment from the repository root:
@@ -67,7 +71,7 @@ Generated `.asv` artifacts are ignored by Git. Local machine metadata lives in
 - `bench_density`: Elementwise log probabilities and summed log densities
 - `bench_event`: Dirichlet and Multinomial log probabilities, parameter gradients, and sampling
 - `bench_grad`: Log densities and their parameter gradients
-- `bench_random`: Random sampling
+- `bench_random`: Random sampling for distributions with supported samplers
 - `bench_tail`: Log-CDFs, log-survival functions, and their parameter gradients
 
 The ASV suites use float32 inputs and cover the `vector`, `likelihood`, and `channel_prior`
@@ -181,9 +185,3 @@ Before requesting review, check discovery and run the suite you changed:
 spin asv check -E existing
 spin bench -t bench_tail --quick
 ```
-
-## Scope
-
-These workloads cover representative shapes and known numerical edge cases, but they do not replace
-the distribution correctness tests. Implementations can also differ outside the measured inputs
-because mmmJAX applies stricter parameter validation.

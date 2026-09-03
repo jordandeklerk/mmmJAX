@@ -53,6 +53,8 @@ class _EventBenchmark:
             )
             arguments = event_arguments.log_probability
         elif self.operation_name == "sampling":
+            if functions.rng is None:
+                raise RuntimeError(f"sampling benchmark is unavailable for {distribution_name!r}")
             function = functools.partial(
                 functions.rng,
                 sample_shape=profile.sample_shape,

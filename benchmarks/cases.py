@@ -59,7 +59,7 @@ class DistributionFunctions:
 
     elementwise_log_probability: Kernel
     summed_log_probability: Kernel
-    rng: Kernel
+    rng: Kernel | None
     logcdf: Kernel | None = None
     logsf: Kernel | None = None
 
@@ -75,6 +75,7 @@ class DistributionSpec:
     outcomes: tuple[int, ...] = ()
     supports_concentrated_inputs: bool = False
     supports_tail_inputs: bool = False
+    supports_sampling: bool = True
     gradient_parameter_indices: tuple[int, ...] | None = None
 
     def __post_init__(self) -> None:
@@ -298,6 +299,11 @@ DISTRIBUTIONS = (
         parameter_values=(5.0, 0.2, 1.3),
     ),
     DistributionSpec(
+        name="truncated_normal",
+        value_range=(-0.5, 0.5),
+        parameter_values=(0.2, 1.3, -1.0, 1.0),
+    ),
+    DistributionSpec(
         name="uniform",
         value_range=(-0.5, 0.5),
         parameter_values=(-1.0, 1.0),
@@ -340,7 +346,7 @@ MMM_JAX_FUNCTIONS: dict[str, DistributionFunctions] = {
     distribution.name: DistributionFunctions(
         _distribution_function(f"{distribution.name}_{distribution.log_probability_operation}"),
         _distribution_function(distribution.name),
-        _distribution_function(f"{distribution.name}_rng"),
+        _distribution_function(f"{distribution.name}_rng") if distribution.supports_sampling else None,
         logcdf=(_distribution_function(f"{distribution.name}_logcdf") if distribution.supports_tail_inputs else None),
         logsf=_distribution_function(f"{distribution.name}_logsf") if distribution.supports_tail_inputs else None,
     )

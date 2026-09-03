@@ -81,6 +81,11 @@ from mmmjax import (
     student_t,
     student_t_logpdf,
     student_t_rng,
+    truncated_normal,
+    truncated_normal_logcdf,
+    truncated_normal_logpdf,
+    truncated_normal_logsf,
+    truncated_normal_rng,
     uniform,
     uniform_logcdf,
     uniform_logpdf,
@@ -112,6 +117,7 @@ from mmmjax import (
         (inverse_gamma, (jnp.empty((0,)), 1.0, 1.0)),
         (laplace, (jnp.empty((0,)), 0.0, 1.0)),
         (student_t, (jnp.empty((0,)), 5.0, 0.0, 1.0)),
+        (truncated_normal, (jnp.empty((0,)), 0.0, 1.0, -1.0, 1.0)),
         (uniform, (jnp.empty((0,)), 0.0, 1.0)),
     ],
 )
@@ -145,6 +151,7 @@ def test_log_density_of_empty_batch_is_scalar_zero(log_density, arguments) -> No
         (inverse_gamma, (jnp.empty((0,)), 0.0, 1.0)),
         (laplace, (jnp.empty((0,)), 0.0, 0.0)),
         (student_t, (jnp.empty((0,)), 0.0, 0.0, 1.0)),
+        (truncated_normal, (jnp.empty((0,)), 0.0, 0.0, -1.0, 1.0)),
         (uniform, (jnp.empty((0,)), 0.0, 0.0)),
     ],
 )
@@ -197,6 +204,27 @@ def test_probability_functions_use_at_least_float32(dtype, expected_dtype) -> No
     assert laplace_logcdf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert laplace_logsf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert student_t_logpdf(values, dtype(5.0), dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
+    assert truncated_normal_logpdf(
+        values,
+        dtype(0.0),
+        dtype(1.0),
+        dtype(-1.0),
+        dtype(2.0),
+    ).dtype == jnp.dtype(expected_dtype)
+    assert truncated_normal_logcdf(
+        values,
+        dtype(0.0),
+        dtype(1.0),
+        dtype(-1.0),
+        dtype(2.0),
+    ).dtype == jnp.dtype(expected_dtype)
+    assert truncated_normal_logsf(
+        values,
+        dtype(0.0),
+        dtype(1.0),
+        dtype(-1.0),
+        dtype(2.0),
+    ).dtype == jnp.dtype(expected_dtype)
     assert uniform_logpdf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert uniform_logcdf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert uniform_logsf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
@@ -239,44 +267,70 @@ def test_probability_functions_promote_integer_inputs_to_float32() -> None:
     assert laplace_logcdf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
     assert laplace_logsf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
     assert student_t_logpdf(values, 5, 0, 1).dtype == jnp.dtype(jnp.float32)
+    assert truncated_normal_logpdf(values, 0, 1, -1, 2).dtype == jnp.dtype(jnp.float32)
+    assert truncated_normal_logcdf(values, 0, 1, -1, 2).dtype == jnp.dtype(jnp.float32)
+    assert truncated_normal_logsf(values, 0, 1, -1, 2).dtype == jnp.dtype(jnp.float32)
     assert uniform_logpdf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
     assert uniform_logcdf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
     assert uniform_logsf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
 
 
 @pytest.mark.parametrize(
-    ("logpdf", "logpdf_arguments", "rng", "rng_arguments"),
+    ("logpdf", "arguments"),
     [
-        pytest.param(normal_logpdf, (0.0, 0.0, 1.0), normal_rng, (0.0, 1.0), id="normal"),
-        pytest.param(half_normal_logpdf, (0.0, 1.0), half_normal_rng, (1.0,), id="half-normal"),
-        pytest.param(lognormal_logpdf, (1.0, 0.0, 1.0), lognormal_rng, (0.0, 1.0), id="lognormal"),
-        pytest.param(exponential_logpdf, (1.0, 1.0), exponential_rng, (1.0,), id="exponential"),
-        pytest.param(gamma_logpdf, (1.0, 1.0, 1.0), gamma_rng, (1.0, 1.0), id="gamma"),
-        pytest.param(beta_logpdf, (0.5, 1.0, 1.0), beta_rng, (1.0, 1.0), id="beta"),
-        pytest.param(cauchy_logpdf, (0.0, 0.0, 1.0), cauchy_rng, (0.0, 1.0), id="cauchy"),
+        pytest.param(normal_logpdf, (0.0, 0.0, 1.0), id="normal"),
+        pytest.param(half_normal_logpdf, (0.0, 1.0), id="half-normal"),
+        pytest.param(lognormal_logpdf, (1.0, 0.0, 1.0), id="lognormal"),
+        pytest.param(exponential_logpdf, (1.0, 1.0), id="exponential"),
+        pytest.param(gamma_logpdf, (1.0, 1.0, 1.0), id="gamma"),
+        pytest.param(beta_logpdf, (0.5, 1.0, 1.0), id="beta"),
+        pytest.param(cauchy_logpdf, (0.0, 0.0, 1.0), id="cauchy"),
         pytest.param(
             inverse_gamma_logpdf,
             (1.0, 1.0, 1.0),
-            inverse_gamma_rng,
-            (1.0, 1.0),
             id="inverse-gamma",
         ),
-        pytest.param(laplace_logpdf, (0.0, 0.0, 1.0), laplace_rng, (0.0, 1.0), id="laplace"),
+        pytest.param(laplace_logpdf, (0.0, 0.0, 1.0), id="laplace"),
         pytest.param(
             student_t_logpdf,
             (0.0, 5.0, 0.0, 1.0),
-            student_t_rng,
-            (5.0, 0.0, 1.0),
             id="student-t",
         ),
-        pytest.param(uniform_logpdf, (0.5, 0.0, 1.0), uniform_rng, (0.0, 1.0), id="uniform"),
+        pytest.param(
+            truncated_normal_logpdf,
+            (0.0, 0.0, 1.0, -1.0, 1.0),
+            id="truncated-normal",
+        ),
+        pytest.param(uniform_logpdf, (0.5, 0.0, 1.0), id="uniform"),
     ],
 )
-def test_python_scalar_inputs_follow_jax_default_dtype(logpdf, logpdf_arguments, rng, rng_arguments) -> None:
+def test_python_scalar_density_inputs_follow_jax_default_dtype(logpdf, arguments) -> None:
     expected_dtype = jnp.asarray(0.0).dtype
 
-    assert logpdf(*logpdf_arguments).dtype == expected_dtype
-    assert rng(jax.random.key(0), *rng_arguments).dtype == expected_dtype
+    assert logpdf(*arguments).dtype == expected_dtype
+
+
+@pytest.mark.parametrize(
+    ("rng", "arguments"),
+    [
+        pytest.param(normal_rng, (0.0, 1.0), id="normal"),
+        pytest.param(half_normal_rng, (1.0,), id="half-normal"),
+        pytest.param(lognormal_rng, (0.0, 1.0), id="lognormal"),
+        pytest.param(exponential_rng, (1.0,), id="exponential"),
+        pytest.param(gamma_rng, (1.0, 1.0), id="gamma"),
+        pytest.param(beta_rng, (1.0, 1.0), id="beta"),
+        pytest.param(cauchy_rng, (0.0, 1.0), id="cauchy"),
+        pytest.param(inverse_gamma_rng, (1.0, 1.0), id="inverse-gamma"),
+        pytest.param(laplace_rng, (0.0, 1.0), id="laplace"),
+        pytest.param(student_t_rng, (5.0, 0.0, 1.0), id="student-t"),
+        pytest.param(truncated_normal_rng, (0.0, 1.0, -1.0, 2.0), id="truncated-normal"),
+        pytest.param(uniform_rng, (0.0, 1.0), id="uniform"),
+    ],
+)
+def test_python_scalar_rng_inputs_follow_jax_default_dtype(rng, arguments) -> None:
+    expected_dtype = jnp.asarray(0.0).dtype
+
+    assert rng(jax.random.key(0), *arguments).dtype == expected_dtype
 
 
 def test_discrete_python_scalars_follow_probability_and_sample_dtypes() -> None:
@@ -322,6 +376,8 @@ def test_cumulative_functions_follow_jax_default_dtype_for_python_scalars() -> N
     assert inverse_gamma_logsf(1.0, 1.0, 1.0).dtype == expected_dtype
     assert laplace_logcdf(0.0, 0.0, 1.0).dtype == expected_dtype
     assert laplace_logsf(0.0, 0.0, 1.0).dtype == expected_dtype
+    assert truncated_normal_logcdf(0.0, 0.0, 1.0, -1.0, 2.0).dtype == expected_dtype
+    assert truncated_normal_logsf(0.0, 0.0, 1.0, -1.0, 2.0).dtype == expected_dtype
     assert uniform_logcdf(0.5, 0.0, 1.0).dtype == expected_dtype
     assert uniform_logsf(0.5, 0.0, 1.0).dtype == expected_dtype
 
@@ -375,6 +431,9 @@ def test_distribution_functions_support_float64() -> None:
     assert laplace_logcdf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert laplace_logsf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert student_t_logpdf(values, 5.0, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
+    assert truncated_normal_logpdf(values, 0.0, 1.0, -1.0, 2.0).dtype == jnp.dtype(jnp.float64)
+    assert truncated_normal_logcdf(values, 0.0, 1.0, -1.0, 2.0).dtype == jnp.dtype(jnp.float64)
+    assert truncated_normal_logsf(values, 0.0, 1.0, -1.0, 2.0).dtype == jnp.dtype(jnp.float64)
     assert uniform_logpdf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert uniform_logcdf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert uniform_logsf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
@@ -388,6 +447,13 @@ def test_distribution_functions_support_float64() -> None:
     assert inverse_gamma_rng(key, jnp.float64(1.0), jnp.float64(1.0)).dtype == jnp.dtype(jnp.float64)
     assert laplace_rng(key, jnp.float64(0.0), jnp.float64(1.0)).dtype == jnp.dtype(jnp.float64)
     assert student_t_rng(key, jnp.float64(5.0), jnp.float64(0.0), jnp.float64(1.0)).dtype == jnp.dtype(jnp.float64)
+    assert truncated_normal_rng(
+        key,
+        jnp.float64(0.0),
+        jnp.float64(1.0),
+        jnp.float64(-1.0),
+        jnp.float64(2.0),
+    ).dtype == jnp.dtype(jnp.float64)
     assert uniform_rng(key, jnp.float64(0.0), jnp.float64(1.0)).dtype == jnp.dtype(jnp.float64)
 
 
@@ -448,6 +514,10 @@ def test_distribution_functions_support_float64() -> None:
         (laplace_logsf, (jnp.array([0.0, 1.0]), 0.5, 2.0)),
         (student_t_logpdf, (jnp.array([0.0, 1.0]), 5.0, 0.5, 2.0)),
         (student_t, (jnp.array([0.0, 1.0]), 5.0, 0.5, 2.0)),
+        (truncated_normal_logpdf, (jnp.array([0.0, 1.0]), 0.5, 2.0, -1.0, 2.0)),
+        (truncated_normal, (jnp.array([0.0, 1.0]), 0.5, 2.0, -1.0, 2.0)),
+        (truncated_normal_logcdf, (jnp.array([0.0, 1.0]), 0.5, 2.0, -1.0, 2.0)),
+        (truncated_normal_logsf, (jnp.array([0.0, 1.0]), 0.5, 2.0, -1.0, 2.0)),
         (uniform_logpdf, (jnp.array([0.0, 1.0]), -0.5, 2.0)),
         (uniform, (jnp.array([0.0, 1.0]), -0.5, 2.0)),
         (uniform_logcdf, (jnp.array([0.0, 1.0]), -0.5, 2.0)),
@@ -481,6 +551,7 @@ def test_rngs_return_scalar_for_scalar_parameters() -> None:
     assert inverse_gamma_rng(key, 1.0, 1.0).shape == ()
     assert laplace_rng(key, 0.0, 1.0).shape == ()
     assert student_t_rng(key, 5.0, 0.0, 1.0).shape == ()
+    assert truncated_normal_rng(key, 0.0, 1.0, -1.0, 2.0).shape == ()
     assert uniform_rng(key, 0.0, 1.0).shape == ()
 
 
@@ -520,6 +591,13 @@ def test_rngs_return_nan_for_invalid_parameters() -> None:
         0.0,
         jnp.array([1.0, 0.0, -1.0, jnp.inf, jnp.nan]),
     )
+    truncated_normal_result = truncated_normal_rng(
+        key,
+        jnp.array([0.0, jnp.inf, 0.0, 0.0]),
+        jnp.array([1.0, 1.0, 0.0, 1.0]),
+        jnp.array([-1.0, -1.0, -1.0, 0.0]),
+        jnp.array([1.0, 1.0, 1.0, 0.0]),
+    )
     uniform_result = uniform_rng(
         key,
         jnp.array([0.0, 0.0, 1.0, -jnp.inf, 0.0]),
@@ -556,6 +634,8 @@ def test_rngs_return_nan_for_invalid_parameters() -> None:
     assert jnp.all(jnp.isnan(student_location_result[1:]))
     assert jnp.isfinite(student_scale_result[0])
     assert jnp.all(jnp.isnan(student_scale_result[1:]))
+    assert jnp.isfinite(truncated_normal_result[0])
+    assert jnp.all(jnp.isnan(truncated_normal_result[1:]))
     assert jnp.isfinite(uniform_result[0])
     assert jnp.all(jnp.isnan(uniform_result[1:]))
 
@@ -612,6 +692,7 @@ def test_rngs_compute_with_float32_for_low_precision_parameters(dtype) -> None:
     inverse_gamma_result = inverse_gamma_rng(key, scale, rate)
     laplace_result = laplace_rng(key, location, scale)
     student_result = student_t_rng(key, degrees, location, scale)
+    truncated_normal_result = truncated_normal_rng(key, location, scale, -1.0, 3.0)
     uniform_result = uniform_rng(key, uniform_lower, uniform_upper)
 
     assert normal_result.dtype == jnp.dtype(jnp.float32)
@@ -628,6 +709,7 @@ def test_rngs_compute_with_float32_for_low_precision_parameters(dtype) -> None:
     assert inverse_gamma_result.dtype == jnp.dtype(jnp.float32)
     assert laplace_result.dtype == jnp.dtype(jnp.float32)
     assert student_result.dtype == jnp.dtype(jnp.float32)
+    assert truncated_normal_result.dtype == jnp.dtype(jnp.float32)
     assert uniform_result.dtype == jnp.dtype(jnp.float32)
     assert jnp.array_equal(normal_result, expected_normal)
     assert jnp.array_equal(half_normal_result, expected_half_normal)
@@ -639,6 +721,16 @@ def test_rngs_compute_with_float32_for_low_precision_parameters(dtype) -> None:
     assert jnp.array_equal(inverse_gamma_result, expected_inverse_gamma)
     assert jnp.array_equal(laplace_result, expected_laplace)
     assert jnp.all(jnp.isfinite(student_result))
+    assert jnp.array_equal(
+        truncated_normal_result,
+        truncated_normal_rng(
+            key,
+            location.astype(jnp.float32),
+            scale.astype(jnp.float32),
+            jnp.float32(-1.0),
+            jnp.float32(3.0),
+        ),
+    )
     assert jnp.array_equal(uniform_result, expected_uniform)
 
 
@@ -658,6 +750,16 @@ def test_rngs_can_be_jitted() -> None:
     compiled_student = jax.jit(
         partial(student_t_rng, degrees_of_freedom=5.0, location=0.0, scale=1.0, sample_shape=(2,))
     )
+    compiled_truncated_normal = jax.jit(
+        partial(
+            truncated_normal_rng,
+            location=0.0,
+            scale=1.0,
+            lower=-1.0,
+            upper=2.0,
+            sample_shape=(2,),
+        )
+    )
     compiled_uniform = jax.jit(partial(uniform_rng, lower=0.0, upper=1.0, sample_shape=(2,)))
 
     assert jnp.array_equal(compiled_bernoulli(key), bernoulli_rng(key, 0.4, sample_shape=(2,)))
@@ -672,6 +774,10 @@ def test_rngs_can_be_jitted() -> None:
     assert jnp.allclose(compiled_inverse_gamma(key), inverse_gamma_rng(key, 2.0, 1.0, sample_shape=(2,)))
     assert jnp.array_equal(compiled_laplace(key), laplace_rng(key, 0.0, 1.0, sample_shape=(2,)))
     assert jnp.allclose(compiled_student(key), student_t_rng(key, 5.0, 0.0, 1.0, sample_shape=(2,)))
+    assert jnp.array_equal(
+        compiled_truncated_normal(key),
+        truncated_normal_rng(key, 0.0, 1.0, -1.0, 2.0, sample_shape=(2,)),
+    )
     assert jnp.array_equal(compiled_uniform(key), uniform_rng(key, 0.0, 1.0, sample_shape=(2,)))
 
 
@@ -690,6 +796,13 @@ def test_rngs_can_be_vectorized_over_keys() -> None:
     inverse_gamma_result = jax.vmap(inverse_gamma_rng, in_axes=(0, None, None))(keys, 2.0, 1.0)
     laplace_result = jax.vmap(laplace_rng, in_axes=(0, None, None))(keys, 0.0, 1.0)
     student_result = jax.vmap(student_t_rng, in_axes=(0, None, None, None))(keys, 5.0, 0.0, 1.0)
+    truncated_normal_result = jax.vmap(truncated_normal_rng, in_axes=(0, None, None, None, None))(
+        keys,
+        0.0,
+        1.0,
+        -1.0,
+        2.0,
+    )
     uniform_result = jax.vmap(uniform_rng, in_axes=(0, None, None))(keys, 0.0, 1.0)
     expected_bernoulli = jnp.stack([bernoulli_rng(key, 0.4) for key in keys])
     expected_bernoulli_logit = jnp.stack([bernoulli_logit_rng(key, 0.2) for key in keys])
@@ -703,6 +816,7 @@ def test_rngs_can_be_vectorized_over_keys() -> None:
     expected_inverse_gamma = jnp.stack([inverse_gamma_rng(key, 2.0, 1.0) for key in keys])
     expected_laplace = jnp.stack([laplace_rng(key, 0.0, 1.0) for key in keys])
     expected_student = jnp.stack([student_t_rng(key, 5.0, 0.0, 1.0) for key in keys])
+    expected_truncated_normal = jnp.stack([truncated_normal_rng(key, 0.0, 1.0, -1.0, 2.0) for key in keys])
     expected_uniform = jnp.stack([uniform_rng(key, 0.0, 1.0) for key in keys])
 
     assert jnp.array_equal(bernoulli_result, expected_bernoulli)
@@ -717,6 +831,7 @@ def test_rngs_can_be_vectorized_over_keys() -> None:
     assert jnp.allclose(inverse_gamma_result, expected_inverse_gamma)
     assert jnp.array_equal(laplace_result, expected_laplace)
     assert jnp.array_equal(student_result, expected_student)
+    assert jnp.array_equal(truncated_normal_result, expected_truncated_normal)
     assert jnp.array_equal(uniform_result, expected_uniform)
 
 
@@ -792,6 +907,10 @@ def test_rng_rejects_negative_sample_shape() -> None:
         (laplace_rng, (jax.random.key(0), 0.0, 1.0 + 0.0j), "scale"),
         (student_t_logpdf, (0.0, 5.0 + 0.0j, 0.0, 1.0), "degrees_of_freedom"),
         (student_t_rng, (jax.random.key(0), 5.0, 0.0, 1.0 + 0.0j), "scale"),
+        (truncated_normal_logpdf, (0.0, 0.0, 1.0, -1.0 + 0.0j, 1.0), "lower"),
+        (truncated_normal_logcdf, (0.0, 0.0, 1.0, -1.0 + 0.0j, 1.0), "lower"),
+        (truncated_normal_logsf, (0.0, 0.0, 1.0, -1.0 + 0.0j, 1.0), "lower"),
+        (truncated_normal_rng, (jax.random.key(0), 0.0, 1.0, -1.0 + 0.0j, 1.0), "lower"),
         (uniform_logpdf, (0.0, 0.0 + 0.0j, 1.0), "lower"),
         (uniform_logcdf, (0.0, 0.0 + 0.0j, 1.0), "lower"),
         (uniform_logsf, (0.0, 0.0 + 0.0j, 1.0), "lower"),

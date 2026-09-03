@@ -72,3 +72,4 @@ docs/source/**/generated/
 /stan
 /math
 /numpy
+/scipy

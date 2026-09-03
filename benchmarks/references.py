@@ -3,6 +3,7 @@
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import cast
 
 import jax
 import jax.numpy as jnp
@@ -17,7 +18,7 @@ class JaxReference:
     """Store equivalent JAX functions for one distribution."""
 
     elementwise_log_probability: Kernel
-    rng: Kernel
+    rng: Kernel | None
     logcdf: Kernel | None = None
     logsf: Kernel | None = None
 
@@ -253,6 +254,49 @@ def _uniform_logsf(
 ) -> jax.Array:
     # Reflecting the CDF avoids cancellation from computing one minus the CDF
     return jnp.log(stats.uniform.cdf(-value, loc=-upper, scale=upper - lower))
+
+
+def _truncated_normal_logpdf(
+    value: jax.Array,
+    location: jax.Array,
+    scale: jax.Array,
+    lower: jax.Array,
+    upper: jax.Array,
+) -> jax.Array:
+    standardized_lower = (lower - location) / scale
+    standardized_upper = (upper - location) / scale
+    return cast(
+        jax.Array,
+        stats.truncnorm.logpdf(
+            value,
+            standardized_lower,
+            standardized_upper,
+            loc=location,
+            scale=scale,
+        ),
+    )
+
+
+def _truncated_normal_rng(
+    key: jax.Array,
+    location: jax.Array,
+    scale: jax.Array,
+    lower: jax.Array,
+    upper: jax.Array,
+    *,
+    sample_shape: tuple[int, ...] = (),
+) -> jax.Array:
+    shape, dtype = _random_metadata(sample_shape, location, scale, lower, upper)
+    standardized_lower = (lower - location) / scale
+    standardized_upper = (upper - location) / scale
+    standard_samples = jax.random.truncated_normal(
+        key,
+        standardized_lower,
+        standardized_upper,
+        shape=shape,
+        dtype=dtype,
+    )
+    return location + scale * standard_samples
 
 
 def _bernoulli_rng(
@@ -641,6 +685,7 @@ JAX_REFERENCES: dict[str, JaxReference] = {
         logsf=stats.norm.logsf,
     ),
     "student_t": JaxReference(stats.t.logpdf, _student_t_rng),
+    "truncated_normal": JaxReference(_truncated_normal_logpdf, _truncated_normal_rng),
     "uniform": JaxReference(
         _uniform_logpdf,
         _uniform_rng,

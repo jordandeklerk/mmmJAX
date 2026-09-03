@@ -93,7 +93,7 @@ def make_operations(
     """Build elementwise, summed, gradient, and sampling operations for one implementation."""
     if sampling_parameters is None:
         sampling_parameters = arguments[1:]
-    return (
+    operations = [
         BenchmarkOperation(
             implementation,
             distribution.log_probability_operation,
@@ -112,13 +112,17 @@ def make_operations(
             jax.value_and_grad(functions.summed_log_probability, argnums=distribution.gradient_argnums),
             arguments,
         ),
-        BenchmarkOperation(
-            implementation,
-            "rng",
-            functools.partial(functions.rng, sample_shape=profile.sample_shape),
-            (jax.random.key(0), *sampling_parameters),
-        ),
-    )
+    ]
+    if functions.rng is not None:
+        operations.append(
+            BenchmarkOperation(
+                implementation,
+                "rng",
+                functools.partial(functions.rng, sample_shape=profile.sample_shape),
+                (jax.random.key(0), *sampling_parameters),
+            )
+        )
+    return tuple(operations)
 
 
 def make_tail_operations(
@@ -366,6 +370,12 @@ def _parse_args() -> argparse.Namespace:
     if arguments.repeats <= 0:
         parser.error("--repeats must be positive")
     selected_operations = set(arguments.operations)
+    selected_distributions = set(arguments.distributions)
+    sampling_distributions = {
+        distribution.name
+        for distribution in distributions
+        if isinstance(distribution, EventDistributionSpec) or distribution.supports_sampling
+    }
     has_default_operation = bool(selected_operations.intersection(DEFAULT_OPERATIONS))
     has_tail_operation = bool(selected_operations.intersection(TAIL_OPERATIONS))
     if "tail" in arguments.inputs and not has_tail_operation:
@@ -382,6 +392,9 @@ def _parse_args() -> argparse.Namespace:
     if has_tail_operation and not TAIL_DISTRIBUTIONS.intersection(arguments.distributions):
         supported = ", ".join(sorted(TAIL_DISTRIBUTIONS))
         parser.error(f"log-CDF and log-survival benchmarks are currently available only for {supported}")
+    if selected_operations == {"rng"} and not selected_distributions.intersection(sampling_distributions):
+        unavailable = ", ".join(arguments.distributions)
+        parser.error(f"RNG benchmarks are unavailable for the selected distributions: {unavailable}")
 
     compares_implementations = len(set(arguments.implementations)) > 1 and any(
         input_set != "concentrated" for input_set in arguments.inputs
@@ -434,6 +447,14 @@ def main() -> None:
         )
     if selects_concentrated_poisson_rng:
         notes.append("Concentrated Poisson RNG is omitted because its float64 rate exceeds the int32 output range")
+    unavailable_sampling_distributions = sorted(
+        distribution.name
+        for distribution in DISTRIBUTIONS
+        if distribution.name in selected_distributions and not distribution.supports_sampling
+    )
+    if "rng" in selected_operations and unavailable_sampling_distributions:
+        unavailable = ", ".join(unavailable_sampling_distributions)
+        notes.append(f"RNG benchmarks are omitted for distributions without supported samplers: {unavailable}")
     unsupported_tail_distributions = selected_distributions - TAIL_DISTRIBUTIONS
     if selected_tail_operations and unsupported_tail_distributions:
         omitted = ", ".join(sorted(unsupported_tail_distributions))

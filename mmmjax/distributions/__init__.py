@@ -83,6 +83,11 @@ from mmmjax.distributions._poisson import poisson_rng as poisson_rng
 from mmmjax.distributions._student_t import student_t as student_t
 from mmmjax.distributions._student_t import student_t_logpdf as student_t_logpdf
 from mmmjax.distributions._student_t import student_t_rng as student_t_rng
+from mmmjax.distributions._truncated_normal import truncated_normal as truncated_normal
+from mmmjax.distributions._truncated_normal import truncated_normal_logcdf as truncated_normal_logcdf
+from mmmjax.distributions._truncated_normal import truncated_normal_logpdf as truncated_normal_logpdf
+from mmmjax.distributions._truncated_normal import truncated_normal_logsf as truncated_normal_logsf
+from mmmjax.distributions._truncated_normal import truncated_normal_rng as truncated_normal_rng
 from mmmjax.distributions._uniform import uniform as uniform
 from mmmjax.distributions._uniform import uniform_logcdf as uniform_logcdf
 from mmmjax.distributions._uniform import uniform_logpdf as uniform_logpdf
@@ -173,6 +178,11 @@ __all__ = [
     "student_t",
     "student_t_logpdf",
     "student_t_rng",
+    "truncated_normal",
+    "truncated_normal_logcdf",
+    "truncated_normal_logpdf",
+    "truncated_normal_logsf",
+    "truncated_normal_rng",
     "uniform",
     "uniform_logcdf",
     "uniform_logpdf",

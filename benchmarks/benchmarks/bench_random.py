@@ -13,12 +13,12 @@ from benchmarks.common import Arguments, compile_and_warm, synchronize
 class Sampling:
     """Measure synchronized random sampling execution."""
 
-    version = "2"
+    version = "3"
     # Batch short device calls so scheduler noise does not dominate each sample
     number = 100
     repeat = 5
     params = (
-        tuple(distribution.name for distribution in DISTRIBUTIONS),
+        tuple(distribution.name for distribution in DISTRIBUTIONS if distribution.supports_sampling),
         ("vector", "likelihood", "channel_prior"),
     )
     param_names = ("distribution", "profile")
@@ -42,8 +42,11 @@ class Sampling:
         )
 
         # The caller owns key advancement, so a fixed key isolates the sampler itself
+        rng = MMM_JAX_FUNCTIONS[distribution_name].rng
+        if rng is None:
+            raise RuntimeError(f"sampling benchmark is unavailable for {distribution_name!r}")
         function = functools.partial(
-            MMM_JAX_FUNCTIONS[distribution_name].rng,
+            rng,
             sample_shape=profile.sample_shape,
         )
         arguments = (jax.random.key(0), *parameters)
