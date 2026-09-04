@@ -15,6 +15,7 @@ from mmmjax import (
     bernoulli_logpmf,
     bernoulli_rng,
 )
+from mmmjax.distributions._bernoulli import bernoulli_logcdf, bernoulli_logsf
 
 
 def test_bernoulli_logpmf_matches_scipy_across_support_and_broadcasting() -> None:
@@ -134,6 +135,113 @@ def test_bernoulli_endpoint_gradients_do_not_use_impossible_log_branches() -> No
 
     assert jnp.array_equal(jax.jit(jax.jacfwd(evaluate))(probabilities), expected)
     assert jnp.array_equal(jax.jit(jax.jacrev(evaluate))(probabilities), expected)
+
+
+@pytest.mark.parametrize(
+    "function, reference", [(bernoulli_logcdf, stats.bernoulli.logcdf), (bernoulli_logsf, stats.bernoulli.logsf)]
+)
+def test_bernoulli_log_tails_match_scipy(function, reference) -> None:
+    values = np.array([[-np.inf], [-1.0], [0.0], [0.5], [1.0], [2.0], [np.inf], [np.nan]])
+    probabilities = np.array([0.0, 0.2, 0.8, 1.0], dtype=np.float32)
+    expected = reference(values, probabilities.astype(np.float64))
+
+    result = function(values, probabilities)
+    compiled = jax.jit(function)(values, probabilities)
+    vectorized = jax.jit(jax.vmap(lambda value: function(value, probabilities)))(values[:, 0])
+
+    assert result.shape == (8, 4)
+    for actual in (result, compiled, vectorized):
+        np.testing.assert_allclose(actual, expected, rtol=3e-6, atol=0, equal_nan=True)
+
+
+def test_bernoulli_log_tails_match_public_jax_and_are_complements() -> None:
+    values = jnp.array([[-jnp.inf], [-1.0], [0.0], [0.5], [1.0], [jnp.inf]])
+    probabilities = jnp.array([0.0, 0.2, 0.8, 1.0])
+    expected_cdf = jax_bernoulli_distribution.cdf(values, probabilities)
+
+    logcdf = bernoulli_logcdf(values, probabilities)
+    logsf = bernoulli_logsf(values, probabilities)
+
+    np.testing.assert_allclose(jnp.exp(logcdf), expected_cdf, rtol=3e-6, atol=0)
+    np.testing.assert_allclose(jnp.exp(logsf), 1 - expected_cdf, rtol=3e-6, atol=0)
+    np.testing.assert_allclose(jnp.logaddexp(logcdf, logsf), 0.0, atol=2e-7)
+
+
+@pytest.mark.parametrize("function", [bernoulli_logcdf, bernoulli_logsf])
+def test_bernoulli_log_tails_reject_invalid_probabilities_before_threshold(function) -> None:
+    values = jnp.array([[-jnp.inf], [-1.0], [0.0], [0.5], [1.0], [jnp.inf]])
+    probabilities = jnp.array([-jnp.inf, -0.1, 1.1, jnp.inf, jnp.nan])
+
+    assert jnp.all(jnp.isnan(jax.jit(function)(values, probabilities)))
+
+
+@pytest.mark.parametrize("function", [bernoulli_logcdf, bernoulli_logsf])
+def test_bernoulli_log_tail_derivatives_match_closed_form(function) -> None:
+    values = jnp.array([-1.0, 0.0, 0.5, 1.0])
+    probability = jnp.asarray(0.3)
+    p = float(probability)
+    slope = -1 / (1 - p) if function is bernoulli_logcdf else 1 / p
+    curvature = -1 / (1 - p) ** 2 if function is bernoulli_logcdf else -1 / p**2
+    expected_gradient = jnp.array([0.0, slope, slope, 0.0])
+    expected_curvature = jnp.array([0.0, curvature, curvature, 0.0])
+
+    def evaluate(current_probability):
+        return function(values, current_probability)
+
+    forward = jax.jit(jax.jacfwd(evaluate))(probability)
+    reverse = jax.jit(jax.jacrev(evaluate))(probability)
+    second = jax.jit(jax.jacfwd(jax.jacrev(evaluate)))(probability)
+
+    np.testing.assert_allclose(forward, expected_gradient, rtol=3e-6, atol=0)
+    np.testing.assert_allclose(reverse, expected_gradient, rtol=3e-6, atol=0)
+    np.testing.assert_allclose(second, expected_curvature, rtol=3e-6, atol=0)
+
+
+@pytest.mark.parametrize("function", [bernoulli_logcdf, bernoulli_logsf])
+@pytest.mark.parametrize("probability", [0.0, 1.0])
+def test_bernoulli_constant_tail_gradients_remain_zero_at_probability_endpoints(function, probability) -> None:
+    values = jnp.array([-jnp.inf, -1.0, 1.0, jnp.inf])
+
+    def evaluate(current_probability):
+        return function(values, current_probability)
+
+    assert jnp.array_equal(jax.jit(jax.jacfwd(evaluate))(probability), jnp.zeros(4))
+    assert jnp.array_equal(jax.jit(jax.jacrev(evaluate))(probability), jnp.zeros(4))
+
+
+@pytest.mark.parametrize(
+    "function, probability, expected", [(bernoulli_logcdf, 0.0, -1.0), (bernoulli_logsf, 1.0, 1.0)]
+)
+def test_bernoulli_certain_tail_has_correct_probability_derivative(function, probability, expected) -> None:
+    assert jax.jit(jax.grad(lambda p: function(0.5, p)))(probability) == expected
+
+
+def test_bernoulli_log_tails_preserve_small_probabilities() -> None:
+    probabilities = np.array([1e-30, 1e-10, 0.5, np.nextafter(np.float32(1), np.float32(0))], dtype=np.float32)
+    expected_logcdf = np.log1p(-probabilities.astype(np.float64))
+    expected_logsf = np.log(probabilities.astype(np.float64))
+
+    np.testing.assert_allclose(jax.jit(bernoulli_logcdf)(0.5, probabilities), expected_logcdf, rtol=3e-6, atol=0)
+    np.testing.assert_allclose(jax.jit(bernoulli_logsf)(0.5, probabilities), expected_logsf, rtol=3e-6, atol=0)
+
+
+@pytest.mark.parametrize("function", [bernoulli_logcdf, bernoulli_logsf])
+def test_bernoulli_log_tails_keep_parameter_dtype_and_empty_shape(function) -> None:
+    values = jnp.asarray([0, 1])
+
+    assert function(values, jnp.float16(0.3)).dtype == jnp.dtype(jnp.float32)
+    assert function(values, jnp.float32(0.3)).dtype == jnp.dtype(jnp.float32)
+    assert function(jnp.empty((0, 1)), jnp.array([0.2, 0.8])).shape == (0, 2)
+    if jax.config.x64_enabled:
+        assert function(values.astype(jnp.float64), jnp.float32(0.3)).dtype == jnp.dtype(jnp.float32)
+        assert function(values, jnp.float64(0.3)).dtype == jnp.dtype(jnp.float64)
+
+
+@pytest.mark.parametrize("function", [bernoulli_logcdf, bernoulli_logsf])
+@pytest.mark.parametrize("arguments, name", [((0.5j, 0.3), "value"), ((0.5, 0.3j), "probability")])
+def test_bernoulli_log_tails_reject_complex_arguments(function, arguments, name) -> None:
+    with pytest.raises(TypeError, match=name):
+        function(*arguments)
 
 
 def test_bernoulli_logit_logpmf_matches_scipy_log_expit() -> None:

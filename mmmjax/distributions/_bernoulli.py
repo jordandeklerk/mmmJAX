@@ -76,6 +76,94 @@ def bernoulli(value: ArrayLike, probability: ArrayLike) -> jax.Array:
     return jnp.sum(bernoulli_logpmf(value, probability))
 
 
+def bernoulli_logcdf(value: ArrayLike, probability: ArrayLike) -> jax.Array:
+    r"""Evaluate the Bernoulli log cumulative distribution function elementwise.
+
+    For threshold :math:`x \in \mathbb{R}` and success probability
+    :math:`p \in [0, 1]`, the log cumulative probability is
+
+    .. math::
+
+        \log P(X \leq x)
+        = \begin{cases}
+            -\infty, & x < 0, \\
+            \log(1 - p), & 0 \leq x < 1, \\
+            0, & x \geq 1.
+          \end{cases}
+
+    Parameters
+    ----------
+    value
+        Thresholds at which to evaluate the cumulative probability.
+        Fractional thresholds are allowed.
+    probability
+        Success probabilities in the closed interval from zero to one.
+
+    Returns
+    -------
+    jax.Array
+        Log cumulative probabilities with the broadcast shape of the arguments.
+        Invalid probabilities or ``nan`` thresholds produce ``nan``.
+    """
+    value_array = _as_real_array("value", value)
+    (probability_array,) = _promote_inexact(("probability", probability))
+    valid_probability = jnp.isfinite(probability_array) & (probability_array >= 0) & (probability_array <= 1)
+    between_outcomes = (value_array >= 0) & (value_array < 1)
+
+    # Constant CDF branches must not differentiate log(0) at a probability endpoint
+    safe_probability = jnp.where(between_outcomes & valid_probability, probability_array, 0.0)
+    log_probability = jnp.where(
+        value_array < 0,
+        -jnp.inf,
+        jnp.where(between_outcomes, jnp.log1p(-safe_probability), 0.0),
+    )
+    return jnp.where(valid_probability & ~jnp.isnan(value_array), log_probability, jnp.nan)
+
+
+def bernoulli_logsf(value: ArrayLike, probability: ArrayLike) -> jax.Array:
+    r"""Evaluate the Bernoulli log survival function elementwise.
+
+    For threshold :math:`x \in \mathbb{R}` and success probability
+    :math:`p \in [0, 1]`, the log survival probability is
+
+    .. math::
+
+        \log P(X > x)
+        = \begin{cases}
+            0, & x < 0, \\
+            \log(p), & 0 \leq x < 1, \\
+            -\infty, & x \geq 1.
+          \end{cases}
+
+    Parameters
+    ----------
+    value
+        Thresholds at which to evaluate the probability of a strictly larger
+        outcome. Fractional thresholds are allowed.
+    probability
+        Success probabilities in the closed interval from zero to one.
+
+    Returns
+    -------
+    jax.Array
+        Log survival probabilities with the broadcast shape of the arguments.
+        Invalid probabilities or ``nan`` thresholds produce ``nan``.
+    """
+    value_array = _as_real_array("value", value)
+    (probability_array,) = _promote_inexact(("probability", probability))
+    valid_probability = jnp.isfinite(probability_array) & (probability_array >= 0) & (probability_array <= 1)
+    between_outcomes = (value_array >= 0) & (value_array < 1)
+
+    # Constant survival branches must not differentiate log(0) at a probability endpoint
+    safe_probability = jnp.where(between_outcomes & valid_probability, probability_array, 1.0)
+    log_probability = jnp.where(
+        value_array < 0,
+        0.0,
+        jnp.where(between_outcomes, jnp.log(safe_probability), -jnp.inf),
+    )
+    return jnp.where(valid_probability & ~jnp.isnan(value_array), log_probability, jnp.nan)
+
+
 def bernoulli_rng(
     key: jax.Array,
     probability: ArrayLike,
