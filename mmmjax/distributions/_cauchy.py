@@ -4,7 +4,6 @@ import math
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 from jax.typing import ArrayLike
 
 from mmmjax.distributions._utils import _promote_inexact, _random_shape
@@ -307,7 +306,7 @@ def _cauchy_logcdf_kernel(
     far_scale = jnp.where(near_location, jnp.ones_like(safe_scale), safe_scale)
     log_scale_ratio = jnp.log(far_scale) - far_log_residual
     scale_ratio = jnp.exp(log_scale_ratio)
-    precision = jnp.asarray(np.finfo(scale_ratio.dtype).eps, dtype=scale_ratio.dtype)
+    precision = jnp.asarray(jnp.finfo(scale_ratio.dtype).eps, dtype=scale_ratio.dtype)
     needs_correction = scale_ratio >= jnp.sqrt(precision)
     safe_ratio = jnp.where(needs_correction, scale_ratio, jnp.ones_like(scale_ratio))
 

@@ -4,7 +4,6 @@ from typing import cast
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 from jax.scipy.special import gammaln, xlogy
 from jax.typing import ArrayLike
 
@@ -455,7 +454,7 @@ def _dirichlet_mean_and_total(
     # Scaling by the largest component keeps the total representable near the dtype limit
     largest_concentration = jnp.max(concentration, axis=-1, keepdims=True)
     reciprocal_limit = jnp.asarray(
-        1 / np.finfo(concentration.dtype).tiny,
+        1 / jnp.finfo(concentration.dtype).tiny,
         dtype=concentration.dtype,
     )
     uses_log_scaling = largest_concentration > reciprocal_limit

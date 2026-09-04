@@ -4,7 +4,6 @@ from typing import cast
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 from jax.scipy.special import log_ndtr, ndtr, ndtri
 from jax.scipy.stats import truncnorm as jax_truncnorm
 from jax.typing import ArrayLike
@@ -326,7 +325,7 @@ def truncated_normal_rng(
     standardized_upper = _standardize_bound(safe_upper, safe_location, safe_scale)
     log_mass = _normal_log_mass(standardized_lower, standardized_upper)
 
-    minimum_probability = jnp.asarray(np.finfo(location_array.dtype).tiny, dtype=location_array.dtype)
+    minimum_probability = jnp.asarray(jnp.finfo(location_array.dtype).tiny, dtype=location_array.dtype)
     unit_samples = jax.random.uniform(
         key,
         shape=output_shape,
@@ -579,7 +578,7 @@ def _inverse_normal_logcdf(log_probability: jax.Array) -> jax.Array:
     # Cephes switches approximation when sqrt(-2 log(p)) reaches 8, or log(p) reaches -32
     far_tail = safe_log_probability < -32
     tail_log_probability = jnp.where(far_tail, safe_log_probability, -32)
-    maximum = jnp.asarray(np.finfo(log_probability.dtype).max, dtype=log_probability.dtype)
+    maximum = jnp.asarray(jnp.finfo(log_probability.dtype).max, dtype=log_probability.dtype)
     direct_root = tail_log_probability >= -maximum / 2
     direct_argument = jnp.where(direct_root, tail_log_probability, -jnp.ones_like(tail_log_probability))
     large_argument = jnp.where(direct_root, -jnp.ones_like(tail_log_probability), tail_log_probability)

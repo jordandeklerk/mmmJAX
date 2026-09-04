@@ -125,6 +125,8 @@ show_column_numbers = true
 disallow_any_generics = true
 disallow_subclassing_any = true
 disallow_untyped_calls = true
+# jax.numpy.finfo is ml_dtypes.finfo, whose constructor is untyped
+untyped_calls_exclude = ["ml_dtypes"]
 disallow_incomplete_defs = true
 check_untyped_defs = true
 disallow_untyped_decorators = true
