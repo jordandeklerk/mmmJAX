@@ -29,7 +29,9 @@ from mmmjax import (
     categorical_logpmf,
     categorical_rng,
     cauchy,
+    cauchy_logcdf,
     cauchy_logpdf,
+    cauchy_logsf,
     cauchy_rng,
     exponential,
     exponential_logcdf,
@@ -197,6 +199,8 @@ def test_probability_functions_use_at_least_float32(dtype, expected_dtype) -> No
     assert gamma_logsf(values + 1, dtype(1.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert beta_logpdf(values, dtype(1.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert cauchy_logpdf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
+    assert cauchy_logcdf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
+    assert cauchy_logsf(values, dtype(0.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert inverse_gamma_logpdf(values + 1, dtype(1.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert inverse_gamma_logcdf(values + 1, dtype(1.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
     assert inverse_gamma_logsf(values + 1, dtype(1.0), dtype(1.0)).dtype == jnp.dtype(expected_dtype)
@@ -260,6 +264,8 @@ def test_probability_functions_promote_integer_inputs_to_float32() -> None:
     assert gamma_logsf(values + 1, 1, 1).dtype == jnp.dtype(jnp.float32)
     assert beta_logpdf(values, 1, 1).dtype == jnp.dtype(jnp.float32)
     assert cauchy_logpdf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
+    assert cauchy_logcdf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
+    assert cauchy_logsf(values, 0, 1).dtype == jnp.dtype(jnp.float32)
     assert inverse_gamma_logpdf(values + 1, 1, 1).dtype == jnp.dtype(jnp.float32)
     assert inverse_gamma_logcdf(values + 1, 1, 1).dtype == jnp.dtype(jnp.float32)
     assert inverse_gamma_logsf(values + 1, 1, 1).dtype == jnp.dtype(jnp.float32)
@@ -372,6 +378,8 @@ def test_cumulative_functions_follow_jax_default_dtype_for_python_scalars() -> N
     assert exponential_logsf(1.0, 1.0).dtype == expected_dtype
     assert gamma_logcdf(1.0, 1.0, 1.0).dtype == expected_dtype
     assert gamma_logsf(1.0, 1.0, 1.0).dtype == expected_dtype
+    assert cauchy_logcdf(0.0, 0.0, 1.0).dtype == expected_dtype
+    assert cauchy_logsf(0.0, 0.0, 1.0).dtype == expected_dtype
     assert inverse_gamma_logcdf(1.0, 1.0, 1.0).dtype == expected_dtype
     assert inverse_gamma_logsf(1.0, 1.0, 1.0).dtype == expected_dtype
     assert laplace_logcdf(0.0, 0.0, 1.0).dtype == expected_dtype
@@ -424,6 +432,8 @@ def test_distribution_functions_support_float64() -> None:
     assert gamma_logsf(values + 1, 1.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert beta_logpdf(values, 1.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert cauchy_logpdf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
+    assert cauchy_logcdf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
+    assert cauchy_logsf(values, 0.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert inverse_gamma_logpdf(values + 1, 1.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert inverse_gamma_logcdf(values + 1, 1.0, 1.0).dtype == jnp.dtype(jnp.float64)
     assert inverse_gamma_logsf(values + 1, 1.0, 1.0).dtype == jnp.dtype(jnp.float64)
@@ -504,6 +514,8 @@ def test_distribution_functions_support_float64() -> None:
         (beta, (jnp.array([0.25, 0.75]), 2.0, 1.5)),
         (cauchy_logpdf, (jnp.array([0.0, 1.0]), 0.5, 2.0)),
         (cauchy, (jnp.array([0.0, 1.0]), 0.5, 2.0)),
+        (cauchy_logcdf, (jnp.array([0.0, 1.0]), 0.5, 2.0)),
+        (cauchy_logsf, (jnp.array([0.0, 1.0]), 0.5, 2.0)),
         (inverse_gamma_logpdf, (jnp.array([0.5, 1.0]), 2.0, 1.5)),
         (inverse_gamma, (jnp.array([0.5, 1.0]), 2.0, 1.5)),
         (inverse_gamma_logcdf, (jnp.array([0.5, 1.0]), 2.0, 1.5)),
@@ -902,6 +914,8 @@ def test_rng_rejects_negative_sample_shape() -> None:
         (gamma_rng, (jax.random.key(0), 1.0, 1.0 + 0.0j), "rate"),
         (beta_rng, (jax.random.key(0), 1.0, 1.0 + 0.0j), "beta"),
         (cauchy_logpdf, (0.0, 0.0, 1.0 + 0.0j), "scale"),
+        (cauchy_logcdf, (0.0, 0.0, 1.0 + 0.0j), "scale"),
+        (cauchy_logsf, (0.0, 0.0, 1.0 + 0.0j), "scale"),
         (cauchy_rng, (jax.random.key(0), 0.0, 1.0 + 0.0j), "scale"),
         (inverse_gamma_rng, (jax.random.key(0), 1.0, 1.0 + 0.0j), "scale"),
         (laplace_rng, (jax.random.key(0), 0.0, 1.0 + 0.0j), "scale"),

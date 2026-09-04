@@ -4,7 +4,6 @@ import math
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 from jax.scipy.special import erf, erfc, log_ndtr
 from jax.typing import ArrayLike
 
@@ -174,7 +173,7 @@ def _half_normal_logcdf_kernel(value: jax.Array, scale: jax.Array) -> jax.Array:
 
     half_log_two_over_pi = jnp.asarray(math.log(2 / math.pi) / 2, dtype=value.dtype)
     # The leading log limit stays finite when erf falls below the dtype's normal range
-    small_threshold = jnp.sqrt(jnp.asarray(np.finfo(value.dtype).tiny, dtype=value.dtype))
+    small_threshold = jnp.sqrt(jnp.asarray(jnp.finfo(value.dtype).tiny, dtype=value.dtype))
     small_logcdf = jnp.log(safe_value) - jnp.log(scale) + half_log_two_over_pi
 
     ordinary_region = (standardized >= small_threshold) & (standardized <= 1)

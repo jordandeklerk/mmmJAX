@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from scipy import stats
 
-from mmmjax import cauchy, cauchy_logpdf, cauchy_rng
+from mmmjax import cauchy, cauchy_logcdf, cauchy_logpdf, cauchy_logsf, cauchy_rng
 
 
 @pytest.mark.parametrize(
@@ -168,6 +168,172 @@ def test_cauchy_sums_broadcast_log_densities() -> None:
 
     assert result.shape == ()
     assert jnp.allclose(result, expected)
+
+
+@pytest.mark.parametrize(
+    ("function", "reference"),
+    [
+        pytest.param(cauchy_logcdf, stats.cauchy.logcdf, id="logcdf"),
+        pytest.param(cauchy_logsf, stats.cauchy.logsf, id="logsf"),
+    ],
+)
+def test_cauchy_log_probabilities_match_scipy(function, reference) -> None:
+    values = np.array([[-np.inf], [-5.0], [0.5], [4.0], [np.inf]], dtype=np.float32)
+    locations = np.array([-2.0, 0.5, 2.3], dtype=np.float32)
+    scales = np.array([0.25, 0.5, 3.0], dtype=np.float32)
+    expected = reference(
+        values.astype(np.float64),
+        loc=locations.astype(np.float64),
+        scale=scales.astype(np.float64),
+    )
+
+    result = function(values, locations, scales)
+    compiled = jax.jit(function)(values, locations, scales)
+
+    assert result.shape == (5, 3)
+    np.testing.assert_allclose(result, expected, rtol=3e-6, atol=3e-7)
+    np.testing.assert_allclose(compiled, expected, rtol=3e-6, atol=3e-7)
+
+
+def test_cauchy_log_probabilities_are_complements() -> None:
+    values = jnp.array([-jnp.inf, -10.0, -1.0, 0.5, 3.0, 12.0, jnp.inf])
+
+    log_cdf = cauchy_logcdf(values, 0.5, 1.75)
+    log_survival = cauchy_logsf(values, 0.5, 1.75)
+
+    assert jnp.allclose(
+        jnp.logaddexp(log_cdf, log_survival),
+        0,
+        atol=jnp.finfo(log_cdf.dtype).eps,
+    )
+    assert jnp.allclose(log_cdf[3], -jnp.log(2))
+    assert jnp.allclose(log_survival[3], -jnp.log(2))
+
+
+@pytest.mark.parametrize(
+    ("function", "value", "reference"),
+    [
+        pytest.param(cauchy_logcdf, -1e8, stats.cauchy.logcdf, id="logcdf-lower-tail"),
+        pytest.param(cauchy_logcdf, 1e8, stats.cauchy.logcdf, id="logcdf-upper-tail"),
+        pytest.param(
+            cauchy_logcdf,
+            -np.finfo(np.float32).max,
+            stats.cauchy.logcdf,
+            id="logcdf-finite-limit",
+        ),
+        pytest.param(cauchy_logsf, -1e8, stats.cauchy.logsf, id="logsf-lower-tail"),
+        pytest.param(cauchy_logsf, 1e8, stats.cauchy.logsf, id="logsf-upper-tail"),
+        pytest.param(
+            cauchy_logsf,
+            np.finfo(np.float32).max,
+            stats.cauchy.logsf,
+            id="logsf-finite-limit",
+        ),
+    ],
+)
+def test_cauchy_log_probabilities_remain_accurate_in_deep_float32_tails(
+    function,
+    value: float,
+    reference,
+) -> None:
+    expected = reference(value)
+
+    result = function(jnp.float32(value), jnp.float32(0), jnp.float32(1))
+    compiled = jax.jit(function)(jnp.float32(value), jnp.float32(0), jnp.float32(1))
+
+    assert jnp.isfinite(result)
+    np.testing.assert_allclose(result, expected, rtol=3e-6, atol=0)
+    np.testing.assert_allclose(compiled, expected, rtol=3e-6, atol=0)
+
+
+def test_cauchy_log_probabilities_handle_opposite_values_at_finite_maximum() -> None:
+    maximum = jnp.asarray(jnp.finfo(jnp.float32).max)
+    values = jnp.array([maximum, -maximum])
+    locations = jnp.array([-maximum, maximum])
+    expected_log_cdf = stats.cauchy.logcdf([2.0, -2.0])
+    expected_log_survival = stats.cauchy.logsf([2.0, -2.0])
+
+    log_cdf = jax.jit(cauchy_logcdf)(values, locations, maximum)
+    log_survival = jax.jit(cauchy_logsf)(values, locations, maximum)
+
+    np.testing.assert_allclose(log_cdf, expected_log_cdf, rtol=3e-6, atol=0)
+    np.testing.assert_allclose(log_survival, expected_log_survival, rtol=3e-6, atol=0)
+
+
+@pytest.mark.parametrize("function", [cauchy_logcdf, cauchy_logsf])
+def test_cauchy_log_probabilities_reject_invalid_parameters(function) -> None:
+    locations = jnp.array([jnp.inf, -jnp.inf, jnp.nan])
+    scales = jnp.array([0.0, -1.0, jnp.inf, -jnp.inf, jnp.nan])
+
+    invalid_locations = function(0.0, locations, 1.0)
+    invalid_scales = function(0.0, 0.0, scales)
+
+    assert jnp.all(jnp.isnan(invalid_locations))
+    assert jnp.all(jnp.isnan(invalid_scales))
+
+
+def test_cauchy_log_probabilities_handle_nonfinite_values() -> None:
+    values = jnp.array([-jnp.inf, jnp.inf, jnp.nan])
+
+    log_cdf = cauchy_logcdf(values, 0.0, 1.0)
+    log_survival = cauchy_logsf(values, 0.0, 1.0)
+
+    assert jnp.isneginf(log_cdf[0])
+    assert log_cdf[1] == 0
+    assert jnp.isnan(log_cdf[2])
+    assert log_survival[0] == 0
+    assert jnp.isneginf(log_survival[1])
+    assert jnp.isnan(log_survival[2])
+
+
+@pytest.mark.parametrize(
+    ("function", "reference", "direction"),
+    [
+        pytest.param(cauchy_logcdf, stats.cauchy.logcdf, 1, id="logcdf"),
+        pytest.param(cauchy_logsf, stats.cauchy.logsf, -1, id="logsf"),
+    ],
+)
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        pytest.param(jnp.array([0.0, 0.0, 1.0]), id="center"),
+        pytest.param(jnp.array([0.4, -0.3, 1.7]), id="central"),
+        pytest.param(jnp.array([5e19, 0.0, 1e20]), id="large-scale"),
+        pytest.param(jnp.array([5e-21, 0.0, 1e-20]), id="small-scale"),
+        pytest.param(jnp.array([-1e8, 0.0, 1.0]), id="lower-tail"),
+        pytest.param(jnp.array([1e8, 0.0, 1.0]), id="upper-tail"),
+        pytest.param(jnp.array([-1e20, 0.0, 1.0]), id="deep-lower-tail"),
+        pytest.param(jnp.array([1e20, 0.0, 1.0]), id="deep-upper-tail"),
+    ],
+)
+def test_cauchy_log_probability_derivatives_match_closed_form(
+    function,
+    reference,
+    direction: int,
+    arguments: jax.Array,
+) -> None:
+    value, location, scale = np.asarray(arguments, dtype=np.float64)
+    standardized = (value - location) / scale
+    log_density = stats.cauchy.logpdf(value, loc=location, scale=scale)
+    log_probability = reference(value, loc=location, scale=scale)
+    density_ratio = np.exp(log_density - log_probability)
+    expected = jnp.array(
+        [
+            direction * density_ratio,
+            -direction * density_ratio,
+            -direction * standardized * density_ratio,
+        ]
+    )
+
+    def evaluate(current):
+        return function(current[0], current[1], current[2])
+
+    forward = jax.jit(jax.jacfwd(evaluate))(arguments)
+    reverse = jax.jit(jax.jacrev(evaluate))(arguments)
+    absolute_tolerance = np.finfo(arguments.dtype).tiny
+
+    np.testing.assert_allclose(forward, expected, rtol=3e-6, atol=absolute_tolerance)
+    np.testing.assert_allclose(reverse, expected, rtol=3e-6, atol=absolute_tolerance)
 
 
 @pytest.mark.parametrize(

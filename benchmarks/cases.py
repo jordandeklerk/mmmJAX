@@ -248,6 +248,7 @@ DISTRIBUTIONS = (
         name="cauchy",
         value_range=(-2.0, 2.0),
         parameter_values=(0.2, 1.3),
+        supports_tail_inputs=True,
     ),
     DistributionSpec(
         name="exponential",
@@ -567,6 +568,18 @@ def make_tail_arguments(
 
         value = scale / scaled_inverse_value.reshape(profile.value_shape)
         return value, shape, scale
+
+    if distribution.name == "cauchy" and input_set == "tail":
+        location, scale = make_parameters(distribution, profile, dtype)
+        negative_log_probability = jnp.linspace(4.0, 32.0, element_count, dtype=dtype)
+        # Inverting the closed-form tail targets the same probability span as lighter-tailed cases
+        tail_probability = jnp.exp(-negative_log_probability)
+        pi = jnp.asarray(math.pi, dtype=dtype)
+        standardized_distance = 1 / jnp.tan(pi * tail_probability)
+        standardized = -standardized_distance if operation == "logcdf" else standardized_distance
+
+        value = location + scale * standardized.reshape(profile.value_shape)
+        return value, location, scale
 
     if distribution.name == "laplace" and input_set == "tail":
         location, scale = make_parameters(distribution, profile, dtype)

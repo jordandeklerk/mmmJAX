@@ -138,10 +138,13 @@ The Multinomial logit reference composes `softmax` with JAX's probability-parame
 - Tail inputs target log probabilities from roughly -4 to -35. Gradient benchmarks sum elementwise
   values and differentiate only distribution parameters, matching the treatment of observed data
   during inference.
+- Cauchy tail inputs invert its closed-form tail probability to cover log probabilities from -4 to
+  -32. Public JAX remains available for ordinary Cauchy inputs but is omitted from the deep-tail
+  comparison because its direct formula loses accuracy through cancellation.
 
-Ordinary tail-probability inputs cover standardized values from -2 to 2 for Laplace, Normal, and
-LogNormal; 0.023 to 2.36 for Half Normal; `rate * value` from 0.1 to 3 for Exponential and 0.5 to 6
-for Gamma; `scale / value` from 0.9 to 7.35 for Inverse Gamma; and probabilities from 0.25 to 0.75
+Ordinary tail-probability inputs cover standardized values from -2 to 2 for Cauchy, Laplace, Normal,
+and LogNormal; 0.023 to 2.36 for Half Normal; `rate * value` from 0.1 to 3 for Exponential and 0.5 to
+6 for Gamma; `scale / value` from 0.9 to 7.35 for Inverse Gamma; and probabilities from 0.25 to 0.75
 for Uniform. Uniform anchors its evaluated endpoint at zero for representable float32 tails. Public
 Laplace and Uniform references compose CDFs and reflected CDFs because JAX does not provide their
 log-CDF or log-survival functions.

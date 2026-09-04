@@ -4,7 +4,6 @@ from typing import cast
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 from jax.scipy.special import gammaln, hyp1f1
 from jax.scipy.stats import gamma as gamma_distribution
 from jax.typing import ArrayLike
@@ -530,7 +529,7 @@ def _gamma_logcdf_kernel(
     )
     log_series_prefix = shape * safe_log_scaled_value - scaled_value - gammaln(shape + 1)
     minimum_normal = jnp.asarray(
-        np.finfo(scaled_value.dtype).tiny,
+        jnp.finfo(scaled_value.dtype).tiny,
         dtype=scaled_value.dtype,
     )
     use_log_series = (
@@ -608,7 +607,7 @@ def _gamma_logsf_kernel(
     log_prefactor = prefix_shape * prefix_log_value - prefix_value - gammaln(prefix_shape)
     first_fraction_log_probability = log_prefactor - jnp.log(prefix_value + 1 - prefix_shape)
     minimum_normal = jnp.asarray(
-        np.finfo(scaled_value.dtype).tiny,
+        jnp.finfo(scaled_value.dtype).tiny,
         dtype=scaled_value.dtype,
     )
     use_continued_fraction = continued_fraction_region & (first_fraction_log_probability < jnp.log(minimum_normal))
@@ -675,7 +674,7 @@ def _gamma_upper_tail_fraction(
     scaled_value: jax.Array,
 ) -> jax.Array:
     minimum_normal = jnp.asarray(
-        np.finfo(scaled_value.dtype).tiny,
+        jnp.finfo(scaled_value.dtype).tiny,
         dtype=scaled_value.dtype,
     )
     denominator = scaled_value + 1 - shape
