@@ -261,6 +261,94 @@ def bernoulli_logit(value: ArrayLike, logits: ArrayLike) -> jax.Array:
     return jnp.sum(bernoulli_logit_logpmf(value, logits))
 
 
+def bernoulli_logit_logcdf(value: ArrayLike, logits: ArrayLike) -> jax.Array:
+    r"""Evaluate the logit-parameterized Bernoulli log CDF elementwise.
+
+    For threshold :math:`x \in \mathbb{R}` and log odds :math:`\eta`,
+    the log cumulative probability is
+
+    .. math::
+
+        \log P(X \leq x)
+        = \begin{cases}
+            -\infty, & x < 0, \\
+            -\log(1 + e^{\eta}), & 0 \leq x < 1, \\
+            0, & x \geq 1.
+          \end{cases}
+
+    Parameters
+    ----------
+    value
+        Thresholds at which to evaluate the cumulative probability.
+        Fractional thresholds are allowed.
+    logits
+        Log odds of success. Infinite logits represent deterministic outcomes.
+
+    Returns
+    -------
+    jax.Array
+        Log cumulative probabilities with the broadcast shape of the arguments.
+        A ``nan`` threshold or logit produces ``nan``.
+    """
+    value_array = _as_real_array("value", value)
+    (logits_array,) = _promote_inexact(("logits", logits))
+    between_outcomes = (value_array >= 0) & (value_array < 1)
+    valid = ~jnp.isnan(value_array) & ~jnp.isnan(logits_array)
+    safe_logits = jnp.where(between_outcomes & valid, logits_array, 0.0)
+
+    # Working in log odds preserves probabilities that sigmoid would round to one
+    log_probability = jnp.where(
+        value_array < 0,
+        -jnp.inf,
+        jnp.where(between_outcomes, jax.nn.log_sigmoid(-safe_logits), 0.0),
+    )
+    return jnp.where(valid, log_probability, jnp.nan)
+
+
+def bernoulli_logit_logsf(value: ArrayLike, logits: ArrayLike) -> jax.Array:
+    r"""Evaluate the logit-parameterized Bernoulli log survival function elementwise.
+
+    For threshold :math:`x \in \mathbb{R}` and log odds :math:`\eta`,
+    the log survival probability is
+
+    .. math::
+
+        \log P(X > x)
+        = \begin{cases}
+            0, & x < 0, \\
+            -\log(1 + e^{-\eta}), & 0 \leq x < 1, \\
+            -\infty, & x \geq 1.
+          \end{cases}
+
+    Parameters
+    ----------
+    value
+        Thresholds at which to evaluate the probability of a strictly larger
+        outcome. Fractional thresholds are allowed.
+    logits
+        Log odds of success. Infinite logits represent deterministic outcomes.
+
+    Returns
+    -------
+    jax.Array
+        Log survival probabilities with the broadcast shape of the arguments.
+        A ``nan`` threshold or logit produces ``nan``.
+    """
+    value_array = _as_real_array("value", value)
+    (logits_array,) = _promote_inexact(("logits", logits))
+    between_outcomes = (value_array >= 0) & (value_array < 1)
+    valid = ~jnp.isnan(value_array) & ~jnp.isnan(logits_array)
+    safe_logits = jnp.where(between_outcomes & valid, logits_array, 0.0)
+
+    # The log-sigmoid keeps rare success probabilities finite even for very negative logits
+    log_probability = jnp.where(
+        value_array < 0,
+        0.0,
+        jnp.where(between_outcomes, jax.nn.log_sigmoid(safe_logits), -jnp.inf),
+    )
+    return jnp.where(valid, log_probability, jnp.nan)
+
+
 def bernoulli_logit_rng(
     key: jax.Array,
     logits: ArrayLike,

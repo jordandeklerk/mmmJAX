@@ -1,10 +1,14 @@
 """Probability functions for transparent JAX model definitions."""
 
 from mmmjax.distributions._bernoulli import bernoulli as bernoulli
+from mmmjax.distributions._bernoulli import bernoulli_logcdf as bernoulli_logcdf
 from mmmjax.distributions._bernoulli import bernoulli_logit as bernoulli_logit
+from mmmjax.distributions._bernoulli import bernoulli_logit_logcdf as bernoulli_logit_logcdf
 from mmmjax.distributions._bernoulli import bernoulli_logit_logpmf as bernoulli_logit_logpmf
+from mmmjax.distributions._bernoulli import bernoulli_logit_logsf as bernoulli_logit_logsf
 from mmmjax.distributions._bernoulli import bernoulli_logit_rng as bernoulli_logit_rng
 from mmmjax.distributions._bernoulli import bernoulli_logpmf as bernoulli_logpmf
+from mmmjax.distributions._bernoulli import bernoulli_logsf as bernoulli_logsf
 from mmmjax.distributions._bernoulli import bernoulli_rng as bernoulli_rng
 from mmmjax.distributions._beta import beta as beta
 from mmmjax.distributions._beta import beta_logpdf as beta_logpdf
@@ -98,10 +102,14 @@ from mmmjax.distributions._uniform import uniform_rng as uniform_rng
 
 __all__ = [
     "bernoulli",
+    "bernoulli_logcdf",
     "bernoulli_logit",
+    "bernoulli_logit_logcdf",
     "bernoulli_logit_logpmf",
+    "bernoulli_logit_logsf",
     "bernoulli_logit_rng",
     "bernoulli_logpmf",
+    "bernoulli_logsf",
     "bernoulli_rng",
     "beta",
     "beta_logpdf",

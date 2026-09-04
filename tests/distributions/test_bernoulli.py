@@ -9,13 +9,16 @@ from scipy import special, stats
 
 from mmmjax import (
     bernoulli,
+    bernoulli_logcdf,
     bernoulli_logit,
+    bernoulli_logit_logcdf,
     bernoulli_logit_logpmf,
+    bernoulli_logit_logsf,
     bernoulli_logit_rng,
     bernoulli_logpmf,
+    bernoulli_logsf,
     bernoulli_rng,
 )
-from mmmjax.distributions._bernoulli import bernoulli_logcdf, bernoulli_logsf
 
 
 def test_bernoulli_logpmf_matches_scipy_across_support_and_broadcasting() -> None:
@@ -242,6 +245,84 @@ def test_bernoulli_log_tails_keep_parameter_dtype_and_empty_shape(function) -> N
 def test_bernoulli_log_tails_reject_complex_arguments(function, arguments, name) -> None:
     with pytest.raises(TypeError, match=name):
         function(*arguments)
+
+
+@pytest.mark.parametrize(
+    "function, probability_function, reference",
+    [
+        (bernoulli_logit_logcdf, bernoulli_logcdf, stats.bernoulli.logcdf),
+        (bernoulli_logit_logsf, bernoulli_logsf, stats.bernoulli.logsf),
+    ],
+)
+def test_bernoulli_logit_tails_match_scipy_and_probability_form(function, probability_function, reference) -> None:
+    values = jnp.array([[-jnp.inf], [-1.0], [0.0], [0.5], [1.0], [2.0], [jnp.inf], [jnp.nan]])
+    logits = jnp.array([-3.0, 0.0, 2.0])
+    probabilities = special.expit(np.asarray(logits, dtype=np.float64))
+    expected = reference(np.asarray(values), probabilities)
+
+    result = function(values, logits)
+    compiled = jax.jit(function)(values, logits)
+    vectorized = jax.jit(jax.vmap(lambda x: function(x, logits)))(values[:, 0])
+    probability_result = probability_function(values, jax.nn.sigmoid(logits))
+
+    for actual in (result, compiled, vectorized, probability_result):
+        np.testing.assert_allclose(actual, expected, rtol=3e-6, atol=0, equal_nan=True)
+
+
+@pytest.mark.parametrize("function, direction", [(bernoulli_logit_logcdf, -1), (bernoulli_logit_logsf, 1)])
+def test_bernoulli_logit_tails_match_log_expit_at_extreme_logits(function, direction) -> None:
+    logits = jnp.array([-jnp.inf, -1000.0, -30.0, 0.0, 30.0, 1000.0, jnp.inf])
+    expected = special.log_expit(direction * np.asarray(logits, dtype=np.float64))
+
+    np.testing.assert_allclose(jax.jit(function)(0.5, logits), expected, rtol=3e-6, atol=0)
+
+
+@pytest.mark.parametrize("function, direction", [(bernoulli_logit_logcdf, -1), (bernoulli_logit_logsf, 1)])
+def test_bernoulli_logit_tail_derivatives_match_closed_form(function, direction) -> None:
+    logits = jnp.array([-jnp.inf, -1000.0, -30.0, -2.0, 0.0, 2.0, 30.0, 1000.0, jnp.inf])
+    eta = np.asarray(logits, dtype=np.float64)
+    expected_gradient = direction * special.expit(-direction * eta)
+    expected_curvature = -special.expit(eta) * special.expit(-eta)
+
+    def evaluate(current):
+        return function(0.5, current)
+
+    forward = jax.jit(jax.vmap(jax.jacfwd(evaluate)))(logits)
+    reverse = jax.jit(jax.vmap(jax.grad(evaluate)))(logits)
+    curvature = jax.jit(jax.vmap(jax.grad(jax.grad(evaluate))))(logits)
+
+    np.testing.assert_allclose(forward, expected_gradient, rtol=3e-6, atol=0)
+    np.testing.assert_allclose(reverse, expected_gradient, rtol=3e-6, atol=0)
+
+    # JAX's logaddexp derivative subtracts logit-sized terms before differentiating again
+    roundoff_scale = np.maximum(1, np.abs(np.where(np.isfinite(eta), eta, 0)))
+    np.testing.assert_allclose(
+        curvature / roundoff_scale,
+        expected_curvature / roundoff_scale,
+        rtol=3e-6,
+        atol=np.finfo(logits.dtype).eps,
+    )
+
+
+@pytest.mark.parametrize("function", [bernoulli_logit_logcdf, bernoulli_logit_logsf])
+def test_bernoulli_logit_tails_preserve_constant_branches_at_infinite_logits(function) -> None:
+    values = jnp.array([-jnp.inf, -1.0, 1.0, jnp.inf])
+    logits = jnp.array([-jnp.inf, jnp.inf, -jnp.inf, jnp.inf])
+    expected = (
+        jnp.array([-jnp.inf, -jnp.inf, 0.0, 0.0])
+        if function is bernoulli_logit_logcdf
+        else jnp.array([0.0, 0.0, -jnp.inf, -jnp.inf])
+    )
+
+    def evaluate(current):
+        return function(values, current)
+
+    np.testing.assert_array_equal(jax.jit(evaluate)(logits), expected)
+    np.testing.assert_array_equal(jax.jit(jax.jacfwd(evaluate))(logits), jnp.zeros((4, 4)))
+    np.testing.assert_array_equal(jax.jit(jax.jacrev(evaluate))(logits), jnp.zeros((4, 4)))
+    assert jnp.all(jnp.isnan(function(values, jnp.nan)))
+    with pytest.raises(TypeError, match="value"):
+        function(0.5j, 0.0)
 
 
 def test_bernoulli_logit_logpmf_matches_scipy_log_expit() -> None:
