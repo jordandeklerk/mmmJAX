@@ -130,6 +130,12 @@ The Multinomial logit reference composes `softmax` with JAX's probability-parame
 
 - Discrete inputs cycle valid outcomes across the sample and parameter dimensions. The Negative
   Binomial sampling reference composes public Gamma and Poisson random functions.
+- Bernoulli tail benchmarks use thresholds between 0 and 1 and vary the parameters across batches.
+  The scalar-parameter profile uses the deepest selected tail. Probability inputs use powers of two
+  to avoid rounding the CDF's success probability to one: float32 log-CDF cases reach about -16,
+  while log-survival and float64 cases reach about -32. Logit inputs cover -4 to -32 in either tail.
+  Ordinary inputs use the configured success probability or logit. JAX references compose public
+  Bernoulli log masses or `log_sigmoid` with the step-function boundaries.
 - Concentrated Poisson inputs span roughly two standard deviations around rates of `1e7` for
   float32 and `1e15` for float64. They remain exactly representable while exposing cancellation near
   the mode. Public JAX timings are omitted because its direct calculation is not numerically

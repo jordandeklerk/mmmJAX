@@ -365,6 +365,52 @@ def test_bernoulli_log_probability_references_match_public_operations() -> None:
     )
 
 
+@pytest.mark.parametrize("name", ["bernoulli", "bernoulli_logit"])
+@pytest.mark.parametrize("operation", ["logcdf", "logsf"])
+@pytest.mark.parametrize("input_set", ["ordinary", "tail"])
+@pytest.mark.parametrize("profile_name", ["vector", "channel_prior"])
+def test_bernoulli_benchmark_tails_match_scipy_and_jax(name, operation, input_set, profile_name) -> None:
+    profile = PROFILES[profile_name]
+    dtype = jnp.asarray(0.0).dtype
+    values, parameter = make_tail_arguments(DISTRIBUTIONS_BY_NAME[name], profile, input_set, operation, dtype)
+    implementation = getattr(mmmjax, f"{name}_{operation}")
+    reference = getattr(JAX_REFERENCES[name], operation)
+    assert reference is not None
+    assert values.shape == profile.value_shape
+    assert parameter.shape == profile.parameter_shape
+
+    parameter64 = np.asarray(parameter, dtype=np.float64)
+    if name == "bernoulli_logit":
+        # log_expit avoids rounding away tiny failure probabilities in the SciPy oracle
+        expected_log = special.log_expit(-parameter64 if operation == "logcdf" else parameter64)
+        expected_gradient = -special.expit(parameter64) if operation == "logcdf" else special.expit(-parameter64)
+    else:
+        expected_log = getattr(stats.bernoulli, operation)(0, parameter64)
+        expected_gradient = -1 / (1 - parameter64) if operation == "logcdf" else 1 / parameter64
+
+    expected = np.broadcast_to(expected_log, profile.value_shape)
+    expected_gradient = expected_gradient * math.prod(profile.sample_shape)
+    result = jax.jit(implementation)(values, parameter)
+    jax_result = jax.jit(reference)(values, parameter)
+
+    def summed(function, current_parameter):
+        return jnp.sum(function(values, current_parameter))
+
+    gradient = jax.jit(jax.grad(partial(summed, implementation)))(parameter)
+    jax_gradient = jax.jit(jax.grad(partial(summed, reference)))(parameter)
+
+    _assert_close(result, expected)
+    _assert_close(result, jax_result)
+    _assert_close(gradient, expected_gradient)
+    _assert_close(gradient, jax_gradient)
+    if input_set == "tail":
+        assert np.all(np.isfinite(expected))
+        assert np.all(expected < -3.9)
+        assert np.min(expected) < (
+            -15 if name == "bernoulli" and operation == "logcdf" and dtype == jnp.float32 else -31
+        )
+
+
 def test_bernoulli_rng_references_match_public_operations() -> None:
     probabilities = jnp.array([0.0, 0.2, 0.8, 1.0])
     logits = jnp.array([-17.0, 0.0, 17.0])

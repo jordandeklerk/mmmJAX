@@ -32,6 +32,24 @@ def _bernoulli_logit_logpmf(value: jax.Array, logits: jax.Array) -> jax.Array:
     return jax.nn.log_sigmoid(signed_logits)
 
 
+def _bernoulli_logcdf(value: jax.Array, probability: jax.Array) -> jax.Array:
+    log_failure = stats.bernoulli.logpmf(jnp.zeros_like(value), probability)
+    return jnp.where(value < 0, -jnp.inf, jnp.where(value < 1, log_failure, 0.0))
+
+
+def _bernoulli_logsf(value: jax.Array, probability: jax.Array) -> jax.Array:
+    log_success = stats.bernoulli.logpmf(jnp.ones_like(value), probability)
+    return jnp.where(value < 0, 0.0, jnp.where(value < 1, log_success, -jnp.inf))
+
+
+def _bernoulli_logit_logcdf(value: jax.Array, logits: jax.Array) -> jax.Array:
+    return jnp.where(value < 0, -jnp.inf, jnp.where(value < 1, jax.nn.log_sigmoid(-logits), 0.0))
+
+
+def _bernoulli_logit_logsf(value: jax.Array, logits: jax.Array) -> jax.Array:
+    return jnp.where(value < 0, 0.0, jnp.where(value < 1, jax.nn.log_sigmoid(logits), -jnp.inf))
+
+
 def _binomial_logit_logpmf(
     value: jax.Array,
     trials: jax.Array,
@@ -624,8 +642,10 @@ def _select_categorical_log_probability(value: jax.Array, log_probabilities: jax
 
 
 JAX_REFERENCES: dict[str, JaxReference] = {
-    "bernoulli": JaxReference(stats.bernoulli.logpmf, _bernoulli_rng),
-    "bernoulli_logit": JaxReference(_bernoulli_logit_logpmf, _bernoulli_logit_rng),
+    "bernoulli": JaxReference(stats.bernoulli.logpmf, _bernoulli_rng, logcdf=_bernoulli_logcdf, logsf=_bernoulli_logsf),
+    "bernoulli_logit": JaxReference(
+        _bernoulli_logit_logpmf, _bernoulli_logit_rng, logcdf=_bernoulli_logit_logcdf, logsf=_bernoulli_logit_logsf
+    ),
     "beta": JaxReference(stats.beta.logpdf, _beta_rng),
     "binomial": JaxReference(stats.binom.logpmf, _binomial_rng),
     "binomial_logit": JaxReference(_binomial_logit_logpmf, _binomial_logit_rng),

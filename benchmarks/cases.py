@@ -169,6 +169,7 @@ DISTRIBUTIONS = (
         parameter_values=(0.35,),
         log_probability_operation="logpmf",
         outcomes=(0, 1),
+        supports_tail_inputs=True,
     ),
     DistributionSpec(
         name="bernoulli_logit",
@@ -176,6 +177,7 @@ DISTRIBUTIONS = (
         parameter_values=(-0.6,),
         log_probability_operation="logpmf",
         outcomes=(0, 1),
+        supports_tail_inputs=True,
     ),
     DistributionSpec(
         name="beta",
@@ -512,6 +514,27 @@ def make_tail_arguments(
         raise ValueError(f"operation must be 'logcdf' or 'logsf', got {operation!r}")
 
     element_count = math.prod(profile.value_shape)
+    if distribution.name in {"bernoulli", "bernoulli_logit"}:
+        # Thresholds between the two outcomes exercise the parameter-dependent branch
+        value = jnp.linspace(0.0, 0.9, element_count, dtype=dtype).reshape(profile.value_shape)
+        if input_set == "ordinary":
+            return (value, *make_parameters(distribution, profile, dtype))
+
+        parameter_count = math.prod(profile.parameter_shape)
+        if distribution.name == "bernoulli_logit":
+            negative_log_probability = jnp.linspace(32.0, 4.0, parameter_count, dtype=dtype)
+            logits = jnp.log(jnp.expm1(negative_log_probability))
+            parameter = logits if operation == "logcdf" else -logits
+        else:
+            # Exponents 6..46 span log probabilities around -4..-32; cap the CDF
+            # at the mantissa precision so subtracting the power of two stays exact
+            maximum_exponent = min(46, jnp.finfo(dtype).nmant) if operation == "logcdf" else 46
+            exponents = jnp.rint(jnp.linspace(maximum_exponent, 6, parameter_count, dtype=dtype))
+            tail_probability = jnp.exp2(-exponents)
+            parameter = 1 - tail_probability if operation == "logcdf" else tail_probability
+
+        return value, parameter.reshape(profile.parameter_shape)
+
     if distribution.name == "exponential":
         # Rate-scaled inputs keep the probability range fixed if benchmark rates change
         (rate,) = make_parameters(distribution, profile, dtype)
