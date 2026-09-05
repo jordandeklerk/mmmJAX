@@ -8,7 +8,7 @@ from typing import cast
 import jax
 import jax.numpy as jnp
 from jax.scipy import stats
-from jax.scipy.special import erf, erfc, gammainc, gammaln
+from jax.scipy.special import betainc, erf, erfc, gammainc, gammaln
 
 Kernel = Callable[..., jax.Array]
 
@@ -57,6 +57,27 @@ def _binomial_logit_logpmf(
 ) -> jax.Array:
     log_coefficient = gammaln(trials + 1) - gammaln(value + 1) - gammaln(trials - value + 1)
     return log_coefficient + value * jax.nn.log_sigmoid(logits) + (trials - value) * jax.nn.log_sigmoid(-logits)
+
+
+def _binomial_logcdf(value: jax.Array, trials: jax.Array, probability: jax.Array) -> jax.Array:
+    # JAX has no Binomial CDF; the benchmark thresholds stay inside the support
+    count = jnp.floor(value)
+    return jnp.log(betainc(trials - count, count + 1, 1 - probability))
+
+
+def _binomial_logsf(value: jax.Array, trials: jax.Array, probability: jax.Array) -> jax.Array:
+    count = jnp.floor(value)
+    return jnp.log(betainc(count + 1, trials - count, probability))
+
+
+def _binomial_logit_logcdf(value: jax.Array, trials: jax.Array, logits: jax.Array) -> jax.Array:
+    count = jnp.floor(value)
+    # Evaluating the failure probability directly avoids subtracting a rounded sigmoid from one
+    return jnp.log(betainc(trials - count, count + 1, jax.nn.sigmoid(-logits)))
+
+
+def _binomial_logit_logsf(value: jax.Array, trials: jax.Array, logits: jax.Array) -> jax.Array:
+    return _binomial_logsf(value, trials, jax.nn.sigmoid(logits))
 
 
 def _categorical_logpmf(value: jax.Array, probabilities: jax.Array) -> jax.Array:
@@ -664,8 +685,10 @@ JAX_REFERENCES: dict[str, JaxReference] = {
         _bernoulli_logit_logpmf, _bernoulli_logit_rng, logcdf=_bernoulli_logit_logcdf, logsf=_bernoulli_logit_logsf
     ),
     "beta": JaxReference(stats.beta.logpdf, _beta_rng),
-    "binomial": JaxReference(stats.binom.logpmf, _binomial_rng),
-    "binomial_logit": JaxReference(_binomial_logit_logpmf, _binomial_logit_rng),
+    "binomial": JaxReference(stats.binom.logpmf, _binomial_rng, logcdf=_binomial_logcdf, logsf=_binomial_logsf),
+    "binomial_logit": JaxReference(
+        _binomial_logit_logpmf, _binomial_logit_rng, logcdf=_binomial_logit_logcdf, logsf=_binomial_logit_logsf
+    ),
     "categorical": JaxReference(_categorical_logpmf, _categorical_rng),
     "categorical_logit": JaxReference(_categorical_logit_logpmf, _categorical_logit_rng),
     "dirichlet": JaxReference(_dirichlet_logpdf, _dirichlet_rng),
