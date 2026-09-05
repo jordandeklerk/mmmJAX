@@ -136,6 +136,11 @@ The Multinomial logit reference composes `softmax` with JAX's probability-parame
   while log-survival and float64 cases reach about -32. Logit inputs cover -4 to -32 in either tail.
   Ordinary inputs use the configured success probability or logit. JAX references compose public
   Bernoulli log masses or `log_sigmoid` with the step-function boundaries.
+- Binomial tail benchmarks use 100 trials and success probability 0.5 (logit 0), with counts spanning
+  log probabilities around -4 to -35. Ordinary inputs use thresholds from 25 to 45 and the configured
+  parameters. References compose public JAX incomplete-Beta operations, since JAX has no Binomial
+  CDF or survival function. Gradients treat trial counts as fixed data. These workloads do not
+  measure the finite-sum recovery used for much smaller probabilities or extreme logits.
 - Poisson tail benchmarks cover rate and log-rate parameters, using rate 40 and counts that span
   log probabilities around -4 to -34. Ordinary inputs use counts from 0 to 10 with the configured
   parameters. JAX references use its public Poisson CDF and the incomplete Gamma survival identity,

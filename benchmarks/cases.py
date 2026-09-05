@@ -192,6 +192,7 @@ DISTRIBUTIONS = (
         parameter_values=(100.0, 0.35),
         log_probability_operation="logpmf",
         outcomes=(0, 20, 35, 50, 100),
+        supports_tail_inputs=True,
         gradient_parameter_indices=(1,),
     ),
     DistributionSpec(
@@ -200,6 +201,7 @@ DISTRIBUTIONS = (
         parameter_values=(100.0, -0.6),
         log_probability_operation="logpmf",
         outcomes=(0, 20, 35, 50, 100),
+        supports_tail_inputs=True,
         gradient_parameter_indices=(1,),
     ),
     DistributionSpec(
@@ -536,6 +538,21 @@ def make_tail_arguments(
             parameter = 1 - tail_probability if operation == "logcdf" else tail_probability
 
         return value, parameter.reshape(profile.parameter_shape)
+
+    if distribution.name in {"binomial", "binomial_logit"}:
+        if input_set == "ordinary":
+            trials, parameter = make_parameters(distribution, profile, dtype)
+            threshold_range = (25.0, 45.0)
+        else:
+            trials = jnp.full(profile.parameter_shape, 100.0, dtype=dtype)
+            parameter = jnp.full(
+                profile.parameter_shape, 0.0 if distribution.name == "binomial_logit" else 0.5, dtype=dtype
+            )
+            # Matching tails avoid endpoint shortcuts and keep the public Beta reference representable
+            threshold_range = (12.0, 39.0) if operation == "logcdf" else (60.0, 87.0)
+
+        value = jnp.floor(jnp.linspace(*threshold_range, element_count, dtype=dtype))
+        return value.reshape(profile.value_shape), trials, parameter
 
     if distribution.name in {"poisson", "poisson_log"}:
         if input_set == "ordinary":

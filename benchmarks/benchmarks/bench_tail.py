@@ -17,7 +17,7 @@ from benchmarks.common import Arguments, BenchmarkFunction, compile_and_warm, sy
 
 
 class _TailBenchmark:
-    version = "5"
+    version = "6"
     # Batch short device calls so scheduler noise does not dominate each sample
     number = 100
     repeat = 5

@@ -31,9 +31,13 @@ Binomial
    binomial
    binomial_logpmf
    binomial_rng
+   binomial_logcdf
+   binomial_logsf
    binomial_logit
    binomial_logit_logpmf
    binomial_logit_rng
+   binomial_logit_logcdf
+   binomial_logit_logsf
 
 Poisson
 -------

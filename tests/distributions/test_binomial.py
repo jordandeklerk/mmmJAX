@@ -1,9 +1,12 @@
 """Tests for Binomial distribution functions."""
 
+import math
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from jax.scipy.special import betainc
 from jax.scipy.stats import binom as jax_binomial_distribution
 from scipy import special, stats
 
@@ -11,10 +14,14 @@ from mmmjax import (
     bernoulli_logit_logpmf,
     bernoulli_logpmf,
     binomial,
+    binomial_logcdf,
     binomial_logit,
+    binomial_logit_logcdf,
     binomial_logit_logpmf,
+    binomial_logit_logsf,
     binomial_logit_rng,
     binomial_logpmf,
+    binomial_logsf,
     binomial_rng,
 )
 
@@ -337,6 +344,381 @@ def test_binomial_unsupported_values_have_zero_probability_derivative(probabilit
     assert jnp.isneginf(evaluate(probability))
     assert jax.jacfwd(evaluate)(probability) == 0
     assert jax.jacrev(evaluate)(probability) == 0
+
+
+@pytest.mark.parametrize(
+    ("function", "reference"),
+    [(binomial_logcdf, stats.binom.logcdf), (binomial_logsf, stats.binom.logsf)],
+)
+def test_binomial_tails_match_scipy_across_support_and_broadcasting(function, reference) -> None:
+    values = np.array([-np.inf, -0.2, 0, 0.9, 1, 3.7, 10, np.inf, np.nan])[:, None, None]
+    trials = np.array([0, 1, 5, 10])[None, :, None]
+    probabilities = np.array([0, 0.01, 0.4, 0.9, 1], dtype=np.float32)[None, None, :]
+    expected = reference(values, trials, probabilities.astype(np.float64))
+
+    result = function(values, trials, probabilities)
+    compiled = jax.jit(function)(values, trials, probabilities)
+
+    assert result.shape == (9, 4, 5)
+    np.testing.assert_allclose(result, expected, rtol=5e-6, atol=2e-6)
+    np.testing.assert_allclose(compiled, expected, rtol=5e-6, atol=2e-6)
+
+
+@pytest.mark.parametrize("function", [binomial_logcdf, binomial_logsf])
+@pytest.mark.parametrize("invalid", [-np.inf, -1.0, 1.5, np.inf, np.nan])
+def test_binomial_tails_reject_invalid_parameters_before_support(function, invalid) -> None:
+    values = jnp.array([-jnp.inf, -1, 0, 1, 10, jnp.inf])
+
+    assert jnp.all(jnp.isnan(jax.jit(function)(values, invalid, 0.3)))
+    assert jnp.all(jnp.isnan(jax.jit(function)(values, 5, invalid)))
+
+
+@pytest.mark.parametrize("trials", [0, 1, 7, 25])
+@pytest.mark.parametrize("probability", [0.01, 0.35, 0.9])
+def test_binomial_tails_match_independent_probability_sums(trials: int, probability: float) -> None:
+    probability = float(jnp.asarray(probability))
+    values = np.arange(-1, trials + 1)
+    # Summing the finite Binomial PMF checks both tails without reusing incomplete Beta
+    masses = [math.comb(trials, k) * probability**k * (1 - probability) ** (trials - k) for k in range(trials + 1)]
+    with np.errstate(divide="ignore"):
+        expected_cdf = np.log([math.fsum(masses[: k + 1]) for k in values])
+        expected_sf = np.log([math.fsum(masses[k + 1 :]) for k in values])
+
+    tolerance = 2e-12 if jax.config.x64_enabled else 5e-6
+    np.testing.assert_allclose(
+        binomial_logcdf(values, trials, probability), expected_cdf, rtol=tolerance, atol=tolerance
+    )
+    np.testing.assert_allclose(binomial_logsf(values, trials, probability), expected_sf, rtol=tolerance, atol=tolerance)
+
+
+@pytest.mark.parametrize(
+    ("function", "reference", "sign"),
+    [(binomial_logcdf, stats.binom.logcdf, -1), (binomial_logsf, stats.binom.logsf, 1)],
+)
+def test_binomial_tail_probability_derivatives_match_analytic_identities(function, reference, sign) -> None:
+    counts = jnp.array([0, 0, 1, 2, 2, 2, 9, 40])
+    trials = jnp.array([1, 5, 5, 7, 7, 7, 10, 100])
+    probabilities = jnp.array([0.3, 0.6, 0.2, 0.4 - 1e-5, 0.4, 0.4 + 1e-5, 0.8, 0.45])
+    p = np.asarray(probabilities, dtype=np.float64)
+    k, n = np.asarray(counts), np.asarray(trials)
+    expected_log = reference(k, n, p)
+    # The derivative of a Binomial tail is +/- n times a Binomial(n-1, p) mass
+    expected_gradient = sign * np.exp(np.log(n) + stats.binom.logpmf(k, n - 1, p) - expected_log)
+    expected_curvature = expected_gradient * (k / p - (n - k - 1) / (1 - p)) - expected_gradient**2
+
+    forward = jax.jit(jax.vmap(jax.jacfwd(function, argnums=2)))(counts, trials, probabilities)
+    reverse = jax.jit(jax.vmap(jax.grad(function, argnums=2)))(counts, trials, probabilities)
+    curvature = jax.jit(jax.vmap(jax.grad(jax.grad(function, argnums=2), argnums=2)))(counts, trials, probabilities)
+    vectorized = jax.jit(jax.vmap(function))(counts, trials, probabilities)
+
+    gradient_tolerance = 2e-11 if jax.config.x64_enabled else 3e-5
+    curvature_tolerance = 2e-10 if jax.config.x64_enabled else 1e-4
+    np.testing.assert_allclose(vectorized, expected_log, rtol=gradient_tolerance, atol=gradient_tolerance)
+    np.testing.assert_allclose(forward, expected_gradient, rtol=gradient_tolerance, atol=gradient_tolerance)
+    np.testing.assert_allclose(reverse, expected_gradient, rtol=gradient_tolerance, atol=gradient_tolerance)
+    np.testing.assert_allclose(curvature, expected_curvature, rtol=curvature_tolerance, atol=curvature_tolerance)
+
+
+@pytest.mark.parametrize("counts", [[1, 3, 6], [0, 7], [0, 3, 7]], ids=["interior", "boundary", "mixed"])
+@pytest.mark.parametrize(
+    ("function", "reference", "sign", "logit"),
+    [
+        (binomial_logcdf, stats.binom.logcdf, -1, False),
+        (binomial_logsf, stats.binom.logsf, 1, False),
+        (binomial_logit_logcdf, stats.binom.logcdf, -1, True),
+        (binomial_logit_logsf, stats.binom.logsf, 1, True),
+    ],
+)
+def test_binomial_tail_batches_preserve_shared_parameter_derivatives(counts, function, reference, sign, logit) -> None:
+    counts = np.asarray(counts)[:, None]
+    parameter = jnp.array([-1.0, 1.0] if logit else [0.2, 0.8])
+    p = np.asarray(parameter, dtype=np.float64)
+    if logit:
+        p = special.expit(p)
+    expected_log = reference(counts, 8, p)
+    derivative = sign * np.exp(np.log(8) + stats.binom.logpmf(counts, 7, p) - expected_log)
+    curvature = derivative * (counts / p - (7 - counts) / (1 - p)) - derivative**2
+    if logit:
+        curvature = curvature * (p * (1 - p)) ** 2 + derivative * p * (1 - p) * (1 - 2 * p)
+        derivative = derivative * p * (1 - p)
+
+    # Shared parameters must accumulate derivatives across all thresholds
+    # Scalar vmap tests don't check these reductions
+    def evaluate(current_parameter, current_counts):
+        return jnp.sum(function(current_counts, 8, current_parameter))
+
+    tolerance = 2e-11 if jax.config.x64_enabled else 3e-5
+    np.testing.assert_allclose(jax.jit(function)(counts, 8, parameter), expected_log, rtol=tolerance, atol=tolerance)
+    np.testing.assert_allclose(
+        jax.jit(jax.grad(evaluate))(parameter, counts), derivative.sum(axis=0), rtol=tolerance, atol=tolerance
+    )
+    np.testing.assert_allclose(
+        jax.jit(jax.jacfwd(evaluate))(parameter, counts), derivative.sum(axis=0), rtol=tolerance, atol=tolerance
+    )
+    np.testing.assert_allclose(
+        jax.jit(jax.hessian(evaluate))(parameter, counts),
+        np.diag(curvature.sum(axis=0)),
+        rtol=tolerance,
+        atol=tolerance,
+    )
+
+
+@pytest.mark.parametrize(
+    ("function", "counts", "probability", "expected_gradient"),
+    [
+        (binomial_logcdf, [0, 1, 4, 5], 0.0, [-5, 0, 0, 0]),
+        (binomial_logsf, [0, 1, 4, -1], 1.0, [0, 0, 5, 0]),
+    ],
+)
+def test_binomial_finite_tail_endpoints_have_correct_probability_gradients(
+    function, counts, probability, expected_gradient
+) -> None:
+    counts = jnp.asarray(counts)
+
+    def evaluate(current_probability):
+        return function(counts, 5, current_probability)
+
+    np.testing.assert_array_equal(evaluate(probability), 0)
+    np.testing.assert_allclose(jax.jit(jax.jacfwd(evaluate))(probability), expected_gradient, atol=1e-6)
+    np.testing.assert_allclose(jax.jit(jax.jacrev(evaluate))(probability), expected_gradient, atol=1e-6)
+
+
+@pytest.mark.parametrize("probability", [0.0, 0.3, 1.0])
+@pytest.mark.parametrize("function", [binomial_logcdf, binomial_logsf])
+def test_binomial_tails_outside_support_have_zero_probability_gradients(function, probability) -> None:
+    def evaluate(current_probability):
+        return function(jnp.array([-jnp.inf, -0.1, 5, jnp.inf]), 5, current_probability)
+
+    np.testing.assert_array_equal(jax.jit(jax.jacfwd(evaluate))(probability), 0)
+    np.testing.assert_array_equal(jax.jit(jax.jacrev(evaluate))(probability), 0)
+    assert jax.grad(lambda p: function(0, 0, p))(probability) == 0
+
+
+def test_binomial_tails_are_monotonic_and_complementary() -> None:
+    values = jnp.arange(-1, 22)
+    logcdf = binomial_logcdf(values, 20, 0.3)
+    logsf = binomial_logsf(values, 20, 0.3)
+
+    assert jnp.all(logcdf[1:] >= logcdf[:-1])
+    assert jnp.all(logsf[1:] <= logsf[:-1])
+    np.testing.assert_allclose(jnp.logaddexp(logcdf, logsf), 0, atol=2e-7)
+
+
+def test_binomial_logcdf_preserves_small_success_probabilities() -> None:
+    probabilities = jnp.array([1e-8, 1e-10, 1e-12])
+    p = np.asarray(probabilities, dtype=np.float64)
+    # SciPy's survival function retains the tiny mass that its CDF can round away
+    expected = np.log1p(-stats.binom.sf(1, 100, p))
+
+    result = jax.jit(binomial_logcdf)(1, 100, probabilities)
+
+    assert jnp.all(result < 0)
+    np.testing.assert_allclose(result, jnp.log1p(-betainc(2, 99, probabilities)), rtol=3e-6, atol=0)
+    # The native float32 Beta normalizer limits relative accuracy for these tiny masses
+    tolerance = 2e-12 if jax.config.x64_enabled else 1e-4
+    np.testing.assert_allclose(result, expected, rtol=tolerance, atol=0)
+
+
+@pytest.mark.parametrize(
+    ("function", "reference", "count", "probability"),
+    [(binomial_logcdf, stats.binom.logcdf, 0, 0.9), (binomial_logsf, stats.binom.logsf, 99, 0.1)],
+)
+def test_binomial_shape_one_tails_preserve_log_probabilities(function, reference, count, probability) -> None:
+    p = jnp.float32(probability)
+    expected = reference(count, 100, float(p))
+
+    result = jax.jit(function)(count, 100, p)
+
+    assert jnp.isfinite(result)
+    np.testing.assert_allclose(result, expected, rtol=2e-6, atol=0)
+
+
+@pytest.mark.parametrize(
+    ("function", "reference", "count", "probability"),
+    [(binomial_logcdf, stats.binom.logcdf, 10, 0.9), (binomial_logsf, stats.binom.logsf, 89, 0.1)],
+)
+def test_binomial_tails_recover_underflowed_beta_values_and_gradients(function, reference, count, probability) -> None:
+    p = jnp.asarray(probability)
+    expected = reference(count, 100, float(p))
+    sign = -1 if function is binomial_logcdf else 1
+    expected_gradient = sign * np.exp(np.log(100) + stats.binom.logpmf(count, 99, float(p)) - expected)
+    expected_curvature = expected_gradient * (count / float(p) - (99 - count) / (1 - float(p))) - expected_gradient**2
+
+    result = jax.jit(function)(count, 100, p)
+    forward = jax.jit(jax.jacfwd(function, argnums=2))(count, 100, p)
+    reverse = jax.jit(jax.grad(function, argnums=2))(count, 100, p)
+    curvature = jax.jit(jax.grad(jax.grad(function, argnums=2), argnums=2))(count, 100, p)
+
+    assert jnp.isfinite(result)
+    tolerance = 2e-11 if jax.config.x64_enabled else 5e-5
+    np.testing.assert_allclose(result, expected, rtol=tolerance, atol=0)
+    np.testing.assert_allclose(forward, expected_gradient, rtol=tolerance, atol=0)
+    np.testing.assert_allclose(reverse, expected_gradient, rtol=tolerance, atol=0)
+    np.testing.assert_allclose(curvature, expected_curvature, rtol=tolerance, atol=0)
+
+
+@pytest.mark.parametrize(
+    ("function", "reference", "probability"),
+    [(binomial_logcdf, stats.binom.logcdf, 0.99), (binomial_logsf, stats.binom.logsf, 0.01)],
+)
+def test_binomial_tails_stay_monotonic_across_beta_underflow(function, reference, probability) -> None:
+    values = jnp.arange(26)
+    p = jnp.asarray(probability)
+    expected = reference(np.asarray(values), 25, float(p))
+
+    result = jax.jit(function)(values, 25, p)
+
+    tolerance = 2e-12 if jax.config.x64_enabled else 1e-5
+    np.testing.assert_allclose(result, expected, rtol=tolerance, atol=tolerance)
+    if function is binomial_logcdf:
+        assert jnp.all(result[1:] >= result[:-1])
+    else:
+        assert jnp.all(result[1:] <= result[:-1])
+
+
+@pytest.mark.parametrize("function", [binomial_logcdf, binomial_logsf, binomial_logit_logcdf, binomial_logit_logsf])
+def test_binomial_tails_preserve_empty_shapes(function) -> None:
+    result = jax.jit(function)(jnp.empty((0, 3)), 10, jnp.array([0.1, 0.3, 0.9]))
+
+    assert result.shape == (0, 3)
+
+
+@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+@pytest.mark.parametrize("function", [binomial_logcdf, binomial_logsf, binomial_logit_logcdf, binomial_logit_logsf])
+def test_binomial_tail_counts_do_not_control_probability_dtype(function) -> None:
+    counts = jnp.array([0, 1, 4], dtype=jnp.int64)
+    trials = jnp.asarray(5, dtype=jnp.int64)
+
+    assert jax.jit(function)(counts, trials, jnp.float32(0.3)).dtype == jnp.dtype(jnp.float32)
+
+
+@pytest.mark.parametrize("function", [binomial_logcdf, binomial_logsf, binomial_logit_logcdf, binomial_logit_logsf])
+@pytest.mark.parametrize("argument_index", [0, 1, 2])
+def test_binomial_tails_reject_nonreal_arguments(function, argument_index) -> None:
+    arguments = [0, 5, 0.3]
+    arguments[argument_index] = 1j
+    parameter_name = "logits" if function in (binomial_logit_logcdf, binomial_logit_logsf) else "probability"
+    name = ("value", "trials", parameter_name)[argument_index]
+
+    with pytest.raises(TypeError, match=rf"argument '{name}' must have a real numeric dtype"):
+        function(*arguments)
+
+
+@pytest.mark.parametrize(
+    ("function", "reference"),
+    [(binomial_logit_logcdf, stats.binom.logcdf), (binomial_logit_logsf, stats.binom.logsf)],
+)
+def test_binomial_logit_tails_match_scipy_across_support_and_broadcasting(function, reference) -> None:
+    values = np.array([-np.inf, -0.2, 0, 0.9, 1, 3.7, 10, np.inf, np.nan])[:, None, None]
+    trials = np.array([0, 1, 5, 10])[None, :, None]
+    logits = np.array([-np.inf, -5, -1, 0, 1, 5, np.inf, np.nan])[None, None, :]
+    expected = reference(values, trials, special.expit(logits))
+    # Our parameter validation comes before support checks, including at the upper boundary
+    expected = np.where(np.isnan(logits), np.nan, expected)
+
+    result = function(values, trials, logits)
+    compiled = jax.jit(function)(values, trials, logits)
+
+    assert result.shape == (9, 4, 8)
+    np.testing.assert_allclose(result, expected, rtol=5e-6, atol=2e-6)
+    np.testing.assert_allclose(compiled, expected, rtol=5e-6, atol=2e-6)
+
+
+@pytest.mark.parametrize("function", [binomial_logit_logcdf, binomial_logit_logsf])
+def test_binomial_logit_tails_reject_invalid_parameters_before_support(function) -> None:
+    values = jnp.array([-jnp.inf, -1, 0, 1, 10, jnp.inf])[:, None]
+    trials = jnp.array([-jnp.inf, -1, 1.5, jnp.inf, jnp.nan])
+
+    assert jnp.all(jnp.isnan(jax.jit(function)(values, trials, 0.3)))
+    assert jnp.all(jnp.isnan(jax.jit(function)(values, 5, jnp.nan)))
+
+
+@pytest.mark.parametrize("function", [binomial_logit_logcdf, binomial_logit_logsf])
+def test_binomial_logit_tails_match_independent_log_mass_sums_and_derivatives(function) -> None:
+    trials = 25
+    counts = np.array([0, 1, 5, 12, 24])
+    logits = np.array([-3.0, 0, 3, 20, 100, 1000])
+    if function is binomial_logit_logsf:
+        logits = -logits
+    thresholds, log_odds = np.broadcast_arrays(counts[:, None], logits)
+    expected_log = np.empty_like(log_odds)
+    expected_gradient = np.empty_like(log_odds)
+    expected_curvature = np.empty_like(log_odds)
+
+    for index in np.ndindex(log_odds.shape):
+        k, eta = thresholds[index], log_odds[index]
+        outcomes = np.arange(k + 1) if function is binomial_logit_logcdf else np.arange(k + 1, trials + 1)
+        # A finite log-space PMF sum stays independent of incomplete Beta and its fallback
+        log_masses = np.array([math.log(math.comb(trials, int(x))) for x in outcomes])
+        log_masses -= outcomes * np.logaddexp(0, -eta) + (trials - outcomes) * np.logaddexp(0, eta)
+        expected_log[index] = special.logsumexp(log_masses)
+        weights = np.exp(log_masses - expected_log[index])
+        mean = np.sum(weights * outcomes)
+        variance = np.sum(weights * (outcomes - mean) ** 2)
+        # Logit derivatives follow from the conditional mean and variance within the tail
+        p, q = special.expit(eta), special.expit(-eta)
+        expected_gradient[index] = mean - trials * p
+        expected_curvature[index] = variance - trials * p * q
+
+    scalar_values = jnp.asarray(thresholds.ravel())
+    scalar_logits = jnp.asarray(log_odds.ravel())
+    result = jax.jit(function)(thresholds, trials, log_odds)
+
+    def evaluate(k, eta):
+        return function(k, trials, eta)
+
+    forward = jax.jit(jax.vmap(jax.jacfwd(evaluate, argnums=1)))(scalar_values, scalar_logits)
+    reverse = jax.jit(jax.vmap(jax.grad(evaluate, argnums=1)))(scalar_values, scalar_logits)
+    curvature = jax.jit(jax.vmap(jax.grad(jax.grad(evaluate, argnums=1), argnums=1)))(scalar_values, scalar_logits)
+
+    tolerance = 5e-11 if jax.config.x64_enabled else 5e-5
+    assert jnp.all(jnp.isfinite(result))
+    np.testing.assert_allclose(result, expected_log, rtol=tolerance, atol=tolerance)
+    np.testing.assert_allclose(forward.reshape(log_odds.shape), expected_gradient, rtol=tolerance, atol=tolerance)
+    np.testing.assert_allclose(reverse.reshape(log_odds.shape), expected_gradient, rtol=tolerance, atol=tolerance)
+    np.testing.assert_allclose(curvature.reshape(log_odds.shape), expected_curvature, rtol=tolerance, atol=tolerance)
+
+
+def test_binomial_logit_tails_preserve_near_certain_probabilities() -> None:
+    logits = jnp.array([20.0, 25, 30])
+    rare_probability = special.expit(-np.asarray(logits, dtype=np.float64))
+    # Compare the tiny departure from one, which a rounded sigmoid input would erase
+    expected = np.log1p(-stats.binom.sf(1, 10, rare_probability))
+
+    logcdf = jax.jit(binomial_logit_logcdf)(1, 10, -logits)
+    logsf = jax.jit(binomial_logit_logsf)(8, 10, logits)
+
+    assert jnp.all(logcdf < 0)
+    assert jnp.all(logsf < 0)
+    tolerance = 2e-12 if jax.config.x64_enabled else 1e-5
+    np.testing.assert_allclose(logcdf, expected, rtol=tolerance, atol=0)
+    np.testing.assert_allclose(logsf, expected, rtol=tolerance, atol=0)
+
+
+def test_binomial_logit_tails_are_monotonic_complementary_and_symmetric() -> None:
+    values = jnp.arange(-1, 27)[:, None]
+    logits = jnp.array([-1000.0, -25, -3, 0, 3, 25, 1000])
+    logcdf = jax.jit(binomial_logit_logcdf)(values, 25, logits)
+    logsf = jax.jit(binomial_logit_logsf)(values, 25, logits)
+
+    assert jnp.all(logcdf[1:] >= logcdf[:-1])
+    assert jnp.all(logsf[1:] <= logsf[:-1])
+    np.testing.assert_allclose(jnp.logaddexp(logcdf, logsf), 0, atol=2e-7)
+    # Native float32 incomplete Beta has rounding error even at its symmetric midpoint
+    tolerance = 2e-12 if jax.config.x64_enabled else 3e-5
+    np.testing.assert_allclose(logcdf, binomial_logit_logsf(24 - values, 25, -logits), rtol=tolerance, atol=0)
+
+
+@pytest.mark.parametrize("function", [binomial_logit_logcdf, binomial_logit_logsf])
+def test_binomial_logit_tails_outside_support_have_zero_gradients(function) -> None:
+    logits = jnp.array([-jnp.inf, -1000, 0, 1000, jnp.inf])
+
+    def evaluate(eta):
+        return function(jnp.array([-jnp.inf, -0.1, 5, jnp.inf]), 5, eta)
+
+    np.testing.assert_array_equal(jax.jit(jax.vmap(jax.jacfwd(evaluate)))(logits), 0)
+    np.testing.assert_array_equal(jax.jit(jax.vmap(jax.jacrev(evaluate)))(logits), 0)
+    np.testing.assert_array_equal(jax.jit(jax.vmap(jax.grad(lambda eta: function(0, 0, eta))))(logits), 0)
 
 
 def test_binomial_logit_logpmf_matches_scipy() -> None:
