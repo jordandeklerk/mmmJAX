@@ -419,6 +419,50 @@ def test_binomial_tail_probability_derivatives_match_analytic_identities(functio
     np.testing.assert_allclose(curvature, expected_curvature, rtol=curvature_tolerance, atol=curvature_tolerance)
 
 
+@pytest.mark.parametrize("counts", [[1, 3, 6], [0, 7], [0, 3, 7]], ids=["interior", "boundary", "mixed"])
+@pytest.mark.parametrize(
+    ("function", "reference", "sign", "logit"),
+    [
+        (binomial_logcdf, stats.binom.logcdf, -1, False),
+        (binomial_logsf, stats.binom.logsf, 1, False),
+        (binomial_logit_logcdf, stats.binom.logcdf, -1, True),
+        (binomial_logit_logsf, stats.binom.logsf, 1, True),
+    ],
+)
+def test_binomial_tail_batches_preserve_shared_parameter_derivatives(counts, function, reference, sign, logit) -> None:
+    counts = np.asarray(counts)[:, None]
+    parameter = jnp.array([-1.0, 1.0] if logit else [0.2, 0.8])
+    p = np.asarray(parameter, dtype=np.float64)
+    if logit:
+        p = special.expit(p)
+    expected_log = reference(counts, 8, p)
+    derivative = sign * np.exp(np.log(8) + stats.binom.logpmf(counts, 7, p) - expected_log)
+    curvature = derivative * (counts / p - (7 - counts) / (1 - p)) - derivative**2
+    if logit:
+        curvature = curvature * (p * (1 - p)) ** 2 + derivative * p * (1 - p) * (1 - 2 * p)
+        derivative = derivative * p * (1 - p)
+
+    # Shared parameters must accumulate derivatives across all thresholds
+    # Scalar vmap tests don't check these reductions
+    def evaluate(current_parameter, current_counts):
+        return jnp.sum(function(current_counts, 8, current_parameter))
+
+    tolerance = 2e-11 if jax.config.x64_enabled else 3e-5
+    np.testing.assert_allclose(jax.jit(function)(counts, 8, parameter), expected_log, rtol=tolerance, atol=tolerance)
+    np.testing.assert_allclose(
+        jax.jit(jax.grad(evaluate))(parameter, counts), derivative.sum(axis=0), rtol=tolerance, atol=tolerance
+    )
+    np.testing.assert_allclose(
+        jax.jit(jax.jacfwd(evaluate))(parameter, counts), derivative.sum(axis=0), rtol=tolerance, atol=tolerance
+    )
+    np.testing.assert_allclose(
+        jax.jit(jax.hessian(evaluate))(parameter, counts),
+        np.diag(curvature.sum(axis=0)),
+        rtol=tolerance,
+        atol=tolerance,
+    )
+
+
 @pytest.mark.parametrize(
     ("function", "counts", "probability", "expected_gradient"),
     [

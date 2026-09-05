@@ -518,11 +518,10 @@ def _binomial_log_probability(
     power_supported = ~invert_power | ((argument > 0) & (argument < 1))
     if logit:
         tail_logits = jnp.where(reflected, -safe_parameter, safe_parameter)
-        log_power = jnp.where(
-            complement_power,
-            second_shape * jax.nn.log_sigmoid(-tail_logits),
-            first_shape * jax.nn.log_sigmoid(tail_logits),
-        )
+        # Select the inputs first so log-sigmoid and its derivative are evaluated once
+        power_logits = jnp.where(complement_power, -tail_logits, tail_logits)
+        power_shape = jnp.where(complement_power, second_shape, first_shape)
+        log_power = power_shape * jax.nn.log_sigmoid(power_logits)
     else:
         complement_argument = jnp.where(complement_power & power_supported, argument, 0.5)
         direct_argument = jnp.where(direct_power & power_supported, argument, 0.5)
