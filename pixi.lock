@@ -5209,7 +5209,7 @@ packages:
 - pypi: ./
   name: mmmjax
   version: 0.0.1
-  sha256: be4833ca71b52c0275048cef97507cab819bd0fe44ca799e789c19c383a20642
+  sha256: 419b57dd744373a4e05fc2d76eee1e21abebc911c95218031f38275aff85b3a7
   requires_dist:
   - jax>=0.10.0,<0.11
   - jaxtyping>=0.2.36
