@@ -8,7 +8,7 @@ from typing import cast
 import jax
 import jax.numpy as jnp
 from jax.scipy import stats
-from jax.scipy.special import erf, erfc, gammaln
+from jax.scipy.special import erf, erfc, gammainc, gammaln
 
 Kernel = Callable[..., jax.Array]
 
@@ -141,6 +141,23 @@ def _negative_binomial_log_logpmf(
 def _poisson_log_logpmf(value: jax.Array, log_rate: jax.Array) -> jax.Array:
     # Staying on the log scale avoids an exp/log round trip in the native JAX baseline
     return value * log_rate - jnp.exp(log_rate) - gammaln(value + 1)
+
+
+def _poisson_logcdf(value: jax.Array, rate: jax.Array) -> jax.Array:
+    return jnp.log(stats.poisson.cdf(value, rate))
+
+
+def _poisson_logsf(value: jax.Array, rate: jax.Array) -> jax.Array:
+    # The Gamma lower tail avoids losing a small survival probability to 1 - cdf
+    return jnp.log(gammainc(jnp.floor(value) + 1, rate))
+
+
+def _poisson_log_logcdf(value: jax.Array, log_rate: jax.Array) -> jax.Array:
+    return _poisson_logcdf(value, jnp.exp(log_rate))
+
+
+def _poisson_log_logsf(value: jax.Array, log_rate: jax.Array) -> jax.Array:
+    return _poisson_logsf(value, jnp.exp(log_rate))
 
 
 def _exponential_logpdf(value: jax.Array, rate: jax.Array) -> jax.Array:
@@ -659,8 +676,18 @@ JAX_REFERENCES: dict[str, JaxReference] = {
         _negative_binomial_log_logpmf,
         _negative_binomial_log_rng,
     ),
-    "poisson": JaxReference(stats.poisson.logpmf, _poisson_rng),
-    "poisson_log": JaxReference(_poisson_log_logpmf, _poisson_log_rng),
+    "poisson": JaxReference(
+        stats.poisson.logpmf,
+        _poisson_rng,
+        logcdf=_poisson_logcdf,
+        logsf=_poisson_logsf,
+    ),
+    "poisson_log": JaxReference(
+        _poisson_log_logpmf,
+        _poisson_log_rng,
+        logcdf=_poisson_log_logcdf,
+        logsf=_poisson_log_logsf,
+    ),
     "cauchy": JaxReference(
         stats.cauchy.logpdf,
         _cauchy_rng,

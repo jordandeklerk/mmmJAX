@@ -136,6 +136,10 @@ The Multinomial logit reference composes `softmax` with JAX's probability-parame
   while log-survival and float64 cases reach about -32. Logit inputs cover -4 to -32 in either tail.
   Ordinary inputs use the configured success probability or logit. JAX references compose public
   Bernoulli log masses or `log_sigmoid` with the step-function boundaries.
+- Poisson tail benchmarks cover rate and log-rate parameters, using rate 40 and counts that span
+  log probabilities around -4 to -34. Ordinary inputs use counts from 0 to 10 with the configured
+  parameters. JAX references use its public Poisson CDF and the incomplete Gamma survival identity,
+  taking the logarithm of each probability.
 - Concentrated Poisson inputs span roughly two standard deviations around rates of `1e7` for
   float32 and `1e15` for float64. They remain exactly representable while exposing cancellation near
   the mode. Public JAX timings are omitted because its direct calculation is not numerically
