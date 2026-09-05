@@ -8,10 +8,14 @@ import pytest
 
 from mmmjax import (
     bernoulli,
+    bernoulli_logcdf,
     bernoulli_logit,
+    bernoulli_logit_logcdf,
     bernoulli_logit_logpmf,
+    bernoulli_logit_logsf,
     bernoulli_logit_rng,
     bernoulli_logpmf,
+    bernoulli_logsf,
     bernoulli_rng,
     beta,
     beta_logpdf,
@@ -173,6 +177,10 @@ def test_probability_functions_use_at_least_float32(dtype, expected_dtype) -> No
     values = jnp.array([0.0, 1.0], dtype=dtype)
 
     assert bernoulli_logpmf(values, dtype(0.4)).dtype == jnp.dtype(expected_dtype)
+    assert bernoulli_logcdf(values, dtype(0.4)).dtype == jnp.dtype(expected_dtype)
+    assert bernoulli_logsf(values, dtype(0.4)).dtype == jnp.dtype(expected_dtype)
+    assert bernoulli_logit_logcdf(values, dtype(0.4)).dtype == jnp.dtype(expected_dtype)
+    assert bernoulli_logit_logsf(values, dtype(0.4)).dtype == jnp.dtype(expected_dtype)
     assert bernoulli_logit_logpmf(values, dtype(0.2)).dtype == jnp.dtype(expected_dtype)
     assert binomial_logpmf(values, 1, dtype(0.4)).dtype == jnp.dtype(expected_dtype)
     assert binomial_logit_logpmf(values, 1, dtype(0.2)).dtype == jnp.dtype(expected_dtype)
@@ -238,6 +246,10 @@ def test_probability_functions_promote_integer_inputs_to_float32() -> None:
     values = jnp.array([0, 1], dtype=jnp.int32)
 
     assert bernoulli_logpmf(values, jnp.int32(1)).dtype == jnp.dtype(jnp.float32)
+    assert bernoulli_logcdf(values, jnp.int32(1)).dtype == jnp.dtype(jnp.float32)
+    assert bernoulli_logsf(values, jnp.int32(1)).dtype == jnp.dtype(jnp.float32)
+    assert bernoulli_logit_logcdf(values, jnp.int32(1)).dtype == jnp.dtype(jnp.float32)
+    assert bernoulli_logit_logsf(values, jnp.int32(1)).dtype == jnp.dtype(jnp.float32)
     assert bernoulli_logit_logpmf(values, jnp.int32(0)).dtype == jnp.dtype(jnp.float32)
     assert binomial_logpmf(values, 1, jnp.int32(1)).dtype == jnp.dtype(jnp.float32)
     assert binomial_logit_logpmf(values, 1, jnp.int32(0)).dtype == jnp.dtype(jnp.float32)
@@ -344,6 +356,10 @@ def test_discrete_python_scalars_follow_probability_and_sample_dtypes() -> None:
     key = jax.random.key(0)
 
     assert bernoulli_logpmf(0, 0.4).dtype == expected_probability_dtype
+    assert bernoulli_logcdf(0, 0.4).dtype == expected_probability_dtype
+    assert bernoulli_logsf(0, 0.4).dtype == expected_probability_dtype
+    assert bernoulli_logit_logcdf(0, 0.4).dtype == expected_probability_dtype
+    assert bernoulli_logit_logsf(0, 0.4).dtype == expected_probability_dtype
     assert bernoulli_logit_logpmf(1, 0.2).dtype == expected_probability_dtype
     assert bernoulli_rng(key, 0.4).dtype == jnp.dtype(jnp.int32)
     assert bernoulli_logit_rng(key, 0.2).dtype == jnp.dtype(jnp.int32)
@@ -396,6 +412,10 @@ def test_distribution_functions_support_float64() -> None:
     key = jax.random.key(0)
 
     assert bernoulli_logpmf(values, jnp.float64(0.4)).dtype == jnp.dtype(jnp.float64)
+    assert bernoulli_logcdf(values, jnp.float64(0.4)).dtype == jnp.dtype(jnp.float64)
+    assert bernoulli_logsf(values, jnp.float64(0.4)).dtype == jnp.dtype(jnp.float64)
+    assert bernoulli_logit_logcdf(values, jnp.float64(0.4)).dtype == jnp.dtype(jnp.float64)
+    assert bernoulli_logit_logsf(values, jnp.float64(0.4)).dtype == jnp.dtype(jnp.float64)
     assert bernoulli_logit_logpmf(values, jnp.float64(0.2)).dtype == jnp.dtype(jnp.float64)
     assert bernoulli_rng(key, jnp.float64(0.4)).dtype == jnp.dtype(jnp.int32)
     assert bernoulli_logit_rng(key, jnp.float64(0.2)).dtype == jnp.dtype(jnp.int32)
@@ -471,6 +491,10 @@ def test_distribution_functions_support_float64() -> None:
     ("function", "arguments"),
     [
         (bernoulli_logpmf, (jnp.array([0, 1]), 0.4)),
+        (bernoulli_logcdf, (jnp.array([-1, 0, 1]), 0.4)),
+        (bernoulli_logsf, (jnp.array([-1, 0, 1]), 0.4)),
+        (bernoulli_logit_logcdf, (jnp.array([-1, 0, 1]), 0.2)),
+        (bernoulli_logit_logsf, (jnp.array([-1, 0, 1]), 0.2)),
         (bernoulli, (jnp.array([0, 1]), 0.4)),
         (bernoulli_logit_logpmf, (jnp.array([0, 1]), 0.2)),
         (bernoulli_logit, (jnp.array([0, 1]), 0.2)),
@@ -882,6 +906,10 @@ def test_rng_rejects_negative_sample_shape() -> None:
     ("function", "arguments", "argument_name"),
     [
         (bernoulli_rng, (jax.random.key(0), 0.4 + 0.0j), "probability"),
+        (bernoulli_logcdf, (0, 0.4 + 0.0j), "probability"),
+        (bernoulli_logsf, (0, 0.4 + 0.0j), "probability"),
+        (bernoulli_logit_logcdf, (0, 0.2 + 0.0j), "logits"),
+        (bernoulli_logit_logsf, (0, 0.2 + 0.0j), "logits"),
         (bernoulli_logit_rng, (jax.random.key(0), 0.2 + 0.0j), "logits"),
         (binomial_rng, (jax.random.key(0), 5, 0.4 + 0.0j), "probability"),
         (binomial_logit_rng, (jax.random.key(0), 5, 0.2 + 0.0j), "logits"),
