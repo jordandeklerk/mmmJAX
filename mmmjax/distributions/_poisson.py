@@ -6,7 +6,7 @@ from jax.scipy.special import digamma
 from jax.typing import ArrayLike
 
 from mmmjax.distributions._discrete import _prepare_nonnegative_count
-from mmmjax.distributions._gamma import gamma_logcdf, gamma_logsf
+from mmmjax.distributions._gamma import _gamma_log_probability, gamma_logcdf, gamma_logsf
 from mmmjax.distributions._utils import (
     _as_real_array,
     _gamma_shape_normalizer,
@@ -271,6 +271,74 @@ def poisson_log(value: ArrayLike, log_rate: ArrayLike) -> jax.Array:
     return jnp.sum(poisson_log_logpmf(value, log_rate))
 
 
+def poisson_log_logcdf(value: ArrayLike, log_rate: ArrayLike) -> jax.Array:
+    r"""Evaluate the log-rate Poisson log cumulative distribution function elementwise.
+
+    For a finite threshold :math:`x \geq 0` and log rate
+    :math:`\eta \in \mathbb{R}`, the log cumulative probability is
+
+    .. math::
+
+        \log P(X \leq x)
+        = \log Q(\lfloor x \rfloor + 1, e^\eta),
+
+    where :math:`Q` is the regularized upper incomplete Gamma function.
+
+    Parameters
+    ----------
+    value
+        Thresholds at which to evaluate the cumulative probability.
+        Fractional thresholds are rounded down to the nearest integer.
+    log_rate
+        Logarithm of the Poisson rate. Negative infinity represents a
+        distribution concentrated at zero. Positive infinity gives the
+        limiting probabilities as the rate increases without bound.
+
+    Returns
+    -------
+    jax.Array
+        Log cumulative probabilities with the broadcast shape of the
+        arguments. Negative thresholds produce ``-inf`` and positive
+        infinity produces zero. A ``nan`` input produces ``nan``.
+    """
+    return _poisson_log_rate_probability(value, log_rate, upper_tail=False)
+
+
+def poisson_log_logsf(value: ArrayLike, log_rate: ArrayLike) -> jax.Array:
+    r"""Evaluate the log-rate Poisson log survival function elementwise.
+
+    For a finite threshold :math:`x \geq 0` and log rate
+    :math:`\eta \in \mathbb{R}`, the log survival probability is
+
+    .. math::
+
+        \log P(X > x)
+        = \log P(\lfloor x \rfloor + 1, e^\eta),
+
+    where :math:`P` on the right is the regularized lower incomplete Gamma
+    function. The log rate is retained when evaluating small probabilities,
+    rather than reconstructing it from a rate that may have rounded to zero.
+
+    Parameters
+    ----------
+    value
+        Thresholds at which to evaluate the survival probability.
+        Fractional thresholds are rounded down to the nearest integer.
+    log_rate
+        Logarithm of the Poisson rate. Negative infinity represents a
+        distribution concentrated at zero. Positive infinity gives the
+        limiting probabilities as the rate increases without bound.
+
+    Returns
+    -------
+    jax.Array
+        Log survival probabilities with the broadcast shape of the
+        arguments. Negative thresholds produce zero and positive infinity
+        produces ``-inf``. A ``nan`` input produces ``nan``.
+    """
+    return _poisson_log_rate_probability(value, log_rate, upper_tail=True)
+
+
 def poisson_log_rng(
     key: jax.Array,
     log_rate: ArrayLike,
@@ -317,7 +385,7 @@ def _poisson_log_probability(value: ArrayLike, rate: ArrayLike, *, upper_tail: b
     gamma_rate = jnp.where(finite_threshold & valid_rate & ~zero_count, rate_array, 1.0)
     zero_count_rate = jnp.where(finite_threshold & valid_rate & zero_count, rate_array, 1.0)
 
-    # P(X = 0) = exp(-rate) gives an exact shortcut and avoids Gamma's derivative at shape=1, rate=0
+    # The exact zero-count formula avoids JAX's NaN gradient at zero rate
     if upper_tail:
         log_probability = jnp.where(
             zero_count,
@@ -336,6 +404,39 @@ def _poisson_log_probability(value: ArrayLike, rate: ArrayLike, *, upper_tail: b
         log_probability = jnp.where(jnp.isposinf(value_array), 0.0, log_probability)
 
     return jnp.where(valid_rate & ~jnp.isnan(value_array), log_probability, jnp.nan)
+
+
+def _poisson_log_rate_probability(value: ArrayLike, log_rate: ArrayLike, *, upper_tail: bool) -> jax.Array:
+    value_array = _as_real_array("value", value)
+    (log_rate_array,) = _promote_inexact(("log_rate", log_rate))
+    finite_threshold = jnp.isfinite(value_array) & (value_array >= 0)
+    count = jnp.floor(jnp.where(finite_threshold, value_array, 0)).astype(log_rate_array.dtype)
+
+    # Mask before exp so overflow in an inactive branch cannot produce NaN gradients
+    rate_overflows = log_rate_array >= jnp.log(jnp.finfo(log_rate_array.dtype).max)
+    evaluate_probability = finite_threshold & jnp.isfinite(log_rate_array) & ~rate_overflows
+    safe_log_rate = jnp.where(evaluate_probability, log_rate_array, 0.0)
+    rate = jnp.exp(safe_log_rate)
+
+    zero_count_cdf = (count == 0) & (not upper_tail)
+    gamma_value = jnp.where(zero_count_cdf, 1.0, rate)
+    gamma_log_value = jnp.where(zero_count_cdf, 0.0, safe_log_rate)
+    log_probability = _gamma_log_probability(
+        gamma_value,
+        count + 1,
+        jnp.ones((), dtype=log_rate_array.dtype),
+        upper_tail=not upper_tail,
+        log_scaled_value=gamma_log_value,
+    )
+    log_probability = jnp.where(zero_count_cdf, -rate, log_probability)
+
+    below_support = 0.0 if upper_tail else -jnp.inf
+    above_support = -jnp.inf if upper_tail else 0.0
+    log_probability = jnp.where(jnp.isneginf(log_rate_array), above_support, log_probability)
+    log_probability = jnp.where(rate_overflows, below_support, log_probability)
+    log_probability = jnp.where(value_array < 0, below_support, log_probability)
+    log_probability = jnp.where(jnp.isposinf(value_array), above_support, log_probability)
+    return jnp.where(jnp.isnan(value_array) | jnp.isnan(log_rate_array), jnp.nan, log_probability)
 
 
 @jax.custom_jvp

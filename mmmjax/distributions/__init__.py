@@ -82,7 +82,9 @@ from mmmjax.distributions._normal import normal_logsf as normal_logsf
 from mmmjax.distributions._normal import normal_rng as normal_rng
 from mmmjax.distributions._poisson import poisson as poisson
 from mmmjax.distributions._poisson import poisson_log as poisson_log
+from mmmjax.distributions._poisson import poisson_log_logcdf as poisson_log_logcdf
 from mmmjax.distributions._poisson import poisson_log_logpmf as poisson_log_logpmf
+from mmmjax.distributions._poisson import poisson_log_logsf as poisson_log_logsf
 from mmmjax.distributions._poisson import poisson_log_rng as poisson_log_rng
 from mmmjax.distributions._poisson import poisson_logcdf as poisson_logcdf
 from mmmjax.distributions._poisson import poisson_logpmf as poisson_logpmf
@@ -185,7 +187,9 @@ __all__ = [
     "normal_rng",
     "poisson",
     "poisson_log",
+    "poisson_log_logcdf",
     "poisson_log_logpmf",
+    "poisson_log_logsf",
     "poisson_log_rng",
     "poisson_logcdf",
     "poisson_logpmf",
