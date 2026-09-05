@@ -1,7 +1,10 @@
 """Binomial distribution functions."""
 
+from typing import cast
+
 import jax
 import jax.numpy as jnp
+from jax.scipy.special import betainc
 from jax.typing import ArrayLike, DTypeLike
 
 from mmmjax.distributions._discrete import _binomial_interior_log_mass
@@ -108,6 +111,87 @@ def binomial(
         dimension of the broadcast result.
     """
     return jnp.sum(binomial_logpmf(value, trials, probability))
+
+
+def binomial_logcdf(value: ArrayLike, trials: ArrayLike, probability: ArrayLike) -> jax.Array:
+    r"""Evaluate the Binomial log cumulative distribution function elementwise.
+
+    For a threshold :math:`0 \leq x < n`, a nonnegative integer number of
+    trials :math:`n`, and success probability :math:`p \in [0, 1]`,
+
+    .. math::
+
+        \log P(X \leq x)
+        = \log I_{1-p}(n - \lfloor x \rfloor, \lfloor x \rfloor + 1),
+
+    where :math:`I` is the regularized incomplete Beta function.
+
+    Parameters
+    ----------
+    value
+        Thresholds at which to evaluate the cumulative probability.
+        Fractional thresholds are rounded down to the nearest integer.
+    trials
+        Numbers of independent trials. Values must be finite nonnegative
+        integers.
+    probability
+        Success probabilities in the closed interval from zero to one.
+
+    Returns
+    -------
+    jax.Array
+        Log cumulative probabilities with the broadcast shape of the
+        arguments. Negative thresholds produce ``-inf`` and thresholds at
+        or above the trial count produce zero. Invalid parameters or
+        ``nan`` thresholds produce ``nan``.
+
+    Notes
+    -----
+    Large trial counts can lose accuracy in float32. Enable JAX 64-bit mode
+    when additional precision is needed.
+    """
+    return _binomial_log_probability(value, trials, probability, upper_tail=False)
+
+
+def binomial_logsf(value: ArrayLike, trials: ArrayLike, probability: ArrayLike) -> jax.Array:
+    r"""Evaluate the Binomial log survival function elementwise.
+
+    For a threshold :math:`0 \leq x < n`, a nonnegative integer number of
+    trials :math:`n`, and success probability :math:`p \in [0, 1]`,
+
+    .. math::
+
+        \log P(X > x)
+        = \log I_p(\lfloor x \rfloor + 1, n - \lfloor x \rfloor),
+
+    where :math:`I` is the regularized incomplete Beta function. This avoids
+    obtaining a small survival probability by subtracting the CDF from one.
+
+    Parameters
+    ----------
+    value
+        Thresholds at which to evaluate the survival probability.
+        Fractional thresholds are rounded down to the nearest integer.
+    trials
+        Numbers of independent trials. Values must be finite nonnegative
+        integers.
+    probability
+        Success probabilities in the closed interval from zero to one.
+
+    Returns
+    -------
+    jax.Array
+        Log survival probabilities with the broadcast shape of the
+        arguments. Negative thresholds produce zero and thresholds at or
+        above the trial count produce ``-inf``. Invalid parameters or
+        ``nan`` thresholds produce ``nan``.
+
+    Notes
+    -----
+    Large trial counts can lose accuracy in float32. Enable JAX 64-bit mode
+    when additional precision is needed.
+    """
+    return _binomial_log_probability(value, trials, probability, upper_tail=True)
 
 
 def binomial_rng(
@@ -299,6 +383,121 @@ def binomial_logit_rng(
     )
     outcomes = jnp.where(logits_array > 0, trials_float - rare_outcomes, rare_outcomes)
     return outcomes.astype(jnp.int32)
+
+
+def _binomial_log_probability(
+    value: ArrayLike,
+    trials: ArrayLike,
+    probability: ArrayLike,
+    *,
+    upper_tail: bool,
+) -> jax.Array:
+    value_array = _as_real_array("value", value)
+    trials_array = _as_real_array("trials", trials)
+    (probability_array,) = _promote_inexact(("probability", probability))
+    # Keep integer thresholds exact before the shared count validation and subtraction
+    threshold = jnp.floor(value_array) if jnp.issubdtype(value_array.dtype, jnp.floating) else value_array
+    successes, failures, _, supported, valid_trials = _prepare_binomial_counts(
+        threshold, trials_array, dtype=probability_array.dtype
+    )
+
+    valid_probability = jnp.isfinite(probability_array) & (probability_array >= 0) & (probability_array <= 1)
+    interior = supported & (failures > 0) & valid_probability
+    safe_probability = jnp.where(interior, probability_array, 0.5)
+    success_shape = jnp.where(interior, successes + 1, 2.0)
+    failure_shape = jnp.where(interior, failures, 2.0)
+
+    # Use the same symmetry criterion as JAX's incomplete Beta calculation
+    # Keeping small p unreflected avoids losing it when 1 - p rounds to one
+    reflected = safe_probability > (success_shape + 1) / (success_shape + failure_shape + 2)
+    first_shape = jnp.where(reflected, failure_shape, success_shape)
+    second_shape = jnp.where(reflected, success_shape, failure_shape)
+    argument = jnp.where(reflected, 1 - safe_probability, safe_probability)
+    direct_tail = reflected != upper_tail
+
+    # Shape-one identities retain log probabilities without an exp/log round trip
+    # They also avoid NaN endpoint derivatives in JAX for these Beta shapes
+    complement_power = (first_shape == 1) & ~direct_tail
+    direct_power = (second_shape == 1) & direct_tail
+    use_power = complement_power | direct_power
+    complement_argument = jnp.where(complement_power, argument, 0.5)
+    direct_argument = jnp.where(direct_power, argument, 0.5)
+    power_log_probability = jnp.where(
+        complement_power,
+        second_shape * jnp.log1p(-complement_argument),
+        first_shape * jnp.log(direct_argument),
+    )
+
+    # Safe inactive inputs keep boundary calculations out of unrelated gradients
+    beta_probability = betainc(
+        jnp.where(use_power, 2.0, first_shape),
+        jnp.where(use_power, 2.0, second_shape),
+        jnp.where(use_power, 0.5, argument),
+    )
+    needs_sum = direct_tail & ~use_power & interior & (argument > 0) & (argument < 1) & (beta_probability == 0)
+    direct_probability = jnp.where(direct_tail & ~needs_sum, beta_probability, 1.0)
+    complement_probability = jnp.where(direct_tail, 0.0, beta_probability)
+    log_probability = jnp.where(direct_tail, jnp.log(direct_probability), jnp.log1p(-complement_probability))
+    log_probability = jnp.where(use_power, power_log_probability, log_probability)
+
+    def sum_underflowed_tail(_: None) -> jax.Array:
+        first_count = jnp.where(needs_sum, first_shape, 1.0)
+        trials = jnp.where(needs_sum, first_shape + second_shape - 1, 1.0)
+        probability = jnp.where(needs_sum, argument, 0.5)
+        relative_sum = _binomial_tail_sum(first_count, trials, probability)
+        recovered = binomial_logpmf(first_count, trials, probability) + jnp.log(relative_sum)
+        return jnp.where(needs_sum, recovered, log_probability)
+
+    log_probability = cast(
+        jax.Array,
+        jax.lax.cond(jnp.any(needs_sum), sum_underflowed_tail, lambda _: log_probability, operand=None),
+    )
+
+    below_support = 0.0 if upper_tail else -jnp.inf
+    above_support = -jnp.inf if upper_tail else 0.0
+    log_probability = jnp.where(value_array < 0, below_support, log_probability)
+    log_probability = jnp.where(value_array >= trials_array, above_support, log_probability)
+    return jnp.where(valid_trials & valid_probability & ~jnp.isnan(value_array), log_probability, jnp.nan)
+
+
+@jax.custom_jvp
+def _binomial_tail_sum(first_count: jax.Array, trials: jax.Array, probability: jax.Array) -> jax.Array:
+    # Boost also sums neighboring Binomial masses when evaluating incomplete Beta
+    # Factoring out the first log mass keeps the terms representable after Beta underflows
+    first_count, trials, probability = jnp.broadcast_arrays(first_count, trials, probability)
+    odds = probability / (1 - probability)
+    epsilon = jnp.finfo(probability.dtype).eps
+
+    def has_terms(state: tuple[jax.Array, jax.Array, jax.Array]) -> jax.Array:
+        count, term, total = state
+        return jnp.any((count < trials) & (term > epsilon * total))
+
+    def add_term(state: tuple[jax.Array, jax.Array, jax.Array]) -> tuple[jax.Array, jax.Array, jax.Array]:
+        count, term, total = state
+        active = (count < trials) & (term > epsilon * total)
+        next_term = jnp.where(active, term * ((trials - count) / (count + 1)) * odds, 0.0)
+        return count + active.astype(count.dtype), next_term, total + next_term
+
+    _, _, relative_sum = jax.lax.while_loop(
+        has_terms, add_term, (first_count, jnp.ones_like(probability), jnp.ones_like(probability))
+    )
+    return relative_sum
+
+
+@_binomial_tail_sum.defjvp
+def _binomial_tail_sum_jvp(
+    primals: tuple[jax.Array, jax.Array, jax.Array],
+    tangents: tuple[jax.Array, jax.Array, jax.Array],
+) -> tuple[jax.Array, jax.Array]:
+    first_count, trials, probability = primals
+    _, _, probability_tangent = tangents
+    relative_sum = _binomial_tail_sum(first_count, trials, probability)
+    # Counts are discrete; this identity avoids differentiating the dynamic loop
+    # Working with the factored sum also avoids subtracting nearly equal log masses
+    derivative = (first_count / probability) * (1 - relative_sum) + relative_sum * (
+        (trials - first_count) / (1 - probability)
+    )
+    return relative_sum, derivative * probability_tangent
 
 
 def _prepare_binomial_counts(

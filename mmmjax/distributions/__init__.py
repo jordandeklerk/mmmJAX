@@ -14,10 +14,12 @@ from mmmjax.distributions._beta import beta as beta
 from mmmjax.distributions._beta import beta_logpdf as beta_logpdf
 from mmmjax.distributions._beta import beta_rng as beta_rng
 from mmmjax.distributions._binomial import binomial as binomial
+from mmmjax.distributions._binomial import binomial_logcdf as binomial_logcdf
 from mmmjax.distributions._binomial import binomial_logit as binomial_logit
 from mmmjax.distributions._binomial import binomial_logit_logpmf as binomial_logit_logpmf
 from mmmjax.distributions._binomial import binomial_logit_rng as binomial_logit_rng
 from mmmjax.distributions._binomial import binomial_logpmf as binomial_logpmf
+from mmmjax.distributions._binomial import binomial_logsf as binomial_logsf
 from mmmjax.distributions._binomial import binomial_rng as binomial_rng
 from mmmjax.distributions._categorical import categorical as categorical
 from mmmjax.distributions._categorical import categorical_logit as categorical_logit
@@ -119,10 +121,12 @@ __all__ = [
     "beta_logpdf",
     "beta_rng",
     "binomial",
+    "binomial_logcdf",
     "binomial_logit",
     "binomial_logit_logpmf",
     "binomial_logit_rng",
     "binomial_logpmf",
+    "binomial_logsf",
     "binomial_rng",
     "categorical",
     "categorical_logit",
