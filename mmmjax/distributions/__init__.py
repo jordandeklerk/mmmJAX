@@ -84,7 +84,9 @@ from mmmjax.distributions._poisson import poisson as poisson
 from mmmjax.distributions._poisson import poisson_log as poisson_log
 from mmmjax.distributions._poisson import poisson_log_logpmf as poisson_log_logpmf
 from mmmjax.distributions._poisson import poisson_log_rng as poisson_log_rng
+from mmmjax.distributions._poisson import poisson_logcdf as poisson_logcdf
 from mmmjax.distributions._poisson import poisson_logpmf as poisson_logpmf
+from mmmjax.distributions._poisson import poisson_logsf as poisson_logsf
 from mmmjax.distributions._poisson import poisson_rng as poisson_rng
 from mmmjax.distributions._student_t import student_t as student_t
 from mmmjax.distributions._student_t import student_t_logpdf as student_t_logpdf
@@ -185,7 +187,9 @@ __all__ = [
     "poisson_log",
     "poisson_log_logpmf",
     "poisson_log_rng",
+    "poisson_logcdf",
     "poisson_logpmf",
+    "poisson_logsf",
     "poisson_rng",
     "student_t",
     "student_t_logpdf",

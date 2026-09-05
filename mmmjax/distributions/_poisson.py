@@ -6,6 +6,7 @@ from jax.scipy.special import digamma
 from jax.typing import ArrayLike
 
 from mmmjax.distributions._discrete import _prepare_nonnegative_count
+from mmmjax.distributions._gamma import gamma_logcdf, gamma_logsf
 from mmmjax.distributions._utils import (
     _as_real_array,
     _gamma_shape_normalizer,
@@ -90,6 +91,74 @@ def poisson(value: ArrayLike, rate: ArrayLike) -> jax.Array:
         dimension of the broadcast result.
     """
     return jnp.sum(poisson_logpmf(value, rate))
+
+
+def poisson_logcdf(value: ArrayLike, rate: ArrayLike) -> jax.Array:
+    r"""Evaluate the Poisson log cumulative distribution function elementwise.
+
+    For a finite threshold :math:`x \geq 0` and rate :math:`\lambda \geq 0`,
+    the log cumulative probability is
+
+    .. math::
+
+        \log P(X \leq x)
+        = \log Q(\lfloor x \rfloor + 1, \lambda),
+
+    where :math:`Q` is the regularized upper incomplete Gamma function.
+
+    Parameters
+    ----------
+    value
+        Thresholds at which to evaluate the cumulative probability.
+        Fractional thresholds are rounded down to the nearest integer.
+    rate
+        Finite nonnegative rate parameter. Zero represents a distribution
+        concentrated at zero.
+
+    Returns
+    -------
+    jax.Array
+        Log cumulative probabilities with the broadcast shape of the
+        arguments. Negative thresholds produce ``-inf`` and positive
+        infinity produces zero. Invalid rates or ``nan`` thresholds produce
+        ``nan``.
+    """
+    return _poisson_log_probability(value, rate, upper_tail=False)
+
+
+def poisson_logsf(value: ArrayLike, rate: ArrayLike) -> jax.Array:
+    r"""Evaluate the Poisson log survival function elementwise.
+
+    For a finite threshold :math:`x \geq 0` and rate :math:`\lambda \geq 0`,
+    the log survival probability is
+
+    .. math::
+
+        \log P(X > x)
+        = \log P(\lfloor x \rfloor + 1, \lambda),
+
+    where :math:`P` on the right is the regularized lower incomplete Gamma
+    function. This evaluates the upper tail without subtracting the CDF
+    from one.
+
+    Parameters
+    ----------
+    value
+        Thresholds at which to evaluate the survival probability.
+        Fractional thresholds are rounded down to the nearest integer.
+    rate
+        Finite nonnegative rate parameter. Zero represents a distribution
+        concentrated at zero.
+
+    Returns
+    -------
+    jax.Array
+        Log survival probabilities with the broadcast shape of the
+        arguments. Negative thresholds produce zero and positive infinity
+        produces ``-inf``. Invalid rates or ``nan`` thresholds produce
+        ``nan``.
+    """
+    return _poisson_log_probability(value, rate, upper_tail=True)
 
 
 def poisson_rng(
@@ -234,6 +303,39 @@ def poisson_log_rng(
         jnp.exp(log_rate_array),
         sample_shape=sample_shape,
     )
+
+
+def _poisson_log_probability(value: ArrayLike, rate: ArrayLike, *, upper_tail: bool) -> jax.Array:
+    value_array = _as_real_array("value", value)
+    (rate_array,) = _promote_inexact(("rate", rate))
+    valid_rate = jnp.isfinite(rate_array) & (rate_array >= 0)
+    finite_threshold = jnp.isfinite(value_array) & (value_array >= 0)
+    count = jnp.floor(jnp.where(finite_threshold, value_array, 0)).astype(rate_array.dtype)
+    zero_count = count == 0
+
+    # Inactive branches get safe inputs so their derivatives cannot contaminate the result
+    gamma_rate = jnp.where(finite_threshold & valid_rate & ~zero_count, rate_array, 1.0)
+    zero_count_rate = jnp.where(finite_threshold & valid_rate & zero_count, rate_array, 1.0)
+
+    # P(X = 0) = exp(-rate) gives an exact shortcut and avoids Gamma's derivative at shape=1, rate=0
+    if upper_tail:
+        log_probability = jnp.where(
+            zero_count,
+            jnp.log(-jnp.expm1(-zero_count_rate)),
+            gamma_logcdf(gamma_rate, count + 1, 1.0),
+        )
+        log_probability = jnp.where(value_array < 0, 0.0, log_probability)
+        log_probability = jnp.where(jnp.isposinf(value_array), -jnp.inf, log_probability)
+    else:
+        log_probability = jnp.where(
+            zero_count,
+            -zero_count_rate,
+            gamma_logsf(gamma_rate, count + 1, 1.0),
+        )
+        log_probability = jnp.where(value_array < 0, -jnp.inf, log_probability)
+        log_probability = jnp.where(jnp.isposinf(value_array), 0.0, log_probability)
+
+    return jnp.where(valid_rate & ~jnp.isnan(value_array), log_probability, jnp.nan)
 
 
 @jax.custom_jvp
