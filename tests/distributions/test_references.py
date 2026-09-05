@@ -664,6 +664,62 @@ def test_poisson_log_probability_references_match_public_operations() -> None:
     )
 
 
+@pytest.mark.parametrize("name", ["poisson", "poisson_log"])
+@pytest.mark.parametrize("operation", ["logcdf", "logsf"])
+@pytest.mark.parametrize("input_set", ["ordinary", "tail"])
+@pytest.mark.parametrize("profile_name", ["vector", "likelihood", "channel_prior"])
+def test_poisson_benchmark_tails_match_scipy_and_jax(name, operation, input_set, profile_name) -> None:
+    profile = PROFILES[profile_name]
+    dtype = jnp.asarray(0.0).dtype
+    values, parameter = make_tail_arguments(DISTRIBUTIONS_BY_NAME[name], profile, input_set, operation, dtype)
+    implementation = getattr(mmmjax, f"{name}_{operation}")
+    reference = getattr(JAX_REFERENCES[name], operation)
+    assert reference is not None
+    assert values.shape == profile.value_shape
+    assert parameter.shape == profile.parameter_shape
+
+    parameter64 = np.asarray(parameter, dtype=np.float64)
+    rate = np.exp(parameter64) if name == "poisson_log" else parameter64
+    counts = np.floor(np.asarray(values, dtype=np.float64))
+    expected = getattr(stats.poisson, operation)(counts, rate)
+
+    # Differentiating the Poisson probability sum leaves the mass at the threshold
+    # Dividing by the tail probability gives the log-tail derivative
+    expected_gradient = np.exp(stats.poisson.logpmf(counts, rate) - expected)
+    if operation == "logcdf":
+        expected_gradient = -expected_gradient
+    if name == "poisson_log":
+        expected_gradient *= rate
+    expected_gradient = expected_gradient.sum(axis=tuple(range(len(profile.sample_shape))))
+
+    result = jax.jit(implementation)(values, parameter)
+    jax_result = jax.jit(reference)(values, parameter)
+
+    def summed(function, current_parameter):
+        return jnp.sum(function(values, current_parameter))
+
+    gradient = jax.jit(jax.grad(partial(summed, implementation)))(parameter)
+    jax_gradient = jax.jit(jax.grad(partial(summed, reference)))(parameter)
+    forward = jax.jit(
+        lambda current: jax.jvp(partial(summed, implementation), (current,), (jnp.ones_like(current),))[1]
+    )(parameter)
+
+    # Native float32 incomplete Gamma values lose a few digits at these larger counts
+    value_tolerance = 5e-11 if jax.config.x64_enabled else 1e-5
+    absolute_tolerance = 1e-14 if jax.config.x64_enabled else 1e-7
+    np.testing.assert_allclose(result, expected, rtol=value_tolerance, atol=absolute_tolerance)
+    _assert_close(result, jax_result)
+    tolerance = 2e-11 if jax.config.x64_enabled else 3e-5
+    np.testing.assert_allclose(gradient, expected_gradient, rtol=tolerance, atol=0)
+    np.testing.assert_allclose(gradient, jax_gradient, rtol=tolerance, atol=0)
+    np.testing.assert_allclose(forward, expected_gradient.sum(), rtol=tolerance, atol=0)
+    if input_set == "tail":
+        assert np.all(np.isfinite(expected))
+        assert np.all(expected < -4)
+        assert np.min(expected) < -33
+        assert np.all(values > 0)
+
+
 def test_poisson_rng_references_match_public_operations() -> None:
     rates = jnp.array([0.2, 2.0, 10.0])
     log_rates = jnp.log(rates)

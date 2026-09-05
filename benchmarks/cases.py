@@ -237,6 +237,7 @@ DISTRIBUTIONS = (
         log_probability_operation="logpmf",
         outcomes=(0, 1, 3, 10, 25),
         supports_concentrated_inputs=True,
+        supports_tail_inputs=True,
     ),
     DistributionSpec(
         name="poisson_log",
@@ -245,6 +246,7 @@ DISTRIBUTIONS = (
         log_probability_operation="logpmf",
         outcomes=(0, 1, 3, 10, 25),
         supports_concentrated_inputs=True,
+        supports_tail_inputs=True,
     ),
     DistributionSpec(
         name="cauchy",
@@ -534,6 +536,19 @@ def make_tail_arguments(
             parameter = 1 - tail_probability if operation == "logcdf" else tail_probability
 
         return value, parameter.reshape(profile.parameter_shape)
+
+    if distribution.name in {"poisson", "poisson_log"}:
+        if input_set == "ordinary":
+            (parameter,) = make_parameters(distribution, profile, dtype)
+            threshold_range = (0.0, 10.0)
+        else:
+            rate = jnp.full(profile.parameter_shape, 40.0, dtype=dtype)
+            parameter = jnp.log(rate) if distribution.name == "poisson_log" else rate
+            # These counts span log probabilities around -4..-34 without relying on the zero-count shortcut
+            threshold_range = (2.0, 26.0) if operation == "logcdf" else (54.0, 99.0)
+
+        value = jnp.floor(jnp.linspace(*threshold_range, element_count, dtype=dtype))
+        return value.reshape(profile.value_shape), parameter
 
     if distribution.name == "exponential":
         # Rate-scaled inputs keep the probability range fixed if benchmark rates change

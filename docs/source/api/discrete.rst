@@ -45,9 +45,13 @@ Poisson
    poisson
    poisson_logpmf
    poisson_rng
+   poisson_logcdf
+   poisson_logsf
    poisson_log
    poisson_log_logpmf
    poisson_log_rng
+   poisson_log_logcdf
+   poisson_log_logsf
 
 Negative Binomial
 -----------------
