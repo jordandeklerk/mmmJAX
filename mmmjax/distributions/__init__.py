@@ -16,7 +16,9 @@ from mmmjax.distributions._beta import beta_rng as beta_rng
 from mmmjax.distributions._binomial import binomial as binomial
 from mmmjax.distributions._binomial import binomial_logcdf as binomial_logcdf
 from mmmjax.distributions._binomial import binomial_logit as binomial_logit
+from mmmjax.distributions._binomial import binomial_logit_logcdf as binomial_logit_logcdf
 from mmmjax.distributions._binomial import binomial_logit_logpmf as binomial_logit_logpmf
+from mmmjax.distributions._binomial import binomial_logit_logsf as binomial_logit_logsf
 from mmmjax.distributions._binomial import binomial_logit_rng as binomial_logit_rng
 from mmmjax.distributions._binomial import binomial_logpmf as binomial_logpmf
 from mmmjax.distributions._binomial import binomial_logsf as binomial_logsf
@@ -123,7 +125,9 @@ __all__ = [
     "binomial",
     "binomial_logcdf",
     "binomial_logit",
+    "binomial_logit_logcdf",
     "binomial_logit_logpmf",
+    "binomial_logit_logsf",
     "binomial_logit_rng",
     "binomial_logpmf",
     "binomial_logsf",

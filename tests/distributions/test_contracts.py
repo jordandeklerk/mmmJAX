@@ -23,7 +23,9 @@ from mmmjax import (
     binomial,
     binomial_logcdf,
     binomial_logit,
+    binomial_logit_logcdf,
     binomial_logit_logpmf,
+    binomial_logit_logsf,
     binomial_logit_rng,
     binomial_logpmf,
     binomial_logsf,
@@ -188,6 +190,8 @@ def test_probability_functions_use_at_least_float32(dtype, expected_dtype) -> No
     assert binomial_logcdf(values, 1, dtype(0.4)).dtype == jnp.dtype(expected_dtype)
     assert binomial_logsf(values, 1, dtype(0.4)).dtype == jnp.dtype(expected_dtype)
     assert binomial_logit_logpmf(values, 1, dtype(0.2)).dtype == jnp.dtype(expected_dtype)
+    assert binomial_logit_logcdf(values, 1, dtype(0.2)).dtype == jnp.dtype(expected_dtype)
+    assert binomial_logit_logsf(values, 1, dtype(0.2)).dtype == jnp.dtype(expected_dtype)
     assert categorical_logpmf(values, jnp.array([0.4, 0.6], dtype=dtype)).dtype == jnp.dtype(expected_dtype)
     assert categorical_logit_logpmf(values, jnp.array([0.2, -0.2], dtype=dtype)).dtype == jnp.dtype(expected_dtype)
     assert negative_binomial_logpmf(values, dtype(2.0), dtype(1.5)).dtype == jnp.dtype(expected_dtype)
@@ -259,6 +263,8 @@ def test_probability_functions_promote_integer_inputs_to_float32() -> None:
     assert binomial_logcdf(values, 1, jnp.int32(1)).dtype == jnp.dtype(jnp.float32)
     assert binomial_logsf(values, 1, jnp.int32(1)).dtype == jnp.dtype(jnp.float32)
     assert binomial_logit_logpmf(values, 1, jnp.int32(0)).dtype == jnp.dtype(jnp.float32)
+    assert binomial_logit_logcdf(values, 1, jnp.int32(0)).dtype == jnp.dtype(jnp.float32)
+    assert binomial_logit_logsf(values, 1, jnp.int32(0)).dtype == jnp.dtype(jnp.float32)
     assert categorical_logpmf(values, jnp.array([0, 1], dtype=jnp.int32)).dtype == jnp.dtype(jnp.float32)
     assert categorical_logit_logpmf(values, jnp.array([0, 1], dtype=jnp.int32)).dtype == jnp.dtype(jnp.float32)
     assert negative_binomial_logpmf(values, jnp.int32(2), jnp.int32(1)).dtype == jnp.dtype(jnp.float32)
@@ -373,6 +379,8 @@ def test_discrete_python_scalars_follow_probability_and_sample_dtypes() -> None:
     assert binomial_logcdf(1, 5, 0.4).dtype == expected_probability_dtype
     assert binomial_logsf(1, 5, 0.4).dtype == expected_probability_dtype
     assert binomial_logit_logpmf(1, 5, 0.2).dtype == expected_probability_dtype
+    assert binomial_logit_logcdf(1, 5, 0.2).dtype == expected_probability_dtype
+    assert binomial_logit_logsf(1, 5, 0.2).dtype == expected_probability_dtype
     assert binomial_rng(key, 5, 0.4).dtype == jnp.dtype(jnp.int32)
     assert binomial_logit_rng(key, 5, 0.2).dtype == jnp.dtype(jnp.int32)
     assert categorical_logpmf(1, [0.4, 0.6]).dtype == expected_probability_dtype
@@ -431,6 +439,8 @@ def test_distribution_functions_support_float64() -> None:
     assert binomial_logcdf(values, 5, jnp.float64(0.4)).dtype == jnp.dtype(jnp.float64)
     assert binomial_logsf(values, 5, jnp.float64(0.4)).dtype == jnp.dtype(jnp.float64)
     assert binomial_logit_logpmf(values, 5, jnp.float64(0.2)).dtype == jnp.dtype(jnp.float64)
+    assert binomial_logit_logcdf(values, 5, jnp.float64(0.2)).dtype == jnp.dtype(jnp.float64)
+    assert binomial_logit_logsf(values, 5, jnp.float64(0.2)).dtype == jnp.dtype(jnp.float64)
     assert binomial_rng(key, 5, jnp.float64(0.4)).dtype == jnp.dtype(jnp.int32)
     assert binomial_logit_rng(key, 5, jnp.float64(0.2)).dtype == jnp.dtype(jnp.int32)
     assert categorical_logpmf(values, jnp.array([0.4, 0.6], dtype=jnp.float64)).dtype == jnp.dtype(jnp.float64)
@@ -513,6 +523,8 @@ def test_distribution_functions_support_float64() -> None:
         (binomial_logsf, (jnp.array([-1, 0, 1, 5]), 5, 0.4)),
         (binomial, (jnp.array([0, 1]), 5, 0.4)),
         (binomial_logit_logpmf, (jnp.array([0, 1]), 5, 0.2)),
+        (binomial_logit_logcdf, (jnp.array([-1, 0, 1, 5]), 5, 0.2)),
+        (binomial_logit_logsf, (jnp.array([-1, 0, 1, 5]), 5, 0.2)),
         (binomial_logit, (jnp.array([0, 1]), 5, 0.2)),
         (categorical_logpmf, (jnp.array([0, 1]), jnp.array([0.4, 0.6]))),
         (categorical, (jnp.array([0, 1]), jnp.array([0.4, 0.6]))),
@@ -926,6 +938,8 @@ def test_rng_rejects_negative_sample_shape() -> None:
         (binomial_rng, (jax.random.key(0), 5, 0.4 + 0.0j), "probability"),
         (binomial_logcdf, (0, 5, 0.4 + 0.0j), "probability"),
         (binomial_logsf, (0, 5, 0.4 + 0.0j), "probability"),
+        (binomial_logit_logcdf, (0, 5, 0.4 + 0.0j), "logits"),
+        (binomial_logit_logsf, (0, 5, 0.4 + 0.0j), "logits"),
         (binomial_logit_rng, (jax.random.key(0), 5, 0.2 + 0.0j), "logits"),
         (normal_logpdf, (0.0, 0.0, 1.0 + 0.0j), "scale"),
         (normal_logcdf, (0.0, 0.0, 1.0 + 0.0j), "scale"),
