@@ -30,10 +30,10 @@ def geometric_adstock(
         \end{cases}
 
     The lag-zero weight is one, including when :math:`\alpha = 0`.
-    Values before the start of the supplied series are zero. Normalization
-    always uses the full lag window, even near the start of a short series.
-    To include observed history, prepend it to ``media`` and slice the
-    corresponding periods off the result.
+
+    Media before the supplied series is assumed to be zero. When
+    normalization is enabled, weights are normalized over the full lag
+    window, even for short series.
 
     Parameters
     ----------
@@ -114,9 +114,9 @@ def delayed_adstock(
     Unlike geometric adstock, setting :math:`\theta = 0` gives weights
     :math:`\alpha^{\ell^2}`, not :math:`\alpha^\ell`.
 
-    Values before the supplied series are zero. Normalization uses the
-    full lag window, including for short series. To include observed
-    history, prepend it to ``media`` and slice those periods off the result.
+    Media before the supplied series is assumed to be zero. When
+    normalization is enabled, weights are normalized over the full lag
+    window, even for short series.
 
     Parameters
     ----------
@@ -215,9 +215,9 @@ def weibull_pdf_adstock(
     A flat sampled kernel has undefined min/max rescaling and produces
     ``nan``. Setting ``max_lag=0`` retains only the current period.
 
-    Values before the supplied series are zero. The weights always use the
-    full lag window, even for short series. To include observed history,
-    prepend it to ``media`` and slice those periods off the result.
+    Media before the supplied series is assumed to be zero. When
+    normalization is enabled, weights are normalized over the full lag
+    window, even for short series.
 
     Parameters
     ----------
@@ -314,9 +314,9 @@ def weibull_cdf_adstock(
     of survival probabilities, not individual CDF or survival values.
     Setting ``max_lag=0`` retains only the current period.
 
-    Values before the supplied series are zero. The weights always use the
-    full lag window, even for short series. To include observed history,
-    prepend it to ``media`` and slice those periods off the result.
+    Media before the supplied series is assumed to be zero. When
+    normalization is enabled, weights are normalized over the full lag
+    window, even for short series.
 
     Parameters
     ----------

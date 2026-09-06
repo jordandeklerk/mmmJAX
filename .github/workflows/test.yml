@@ -35,7 +35,7 @@ jobs:
             docs
             benchmark
       - name: Run tests
-        run: pixi run --frozen -e dev tests
+        run: pixi run --frozen -e dev tests-parallel
       - name: Build package
         run: pixi run --frozen -e dev package
       - name: Run lint checks
@@ -48,12 +48,19 @@ jobs:
         run: pixi run --frozen -e benchmark spin asv check -E existing
 
   test:
-    name: test (Python ${{ matrix.python-version }})
+    name: test (Python ${{ matrix.python-version }}${{ matrix.x64 == 'true' && ', float64' || '' }})
     runs-on: ubuntu-latest
+    env:
+      JAX_PLATFORMS: cpu
+      JAX_ENABLE_X64: ${{ matrix.x64 }}
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
+        x64: ["false"]
+        include:
+          - python-version: "3.12"
+            x64: "true"
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -71,16 +78,17 @@ jobs:
           python -m pip install -e ".[test]"
 
       - name: Run tests with coverage
-        run: pytest -m "not slow" --cov --cov-report=xml --cov-report=term
+        if: matrix.x64 == 'false'
+        run: >-
+          pytest -m "not slow" -n auto --maxprocesses=4 --dist=worksteal
+          --durations=20 --cov --cov-report=xml --cov-report=term
 
       - name: Run tests with JAX 64-bit mode
-        if: matrix.python-version == '3.12'
-        env:
-          JAX_ENABLE_X64: "true"
-        run: pytest -m "not slow"
+        if: matrix.x64 == 'true'
+        run: pytest -m "not slow" -n auto --maxprocesses=4 --dist=worksteal --durations=20
 
       - name: Upload coverage to Codecov
-        if: matrix.python-version == '3.12'
+        if: matrix.python-version == '3.12' && matrix.x64 == 'false'
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
