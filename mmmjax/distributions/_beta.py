@@ -58,6 +58,18 @@ def beta_logpdf(
         Normalized log densities with the broadcast shape of the arguments.
         Values outside ``[0, 1]`` produce ``-inf``. A nonpositive or
         nonfinite shape parameter produces ``nan``.
+
+    Examples
+    --------
+    Evaluate one log density per value. Both shape parameters are shared across
+    the values.
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from mmmjax import beta_logpdf
+           ...: values = jnp.array([0.2, 0.5, 0.8])
+           ...: beta_logpdf(values, alpha=2.0, beta=3.0)
     """
     value_array, alpha_array, beta_array = _promote_inexact(
         ("value", value),
@@ -88,6 +100,18 @@ def beta(
     jax.Array
         Complete normalized log density, including constants, summed across
         every dimension of the broadcast result.
+
+    Examples
+    --------
+    Sum the log densities of independent observations into a single log
+    likelihood. Both shape parameters are shared across the values.
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from mmmjax import beta
+           ...: values = jnp.array([0.2, 0.5, 0.8])
+           ...: beta(values, alpha=2.0, beta=3.0)
     """
     return jnp.sum(beta_logpdf(value, alpha, beta))
 
@@ -120,6 +144,17 @@ def beta_rng(
     jax.Array
         Random variates with shape ``sample_shape + broadcast_shape``. A
         nonpositive or nonfinite shape parameter produces ``nan``.
+
+    Examples
+    --------
+    Draw five samples using a key to make the draw reproducible.
+
+    .. ipython::
+
+        In [1]: from jax import random
+           ...: from mmmjax import beta_rng
+           ...: key = random.key(0)
+           ...: beta_rng(key, alpha=2.0, beta=3.0, sample_shape=(5,))
     """
     alpha_array, beta_array = _promote_inexact(("alpha", alpha), ("beta", beta))
     output_shape = _random_shape(sample_shape, alpha_array, beta_array)

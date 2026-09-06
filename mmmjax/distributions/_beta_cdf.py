@@ -144,18 +144,19 @@ def _beta_fraction(
             def advance(alpha: jax.Array, beta: jax.Array, terms: jax.Array) -> jax.Array:
                 numerator, denominator, fraction = terms
                 even = (order / (alpha + 2 * order)) * ((beta - order) / (alpha + 2 * order - 1)) * value
-                numerator = protect(1 + even / numerator)
-                denominator = 1 / protect(1 + even * denominator)
-                fraction = fraction * numerator * denominator
+                numerator_update = even / numerator
+                denominator_update = even * denominator
 
-                odd = (
-                    -((alpha + order) / (alpha + 2 * order))
-                    * ((alpha + beta + order) / (alpha + 2 * order + 1))
-                    * value
+                # Form 1 + odd directly and combine the pair to avoid cancellation near x = 1
+                odd_residual = (1 - value) + value * (
+                    ((alpha + order) / (alpha + 2 * order)) * ((2 * order + 1 - beta) / (alpha + 2 * order + 1))
+                    + (order / (alpha + 2 * order)) * ((order + 1) / (alpha + 2 * order + 1))
                 )
-                numerator = protect(1 + odd / numerator)
-                denominator = 1 / protect(1 + odd * denominator)
-                return jnp.stack((numerator, denominator, fraction * numerator * denominator))
+                numerator_term = protect(numerator_update + odd_residual)
+                denominator_term = protect(denominator_update + odd_residual)
+                numerator = numerator_term / protect(1 + numerator_update)
+                denominator = protect(1 + denominator_update) / denominator_term
+                return jnp.stack((numerator, denominator, fraction * (numerator_term / denominator_term)))
 
             if with_derivatives:
                 # Forward-mode propagates elementwise partials without constructing a batch-sized Jacobian

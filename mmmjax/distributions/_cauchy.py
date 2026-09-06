@@ -41,6 +41,17 @@ def cauchy_logpdf(
         Normalized log densities with the broadcast shape of the arguments. A
         nonfinite location or a nonpositive or nonfinite scale produces
         ``nan``.
+
+    Examples
+    --------
+    Evaluate one log density per value.
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from mmmjax import cauchy_logpdf
+           ...: values = jnp.array([-1.0, 0.0, 1.0])
+           ...: cauchy_logpdf(values, location=0.0, scale=1.0)
     """
     value_array, location_array, scale_array = _promote_inexact(
         ("value", value),
@@ -116,6 +127,18 @@ def cauchy(
     jax.Array
         Complete normalized log density, including constants, summed across
         every dimension of the broadcast result.
+
+    Examples
+    --------
+    Sum the log densities of independent observations into a single log
+    likelihood.
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from mmmjax import cauchy
+           ...: values = jnp.array([-1.0, 0.0, 1.0])
+           ...: cauchy(values, location=0.0, scale=1.0)
     """
     return jnp.sum(cauchy_logpdf(value, location, scale))
 
@@ -153,6 +176,19 @@ def cauchy_logcdf(
         Log cumulative probabilities with the broadcast shape of the
         arguments. A nonfinite location or a nonpositive or nonfinite scale
         produces ``nan``.
+
+    Examples
+    --------
+    Evaluate :math:`\log P(X \leq x)` at three thresholds, then convert the
+    results to probabilities.
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from mmmjax import cauchy_logcdf
+           ...: thresholds = jnp.array([-1.0, 0.0, 1.0])
+           ...: log_prob = cauchy_logcdf(thresholds, location=0.0, scale=1.0)
+           ...: jnp.exp(log_prob)
     """
     value_array, location_array, scale_array = _promote_inexact(
         ("value", value),
@@ -195,6 +231,19 @@ def cauchy_logsf(
         Log survival probabilities with the broadcast shape of the arguments.
         A nonfinite location or a nonpositive or nonfinite scale produces
         ``nan``.
+
+    Examples
+    --------
+    Evaluate :math:`\log P(X > x)` at three thresholds, then convert the results
+    to probabilities.
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from mmmjax import cauchy_logsf
+           ...: thresholds = jnp.array([-1.0, 0.0, 1.0])
+           ...: log_prob = cauchy_logsf(thresholds, location=0.0, scale=1.0)
+           ...: jnp.exp(log_prob)
     """
     value_array, location_array, scale_array = _promote_inexact(
         ("value", value),
@@ -233,6 +282,17 @@ def cauchy_rng(
         Random variates with shape ``sample_shape + broadcast_shape``. A
         nonfinite location or a nonpositive or nonfinite scale produces
         ``nan``.
+
+    Examples
+    --------
+    Draw five samples using a key to make the draw reproducible.
+
+    .. ipython::
+
+        In [1]: from jax import random
+           ...: from mmmjax import cauchy_rng
+           ...: key = random.key(0)
+           ...: cauchy_rng(key, location=0.0, scale=1.0, sample_shape=(5,))
     """
     location_array, scale_array = _promote_inexact(
         ("location", location),

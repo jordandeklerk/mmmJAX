@@ -73,7 +73,7 @@ def test_betainc_preserves_jax_values_and_matches_scipy(dtype) -> None:
 
 @pytest.mark.parametrize("log_value", [False, True])
 def test_log_betainc_large_shape_values_and_gradients_match_scipy(log_value) -> None:
-    # These valid tails expose roundoff in the stopping check, including during differentiation
+    # Near-one arguments expose cancellation in the fraction even after it has converged
     points = jnp.array(
         [[10001.0, 0.1, 0.999], [8000.0, 0.2, 0.99985], [11000.0, 0.3, 0.99985]],
         dtype=jnp.float32,
@@ -103,8 +103,11 @@ def test_log_betainc_large_shape_values_and_gradients_match_scipy(log_value) -> 
 
     values = jax.jit(jax.vmap(log_probability))(points)
     differentiated, gradients = jax.jit(jax.vmap(jax.value_and_grad(log_probability)))(points)
+    # Direct batching and vmap can lead to different compiler choices for the same arithmetic
+    batched = jax.jit(lambda alpha, beta, value: _log_betainc(alpha, beta, value, log_value))(*points.T)
 
     np.testing.assert_allclose(values, expected_values, rtol=4e-5, atol=0)
+    np.testing.assert_allclose(batched, expected_values, rtol=4e-5, atol=0)
     np.testing.assert_allclose(differentiated, expected_values, rtol=4e-5, atol=0)
     np.testing.assert_allclose(gradients, expected_gradients, rtol=2e-4, atol=0)
 

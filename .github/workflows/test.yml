@@ -34,8 +34,6 @@ jobs:
             check
             docs
             benchmark
-      - name: Run tests
-        run: pixi run --frozen -e dev tests
       - name: Build package
         run: pixi run --frozen -e dev package
       - name: Run lint checks
@@ -47,42 +45,94 @@ jobs:
       - name: Check benchmark discovery
         run: pixi run --frozen -e benchmark spin asv check -E existing
 
-  test:
-    name: test (Python ${{ matrix.python-version }})
+  pixi-test:
+    name: pixi tests (group ${{ matrix.group }}/3)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      JAX_PLATFORMS: cpu
+      JAX_ENABLE_X64: "false"
+      TEST_SPLITS: "3"
+      TEST_GROUP: ${{ matrix.group }}
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        group: [1, 2, 3]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Pixi
+        uses: prefix-dev/setup-pixi@f00437f565399d418b0acc85936d12c1fb668347 # v0.10.1
+        with:
+          pixi-version: v0.64.0
+          cache: true
+          cache-write: ${{ github.event_name == 'push' && github.ref_name == 'main' }}
+          frozen: true
+          environments: dev
+      - name: Run tests
+        run: pixi run --frozen -e dev bash .github/scripts/tests.sh
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: tests-pixi-${{ matrix.group }}
+          path: test-results.xml
+          retention-days: 7
+
+  test:
+    name: test (Python ${{ matrix.config.python-version }}${{ matrix.config.x64 == 'true' && ', float64' || '' }}, group ${{ matrix.group }}/3)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      JAX_PLATFORMS: cpu
+      JAX_ENABLE_X64: ${{ matrix.config.x64 }}
+      TEST_SPLITS: "3"
+      TEST_GROUP: ${{ matrix.group }}
+      TEST_COVERAGE: ${{ matrix.config.python-version == '3.12' && matrix.config.x64 == 'false' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - {python-version: "3.11", x64: "false"}
+          - {python-version: "3.12", x64: "false"}
+          - {python-version: "3.13", x64: "false"}
+          - {python-version: "3.14", x64: "false"}
+          - {python-version: "3.12", x64: "true"}
+        group: [1, 2, 3]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python ${{ matrix.config.python-version }}
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: ${{ matrix.config.python-version }}
 
       - name: Install package with test extras
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[test]"
 
-      - name: Run tests with coverage
-        run: pytest -m "not slow" --cov --cov-report=xml --cov-report=term
+      - name: Run tests
+        run: bash .github/scripts/tests.sh
 
-      - name: Run tests with JAX 64-bit mode
-        if: matrix.python-version == '3.12'
-        env:
-          JAX_ENABLE_X64: "true"
-        run: pytest -m "not slow"
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: tests-${{ matrix.config.python-version }}-${{ matrix.config.x64 }}-${{ matrix.group }}
+          path: test-results.xml
+          retention-days: 7
 
       - name: Upload coverage to Codecov
-        if: matrix.python-version == '3.12'
+        if: ${{ !cancelled() && matrix.config.python-version == '3.12' && matrix.config.x64 == 'false' && hashFiles('coverage.xml') != '' }}
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage.xml
+          name: python-3.12-group-${{ matrix.group }}
           fail_ci_if_error: false

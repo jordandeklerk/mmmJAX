@@ -56,6 +56,19 @@ def dirichlet_logpdf(
         ``inf``, zero, or ``-inf`` when its concentration is below, equal to,
         or above one. Opposing infinite terms produce ``nan`` because the
         multivariate boundary limit depends on the path of approach.
+
+    Examples
+    --------
+    Evaluate one log density per row. Each row is a probability vector whose
+    components sum to one.
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from mmmjax import dirichlet_logpdf
+           ...: values = jnp.array([[0.2, 0.3, 0.5], [0.4, 0.4, 0.2]])
+           ...: concentration = jnp.array([2.0, 3.0, 4.0])
+           ...: dirichlet_logpdf(values, concentration=concentration)
     """
     value_array, concentration_array = _promote_inexact(
         ("value", value),
@@ -125,6 +138,19 @@ def dirichlet(
     jax.Array
         Complete normalized log density, including constants, summed across
         every broadcast batch dimension.
+
+    Examples
+    --------
+    Sum the log densities of independent probability vectors into a single
+    log likelihood. Each row contains components that sum to one.
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from mmmjax import dirichlet
+           ...: values = jnp.array([[0.2, 0.3, 0.5], [0.4, 0.4, 0.2]])
+           ...: concentration = jnp.array([2.0, 3.0, 4.0])
+           ...: dirichlet(values, concentration=concentration)
     """
     return jnp.sum(dirichlet_logpdf(value, concentration))
 
@@ -156,6 +182,23 @@ def dirichlet_rng(
         Random simplex values with shape
         ``sample_shape + concentration.shape``. An event containing a
         nonpositive or nonfinite concentration produces ``nan``.
+
+    Examples
+    --------
+    Draw three probability vectors, each with three components that sum to one.
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from jax import random
+           ...: from mmmjax import dirichlet_rng
+           ...: concentration = jnp.array([2.0, 3.0, 4.0])
+           ...: key = random.key(0)
+           ...: dirichlet_rng(
+           ...:     key,
+           ...:     concentration=concentration,
+           ...:     sample_shape=(3,),
+           ...: )
     """
     (concentration_array,) = _promote_inexact(("concentration", concentration))
     if concentration_array.ndim == 0:

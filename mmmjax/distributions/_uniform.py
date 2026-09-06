@@ -43,6 +43,18 @@ def uniform_logpdf(
         Values outside the bounds produce ``-inf``. Nonfinite bounds or bounds
         where ``lower >= upper`` produce ``nan``. A ``nan`` value also produces
         ``nan``.
+
+    Examples
+    --------
+    Evaluate one log density per value. Use a uniform distribution over the
+    interval from zero to two.
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from mmmjax import uniform_logpdf
+           ...: values = jnp.array([0.5, 1.0, 1.5])
+           ...: uniform_logpdf(values, lower=0.0, upper=2.0)
     """
     value_array, lower_array, upper_array = _promote_inexact(
         ("value", value),
@@ -80,6 +92,18 @@ def uniform(
     jax.Array
         Complete normalized log density, including constants, summed across
         every dimension of the broadcast result.
+
+    Examples
+    --------
+    Sum the log densities of independent observations into a single log
+    likelihood. Use a uniform distribution over the interval from zero to two.
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from mmmjax import uniform
+           ...: values = jnp.array([0.5, 1.0, 1.5])
+           ...: uniform(values, lower=0.0, upper=2.0)
     """
     return jnp.sum(uniform_logpdf(value, lower, upper))
 
@@ -117,6 +141,19 @@ def uniform_logcdf(
         Log cumulative probabilities with the broadcast shape of the
         arguments. Nonfinite bounds or bounds where ``lower >= upper`` produce
         ``nan``. A ``nan`` value also produces ``nan``.
+
+    Examples
+    --------
+    Evaluate :math:`\log P(X \leq x)` at three thresholds, then convert the
+    results to probabilities.
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from mmmjax import uniform_logcdf
+           ...: thresholds = jnp.array([0.5, 1.0, 1.5])
+           ...: log_prob = uniform_logcdf(thresholds, lower=0.0, upper=2.0)
+           ...: jnp.exp(log_prob)
     """
     value_array, lower_array, upper_array = _promote_inexact(
         ("value", value),
@@ -176,6 +213,19 @@ def uniform_logsf(
         Log survival probabilities with the broadcast shape of the arguments.
         Nonfinite bounds or bounds where ``lower >= upper`` produce ``nan``. A
         ``nan`` value also produces ``nan``.
+
+    Examples
+    --------
+    Evaluate :math:`\log P(X > x)` at three thresholds, then convert the results
+    to probabilities.
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from mmmjax import uniform_logsf
+           ...: thresholds = jnp.array([0.5, 1.0, 1.5])
+           ...: log_prob = uniform_logsf(thresholds, lower=0.0, upper=2.0)
+           ...: jnp.exp(log_prob)
     """
     value_array, lower_array, upper_array = _promote_inexact(
         ("value", value),
@@ -231,6 +281,17 @@ def uniform_rng(
         Random variates with shape ``sample_shape + broadcast_shape``. The
         lower bound is inclusive and the upper bound is exclusive. Invalid
         bounds produce ``nan``.
+
+    Examples
+    --------
+    Draw five samples using a key to make the draw reproducible.
+
+    .. ipython::
+
+        In [1]: from jax import random
+           ...: from mmmjax import uniform_rng
+           ...: key = random.key(0)
+           ...: uniform_rng(key, lower=0.0, upper=2.0, sample_shape=(5,))
     """
     lower_array, upper_array = _promote_inexact(("lower", lower), ("upper", upper))
     output_shape = _random_shape(sample_shape, lower_array, upper_array)

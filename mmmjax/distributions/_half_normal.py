@@ -38,6 +38,17 @@ def half_normal_logpdf(value: ArrayLike, scale: ArrayLike) -> jax.Array:
         Normalized log densities with the broadcast shape of the arguments.
         Values below zero produce ``-inf`` and a nonpositive or nonfinite scale
         produces ``nan``.
+
+    Examples
+    --------
+    Evaluate a separate log density for each nonnegative value:
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from mmmjax import half_normal_logpdf
+           ...: values = jnp.array([0.0, 0.5, 1.0])
+           ...: half_normal_logpdf(values, scale=1.0)
     """
     value_array, scale_array = _promote_inexact(("value", value), ("scale", scale))
 
@@ -66,6 +77,18 @@ def half_normal(value: ArrayLike, scale: ArrayLike) -> jax.Array:
     jax.Array
         Complete normalized log density, including constants, summed across
         every dimension of the broadcast result.
+
+    Examples
+    --------
+    Compute a single log likelihood by summing the log densities of
+    independent nonnegative observations:
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from mmmjax import half_normal
+           ...: values = jnp.array([0.0, 0.5, 1.0])
+           ...: half_normal(values, scale=1.0)
     """
     return jnp.sum(half_normal_logpdf(value, scale))
 
@@ -96,6 +119,19 @@ def half_normal_logcdf(value: ArrayLike, scale: ArrayLike) -> jax.Array:
         Log cumulative probabilities with the broadcast shape of the
         arguments. Values at or below zero produce ``-inf``. A nonpositive or
         nonfinite scale produces ``nan``.
+
+    Examples
+    --------
+    Evaluate :math:`\log P(X \leq x)` at three thresholds, then convert
+    the results to probabilities:
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from mmmjax import half_normal_logcdf
+           ...: thresholds = jnp.array([0.5, 1.0, 2.0])
+           ...: log_prob = half_normal_logcdf(thresholds, scale=1.0)
+           ...: jnp.exp(log_prob)
     """
     value_array, scale_array = _promote_inexact(("value", value), ("scale", scale))
     return _half_normal_logcdf_kernel(value_array, scale_array)
@@ -130,6 +166,19 @@ def half_normal_logsf(value: ArrayLike, scale: ArrayLike) -> jax.Array:
         Log survival probabilities with the broadcast shape of the arguments.
         Values at or below zero produce zero. A nonpositive or nonfinite scale
         produces ``nan``.
+
+    Examples
+    --------
+    Evaluate :math:`\log P(X > x)` at three thresholds, then convert
+    the results to probabilities:
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from mmmjax import half_normal_logsf
+           ...: thresholds = jnp.array([0.5, 1.0, 2.0])
+           ...: log_prob = half_normal_logsf(thresholds, scale=1.0)
+           ...: jnp.exp(log_prob)
     """
     value_array, scale_array = _promote_inexact(("value", value), ("scale", scale))
     return _half_normal_logsf_kernel(value_array, scale_array)
@@ -161,6 +210,17 @@ def half_normal_rng(
     jax.Array
         Random variates with shape ``sample_shape + scale.shape``. A
         nonpositive or nonfinite scale produces ``nan``.
+
+    Examples
+    --------
+    Draw five nonnegative samples using a key to make the draw reproducible:
+
+    .. ipython::
+
+        In [1]: from jax import random
+           ...: from mmmjax import half_normal_rng
+           ...: key = random.key(0)
+           ...: half_normal_rng(key, scale=1.0, sample_shape=(5,))
     """
     return jnp.abs(normal_rng(key, 0, scale, sample_shape=sample_shape))
 

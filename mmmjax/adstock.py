@@ -30,10 +30,10 @@ def geometric_adstock(
         \end{cases}
 
     The lag-zero weight is one, including when :math:`\alpha = 0`.
-    Values before the start of the supplied series are zero. Normalization
-    always uses the full lag window, even near the start of a short series.
-    To include observed history, prepend it to ``media`` and slice the
-    corresponding periods off the result.
+
+    Media before the supplied series is assumed to be zero. When
+    normalization is enabled, weights are normalized over the full lag
+    window, even for short series.
 
     Parameters
     ----------
@@ -62,6 +62,37 @@ def geometric_adstock(
         Transformed values with the same shape as ``media``. Inputs are
         promoted to a common floating-point dtype of at least float32.
         Invalid retention parameters produce ``nan`` for their series.
+
+    Examples
+    --------
+    Start with weekly media spending, with one row per week in time order.
+    Apply a different retention value to each channel, in the same order
+    as the selected columns, and add the transformed values to the table:
+
+    .. ipython::
+
+        In [1]: import numpy as np
+           ...: import polars as pl
+           ...: from mmmjax import geometric_adstock
+
+        In [2]: spend = pl.DataFrame({
+           ...:     "week": [1, 2, 3, 4],
+           ...:     "search": [100.0, 120.0, 80.0, 0.0],
+           ...:     "social": [60.0, 0.0, 40.0, 80.0],
+           ...: })
+
+        In [3]: media = spend.select("search", "social").to_numpy()
+           ...: carried = geometric_adstock(
+           ...:     media,
+           ...:     alpha=np.array([0.5, 0.3]),
+           ...:     max_lag=2,
+           ...: )
+
+        In [4]: spend = spend.with_columns(
+           ...:     pl.Series("search_adstock", np.asarray(carried[:, 0])),
+           ...:     pl.Series("social_adstock", np.asarray(carried[:, 1])),
+           ...: )
+           ...: spend
     """
     media_array, parameters = _prepare_adstock(media, max_lag=max_lag, axis=axis, normalize=normalize, alpha=alpha)
     alpha_array = parameters["alpha"]
@@ -114,9 +145,9 @@ def delayed_adstock(
     Unlike geometric adstock, setting :math:`\theta = 0` gives weights
     :math:`\alpha^{\ell^2}`, not :math:`\alpha^\ell`.
 
-    Values before the supplied series are zero. Normalization uses the
-    full lag window, including for short series. To include observed
-    history, prepend it to ``media`` and slice those periods off the result.
+    Media before the supplied series is assumed to be zero. When
+    normalization is enabled, weights are normalized over the full lag
+    window, even for short series.
 
     Parameters
     ----------
@@ -150,6 +181,35 @@ def delayed_adstock(
         Transformed values with the same shape as ``media``. Inputs are
         promoted to a common floating-point dtype of at least float32.
         Invalid retention or delay parameters produce ``nan`` for their series.
+
+    Examples
+    --------
+    Suppose a video campaign runs in the first of four consecutive weeks.
+    Apply carryover that peaks two weeks later and compare it with the
+    original spending:
+
+    .. ipython::
+
+        In [1]: import numpy as np
+           ...: import polars as pl
+           ...: from mmmjax import delayed_adstock
+
+        In [2]: spend = pl.DataFrame({
+           ...:     "week": [1, 2, 3, 4],
+           ...:     "video": [100.0, 0.0, 0.0, 0.0],
+           ...: })
+
+        In [3]: carried = delayed_adstock(
+           ...:     spend["video"].to_numpy(),
+           ...:     alpha=0.5,
+           ...:     theta=2.0,
+           ...:     max_lag=3,
+           ...: )
+
+        In [4]: spend = spend.with_columns(
+           ...:     pl.Series("video_adstock", np.asarray(carried)),
+           ...: )
+           ...: spend
     """
     media_array, parameters = _prepare_adstock(
         media, max_lag=max_lag, axis=axis, normalize=normalize, alpha=alpha, theta=theta
@@ -215,9 +275,9 @@ def weibull_pdf_adstock(
     A flat sampled kernel has undefined min/max rescaling and produces
     ``nan``. Setting ``max_lag=0`` retains only the current period.
 
-    Values before the supplied series are zero. The weights always use the
-    full lag window, even for short series. To include observed history,
-    prepend it to ``media`` and slice those periods off the result.
+    Media before the supplied series is assumed to be zero. When
+    normalization is enabled, weights are normalized over the full lag
+    window, even for short series.
 
     Parameters
     ----------
@@ -249,6 +309,35 @@ def weibull_pdf_adstock(
         Transformed values with the same shape as ``media``. Inputs are
         promoted to a common floating-point dtype of at least float32.
         Invalid shape or scale parameters produce ``nan`` for their series.
+
+    Examples
+    --------
+    Transform four consecutive weeks of video spending using Weibull
+    density weights. Add the result as a new column, keeping the original
+    spending available for comparison:
+
+    .. ipython::
+
+        In [1]: import numpy as np
+           ...: import polars as pl
+           ...: from mmmjax import weibull_pdf_adstock
+
+        In [2]: spend = pl.DataFrame({
+           ...:     "week": [1, 2, 3, 4],
+           ...:     "video": [100.0, 0.0, 80.0, 40.0],
+           ...: })
+
+        In [3]: carried = weibull_pdf_adstock(
+           ...:     spend["video"].to_numpy(),
+           ...:     shape=2.0,
+           ...:     scale=3.0,
+           ...:     max_lag=3,
+           ...: )
+
+        In [4]: spend = spend.with_columns(
+           ...:     pl.Series("video_adstock", np.asarray(carried)),
+           ...: )
+           ...: spend
     """
     media_array, parameters = _prepare_adstock(
         media, max_lag=max_lag, axis=axis, normalize=normalize, shape=shape, scale=scale
@@ -314,9 +403,9 @@ def weibull_cdf_adstock(
     of survival probabilities, not individual CDF or survival values.
     Setting ``max_lag=0`` retains only the current period.
 
-    Values before the supplied series are zero. The weights always use the
-    full lag window, even for short series. To include observed history,
-    prepend it to ``media`` and slice those periods off the result.
+    Media before the supplied series is assumed to be zero. When
+    normalization is enabled, weights are normalized over the full lag
+    window, even for short series.
 
     Parameters
     ----------
@@ -348,6 +437,35 @@ def weibull_cdf_adstock(
         Transformed values with the same shape as ``media``. Inputs are
         promoted to a common floating-point dtype of at least float32.
         Invalid shape or scale parameters produce ``nan`` for their series.
+
+    Examples
+    --------
+    Transform four consecutive weeks of video spending using decreasing
+    carryover weights. Add the result alongside the original spending
+    for each week:
+
+    .. ipython::
+
+        In [1]: import numpy as np
+           ...: import polars as pl
+           ...: from mmmjax import weibull_cdf_adstock
+
+        In [2]: spend = pl.DataFrame({
+           ...:     "week": [1, 2, 3, 4],
+           ...:     "video": [100.0, 0.0, 80.0, 40.0],
+           ...: })
+
+        In [3]: carried = weibull_cdf_adstock(
+           ...:     spend["video"].to_numpy(),
+           ...:     shape=2.0,
+           ...:     scale=3.0,
+           ...:     max_lag=3,
+           ...: )
+
+        In [4]: spend = spend.with_columns(
+           ...:     pl.Series("video_adstock", np.asarray(carried)),
+           ...: )
+           ...: spend
     """
     media_array, parameters = _prepare_adstock(
         media, max_lag=max_lag, axis=axis, normalize=normalize, shape=shape, scale=scale

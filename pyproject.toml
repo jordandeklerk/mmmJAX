@@ -42,7 +42,9 @@ documentation = "https://mmmjax.readthedocs.io"
 test = [
     "pytest",
     "pytest-cov",
+    "pytest-split>=0.11,<0.12",
     "pytest-timeout",
+    "pytest-xdist>=3.8",
     "scipy>=1.14",
 ]
 benchmark = [
@@ -58,6 +60,7 @@ doc = [
     "sphinx-copybutton>=0.5",
     "sphinx-design>=0.7",
     "ipython",
+    "polars>=1.0",
 ]
 dev = [
     "prek",

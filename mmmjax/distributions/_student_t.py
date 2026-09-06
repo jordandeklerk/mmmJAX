@@ -51,6 +51,23 @@ def student_t_logpdf(
         Normalized log densities with the broadcast shape of the arguments. A
         nonpositive or nonfinite degrees of freedom or scale, or a nonfinite
         location, produces ``nan``.
+
+    Examples
+    --------
+    Evaluate one log density per value. Use five degrees of freedom with
+    location zero and scale one.
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from mmmjax import student_t_logpdf
+           ...: values = jnp.array([-1.0, 0.0, 1.0])
+           ...: student_t_logpdf(
+           ...:     values,
+           ...:     degrees_of_freedom=5.0,
+           ...:     location=0.0,
+           ...:     scale=1.0,
+           ...: )
     """
     value_array, degrees_array, location_array, scale_array = _promote_inexact(
         ("value", value),
@@ -220,6 +237,36 @@ def student_t(
     jax.Array
         Complete normalized log density, including constants, summed across
         every dimension of the broadcast result.
+
+    Examples
+    --------
+    Sum the log densities of independent observations into a single log
+    likelihood. Use five degrees of freedom with location zero and scale one.
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from mmmjax import student_t
+           ...: values = jnp.array([-1.0, 0.0, 1.0])
+           ...: student_t(
+           ...:     values,
+           ...:     degrees_of_freedom=5.0,
+           ...:     location=0.0,
+           ...:     scale=1.0,
+           ...: )
+
+    Use ``vmap`` to get a separate log likelihood for each dataset. Map over
+    the rows of ``datasets`` while sharing the three distribution parameters:
+
+    .. ipython::
+
+        In [2]: from jax import vmap
+           ...: datasets = jnp.array([[-1.0, 0.0, 1.0], [1.0, 2.0, 3.0]])
+           ...: batched_log_likelihood = vmap(
+           ...:     student_t,
+           ...:     in_axes=(0, None, None, None),
+           ...: )
+           ...: batched_log_likelihood(datasets, 5.0, 0.0, 1.0)
     """
     return jnp.sum(student_t_logpdf(value, degrees_of_freedom, location, scale))
 
@@ -256,6 +303,23 @@ def student_t_rng(
         Random variates with shape ``sample_shape + broadcast_shape``. A
         nonpositive or nonfinite degrees of freedom or scale, or a nonfinite
         location, produces ``nan``.
+
+    Examples
+    --------
+    Draw five samples using a key to make the draw reproducible.
+
+    .. ipython::
+
+        In [1]: from jax import random
+           ...: from mmmjax import student_t_rng
+           ...: key = random.key(0)
+           ...: student_t_rng(
+           ...:     key,
+           ...:     degrees_of_freedom=5.0,
+           ...:     location=0.0,
+           ...:     scale=1.0,
+           ...:     sample_shape=(5,),
+           ...: )
     """
     degrees_array, location_array, scale_array = _promote_inexact(
         ("degrees_of_freedom", degrees_of_freedom),

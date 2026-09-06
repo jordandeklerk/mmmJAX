@@ -393,11 +393,8 @@ def test_bernoulli_benchmark_tails_match_scipy_and_jax(name, operation, input_se
     result = jax.jit(implementation)(values, parameter)
     jax_result = jax.jit(reference)(values, parameter)
 
-    def summed(function, current_parameter):
-        return jnp.sum(function(values, current_parameter))
-
-    gradient = jax.jit(jax.grad(partial(summed, implementation)))(parameter)
-    jax_gradient = jax.jit(jax.grad(partial(summed, reference)))(parameter)
+    (gradient,) = _tail_gradient(implementation, values, (), (parameter,))
+    (jax_gradient,) = _tail_gradient(reference, values, (), (parameter,))
 
     _assert_close(result, expected)
     _assert_close(result, jax_result)
@@ -500,14 +497,9 @@ def test_binomial_benchmark_tails_match_scipy_and_jax(name, operation, input_set
     result = jax.jit(implementation)(values, trials, parameter)
     jax_result = jax.jit(reference)(values, trials, parameter)
 
-    def summed(function, current_parameter):
-        return jnp.sum(function(values, trials, current_parameter))
-
-    gradient = jax.jit(jax.grad(partial(summed, implementation)))(parameter)
-    jax_gradient = jax.jit(jax.grad(partial(summed, reference)))(parameter)
-    forward = jax.jit(
-        lambda current: jax.jvp(partial(summed, implementation), (current,), (jnp.ones_like(current),))[1]
-    )(parameter)
+    (gradient,) = _tail_gradient(implementation, values, (trials,), (parameter,))
+    (jax_gradient,) = _tail_gradient(reference, values, (trials,), (parameter,))
+    forward = _tail_directional_derivative(implementation, values, (trials,), (parameter,))
 
     # Native float32 Beta normalization and derivatives lose precision at these trial counts
     tolerance = 5e-11 if jax.config.x64_enabled else 1e-4
@@ -689,13 +681,8 @@ def test_negative_binomial_benchmark_tails_match_scipy_and_jax(name, operation, 
     result = jax.jit(implementation)(values, parameter, concentration)
     jax_result = jax.jit(reference)(values, parameter, concentration)
 
-    def summed(current_parameter, current_concentration):
-        return jnp.sum(implementation(values, current_parameter, current_concentration))
-
-    gradients = jax.jit(jax.grad(summed, argnums=(0, 1)))(parameter, concentration)
-    _, forward = jax.jit(lambda mu, phi: jax.jvp(summed, (mu, phi), (jnp.ones_like(mu), jnp.ones_like(phi))))(
-        parameter, concentration
-    )
+    gradients = _tail_gradient(implementation, values, (), (parameter, concentration))
+    forward = _tail_directional_derivative(implementation, values, (), (parameter, concentration))
 
     tolerance = 2e-10 if jax.config.x64_enabled else 8e-5
     gradient_tolerance = 2e-8 if jax.config.x64_enabled else 3e-4
@@ -813,14 +800,9 @@ def test_poisson_benchmark_tails_match_scipy_and_jax(name, operation, input_set,
     result = jax.jit(implementation)(values, parameter)
     jax_result = jax.jit(reference)(values, parameter)
 
-    def summed(function, current_parameter):
-        return jnp.sum(function(values, current_parameter))
-
-    gradient = jax.jit(jax.grad(partial(summed, implementation)))(parameter)
-    jax_gradient = jax.jit(jax.grad(partial(summed, reference)))(parameter)
-    forward = jax.jit(
-        lambda current: jax.jvp(partial(summed, implementation), (current,), (jnp.ones_like(current),))[1]
-    )(parameter)
+    (gradient,) = _tail_gradient(implementation, values, (), (parameter,))
+    (jax_gradient,) = _tail_gradient(reference, values, (), (parameter,))
+    forward = _tail_directional_derivative(implementation, values, (), (parameter,))
 
     # Native float32 incomplete Gamma values lose a few digits at these larger counts
     value_tolerance = 5e-11 if jax.config.x64_enabled else 1e-5
@@ -1511,6 +1493,24 @@ def test_mmmjax_rng_matches_jax_benchmark_contract(
     assert compiled_jax_result.shape == result.shape
     assert compiled_jax_result.dtype == result.dtype
     assert jnp.all(jnp.isfinite(compiled_jax_result))
+
+
+@partial(jax.jit, static_argnames="function")
+def _tail_gradient(function, values, fixed_parameters, parameters):
+    # Keeping data dynamic lets ordinary and tail cases reuse the compiled derivative
+    def summed(parameters):
+        return jnp.sum(function(values, *fixed_parameters, *parameters))
+
+    return jax.grad(summed)(parameters)
+
+
+@partial(jax.jit, static_argnames="function")
+def _tail_directional_derivative(function, values, fixed_parameters, parameters):
+    def summed(parameters):
+        return jnp.sum(function(values, *fixed_parameters, *parameters))
+
+    tangents = jax.tree.map(jnp.ones_like, parameters)
+    return jax.jvp(summed, (parameters,), (tangents,))[1]
 
 
 def _assert_close(actual, expected) -> None:
