@@ -18,12 +18,41 @@ def test_log_betainc_log_argument_derivative_avoids_reciprocal_overflow() -> Non
         alpha, log_value = parameters
         return _log_betainc(alpha, jnp.float32(1), log_value, True)
 
+    value_only = jax.jit(log_probability)(parameters)
     result, gradient = jax.jit(jax.value_and_grad(log_probability))(parameters)
     hessian = jax.jit(jax.hessian(log_probability))(parameters)
 
-    np.testing.assert_allclose(result, -8500.0, rtol=2e-6, atol=0)
+    np.testing.assert_allclose([value_only, result], -8500.0, rtol=2e-6, atol=0)
     np.testing.assert_allclose(gradient, [-85.0, 100.0], rtol=2e-6, atol=0)
     np.testing.assert_allclose(hessian, [[0.0, 1.0], [1.0, 0.0]], rtol=2e-6, atol=2e-7)
+
+
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
+@pytest.mark.parametrize("log_value", [False, True])
+def test_log_betainc_values_match_scipy_with_and_without_differentiation(dtype, log_value) -> None:
+    if dtype == jnp.float64 and not jax.config.x64_enabled:
+        pytest.skip("JAX 64-bit mode is disabled")
+    # Mixing terminating and longer fractions checks that early convergence in one entry leaves others running
+    alpha = jnp.array([1.0, 2.0, 0.2, 20.0, 0.1, 10001.0], dtype=dtype)
+    beta = jnp.array([1.0, 1.0, 0.3, 30.0, 10001.0, 0.1], dtype=dtype)
+    value = jnp.array([0.4, 0.4, 0.01, 0.2, 1e-5, 0.999], dtype=dtype)
+    argument = jnp.log(value) if log_value else value
+    value64 = np.exp(np.asarray(argument, dtype=np.float64)) if log_value else np.asarray(value, dtype=np.float64)
+    expected = np.log(special.betainc(np.asarray(alpha, dtype=np.float64), np.asarray(beta, dtype=np.float64), value64))
+
+    def log_probability(alpha, beta, argument):
+        return _log_betainc(alpha, beta, argument, log_value)
+
+    eager = log_probability(alpha, beta, argument)
+    compiled = jax.jit(log_probability)(alpha, beta, argument)
+    differentiated, _ = jax.jit(
+        lambda a, b, x: jax.jvp(log_probability, (a, b, x), (jnp.ones_like(a), jnp.ones_like(b), jnp.ones_like(x)))
+    )(alpha, beta, argument)
+    vectorized = jax.jit(jax.vmap(log_probability))(alpha, beta, argument)
+
+    tolerance = 4e-5 if dtype == jnp.float32 else 2e-11
+    for result in (eager, compiled, differentiated, vectorized):
+        np.testing.assert_allclose(result, expected, rtol=tolerance, atol=0)
 
 
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])

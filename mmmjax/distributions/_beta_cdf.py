@@ -21,7 +21,7 @@ def _log_betainc(alpha: jax.Array, beta: jax.Array, value: jax.Array, log_value:
     log_argument = value if log_value else jnp.log(value)
     value = jnp.exp(value) if log_value else value
     alpha, beta, value = jnp.broadcast_arrays(alpha, beta, value)
-    fraction = _beta_fraction(alpha, beta, value)[0]
+    fraction = _beta_fraction(alpha, beta, value, with_derivatives=False)[0]
     # Native betainc can lose normalization accuracy at large shapes or underflow before taking a log
     return _beta_logpdf(value, alpha, beta) + log_argument + jnp.log1p(-value) - jnp.log(alpha) + jnp.log(fraction)
 
@@ -109,7 +109,10 @@ def _beta_fraction(
     alpha: jax.Array,
     beta: jax.Array,
     value: jax.Array,
-) -> tuple[jax.Array, jax.Array, jax.Array]:
+    *,
+    with_derivatives: bool = True,
+) -> tuple[jax.Array, ...]:
+    """Evaluate the fraction and optionally its two shape derivatives."""
     # Evaluate the incomplete Beta continued fraction from DLMF 8.17.22-23 using modified Lentz
     # The square-root floor also leaves room for reciprocals in the differentiated recurrence
     minimum = jnp.sqrt(jnp.finfo(value.dtype).tiny)
@@ -125,11 +128,14 @@ def _beta_fraction(
         denominator = 1 / protect((1 - value) - (beta - 1) * value / (alpha + 1))
         return jnp.stack((ones, denominator, denominator))
 
-    initial, alpha_derivative = jax.jvp(initialize, (alpha, beta), (ones, zeros))
-    _, beta_derivative = jax.jvp(initialize, (alpha, beta), (zeros, ones))
-    initial_state = jnp.stack((initial, alpha_derivative, beta_derivative))
+    if with_derivatives:
+        initial, alpha_derivative = jax.jvp(initialize, (alpha, beta), (ones, zeros))
+        _, beta_derivative = jax.jvp(initialize, (alpha, beta), (zeros, ones))
+        initial_state = jnp.stack((initial, alpha_derivative, beta_derivative))
+    else:
+        initial_state = initialize(alpha, beta)[None, ...]
 
-    def step(index: int, state: tuple[jax.Array, jax.Array]) -> tuple[jax.Array, jax.Array]:
+    def step(index: int | jax.Array, state: tuple[jax.Array, jax.Array]) -> tuple[jax.Array, jax.Array]:
         order = jnp.asarray(index, dtype=value.dtype)
 
         def update(state: tuple[jax.Array, jax.Array]) -> tuple[jax.Array, jax.Array]:
@@ -151,25 +157,47 @@ def _beta_fraction(
                 denominator = 1 / protect(1 + odd * denominator)
                 return jnp.stack((numerator, denominator, fraction * numerator * denominator))
 
-            # Forward-mode propagates elementwise partials without constructing a batch-sized Jacobian
-            updated, alpha_derivative = jax.jvp(advance, (alpha, beta, previous[0]), (ones, zeros, previous[1]))
-            _, beta_derivative = jax.jvp(advance, (alpha, beta, previous[0]), (zeros, ones, previous[2]))
-            current = jnp.stack((updated, alpha_derivative, beta_derivative))
+            if with_derivatives:
+                # Forward-mode propagates elementwise partials without constructing a batch-sized Jacobian
+                updated, alpha_derivative = jax.jvp(advance, (alpha, beta, previous[0]), (ones, zeros, previous[1]))
+                _, beta_derivative = jax.jvp(advance, (alpha, beta, previous[0]), (zeros, ones, previous[2]))
+                current = jnp.stack((updated, alpha_derivative, beta_derivative))
+            else:
+                current = advance(alpha, beta, previous[0])[None, ...]
 
-            # Integer shapes can terminate the value fraction before its shape derivatives converge
-            change = jnp.abs(current[:, 2] - previous[:, 2])
             converged = jnp.abs(current[0, 0] * current[0, 1] - 1) <= tolerance
-            converged &= jnp.all(change[1:] <= tolerance * jnp.maximum(1.0, jnp.abs(current[1:, 2])), axis=0)
+            if with_derivatives:
+                # Integer shapes can terminate the value fraction before its shape derivatives converge
+                change = jnp.abs(current[1:, 2] - previous[1:, 2])
+                converged &= jnp.all(change <= tolerance * jnp.maximum(1.0, jnp.abs(current[1:, 2])), axis=0)
             return jnp.where(active, current, previous), active & ~converged
 
+        if not with_derivatives:
+            return update(state)
         return cast(
             tuple[jax.Array, jax.Array],
             jax.lax.cond(jnp.any(state[1]), update, lambda state: state, state),
         )
 
     # Each step evaluates two coefficients, so use paired-step limits based on JAX's iteration budget
-    # Static loop bounds keep reverse-mode differentiation available for higher derivatives
     iterations = 300 if value.dtype == jnp.float64 else 100
-    result, unfinished = jax.lax.fori_loop(1, iterations + 1, step, (initial_state, jnp.ones_like(value, dtype=bool)))
+    active = jnp.ones_like(value, dtype=bool)
+    if with_derivatives:
+        # Static bounds let reverse mode differentiate the shape partials when computing Hessians
+        result, unfinished = jax.lax.fori_loop(1, iterations + 1, step, (initial_state, active))
+    else:
+        # The custom JVP supplies derivatives, so value-only calls can stop as soon as the batch converges
+        def unfinished_batch(state: tuple[jax.Array, jax.Array, jax.Array]) -> jax.Array:
+            index, _, unfinished = state
+            return (index <= iterations) & jnp.any(unfinished)
+
+        def advance_batch(state: tuple[jax.Array, jax.Array, jax.Array]) -> tuple[jax.Array, jax.Array, jax.Array]:
+            index, terms, unfinished = state
+            terms, unfinished = step(index, (terms, unfinished))
+            return index + 1, terms, unfinished
+
+        _, result, unfinished = jax.lax.while_loop(
+            unfinished_batch, advance_batch, (jnp.asarray(1), initial_state, active)
+        )
     result = jnp.where(unfinished, jnp.nan, result)
-    return result[0, 2], result[1, 2], result[2, 2]
+    return tuple(result[:, 2])
