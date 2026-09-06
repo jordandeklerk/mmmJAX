@@ -1,5 +1,6 @@
 """Bayesian marketing mix modeling expressed entirely in JAX."""
 
+from mmmjax.adstock import geometric_adstock
 from mmmjax.distributions import (
     bernoulli,
     bernoulli_logcdf,
@@ -174,6 +175,7 @@ __all__ = [
     "gamma_logpdf",
     "gamma_logsf",
     "gamma_rng",
+    "geometric_adstock",
     "half_normal",
     "half_normal_logcdf",
     "half_normal_logpdf",

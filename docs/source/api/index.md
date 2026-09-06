@@ -8,6 +8,7 @@ available from `mmmjax.distributions`.
 
 model
 parameters
+adstock
 continuous
 discrete
 multivariate
