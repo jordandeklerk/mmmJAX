@@ -71,6 +71,44 @@ def test_betainc_preserves_jax_values_and_matches_scipy(dtype) -> None:
     np.testing.assert_allclose(result, expected, rtol=tolerance, atol=0)
 
 
+@pytest.mark.parametrize("log_value", [False, True])
+def test_log_betainc_large_shape_values_and_gradients_match_scipy(log_value) -> None:
+    # These valid tails expose roundoff in the stopping check, including during differentiation
+    points = jnp.array(
+        [[10001.0, 0.1, 0.999], [8000.0, 0.2, 0.99985], [11000.0, 0.3, 0.99985]],
+        dtype=jnp.float32,
+    )
+    if log_value:
+        points = points.at[:, 2].set(jnp.log(points[:, 2]))
+
+    def reference(point):
+        alpha, beta, argument = point
+        return np.log(special.betainc(alpha, beta, np.exp(argument) if log_value else argument))
+
+    expected_values = np.array([reference(point) for point in np.asarray(points, dtype=np.float64)])
+    expected_gradients = []
+    for point in np.asarray(points, dtype=np.float64):
+        steps = np.abs(point) * 1e-4
+        if not log_value:
+            steps[2] = (1 - point[2]) * 1e-4
+        gradient = []
+        for index, step in enumerate(steps):
+            offset = np.eye(3)[index] * step
+            values = [reference(point + multiplier * offset) for multiplier in (-2, -1, 1, 2)]
+            gradient.append((values[0] - 8 * values[1] + 8 * values[2] - values[3]) / (12 * step))
+        expected_gradients.append(gradient)
+
+    def log_probability(point):
+        return _log_betainc(*point, log_value)
+
+    values = jax.jit(jax.vmap(log_probability))(points)
+    differentiated, gradients = jax.jit(jax.vmap(jax.value_and_grad(log_probability)))(points)
+
+    np.testing.assert_allclose(values, expected_values, rtol=4e-5, atol=0)
+    np.testing.assert_allclose(differentiated, expected_values, rtol=4e-5, atol=0)
+    np.testing.assert_allclose(gradients, expected_gradients, rtol=2e-4, atol=0)
+
+
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
 def test_betainc_gradients_match_independent_integrals(dtype) -> None:
     if dtype == jnp.float64 and not jax.config.x64_enabled:

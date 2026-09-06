@@ -184,7 +184,7 @@ def _beta_fraction(
     active = jnp.ones_like(value, dtype=bool)
     if with_derivatives:
         # Static bounds let reverse mode differentiate the shape partials when computing Hessians
-        result, unfinished = jax.lax.fori_loop(1, iterations + 1, step, (initial_state, active))
+        result, _ = jax.lax.fori_loop(1, iterations + 1, step, (initial_state, active))
     else:
         # The custom JVP supplies derivatives, so value-only calls can stop as soon as the batch converges
         def unfinished_batch(state: tuple[jax.Array, jax.Array, jax.Array]) -> jax.Array:
@@ -196,8 +196,8 @@ def _beta_fraction(
             terms, unfinished = step(index, (terms, unfinished))
             return index + 1, terms, unfinished
 
-        _, result, unfinished = jax.lax.while_loop(
-            unfinished_batch, advance_batch, (jnp.asarray(1), initial_state, active)
-        )
-    result = jnp.where(unfinished, jnp.nan, result)
+        _, result, _ = jax.lax.while_loop(unfinished_batch, advance_batch, (jnp.asarray(1), initial_state, active))
+
+    # Keep the final estimate at the iteration cap, as JAX's continued fraction does
+    # Roundoff can keep the stopping check active even when the estimate is accurate
     return tuple(result[:, 2])

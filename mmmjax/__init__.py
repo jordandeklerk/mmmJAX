@@ -1,6 +1,6 @@
 """Bayesian marketing mix modeling expressed entirely in JAX."""
 
-from mmmjax.adstock import geometric_adstock
+from mmmjax.adstock import delayed_adstock, geometric_adstock
 from mmmjax.distributions import (
     bernoulli,
     bernoulli_logcdf,
@@ -162,6 +162,7 @@ __all__ = [
     "cauchy_logpdf",
     "cauchy_logsf",
     "cauchy_rng",
+    "delayed_adstock",
     "dirichlet",
     "dirichlet_logpdf",
     "dirichlet_rng",
