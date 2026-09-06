@@ -49,6 +49,17 @@ def inverse_gamma_logpdf(
         Nonpositive values and either infinity produce ``-inf``. A
         nonpositive or nonfinite shape or scale produces ``nan``. A ``nan``
         value also produces ``nan``.
+
+    Examples
+    --------
+    Evaluate one log density per value. Specify a shape and a scale.
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from mmmjax import inverse_gamma_logpdf
+           ...: values = jnp.array([0.5, 1.0, 2.0])
+           ...: inverse_gamma_logpdf(values, shape=3.0, scale=2.0)
     """
     value_array, shape_array, scale_array = _promote_inexact(
         ("value", value),
@@ -79,6 +90,18 @@ def inverse_gamma(
     jax.Array
         Complete normalized log density, including constants, summed across
         every dimension of the broadcast result.
+
+    Examples
+    --------
+    Sum the log densities of independent observations into a single log
+    likelihood. Specify a shape and a scale.
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from mmmjax import inverse_gamma
+           ...: values = jnp.array([0.5, 1.0, 2.0])
+           ...: inverse_gamma(values, shape=3.0, scale=2.0)
     """
     return jnp.sum(inverse_gamma_logpdf(value, shape, scale))
 
@@ -115,6 +138,23 @@ def inverse_gamma_logcdf(
     jax.Array
         Log cumulative probabilities with the broadcast shape of the
         arguments. A nonpositive or nonfinite shape or scale produces ``nan``.
+
+    Examples
+    --------
+    Evaluate :math:`\log P(X \leq x)` at three thresholds, then convert the
+    results to probabilities.
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from mmmjax import inverse_gamma_logcdf
+           ...: thresholds = jnp.array([0.5, 1.0, 2.0])
+           ...: log_prob = inverse_gamma_logcdf(
+           ...:     thresholds,
+           ...:     shape=3.0,
+           ...:     scale=2.0,
+           ...: )
+           ...: jnp.exp(log_prob)
     """
     return _inverse_gamma_log_probability(value, shape, scale, survival=False)
 
@@ -151,6 +191,19 @@ def inverse_gamma_logsf(
     jax.Array
         Log survival probabilities with the broadcast shape of the arguments.
         A nonpositive or nonfinite shape or scale produces ``nan``.
+
+    Examples
+    --------
+    Evaluate :math:`\log P(X > x)` at three thresholds, then convert the results
+    to probabilities.
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from mmmjax import inverse_gamma_logsf
+           ...: thresholds = jnp.array([0.5, 1.0, 2.0])
+           ...: log_prob = inverse_gamma_logsf(thresholds, shape=3.0, scale=2.0)
+           ...: jnp.exp(log_prob)
     """
     return _inverse_gamma_log_probability(value, shape, scale, survival=True)
 
@@ -183,6 +236,17 @@ def inverse_gamma_rng(
     jax.Array
         Random variates with shape ``sample_shape + broadcast_shape``. A
         nonpositive or nonfinite shape or scale produces ``nan``.
+
+    Examples
+    --------
+    Draw five samples using a key to make the draw reproducible.
+
+    .. ipython::
+
+        In [1]: from jax import random
+           ...: from mmmjax import inverse_gamma_rng
+           ...: key = random.key(0)
+           ...: inverse_gamma_rng(key, shape=3.0, scale=2.0, sample_shape=(5,))
     """
     shape_array, scale_array = _promote_inexact(("shape", shape), ("scale", scale))
     output_shape = _random_shape(sample_shape, shape_array, scale_array)

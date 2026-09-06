@@ -81,6 +81,12 @@ autodoc_typehints = "none"
 napoleon_numpy_docstring = True
 napoleon_google_docstring = False
 
+# Keep example output compact without rounding the values used in calculations
+ipython_execlines = [
+    "import numpy as np",
+    "np.set_printoptions(precision=1, floatmode='fixed', suppress=True)",
+]
+
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
     "jax": ("https://docs.jax.dev/en/latest", None),

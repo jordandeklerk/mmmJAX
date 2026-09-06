@@ -55,6 +55,18 @@ def gamma_logpdf(
         Normalized log densities with the broadcast shape of the arguments.
         Negative values and positive infinity produce ``-inf``. A nonpositive
         or nonfinite shape or rate produces ``nan``.
+
+    Examples
+    --------
+    Evaluate one log density per value. Specify a shape and a rate, rather than
+    a scale.
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from mmmjax import gamma_logpdf
+           ...: values = jnp.array([0.5, 1.0, 2.0])
+           ...: gamma_logpdf(values, shape=3.0, rate=2.0)
     """
     value_array, shape_array, rate_array = _promote_inexact(
         ("value", value),
@@ -85,6 +97,18 @@ def gamma(
     jax.Array
         Complete normalized log density, including constants, summed across
         every dimension of the broadcast result.
+
+    Examples
+    --------
+    Sum the log densities of independent observations into a single log
+    likelihood. Specify a shape and a rate, rather than a scale.
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from mmmjax import gamma
+           ...: values = jnp.array([0.5, 1.0, 2.0])
+           ...: gamma(values, shape=3.0, rate=2.0)
     """
     return jnp.sum(gamma_logpdf(value, shape, rate))
 
@@ -120,6 +144,19 @@ def gamma_logcdf(
     jax.Array
         Log cumulative probabilities with the broadcast shape of the
         arguments. A nonpositive or nonfinite shape or rate produces ``nan``.
+
+    Examples
+    --------
+    Evaluate :math:`\log P(X \leq x)` at three thresholds, then convert the
+    results to probabilities.
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from mmmjax import gamma_logcdf
+           ...: thresholds = jnp.array([0.5, 1.0, 2.0])
+           ...: log_prob = gamma_logcdf(thresholds, shape=3.0, rate=2.0)
+           ...: jnp.exp(log_prob)
     """
     value_array, shape_array, rate_array = _promote_inexact(
         ("value", value),
@@ -160,6 +197,19 @@ def gamma_logsf(
     jax.Array
         Log survival probabilities with the broadcast shape of the arguments.
         A nonpositive or nonfinite shape or rate produces ``nan``.
+
+    Examples
+    --------
+    Evaluate :math:`\log P(X > x)` at three thresholds, then convert the results
+    to probabilities.
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from mmmjax import gamma_logsf
+           ...: thresholds = jnp.array([0.5, 1.0, 2.0])
+           ...: log_prob = gamma_logsf(thresholds, shape=3.0, rate=2.0)
+           ...: jnp.exp(log_prob)
     """
     value_array, shape_array, rate_array = _promote_inexact(
         ("value", value),
@@ -197,6 +247,17 @@ def gamma_rng(
     jax.Array
         Random variates with shape ``sample_shape + broadcast_shape``. A
         nonpositive or nonfinite shape or rate produces ``nan``.
+
+    Examples
+    --------
+    Draw five samples using a key to make the draw reproducible.
+
+    .. ipython::
+
+        In [1]: from jax import random
+           ...: from mmmjax import gamma_rng
+           ...: key = random.key(0)
+           ...: gamma_rng(key, shape=3.0, rate=2.0, sample_shape=(5,))
     """
     shape_array, rate_array = _promote_inexact(("shape", shape), ("rate", rate))
     output_shape = _random_shape(sample_shape, shape_array, rate_array)

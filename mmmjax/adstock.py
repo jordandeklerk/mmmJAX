@@ -83,7 +83,9 @@ def geometric_adstock(
 
         In [3]: media = spend.select("search", "social").to_numpy()
            ...: carried = geometric_adstock(
-           ...:     media, alpha=np.array([0.5, 0.3]), max_lag=2,
+           ...:     media,
+           ...:     alpha=np.array([0.5, 0.3]),
+           ...:     max_lag=2,
            ...: )
 
         In [4]: spend = spend.with_columns(
@@ -198,10 +200,15 @@ def delayed_adstock(
            ...: })
 
         In [3]: carried = delayed_adstock(
-           ...:     spend["video"].to_numpy(), alpha=0.5, theta=2.0, max_lag=3,
+           ...:     spend["video"].to_numpy(),
+           ...:     alpha=0.5,
+           ...:     theta=2.0,
+           ...:     max_lag=3,
            ...: )
 
-        In [4]: spend = spend.with_columns(pl.Series("video_adstock", np.asarray(carried)))
+        In [4]: spend = spend.with_columns(
+           ...:     pl.Series("video_adstock", np.asarray(carried)),
+           ...: )
            ...: spend
     """
     media_array, parameters = _prepare_adstock(
@@ -321,10 +328,15 @@ def weibull_pdf_adstock(
            ...: })
 
         In [3]: carried = weibull_pdf_adstock(
-           ...:     spend["video"].to_numpy(), shape=2.0, scale=3.0, max_lag=3,
+           ...:     spend["video"].to_numpy(),
+           ...:     shape=2.0,
+           ...:     scale=3.0,
+           ...:     max_lag=3,
            ...: )
 
-        In [4]: spend = spend.with_columns(pl.Series("video_adstock", np.asarray(carried)))
+        In [4]: spend = spend.with_columns(
+           ...:     pl.Series("video_adstock", np.asarray(carried)),
+           ...: )
            ...: spend
     """
     media_array, parameters = _prepare_adstock(
@@ -444,10 +456,15 @@ def weibull_cdf_adstock(
            ...: })
 
         In [3]: carried = weibull_cdf_adstock(
-           ...:     spend["video"].to_numpy(), shape=2.0, scale=3.0, max_lag=3,
+           ...:     spend["video"].to_numpy(),
+           ...:     shape=2.0,
+           ...:     scale=3.0,
+           ...:     max_lag=3,
            ...: )
 
-        In [4]: spend = spend.with_columns(pl.Series("video_adstock", np.asarray(carried)))
+        In [4]: spend = spend.with_columns(
+           ...:     pl.Series("video_adstock", np.asarray(carried)),
+           ...: )
            ...: spend
     """
     media_array, parameters = _prepare_adstock(

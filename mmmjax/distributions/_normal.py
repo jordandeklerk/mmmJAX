@@ -53,10 +53,8 @@ def normal_logpdf(
 
         In [1]: import jax.numpy as jnp
            ...: from mmmjax import normal_logpdf
-
-        In [2]: values = jnp.array([-1.0, 0.0, 1.0])
-
-        In [3]: normal_logpdf(values, location=0.0, scale=1.0)
+           ...: values = jnp.array([-1.0, 0.0, 1.0])
+           ...: normal_logpdf(values, location=0.0, scale=1.0)
     """
     value_array, location_array, scale_array = _promote_inexact(
         ("value", value),
@@ -101,10 +99,17 @@ def normal(
 
         In [1]: import jax.numpy as jnp
            ...: from mmmjax import normal
+           ...: values = jnp.array([-1.0, 0.0, 1.0])
+           ...: normal(values, location=0.0, scale=1.0)
 
-        In [2]: values = jnp.array([-1.0, 0.0, 1.0])
+    Differentiate with respect to location, the second argument, and compile
+    the gradient function for repeated evaluation:
 
-        In [3]: normal(values, location=0.0, scale=1.0)
+    .. ipython::
+
+        In [2]: from jax import grad, jit
+           ...: location_gradient = jit(grad(normal, argnums=1))
+           ...: location_gradient(values, 0.5, 1.0)
     """
     return jnp.sum(normal_logpdf(value, location, scale))
 
@@ -153,12 +158,9 @@ def normal_logcdf(
 
         In [1]: import jax.numpy as jnp
            ...: from mmmjax import normal_logcdf
-
-        In [2]: thresholds = jnp.array([-1.0, 0.0, 1.0])
+           ...: thresholds = jnp.array([-1.0, 0.0, 1.0])
            ...: log_prob = normal_logcdf(thresholds, location=0.0, scale=1.0)
-           ...: log_prob
-
-        In [3]: jnp.exp(log_prob)
+           ...: jnp.exp(log_prob)
     """
     value_array, location_array, scale_array = _promote_inexact(
         ("value", value),
@@ -214,12 +216,9 @@ def normal_logsf(
 
         In [1]: import jax.numpy as jnp
            ...: from mmmjax import normal_logsf
-
-        In [2]: thresholds = jnp.array([-1.0, 0.0, 1.0])
+           ...: thresholds = jnp.array([-1.0, 0.0, 1.0])
            ...: log_prob = normal_logsf(thresholds, location=0.0, scale=1.0)
-           ...: log_prob
-
-        In [3]: jnp.exp(log_prob)
+           ...: jnp.exp(log_prob)
     """
     value_array, location_array, scale_array = _promote_inexact(
         ("value", value),
@@ -269,10 +268,8 @@ def normal_rng(
 
         In [1]: from jax import random
            ...: from mmmjax import normal_rng
-
-        In [2]: key = random.key(0)
-
-        In [3]: normal_rng(key, location=0.0, scale=1.0, sample_shape=(5,))
+           ...: key = random.key(0)
+           ...: normal_rng(key, location=0.0, scale=1.0, sample_shape=(5,))
     """
     location_array, scale_array = _promote_inexact(
         ("location", location),

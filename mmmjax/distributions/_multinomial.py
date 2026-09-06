@@ -49,6 +49,19 @@ def multinomial_logpmf(
         A count event outside the nonnegative integer support produces
         ``-inf`` and an event containing ``nan`` produces ``nan``. A
         probability vector outside the simplex produces ``nan``.
+
+    Examples
+    --------
+    Evaluate one log probability mass per row. Each row contains counts for
+    three categories; its sum gives the total count.
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from mmmjax import multinomial_logpmf
+           ...: counts = jnp.array([[2, 3, 5], [1, 4, 5]])
+           ...: probabilities = jnp.array([0.2, 0.3, 0.5])
+           ...: multinomial_logpmf(counts, probabilities=probabilities)
     """
     count, total, probability_array, supported, has_nan, batch_shape = _prepare_multinomial_inputs(
         value,
@@ -111,6 +124,20 @@ def multinomial(
     jax.Array
         Complete normalized log probability mass summed across every
         broadcast batch dimension.
+
+    Examples
+    --------
+    Sum the log probability masses of independent count vectors into a single
+    log likelihood. Each row contains counts for three categories; its sum
+    gives the total count.
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from mmmjax import multinomial
+           ...: counts = jnp.array([[2, 3, 5], [1, 4, 5]])
+           ...: probabilities = jnp.array([0.2, 0.3, 0.5])
+           ...: multinomial(counts, probabilities=probabilities)
     """
     return jnp.sum(multinomial_logpmf(value, probabilities))
 
@@ -146,6 +173,24 @@ def multinomial_rng(
     jax.Array
         Integer category counts with shape ``sample_shape + broadcast_shape
         + (category_count,)``.
+
+    Examples
+    --------
+    Draw three count vectors for ten trials across three categories.
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from jax import random
+           ...: from mmmjax import multinomial_rng
+           ...: probabilities = jnp.array([0.2, 0.3, 0.5])
+           ...: key = random.key(0)
+           ...: multinomial_rng(
+           ...:     key,
+           ...:     probabilities=probabilities,
+           ...:     trials=10,
+           ...:     sample_shape=(3,),
+           ...: )
     """
     trials_array = _as_real_array("trials", trials)
     (probability_array,) = _promote_inexact(("probabilities", probabilities))
@@ -195,6 +240,19 @@ def multinomial_logit_logpmf(
         ``-inf`` and an event containing ``nan`` produces ``nan``. A logit
         event containing ``nan`` or ``+inf``, or containing no finite logit,
         produces ``nan``.
+
+    Examples
+    --------
+    Evaluate one log probability mass per row. Each row contains category
+    counts, and logits supply unnormalized log probabilities.
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from mmmjax import multinomial_logit_logpmf
+           ...: counts = jnp.array([[2, 3, 5], [1, 4, 5]])
+           ...: logits = jnp.array([-1.0, 0.0, 1.0])
+           ...: multinomial_logit_logpmf(counts, logits=logits)
     """
     count, total, logits_array, supported, has_nan, batch_shape = _prepare_multinomial_inputs(
         value,
@@ -257,6 +315,20 @@ def multinomial_logit(
     jax.Array
         Complete normalized log probability mass summed across every
         broadcast batch dimension.
+
+    Examples
+    --------
+    Sum the log probability masses of independent count vectors into a single
+    log likelihood. Each row contains category counts, and logits supply
+    unnormalized log probabilities.
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from mmmjax import multinomial_logit
+           ...: counts = jnp.array([[2, 3, 5], [1, 4, 5]])
+           ...: logits = jnp.array([-1.0, 0.0, 1.0])
+           ...: multinomial_logit(counts, logits=logits)
     """
     return jnp.sum(multinomial_logit_logpmf(value, logits))
 
@@ -294,6 +366,24 @@ def multinomial_logit_rng(
     jax.Array
         Integer category counts with shape ``sample_shape + broadcast_shape
         + (category_count,)``.
+
+    Examples
+    --------
+    Draw three count vectors for ten trials across three categories.
+
+    .. ipython::
+
+        In [1]: import jax.numpy as jnp
+           ...: from jax import random
+           ...: from mmmjax import multinomial_logit_rng
+           ...: logits = jnp.array([-1.0, 0.0, 1.0])
+           ...: key = random.key(0)
+           ...: multinomial_logit_rng(
+           ...:     key,
+           ...:     logits=logits,
+           ...:     trials=10,
+           ...:     sample_shape=(3,),
+           ...: )
     """
     trials_array = _as_real_array("trials", trials)
     (logits_array,) = _promote_inexact(("logits", logits))
