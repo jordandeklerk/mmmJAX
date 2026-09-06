@@ -10,6 +10,45 @@ from mmmjax.distributions._beta import _beta_logpdf
 
 
 @jax.custom_jvp
+def _log_betainc(alpha: jax.Array, beta: jax.Array, value: jax.Array) -> jax.Array:
+    r"""Evaluate log regularized incomplete Beta without reflection.
+
+    Callers must provide finite positive shapes and a value satisfying
+    :math:`0 < x \leq (\alpha + 1) / (\alpha + \beta + 2)`.
+    """
+    alpha, beta, value = jnp.broadcast_arrays(alpha, beta, value)
+    fraction = _beta_fraction(alpha, beta, value)[0]
+    # Native betainc can lose normalization accuracy at large shapes or underflow before taking a log
+    return _beta_logpdf(value, alpha, beta) + jnp.log(value) + jnp.log1p(-value) - jnp.log(alpha) + jnp.log(fraction)
+
+
+@_log_betainc.defjvp
+def _log_betainc_jvp(
+    primals: tuple[jax.Array, jax.Array, jax.Array],
+    tangents: tuple[jax.Array, jax.Array, jax.Array],
+) -> tuple[jax.Array, jax.Array]:
+    alpha, beta, value = primals
+    alpha_tangent, beta_tangent, value_tangent = tangents
+    fraction, alpha_derivative, beta_derivative = _beta_fraction(*jnp.broadcast_arrays(alpha, beta, value))
+    log_density, shape_tangent = jax.jvp(
+        _beta_logpdf,
+        (value, alpha, beta),
+        (jnp.zeros_like(value), alpha_tangent, beta_tangent),
+    )
+    log_probability = log_density + jnp.log(value) + jnp.log1p(-value) - jnp.log(alpha) + jnp.log(fraction)
+
+    # Reuse the fraction's partials instead of reverse-differentiating its iteration history
+    # The value derivative is the Beta density divided by its cumulative probability
+    tangent = (
+        shape_tangent
+        + (alpha_derivative / fraction - 1 / alpha) * alpha_tangent
+        + (beta_derivative / fraction) * beta_tangent
+        + ((alpha / fraction) / value / (1 - value)) * value_tangent
+    )
+    return log_probability, tangent
+
+
+@jax.custom_jvp
 def _betainc(alpha: jax.Array, beta: jax.Array, value: jax.Array) -> jax.Array:
     """Evaluate regularized incomplete Beta with differentiable shape parameters.
 
@@ -60,7 +99,7 @@ def _beta_fraction(
     beta: jax.Array,
     value: jax.Array,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
-    # Modified Lentz evaluation of the continued fraction in DLMF 8.17.22-23
+    # Evaluate the incomplete Beta continued fraction from DLMF 8.17.22-23 using modified Lentz
     # The square-root floor also leaves room for reciprocals in the differentiated recurrence
     minimum = jnp.sqrt(jnp.finfo(value.dtype).tiny)
     tolerance = jnp.finfo(value.dtype).eps
@@ -71,7 +110,8 @@ def _beta_fraction(
         return jnp.where(jnp.abs(denominator) < minimum, minimum, denominator)
 
     def initialize(alpha: jax.Array, beta: jax.Array) -> jax.Array:
-        denominator = 1 / protect(1 - (alpha + beta) * value / (alpha + 1))
+        # This rearrangement avoids subtracting nearly equal shape ratios when beta is close to one
+        denominator = 1 / protect((1 - value) - (beta - 1) * value / (alpha + 1))
         return jnp.stack((ones, denominator, denominator))
 
     initial, alpha_derivative = jax.jvp(initialize, (alpha, beta), (ones, zeros))
@@ -86,13 +126,15 @@ def _beta_fraction(
 
             def advance(alpha: jax.Array, beta: jax.Array, terms: jax.Array) -> jax.Array:
                 numerator, denominator, fraction = terms
-                even = order * (beta - order) * value / ((alpha + 2 * order - 1) * (alpha + 2 * order))
+                even = (order / (alpha + 2 * order)) * ((beta - order) / (alpha + 2 * order - 1)) * value
                 numerator = protect(1 + even / numerator)
                 denominator = 1 / protect(1 + even * denominator)
                 fraction = fraction * numerator * denominator
 
                 odd = (
-                    -(alpha + order) * (alpha + beta + order) * value / ((alpha + 2 * order) * (alpha + 2 * order + 1))
+                    -((alpha + order) / (alpha + 2 * order))
+                    * ((alpha + beta + order) / (alpha + 2 * order + 1))
+                    * value
                 )
                 numerator = protect(1 + odd / numerator)
                 denominator = 1 / protect(1 + odd * denominator)
@@ -105,7 +147,7 @@ def _beta_fraction(
 
             # Integer shapes can terminate the value fraction before its shape derivatives converge
             change = jnp.abs(current[:, 2] - previous[:, 2])
-            converged = change[0] <= tolerance * jnp.abs(current[0, 2])
+            converged = jnp.abs(current[0, 0] * current[0, 1] - 1) <= tolerance
             converged &= jnp.all(change[1:] <= tolerance * jnp.maximum(1.0, jnp.abs(current[1:, 2])), axis=0)
             return jnp.where(active, current, previous), active & ~converged
 
@@ -114,7 +156,7 @@ def _beta_fraction(
             jax.lax.cond(jnp.any(state[1]), update, lambda state: state, state),
         )
 
-    # These caps match 200/600 alternating terms in JAX's continued fraction
+    # Each step evaluates two coefficients, so use paired-step limits based on JAX's iteration budget
     # Static loop bounds keep reverse-mode differentiation available for higher derivatives
     iterations = 300 if value.dtype == jnp.float64 else 100
     result, unfinished = jax.lax.fori_loop(1, iterations + 1, step, (initial_state, jnp.ones_like(value, dtype=bool)))
