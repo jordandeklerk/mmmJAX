@@ -12,3 +12,4 @@ Transform marketing inputs to account for effects that persist over time.
    geometric_adstock
    delayed_adstock
    weibull_pdf_adstock
+   weibull_cdf_adstock
