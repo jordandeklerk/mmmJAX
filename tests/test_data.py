@@ -28,6 +28,161 @@ def frame_factory(request):
     return pa.table
 
 
+@pytest.mark.parametrize("x64", [False, True])
+def test_panel_data_to_jax_follows_precision_setting_without_changing_host_data(frame_factory, x64):
+    source = frame_factory(
+        {
+            "week": [2, 1],
+            "sales": np.array([20, 10], dtype=np.int64),
+            "video": np.array([2.5, 1.5], dtype=np.float64),
+            "promotion": [True, False],
+        }
+    )
+    data = _prepare_data(source, time="week", blocks={"outcome": "sales", "media": ["video"], "flag": "promotion"})
+    before = {name: array.copy() for name, array in data.arrays.items()}
+
+    with jax.enable_x64(x64):
+        result = data.to_jax()
+        assert jax.config.x64_enabled == x64
+
+    assert set(result) == set(data.arrays)
+    assert result["media"].dtype == (np.float64 if x64 else np.float32)
+    assert result["outcome"].dtype == (np.int64 if x64 else np.int32)
+    assert result["flag"].dtype == np.bool_
+    for name, array in result.items():
+        assert isinstance(array, jax.Array)
+        assert array.shape == before[name].shape
+        np.testing.assert_array_equal(array, before[name])
+        np.testing.assert_array_equal(data.arrays[name], before[name])
+        assert data.arrays[name].dtype == before[name].dtype
+    assert data.time_values == (1, 2)
+    assert data.columns == {"outcome": ("sales",), "media": ("video",), "flag": ("promotion",)}
+
+
+@pytest.mark.parametrize("dtype", [np.float32, "float32", np.float64, "float64"])
+def test_panel_data_to_jax_respects_explicit_floating_precision(dtype):
+    data = _prepare_data(pl.DataFrame({"week": [1], "value": [1.5]}), time="week", blocks={"value": "value"})
+
+    with jax.enable_x64(True):
+        result = data.to_jax(dtype=dtype)
+
+    assert result["value"].dtype == np.dtype(dtype)
+
+
+@pytest.mark.parametrize("dtype", [np.float64, "float64", np.dtype("float64")])
+def test_panel_data_to_jax_does_not_silently_narrow_explicit_float64(dtype):
+    data = _prepare_data(pl.DataFrame({"week": [1], "value": [1.5]}), time="week", blocks={"value": "value"})
+
+    with jax.enable_x64(False), pytest.raises(ValueError, match=r"explicit dtype float64.*JAX_ENABLE_X64=true"):
+        data.to_jax(dtype=dtype)
+
+
+@pytest.mark.parametrize("dtype", [None, np.int32, np.bool_, np.complex64, np.float16, "not-a-dtype"])
+def test_panel_data_to_jax_requires_a_supported_floating_dtype(dtype):
+    data = _prepare_data(pl.DataFrame({"week": [1], "value": [1.5]}), time="week", blocks={"value": "value"})
+
+    with pytest.raises(TypeError, match="dtype must be float32 or float64"):
+        data.to_jax(dtype=dtype)
+
+
+@pytest.mark.parametrize(
+    "source_dtype,expected_dtype,values",
+    [
+        (np.int8, np.int8, [-128, 127]),
+        (np.int16, np.int16, [-32768, 32767]),
+        (np.int32, np.int32, [np.iinfo(np.int32).min, np.iinfo(np.int32).max]),
+        (np.int64, np.int32, [np.iinfo(np.int32).min, np.iinfo(np.int32).max]),
+        (np.uint64, np.uint32, [0, np.iinfo(np.uint32).max]),
+    ],
+)
+def test_panel_data_to_jax_preserves_representable_integers(source_dtype, expected_dtype, values):
+    original = np.array(values, dtype=source_dtype)
+    data = _prepare_data(pl.DataFrame({"week": [1, 2], "counts": original}), time="week", blocks={"counts": "counts"})
+
+    with jax.enable_x64(False):
+        result = data.to_jax()
+
+    assert result["counts"].dtype == expected_dtype
+    np.testing.assert_array_equal(result["counts"], original)
+
+
+@pytest.mark.parametrize(
+    "dtype,value",
+    [
+        (np.int64, int(np.iinfo(np.int32).min) - 1),
+        (np.int64, int(np.iinfo(np.int32).max) + 1),
+        (np.uint64, int(np.iinfo(np.uint32).max) + 1),
+    ],
+)
+def test_panel_data_to_jax_rejects_integer_wraparound(dtype, value):
+    data = _prepare_data(
+        pl.DataFrame({"week": [1], "sales": np.array([value], dtype=dtype)}), time="week", blocks={"outcome": "sales"}
+    )
+
+    with jax.enable_x64(False), pytest.raises(ValueError, match=r"block 'outcome'.*integers.*JAX_ENABLE_X64=true"):
+        data.to_jax()
+
+    with jax.enable_x64(True):
+        result = data.to_jax()
+
+    assert result["outcome"].dtype == dtype
+    assert int(np.asarray(result["outcome"])[0]) == value
+
+
+def test_panel_data_to_jax_keeps_large_counts_exact_in_64_bit_mode():
+    counts = np.array([2**53, 2**53 + 1], dtype=np.int64)
+    data = _prepare_data(pl.DataFrame({"week": [1, 2], "counts": counts}), time="week", blocks={"counts": "counts"})
+
+    with jax.enable_x64(True):
+        result = data.to_jax(dtype=np.float32)
+
+    # The floating-point precision choice must not turn count outcomes into rounded floats
+    assert result["counts"].dtype == np.int64
+    np.testing.assert_array_equal(result["counts"], counts)
+
+
+@pytest.mark.parametrize("value", [1e100, -1e100])
+def test_panel_data_to_jax_reports_floating_overflow_before_transfer(value):
+    data = _prepare_data(pl.DataFrame({"week": [1], "spend": [value]}), time="week", blocks={"media": ["spend"]})
+
+    with jax.enable_x64(False), pytest.raises(ValueError, match=r"block 'media'.*not finite as float32.*rescale"):
+        data.to_jax()
+
+    with jax.enable_x64(True):
+        result = data.to_jax(dtype=np.float64)
+
+    np.testing.assert_array_equal(result["media"], [[value]])
+
+
+@pytest.mark.parametrize("sharded", [False, True])
+def test_panel_data_to_jax_places_all_blocks_on_the_requested_device(sharded):
+    data = _prepare_data(
+        pl.DataFrame({"week": [1, 2], "sales": [10, 20], "video": [1.5, 2.5]}),
+        time="week",
+        blocks={"outcome": "sales", "media": ["video"]},
+    )
+    device = jax.devices("cpu")[0]
+    destination = jax.sharding.SingleDeviceSharding(device) if sharded else device
+
+    result = data.to_jax(device=destination)
+
+    for array in result.values():
+        assert array.devices() == {device}
+        assert array.committed
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.int32, np.bool_])
+def test_panel_data_to_jax_does_not_share_mutable_host_buffers(dtype):
+    original = np.array([0, 1], dtype=dtype)
+    data = _prepare_data(pl.DataFrame({"week": [1, 2], "value": original}), time="week", blocks={"value": "value"})
+    result = data.to_jax(dtype=np.float32, device=jax.devices("cpu")[0])
+    jax.block_until_ready(result)
+
+    data.arrays["value"][:] = 0
+
+    np.testing.assert_array_equal(result["value"], original)
+
+
 def test_prepare_data_keeps_block_axes_and_labels_aligned(frame_factory):
     source = frame_factory(
         {
@@ -183,7 +338,7 @@ def test_prepare_data_works_with_model_densities_and_gradients():
 
     model = Model({"beta": Real(shape=(2,))}, log_density)
     position = {"beta": jnp.array([0.5, 1.0])}
-    value, gradient = jax.jit(jax.value_and_grad(model.log_density))(position, data.arrays)
+    value, gradient = jax.jit(jax.value_and_grad(model.log_density))(position, data.to_jax())
 
     residual = np.array([2.0, 5.0]) - np.array([[1.0, 3.0], [2.0, 1.0]]) @ np.array([0.5, 1.0])
     expected_density = -0.5 * np.sum(residual**2) - np.log(2 * np.pi)
@@ -208,8 +363,8 @@ def test_prepare_data_keeps_labels_out_of_jax_compilation():
         traces.append(None)
         return data["outcome"].sum()
 
-    assert float(total(first.arrays)) == 30.0
-    assert float(total(second.arrays)) == 70.0
+    assert float(total(first.to_jax())) == 30.0
+    assert float(total(second.to_jax())) == 70.0
     assert len(traces) == 1
 
 
@@ -219,7 +374,7 @@ def test_prepare_data_works_with_batched_adstock(frame_factory):
     )
     data = _prepare_data(source, time="week", groups=["geo"], blocks={"media": ["video"]})
 
-    carried = jax.jit(lambda media: geometric_adstock(media, 0.5, max_lag=1, normalize=False))(data.arrays["media"])
+    carried = jax.jit(lambda media: geometric_adstock(media, 0.5, max_lag=1, normalize=False))(data.to_jax()["media"])
 
     np.testing.assert_array_equal(carried, [[[3.0], [1.0]], [[5.5], [2.5]]])
 

@@ -5,9 +5,12 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from typing import cast
 
+import jax
 import narwhals as nw
 import numpy as np
+from jax.typing import DTypeLike
 from narwhals.typing import IntoDataFrameT
 from numpy.typing import NDArray
 
@@ -16,10 +19,9 @@ from numpy.typing import NDArray
 class _PanelData:
     """Keep aligned numerical blocks with their observation and column labels.
 
-    ``arrays`` is a dictionary of NumPy arrays suitable for JAX input. Labels
-    stay outside that dictionary and are not registered as static JAX data.
-    Dtype promotion is local to each block. Choosing a modeling dtype and
-    moving data to a device happen separately.
+    ``arrays`` contains the host-side NumPy arrays. Use ``to_jax`` to choose
+    floating-point precision and transfer them for modeling. Labels stay
+    outside the returned dictionary and are not registered as static JAX data.
     """
 
     arrays: dict[str, NDArray[np.generic]]
@@ -28,6 +30,72 @@ class _PanelData:
     group_columns: tuple[str, ...]
     group_values: tuple[tuple[object, ...], ...]
     columns: dict[str, tuple[str, ...]]
+
+    def to_jax(
+        self,
+        *,
+        dtype: DTypeLike = float,
+        device: jax.Device | jax.sharding.Sharding | None = None,
+    ) -> dict[str, jax.Array]:
+        """Convert numerical blocks to JAX arrays without transferring labels.
+
+        Parameters
+        ----------
+        dtype : data-type, default float
+            Precision for floating-point blocks, either float32 or float64.
+            The default ``float`` follows JAX's precision setting. Explicit
+            float64 requires JAX 64-bit mode to be enabled. Integer and
+            boolean blocks stay integer and boolean. Integers that cannot
+            fit JAX's available dtype raise an error rather than wrapping.
+        device : jax.Device or jax.sharding.Sharding, optional
+            Destination for the arrays. If omitted, JAX chooses the device.
+
+        Returns
+        -------
+        dict of str to jax.Array
+            Named arrays with unchanged shapes and axis order. The host
+            arrays and labels are retained on this object. Call this once
+            before using JAX transformations on a model.
+        """
+        try:
+            requested_dtype = np.dtype(dtype)
+        except (TypeError, ValueError) as error:
+            raise TypeError(f"dtype must be float32 or float64, or float for the JAX default. Got {dtype!r}") from error
+        if dtype is None or requested_dtype not in (np.dtype(np.float32), np.dtype(np.float64)):
+            raise TypeError(f"dtype must be float32 or float64, or float for the JAX default. Got {dtype!r}")
+
+        floating_dtype = jax.dtypes.canonicalize_dtype(requested_dtype)
+        if dtype is not float and floating_dtype != requested_dtype:
+            raise ValueError(
+                "explicit dtype float64 requires JAX 64-bit mode. "
+                "Set JAX_ENABLE_X64=true before starting Python or use dtype=float32"
+            )
+
+        # CPU transfers can reuse NumPy buffers, so hand JAX snapshots of our editable arrays
+        converted: dict[str, NDArray[np.generic]] = {}
+        for name, array in self.arrays.items():
+            if np.issubdtype(array.dtype, np.floating):
+                # Check on the host so overflow is caught before allocating device buffers
+                with np.errstate(over="ignore"):
+                    values = array.astype(floating_dtype, copy=True)
+                if not np.isfinite(values).all():
+                    raise ValueError(
+                        f"block {name!r} contains values that are not finite as {floating_dtype}. "
+                        "Check or rescale the data, or use float64 with JAX 64-bit mode"
+                    )
+            else:
+                target_dtype = jax.dtypes.canonicalize_dtype(array.dtype)
+                if target_dtype != array.dtype and np.issubdtype(array.dtype, np.integer):
+                    limits = np.iinfo(target_dtype)
+                    if int(array.min()) < limits.min or int(array.max()) > limits.max:
+                        raise ValueError(
+                            f"block {name!r} contains integers that do not fit {target_dtype}. "
+                            "Set JAX_ENABLE_X64=true before starting Python to preserve these counts"
+                        )
+                values = array.astype(target_dtype, copy=True)
+            converted[name] = values
+
+        return cast(dict[str, jax.Array], jax.device_put(converted, device=device))
 
 
 def _prepare_data(
