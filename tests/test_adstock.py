@@ -7,9 +7,10 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from numpy.polynomial import Polynomial
+from scipy import stats
 
 import mmmjax
-from mmmjax.adstock import delayed_adstock, geometric_adstock
+from mmmjax.adstock import delayed_adstock, geometric_adstock, weibull_pdf_adstock
 
 
 def test_geometric_adstock_is_exported() -> None:
@@ -478,9 +479,207 @@ def test_delayed_adstock_requires_real_numeric_delay(theta) -> None:
         delayed_adstock(jnp.ones(4), 0.5, theta, max_lag=2)
 
 
+def test_weibull_pdf_adstock_is_exported() -> None:
+    assert mmmjax.weibull_pdf_adstock is weibull_pdf_adstock
+    assert "weibull_pdf_adstock" in mmmjax.__all__
+
+
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
+@pytest.mark.parametrize("normalize", [False, True])
+@pytest.mark.parametrize("shape,scale,max_lag", [(0.5, 0.3, 4), (1.0, 2.0, 3), (2.5, 4.0, 12), (5.0, 3.0, 4)])
+def test_weibull_pdf_adstock_matches_scipy_density_lag_sum(shape, scale, max_lag, normalize, dtype) -> None:
+    if dtype == jnp.float64 and not jax.config.x64_enabled:
+        pytest.skip("JAX 64-bit mode is disabled")
+    media = jnp.array([0.0, 2.0, -1.0, 0.5, 3.0, 0.0, 0.0], dtype=dtype)
+    shape, scale = jnp.asarray(shape, dtype=dtype), jnp.asarray(scale, dtype=dtype)
+    expected = _weibull_pdf_reference(media, shape, scale, max_lag=max_lag, normalize=normalize)
+    function = partial(weibull_pdf_adstock, max_lag=max_lag, normalize=normalize)
+
+    for result in (function(media, shape, scale), jax.jit(function)(media, shape, scale)):
+        assert result.shape == media.shape
+        assert result.dtype == dtype
+        np.testing.assert_allclose(result, expected, rtol=4e-6 if dtype == jnp.float32 else 4e-14, atol=1e-15)
+
+
+@pytest.mark.parametrize("normalize", [False, True])
+def test_weibull_pdf_adstock_impulse_uses_rescaled_weights_and_causal_padding(normalize) -> None:
+    # Shape one and scale 1/log(2) give densities proportional to 1/2, 1/4, 1/8, 1/16
+    # Subtracting the minimum and dividing by the range gives 1, 3/7, 1/7, 0
+    media = jnp.array([0.0, 1.0, 0.0, 0.0, 0.0, 0.0])
+    expected = np.array([0.0, 1.0, 3 / 7, 1 / 7, 0.0, 0.0])
+    if normalize:
+        expected /= 11 / 7
+
+    result = weibull_pdf_adstock(media, 1.0, 1 / np.log(2), max_lag=3, normalize=normalize)
+
+    np.testing.assert_allclose(result, expected, rtol=4e-7, atol=0)
+
+
+@pytest.mark.parametrize("axis", [0, 1, -1])
+def test_weibull_pdf_adstock_broadcasts_parameters_independently(axis) -> None:
+    media = np.moveaxis(np.arange(42, dtype=np.float32).reshape(2, 3, 7) / 10, -1, axis)
+    shape = np.array([[0.7], [2.5]], dtype=np.float32)
+    scale = np.array([1.5, 3.0, 4.0], dtype=np.float32)
+    expected = _weibull_pdf_reference(media, shape, scale, max_lag=4, normalize=True, axis=axis)
+
+    result = jax.jit(partial(weibull_pdf_adstock, max_lag=4, axis=axis))(media, shape, scale)
+
+    np.testing.assert_allclose(result, expected, rtol=3e-6, atol=1e-7)
+
+
+def test_weibull_pdf_adstock_media_jacobian_has_only_causal_lag_weights() -> None:
+    expected = np.array([[7, 0, 0, 0], [3, 7, 0, 0], [1, 3, 7, 0], [0, 1, 3, 7]]) / 11
+    function = partial(weibull_pdf_adstock, shape=1.0, scale=1 / np.log(2), max_lag=3)
+
+    for derivative in (jax.jacfwd(function), jax.jacrev(function)):
+        np.testing.assert_allclose(jax.jit(derivative)(jnp.ones(4)), expected, rtol=4e-7, atol=0)
+
+
+@pytest.mark.parametrize("dtype", [jnp.int32, jnp.float16, jnp.bfloat16, jnp.float32])
+def test_weibull_pdf_adstock_promotes_low_precision_inputs(dtype) -> None:
+    media = jnp.ones(4, dtype=dtype)
+    shape, scale = dtype(2), dtype(3)
+    expected = _weibull_pdf_reference(media.astype(jnp.float32), 2.0, 3.0, max_lag=4, normalize=True)
+
+    result = weibull_pdf_adstock(media, shape, scale, max_lag=4)
+
+    assert result.dtype == jnp.float32
+    np.testing.assert_allclose(result, expected, rtol=3e-6, atol=0)
+
+
+def test_weibull_pdf_adstock_vectorizes_over_parameter_draws() -> None:
+    media = jnp.arange(30, dtype=jnp.float32).reshape(5, 2, 3) / 10
+    shape = jnp.linspace(0.5, 3.0, 12).reshape(4, 3)
+    scale = jnp.linspace(1.0, 4.0, 8).reshape(4, 2, 1)
+    expected = np.stack(
+        [_weibull_pdf_reference(media, k, s, max_lag=4, normalize=True) for k, s in zip(shape, scale, strict=True)]
+    )
+    function = jax.vmap(partial(weibull_pdf_adstock, max_lag=4), in_axes=(None, 0, 0))
+
+    result = jax.jit(function)(media, shape, scale)
+
+    assert result.shape == (4, 5, 2, 3)
+    np.testing.assert_allclose(result, expected, rtol=4e-6, atol=1e-7)
+
+
+@pytest.mark.parametrize("normalize", [False, True])
+@pytest.mark.parametrize("shape,scale", [(0.7, 2.3), (1.0, 1.7), (2.5, 3.2)])
+def test_weibull_pdf_adstock_derivatives_match_scipy_finite_differences(shape, scale, normalize) -> None:
+    media = np.array([2.0, 0.0, 1.0, 3.0, 0.5])
+    parameters = np.array([shape, scale])
+
+    def reference(values):
+        return _weibull_pdf_reference(media, *values, max_lag=4, normalize=normalize).sum()
+
+    def total(values):
+        return weibull_pdf_adstock(media, values[0], values[1], max_lag=4, normalize=normalize).sum()
+
+    # Keep the finite-difference reference separate from JAX and its autodiff rules
+    offsets = np.eye(2) * 1e-4
+    expected_gradient = np.array([(reference(parameters + dx) - reference(parameters - dx)) / 2e-4 for dx in offsets])
+    expected_hessian = np.array(
+        [
+            [
+                (
+                    reference(parameters + dx + dy)
+                    - reference(parameters + dx - dy)
+                    - reference(parameters - dx + dy)
+                    + reference(parameters - dx - dy)
+                )
+                / 4e-8
+                for dy in offsets
+            ]
+            for dx in offsets
+        ]
+    )
+
+    for gradient in (jax.jit(jax.jacfwd(total))(parameters), jax.jit(jax.grad(total))(parameters)):
+        np.testing.assert_allclose(gradient, expected_gradient, rtol=3e-5, atol=2e-6)
+    hessian = jax.jit(jax.hessian(total))(parameters)
+    np.testing.assert_allclose(hessian, expected_hessian, rtol=2e-4, atol=2e-5)
+
+
+@pytest.mark.parametrize("max_lag,scale", [(0, 2.0), (4, 0.001)])
+@pytest.mark.parametrize("normalize", [False, True])
+def test_weibull_pdf_adstock_handles_single_period_and_concentrated_weights(max_lag, scale, normalize) -> None:
+    media = jnp.array([2.0, 0.0, 1.0, 3.0])
+    function = partial(weibull_pdf_adstock, max_lag=max_lag, normalize=normalize)
+
+    result = jax.jit(function)(media, 1.0, scale)
+    gradient = jax.jit(jax.grad(lambda k, s: function(media, k, s).sum(), argnums=(0, 1)))(1.0, scale)
+
+    np.testing.assert_array_equal(result, media)
+    np.testing.assert_array_equal(gradient, [0.0, 0.0])
+
+
+@pytest.mark.parametrize("normalize", [False, True])
+def test_weibull_pdf_adstock_flat_kernel_has_undefined_rescaling(normalize) -> None:
+    media = jnp.array([2.0, 0.0, 1.0, 3.0])
+    # The sampled densities round to the same value, making their min/max range zero
+    with np.errstate(invalid="ignore"):
+        expected = _weibull_pdf_reference(media, 1.0, 1e20, max_lag=4, normalize=normalize)
+    function = partial(weibull_pdf_adstock, max_lag=4, normalize=normalize)
+
+    assert np.isnan(expected).all()
+    for result in (function(media, 1.0, 1e20), jax.jit(function)(media, 1.0, 1e20)):
+        np.testing.assert_array_equal(result, expected)
+
+
+@pytest.mark.parametrize("max_lag", [0, 4])
+def test_weibull_pdf_adstock_invalid_parameters_only_affect_their_series(max_lag) -> None:
+    shape = jnp.array([0.5, 2.5, 0.0, -1.0, jnp.inf, jnp.nan, 2.5, 2.5, 2.5, 2.5])
+    scale = jnp.array([1.0, 3.0, 1.0, 1.0, 1.0, 1.0, 0.0, -1.0, jnp.inf, jnp.nan])
+    media = jnp.ones((5, 10))
+    function = partial(weibull_pdf_adstock, max_lag=max_lag)
+
+    result = jax.jit(function)(media, shape, scale)
+    gradient = jax.jit(jax.grad(lambda k, s: function(media, k, s)[:, :2].sum(), argnums=(0, 1)))(shape, scale)
+
+    expected = _weibull_pdf_reference(media[:, :2], shape[:2], scale[:2], max_lag=max_lag, normalize=True)
+    np.testing.assert_allclose(result[:, :2], expected, rtol=3e-6, atol=0)
+    assert np.isnan(result[:, 2:]).all()
+    assert np.isfinite(gradient).all()
+    np.testing.assert_array_equal(np.asarray(gradient)[:, 2:], 0)
+
+
+@pytest.mark.parametrize("name", ["shape", "scale"])
+def test_weibull_pdf_adstock_rejects_incompatible_parameter_shapes(name) -> None:
+    parameters = {"shape": 2.0, "scale": 3.0, name: jnp.ones(4)}
+    with pytest.raises(ValueError, match=rf"{name} shape \(4,\).*non-time media shape \(2, 3\)"):
+        weibull_pdf_adstock(jnp.ones((2, 7, 3)), **parameters, max_lag=4, axis=1)
+
+
+@pytest.mark.parametrize("name", ["shape", "scale"])
+@pytest.mark.parametrize("value", ["invalid", 1.0j])
+def test_weibull_pdf_adstock_requires_real_numeric_parameters(name, value) -> None:
+    parameters = {"shape": 2.0, "scale": 3.0, name: value}
+    with pytest.raises(TypeError, match=rf"{name} must.*real numeric"):
+        weibull_pdf_adstock(jnp.ones(4), **parameters, max_lag=4)
+
+
 @pytest.fixture(params=[geometric_adstock, partial(delayed_adstock, theta=0)], ids=["geometric", "delayed"])
 def adstock(request):
     return request.param
+
+
+def _weibull_pdf_reference(media, shape, scale, *, max_lag, normalize, axis=0):
+    media = np.moveaxis(np.asarray(media, dtype=np.float64), axis, -1)
+    shape = np.broadcast_to(np.asarray(shape, dtype=np.float64), media.shape[:-1])
+    scale = np.broadcast_to(np.asarray(scale, dtype=np.float64), media.shape[:-1])
+    periods = np.arange(max_lag + 1) + 1
+    if max_lag == 0:
+        weights = np.ones((*shape.shape, 1))
+    else:
+        weights = stats.weibull_min.pdf(periods, c=shape[..., None], scale=scale[..., None])
+        minimum = weights.min(axis=-1, keepdims=True)
+        width = weights.max(axis=-1, keepdims=True) - minimum
+        weights = (weights - minimum) / width
+    if normalize:
+        weights /= weights.sum(axis=-1, keepdims=True)
+    result = np.zeros_like(media)
+    for lag in range(min(max_lag + 1, media.shape[-1])):
+        result[..., lag:] += media[..., : media.shape[-1] - lag] * weights[..., lag, None]
+    return np.moveaxis(result, -1, axis)
 
 
 def _delayed_reference(media, alpha, theta, *, max_lag, normalize, axis=0):

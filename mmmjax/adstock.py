@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 
-__all__ = ["delayed_adstock", "geometric_adstock"]
+__all__ = ["delayed_adstock", "geometric_adstock", "weibull_pdf_adstock"]
 
 
 def geometric_adstock(
@@ -168,6 +168,109 @@ def delayed_adstock(
 
     lags = jnp.arange(max_lag + 1, dtype=media_array.dtype)
     weights = safe_alpha[..., None] ** jnp.square(lags - safe_theta[..., None])
+    if normalize:
+        weights = weights / jnp.sum(weights, axis=-1, keepdims=True)
+    weights = jnp.where(valid[..., None], weights, jnp.nan)
+    return _convolve_adstock(media_array, weights, axis=axis)
+
+
+def weibull_pdf_adstock(
+    media: ArrayLike,
+    shape: ArrayLike,
+    scale: ArrayLike,
+    *,
+    max_lag: int,
+    axis: int = 0,
+    normalize: bool = True,
+) -> jax.Array:
+    r"""Apply finite carryover using rescaled Weibull density weights.
+
+    For shape :math:`k > 0`, scale :math:`\lambda > 0`, and lags
+    :math:`\ell = 0, \ldots, L`, sample the Weibull density at
+    :math:`\ell + 1` and rescale it over the full lag window:
+
+    .. math::
+
+        q_\ell = \frac{k}{\lambda}
+            \left(\frac{\ell + 1}{\lambda}\right)^{k-1}
+            \exp\!\left[-\left(\frac{\ell + 1}{\lambda}\right)^k\right],
+        \qquad
+        w_\ell = \frac{q_\ell - \min_j q_j}{\max_j q_j - \min_j q_j}.
+
+    The transformed series is
+
+    .. math::
+
+        a_t = \frac{\sum_{\ell=0}^{L} w_\ell x_{t-\ell}}{Z},
+        \qquad
+        Z = \begin{cases}
+            \sum_{\ell=0}^{L} w_\ell & \text{if normalized}, \\
+            1 & \text{otherwise}.
+        \end{cases}
+
+    Sampling starts at one to avoid a singular density at zero for shapes
+    below one. The min/max rescaling is applied even with ``normalize=False``;
+    the weights are not raw density values. It is piecewise differentiable,
+    with possible kinks where the sampled minimum or maximum changes.
+    A flat sampled kernel has undefined min/max rescaling and produces
+    ``nan``. Setting ``max_lag=0`` retains only the current period.
+
+    Values before the supplied series are zero. The weights always use the
+    full lag window, even for short series. To include observed history,
+    prepend it to ``media`` and slice those periods off the result.
+
+    Parameters
+    ----------
+    media : array_like
+        Real-valued array with at least one dimension. Observations along
+        ``axis`` must represent equally spaced periods. Other axes identify
+        independent series, such as channels and geographies.
+    shape : array_like
+        Finite positive Weibull shape. Shapes at most one give decreasing
+        density weights; larger shapes can give a delayed peak. Its shape
+        must broadcast to the non-time shape of ``media``.
+    scale : array_like
+        Finite positive Weibull scale, measured in periods. Its shape must
+        broadcast to the non-time shape of ``media`` independently of
+        ``shape``. For ``(time, geo, channel)`` inputs, parameters can have
+        shape ``(channel,)``, ``(geo, 1)``, or ``(geo, channel)``.
+    max_lag : int
+        Nonnegative number of previous periods to include. The window has
+        ``max_lag + 1`` weights, including the current period.
+    axis : int, default 0
+        Time axis in ``media``.
+    normalize : bool, default True
+        Whether to divide the rescaled weights by their sum.
+        ``max_lag``, ``axis``, and ``normalize`` must be static under JIT.
+
+    Returns
+    -------
+    jax.Array
+        Transformed values with the same shape as ``media``. Inputs are
+        promoted to a common floating-point dtype of at least float32.
+        Invalid shape or scale parameters produce ``nan`` for their series.
+    """
+    media_array, parameters = _prepare_adstock(
+        media, max_lag=max_lag, axis=axis, normalize=normalize, shape=shape, scale=scale
+    )
+    shape_array, scale_array = parameters["shape"], parameters["scale"]
+    valid = jnp.isfinite(shape_array) & (shape_array > 0) & jnp.isfinite(scale_array) & (scale_array > 0)
+    safe_shape = jnp.where(valid, shape_array, 1.0)[..., None]
+    safe_scale = jnp.where(valid, scale_array, 1.0)[..., None]
+
+    if max_lag == 0:
+        weights = jnp.ones_like(safe_shape)
+    else:
+        periods = jnp.arange(max_lag + 1, dtype=media_array.dtype) + 1
+        log_ratio = jnp.log(periods) - jnp.log(safe_scale)
+        # The common density factor k/scale cancels in min/max rescaling
+        log_weights = (safe_shape - 1) * log_ratio - jnp.exp(safe_shape * log_ratio)
+        # Max-shifting preserves relative weights when the sampled densities underflow
+        weights = jnp.exp(log_weights - jnp.max(log_weights, axis=-1, keepdims=True))
+        minimum = jnp.min(weights, axis=-1, keepdims=True)
+        width = 1 - minimum
+        weights = (weights - minimum) / width
+
     if normalize:
         weights = weights / jnp.sum(weights, axis=-1, keepdims=True)
     weights = jnp.where(valid[..., None], weights, jnp.nan)

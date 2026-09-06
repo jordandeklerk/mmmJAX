@@ -1,6 +1,6 @@
 """Bayesian marketing mix modeling expressed entirely in JAX."""
 
-from mmmjax.adstock import delayed_adstock, geometric_adstock
+from mmmjax.adstock import delayed_adstock, geometric_adstock, weibull_pdf_adstock
 from mmmjax.distributions import (
     bernoulli,
     bernoulli_logcdf,
@@ -241,4 +241,5 @@ __all__ = [
     "uniform_logpdf",
     "uniform_logsf",
     "uniform_rng",
+    "weibull_pdf_adstock",
 ]
