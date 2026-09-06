@@ -1,7 +1,9 @@
 """Dataframe preparation for marketing mix models."""
 
+from calendar import monthrange
 from collections import Counter
 from collections.abc import Sequence
+from datetime import date, datetime, timedelta
 
 import narwhals as nw
 from narwhals.typing import IntoDataFrameT
@@ -13,6 +15,7 @@ def _prepare_panel(
     time: str,
     groups: Sequence[str] = (),
     values: Sequence[str],
+    frequency: str | None = None,
 ) -> nw.DataFrame[IntoDataFrameT]:
     """Arrange a complete observation panel in time-major order.
 
@@ -21,14 +24,20 @@ def _prepare_panel(
     frame : dataframe-like
         Eager dataframe supported by Narwhals. The input is not modified.
     time : str
-        Time column, already represented in a form that sorts chronologically.
-        Date parsing and calendar-frequency validation happen separately.
+        Time column, represented in a form that sorts chronologically.
+        Calendar checks accept dates, timezone-naive datetimes, or date
+        strings written as ``YYYY-MM-DD``. The original labels are retained.
     groups : sequence of str, optional
         Columns identifying each observed series. Combinations retain their
         first-appearance order across time. With no groups, the input is a
         single series.
     values : sequence of str
         Numeric or boolean columns to retain in the supplied order.
+    frequency : str, optional
+        Expected spacing: ``"daily"``, ``"weekly"``, ``"monthly"``,
+        ``"quarterly"``, or ``"yearly"``. Calendar periods follow the first
+        observation's day, or month-end if it starts at month-end. Without
+        this argument, only coverage of the observed times is checked.
 
     Returns
     -------
@@ -39,12 +48,15 @@ def _prepare_panel(
 
     Notes
     -----
-    This checks coverage of the observed times, not whether those times are
-    regularly spaced. A period missing from every group is not detected here.
+    Supply ``frequency`` to detect periods missing from every group. Missing
+    observations are reported, not filled or treated as zero. Only the span
+    between the first and last supplied times can be checked.
     """
     if isinstance(groups, str) or not isinstance(groups, Sequence):
         raise TypeError("groups must be a sequence of column names, such as ['region'], or () for a single series")
     selected = _prepare_frame(frame, keys=[time, *groups], values=values)
+    if frequency is not None:
+        _validate_calendar(selected, time=time, frequency=frequency)
     if not groups:
         return selected.sort(time)
 
@@ -140,3 +152,70 @@ def _prepare_frame(
         raise ValueError(f"data contains duplicate observations for {example}; provide one row per key combination")
 
     return selected
+
+
+def _validate_calendar(frame: nw.DataFrame[IntoDataFrameT], *, time: str, frequency: str) -> None:
+    """Check the distinct observation times against a declared calendar spacing."""
+    frequencies = ("daily", "weekly", "monthly", "quarterly", "yearly")
+    if frequency not in frequencies:
+        raise ValueError(f"frequency must be one of {frequencies}, got {frequency!r}")
+
+    # Calendar metadata is small even when the panel has many groups and channels
+    labels = frame.get_column(time).unique().to_list()
+    times = []
+    representations = set()
+    for label in labels:
+        if isinstance(label, str):
+            representations.add("string")
+            try:
+                parsed = date.fromisoformat(label)
+                if parsed.isoformat() != label:
+                    raise ValueError
+            except ValueError as error:
+                raise ValueError(
+                    f"time column {time!r} contains {label!r}; use valid dates written as YYYY-MM-DD "
+                    "or convert the column to a date/datetime dtype"
+                ) from error
+            times.append(datetime.combine(parsed, datetime.min.time()))
+        elif isinstance(label, datetime):
+            representations.add("datetime")
+            if label.utcoffset() is not None:
+                raise ValueError(
+                    f"time column {time!r} contains timezone-aware timestamps; "
+                    "convert them to observation dates in the intended timezone before preparing the panel"
+                )
+            times.append(label)
+        elif isinstance(label, date):
+            representations.add("date")
+            times.append(datetime.combine(label, datetime.min.time()))
+        else:
+            raise TypeError(
+                f"frequency={frequency!r} requires dates in time column {time!r}, got {label!r}; "
+                "use dates, timezone-naive datetimes, or YYYY-MM-DD strings"
+            )
+
+    if len(representations) > 1:
+        raise TypeError(
+            f"time column {time!r} mixes date representations; "
+            "convert the entire column to a single date/datetime dtype before preparing the panel"
+        )
+
+    times.sort()
+    first = times[0]
+    months = {"monthly": 1, "quarterly": 3, "yearly": 12}.get(frequency)
+    at_month_end = first.day == monthrange(first.year, first.month)[1]
+    for index, observed in enumerate(times[1:], start=1):
+        if months is None:
+            expected = first + timedelta(days=index * (7 if frequency == "weekly" else 1))
+        else:
+            # Anchor to the first observation so February does not shift later month-end labels
+            year, month = divmod(first.year * 12 + first.month - 1 + index * months, 12)
+            last_day = monthrange(year, month + 1)[1]
+            day = last_day if at_month_end else min(first.day, last_day)
+            expected = first.replace(year=year, month=month + 1, day=day)
+        if observed != expected:
+            raise ValueError(
+                f"time column {time!r} does not follow frequency={frequency!r}: "
+                f"expected {expected.isoformat(sep=' ')}, found {observed.isoformat(sep=' ')}; "
+                "check for missing periods or an incorrect frequency"
+            )

@@ -1,6 +1,6 @@
 """Tests for dataframe input preparation."""
 
-from datetime import date
+from datetime import UTC, date, datetime
 
 import narwhals as nw
 import numpy as np
@@ -127,6 +127,134 @@ def test_prepare_panel_does_not_fill_calendar_gaps_shared_by_all_groups(frame_fa
     result = _prepare_panel(source, time="week", groups=["geo"], values=[])
 
     assert result.to_dict(as_series=False) == {"week": [1, 1, 3, 3], "geo": ["east", "west", "east", "west"]}
+
+
+@pytest.mark.parametrize(
+    "frequency,dates",
+    [
+        ("daily", ["2024-02-28", "2024-02-29", "2024-03-01"]),
+        ("weekly", ["2025-12-31", "2026-01-07", "2026-01-14"]),
+        ("monthly", ["2024-01-01", "2024-02-01", "2024-03-01"]),
+        ("monthly", ["2024-01-31", "2024-02-29", "2024-03-31"]),
+        ("monthly", ["2024-01-30", "2024-02-29", "2024-03-30"]),
+        ("quarterly", ["2023-11-30", "2024-02-29", "2024-05-31"]),
+        ("yearly", ["2024-02-29", "2025-02-28", "2026-02-28"]),
+    ],
+)
+def test_prepare_panel_checks_calendar_without_changing_labels_or_values(frame_factory, frequency, dates):
+    source = frame_factory({"date": dates[::-1], "sales": [30, 20, 10]})
+    original = nw.from_native(source)
+    before = original.to_dict(as_series=False)
+
+    result = _prepare_panel(source, time="date", values=["sales"], frequency=frequency)
+
+    assert result.to_dict(as_series=False) == {"date": dates, "sales": [10, 20, 30]}
+    assert result.schema == original.schema
+    assert nw.from_native(source).to_dict(as_series=False) == before
+
+
+@pytest.mark.parametrize("representation", [date.fromisoformat, datetime.fromisoformat])
+def test_prepare_panel_accepts_native_dates_and_datetimes(frame_factory, representation):
+    dates = [representation(value) for value in ["2024-01-31", "2024-02-29", "2024-03-31"]]
+    source = frame_factory({"date": dates[::-1], "sales": [30, 20, 10]})
+
+    result = _prepare_panel(source, time="date", values=["sales"], frequency="monthly")
+
+    assert result["date"].to_list() == dates
+    assert result.schema == nw.from_native(source).schema
+
+
+@pytest.mark.parametrize(
+    "frequency,offset", [("monthly", pd.offsets.MonthEnd()), ("quarterly", pd.offsets.QuarterEnd())]
+)
+def test_prepare_panel_accepts_established_calendar_ranges(frame_factory, frequency, offset):
+    # A calendar-generated reference spans leap years and months of different lengths
+    dates = pd.date_range("2023-01-01", periods=36, freq=offset).to_pydatetime().tolist()
+    source = frame_factory({"date": dates[::-1]})
+
+    result = _prepare_panel(source, time="date", values=[], frequency=frequency)
+
+    assert result["date"].to_list() == dates
+
+
+def test_prepare_panel_detects_a_week_missing_from_every_group(frame_factory):
+    source = frame_factory({"week": ["2026-01-05", "2026-01-19"] * 2, "geo": ["east", "east", "west", "west"]})
+
+    with pytest.raises(ValueError, match=r"week.*weekly.*expected 2026-01-12.*found 2026-01-19.*missing periods"):
+        _prepare_panel(source, time="week", groups=["geo"], values=[], frequency="weekly")
+
+
+def test_prepare_panel_checks_distinct_times_in_a_balanced_panel(frame_factory):
+    source = frame_factory({"week": ["2026-01-12", "2026-01-05"] * 2, "geo": ["west", "west", "east", "east"]})
+
+    result = _prepare_panel(source, time="week", groups=["geo"], values=[], frequency="weekly")
+
+    assert result.to_dict(as_series=False) == {
+        "week": ["2026-01-05", "2026-01-05", "2026-01-12", "2026-01-12"],
+        "geo": ["west", "east", "west", "east"],
+    }
+
+
+@pytest.mark.parametrize(
+    "frequency,dates,expected,observed",
+    [
+        ("daily", ["2024-02-28", "2024-03-01"], "2024-02-29", "2024-03-01"),
+        ("weekly", ["2026-01-05", "2026-01-13"], "2026-01-12", "2026-01-13"),
+        ("monthly", ["2026-01-31", "2026-03-31"], "2026-02-28", "2026-03-31"),
+        ("monthly", ["2026-01-31", "2026-02-28", "2026-03-28"], "2026-03-31", "2026-03-28"),
+        ("quarterly", ["2026-01-01", "2026-07-01"], "2026-04-01", "2026-07-01"),
+        ("yearly", ["2024-02-29", "2026-02-28"], "2025-02-28", "2026-02-28"),
+    ],
+)
+def test_prepare_panel_rejects_missing_or_shifted_calendar_periods(frame_factory, frequency, dates, expected, observed):
+    with pytest.raises(ValueError, match=rf"date.*{frequency}.*expected {expected}.*found {observed}"):
+        _prepare_panel(frame_factory({"date": dates}), time="date", values=[], frequency=frequency)
+
+
+@pytest.mark.parametrize("label", ["01/02/2026", "2026-02-30", "20260105", "2026-W02-1", "2026-01-05T01:00:00"])
+def test_prepare_panel_does_not_guess_or_silently_adjust_date_strings(frame_factory, label):
+    with pytest.raises(ValueError, match=r"time column 'date'.*YYYY-MM-DD"):
+        _prepare_panel(frame_factory({"date": [label]}), time="date", values=[], frequency="weekly")
+
+
+def test_prepare_panel_does_not_interpret_period_numbers_as_calendar_dates(frame_factory):
+    with pytest.raises(TypeError, match=r"weekly.*requires dates.*week"):
+        _prepare_panel(frame_factory({"week": [1, 2]}), time="week", values=[], frequency="weekly")
+
+
+def test_prepare_panel_requires_explicit_timezone_conversion(frame_factory):
+    source = frame_factory({"date": [datetime(2026, 1, 5, tzinfo=UTC)]})
+
+    with pytest.raises(ValueError, match=r"timezone-aware.*observation dates.*intended timezone"):
+        _prepare_panel(source, time="date", values=[], frequency="weekly")
+
+
+def test_prepare_panel_does_not_discard_time_of_day(frame_factory):
+    source = frame_factory({"date": [datetime(2026, 1, 5, 12), datetime(2026, 1, 12, 13)]})
+
+    with pytest.raises(ValueError, match="expected 2026-01-12 12:00:00, found 2026-01-12 13:00:00"):
+        _prepare_panel(source, time="date", values=[], frequency="weekly")
+
+
+@pytest.mark.parametrize("second", [datetime(2026, 1, 12), "2026-01-12"])
+def test_prepare_panel_reports_mixed_time_representations(second):
+    # pandas object columns can mix individually valid labels that cannot be sorted together
+    source = pd.DataFrame({"date": [date(2026, 1, 5), second]})
+
+    with pytest.raises(TypeError, match=r"date.*mixes date representations.*entire column"):
+        _prepare_panel(source, time="date", values=[], frequency="weekly")
+
+
+def test_prepare_panel_accepts_one_calendar_period_without_inventing_dates(frame_factory):
+    result = _prepare_panel(frame_factory({"date": ["2026-01-05"]}), time="date", values=[], frequency="weekly")
+
+    assert result["date"].to_list() == ["2026-01-05"]
+
+
+@pytest.mark.parametrize("frequency", ["", "fortnightly", 7, ["weekly"]])
+def test_prepare_panel_reports_invalid_calendar_frequency(frequency):
+    with pytest.raises(ValueError, match=r"frequency must be one of.*daily.*weekly"):
+        _prepare_panel(pl.DataFrame({"date": ["2026-01-05"]}), time="date", values=[], frequency=frequency)
 
 
 @pytest.mark.parametrize("backend", ["pandas", "polars", "pyarrow"])
