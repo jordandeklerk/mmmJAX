@@ -10,3 +10,4 @@ Transform marketing inputs to account for effects that persist over time.
    :nosignatures:
 
    geometric_adstock
+   delayed_adstock

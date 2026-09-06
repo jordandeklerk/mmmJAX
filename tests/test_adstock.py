@@ -350,6 +350,67 @@ def test_delayed_adstock_vectorizes_over_parameter_draws() -> None:
 
 
 @pytest.mark.parametrize("normalize", [False, True])
+def test_delayed_adstock_composes_with_batched_model_parameters(normalize) -> None:
+    data = {
+        "media": jnp.asarray(np.random.default_rng(23).uniform(size=(5, 2, 3))),
+        "target": jnp.linspace(0.3, 2.0, 10).reshape(5, 2),
+    }
+    position = {"alpha": jnp.array([-0.8, 0.2, 1.1]), "theta": jnp.array([[-0.5], [0.7]])}
+
+    def predict(data, alpha, theta):
+        return mmmjax.delayed_adstock(data["media"], alpha, theta, max_lag=3, normalize=normalize).sum(axis=-1)
+
+    def log_density(data, alpha, theta):
+        return mmmjax.normal(data["target"], predict(data, alpha, theta), 0.7)
+
+    def generate(key, data, alpha, theta):
+        return {"prediction": predict(data, alpha, theta)}
+
+    specification = mmmjax.Model(
+        {
+            "alpha": mmmjax.Interval(0.0, 1.0, shape=(3,)),
+            "theta": mmmjax.Interval(0.0, 3.0, shape=(2, 1)),
+        },
+        log_density,
+        generate,
+    )
+
+    def reference(unconstrained):
+        # Check the whole path independently, including interval transforms and their Jacobians
+        alpha_position = np.asarray(unconstrained["alpha"], dtype=np.float64)
+        theta_position = np.asarray(unconstrained["theta"], dtype=np.float64)
+        alpha = 1 / (1 + np.exp(-alpha_position))
+        theta = 3 / (1 + np.exp(-theta_position))
+        prediction = _delayed_reference(data["media"], alpha, theta, max_lag=3, normalize=normalize).sum(axis=-1)
+        residual = (np.asarray(data["target"]) - prediction) / 0.7
+        density = (-0.5 * residual**2 - np.log(0.7) - 0.5 * np.log(2 * np.pi)).sum()
+        density += (-np.logaddexp(0, -alpha_position) - np.logaddexp(0, alpha_position)).sum()
+        density += (np.log(3) - np.logaddexp(0, -theta_position) - np.logaddexp(0, theta_position)).sum()
+        return density, prediction
+
+    value, gradient = jax.jit(jax.value_and_grad(specification.log_density))(position, data)
+    generated = jax.jit(specification.generate)(jax.random.key(0), specification.constrain(position), data)
+    expected_density, expected_prediction = reference(position)
+
+    np.testing.assert_allclose(value, expected_density, rtol=3e-6, atol=1e-6)
+    assert set(generated) == {"prediction"}
+    assert generated["prediction"].shape == (5, 2)
+    np.testing.assert_allclose(generated["prediction"], expected_prediction, rtol=3e-6, atol=0)
+    assert set(gradient) == set(position)
+    for name, values in position.items():
+        values64 = np.asarray(values, dtype=np.float64)
+        expected_gradient = np.empty_like(values64)
+        for index in np.ndindex(values64.shape):
+            offset = np.zeros_like(values64)
+            offset[index] = 1e-4
+            upper = reference(position | {name: values64 + offset})[0]
+            lower = reference(position | {name: values64 - offset})[0]
+            expected_gradient[index] = (upper - lower) / 2e-4
+        assert gradient[name].shape == values.shape
+        np.testing.assert_allclose(gradient[name], expected_gradient, rtol=3e-5, atol=2e-6)
+
+
+@pytest.mark.parametrize("normalize", [False, True])
 @pytest.mark.parametrize("alpha,theta", [(0.45, 1.3), (0.2, 0.0), (1.0, 1.5)])
 def test_delayed_adstock_derivatives_match_numpy_finite_differences(alpha, theta, normalize) -> None:
     media = np.array([2.0, 0.0, 1.0, 3.0, 0.5])
