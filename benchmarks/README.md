@@ -141,6 +141,12 @@ The Multinomial logit reference composes `softmax` with JAX's probability-parame
   parameters. References compose public JAX incomplete-Beta operations, since JAX has no Binomial
   CDF or survival function. Gradients treat trial counts as fixed data. These workloads do not
   measure the finite-sum recovery used for much smaller probabilities or extreme logits.
+- Negative Binomial tail benchmarks cover mean and log-mean parameters, using mean 80 and
+  concentration 40 for log probabilities around -4 to -36. Ordinary inputs use counts from 0 to 12
+  with the configured parameters. JAX value references compose public incomplete-Beta operations.
+  Full parameter-gradient timings are mmmJAX-only because JAX does not provide the incomplete-Beta
+  shape derivatives needed for concentration gradients. These workloads do not measure recovery
+  for underflowed Beta arguments or extreme log means.
 - Poisson tail benchmarks cover rate and log-rate parameters, using rate 40 and counts that span
   log probabilities around -4 to -34. Ordinary inputs use counts from 0 to 10 with the configured
   parameters. JAX references use its public Poisson CDF and the incomplete Gamma survival identity,

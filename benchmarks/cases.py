@@ -224,6 +224,7 @@ DISTRIBUTIONS = (
         parameter_values=(4.5, 2.5),
         log_probability_operation="logpmf",
         outcomes=(0, 1, 3, 10, 25),
+        supports_tail_inputs=True,
     ),
     DistributionSpec(
         name="negative_binomial_log",
@@ -231,6 +232,7 @@ DISTRIBUTIONS = (
         parameter_values=(1.5, 2.5),
         log_probability_operation="logpmf",
         outcomes=(0, 1, 3, 10, 25),
+        supports_tail_inputs=True,
     ),
     DistributionSpec(
         name="poisson",
@@ -553,6 +555,20 @@ def make_tail_arguments(
 
         value = jnp.floor(jnp.linspace(*threshold_range, element_count, dtype=dtype))
         return value.reshape(profile.value_shape), trials, parameter
+
+    if distribution.name in {"negative_binomial", "negative_binomial_log"}:
+        if input_set == "ordinary":
+            parameter, concentration = make_parameters(distribution, profile, dtype)
+            threshold_range = (0.0, 12.0)
+        else:
+            mean = jnp.full(profile.parameter_shape, 80.0, dtype=dtype)
+            parameter = jnp.log(mean) if distribution.name == "negative_binomial_log" else mean
+            concentration = jnp.full(profile.parameter_shape, 40.0, dtype=dtype)
+            # Nonzero thresholds exercise both shape derivatives without taking endpoint shortcuts
+            threshold_range = (3.0, 49.0) if operation == "logcdf" else (120.0, 260.0)
+
+        value = jnp.floor(jnp.linspace(*threshold_range, element_count, dtype=dtype))
+        return value.reshape(profile.value_shape), parameter, concentration
 
     if distribution.name in {"poisson", "poisson_log"}:
         if input_set == "ordinary":

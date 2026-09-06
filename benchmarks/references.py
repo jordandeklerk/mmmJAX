@@ -159,6 +159,25 @@ def _negative_binomial_log_logpmf(
     return stats.nbinom.logpmf(value, concentration, probability)
 
 
+def _negative_binomial_logcdf(value: jax.Array, mean: jax.Array, concentration: jax.Array) -> jax.Array:
+    # JAX has no NB tail functions; these identities apply to the nonnegative benchmark thresholds
+    return jnp.log(betainc(concentration, jnp.floor(value) + 1, concentration / (concentration + mean)))
+
+
+def _negative_binomial_logsf(value: jax.Array, mean: jax.Array, concentration: jax.Array) -> jax.Array:
+    return jnp.log(betainc(jnp.floor(value) + 1, concentration, mean / (concentration + mean)))
+
+
+def _negative_binomial_log_logcdf(value: jax.Array, log_mean: jax.Array, concentration: jax.Array) -> jax.Array:
+    probability = jax.nn.sigmoid(jnp.log(concentration) - log_mean)
+    return jnp.log(betainc(concentration, jnp.floor(value) + 1, probability))
+
+
+def _negative_binomial_log_logsf(value: jax.Array, log_mean: jax.Array, concentration: jax.Array) -> jax.Array:
+    probability = jax.nn.sigmoid(log_mean - jnp.log(concentration))
+    return jnp.log(betainc(jnp.floor(value) + 1, concentration, probability))
+
+
 def _poisson_log_logpmf(value: jax.Array, log_rate: jax.Array) -> jax.Array:
     # Staying on the log scale avoids an exp/log round trip in the native JAX baseline
     return value * log_rate - jnp.exp(log_rate) - gammaln(value + 1)
@@ -694,10 +713,17 @@ JAX_REFERENCES: dict[str, JaxReference] = {
     "dirichlet": JaxReference(_dirichlet_logpdf, _dirichlet_rng),
     "multinomial": JaxReference(_multinomial_logpmf, _multinomial_rng),
     "multinomial_logit": JaxReference(_multinomial_logit_logpmf, _multinomial_logit_rng),
-    "negative_binomial": JaxReference(_negative_binomial_logpmf, _negative_binomial_rng),
+    "negative_binomial": JaxReference(
+        _negative_binomial_logpmf,
+        _negative_binomial_rng,
+        logcdf=_negative_binomial_logcdf,
+        logsf=_negative_binomial_logsf,
+    ),
     "negative_binomial_log": JaxReference(
         _negative_binomial_log_logpmf,
         _negative_binomial_log_rng,
+        logcdf=_negative_binomial_log_logcdf,
+        logsf=_negative_binomial_log_logsf,
     ),
     "poisson": JaxReference(
         stats.poisson.logpmf,

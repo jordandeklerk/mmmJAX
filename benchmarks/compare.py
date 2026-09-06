@@ -204,6 +204,13 @@ def make_benchmark_operation(
             return None
         if implementation == "jax" and input_set == "tail" and distribution.name == "cauchy":
             return None
+        if (
+            implementation == "jax"
+            and distribution.name in {"negative_binomial", "negative_binomial_log"}
+            and operation.endswith("_value_and_grad")
+        ):
+            # Native betainc cannot differentiate the concentration through its shape parameters
+            return None
 
         tail_function = "logcdf" if operation.startswith("logcdf") else "logsf"
         arguments = make_tail_arguments(distribution, profile, input_set, tail_function, dtype)
@@ -398,10 +405,7 @@ def _parse_args() -> argparse.Namespace:
         unavailable = ", ".join(arguments.distributions)
         parser.error(f"RNG benchmarks are unavailable for the selected distributions: {unavailable}")
 
-    compares_implementations = len(set(arguments.implementations)) > 1 and (
-        "ordinary" in arguments.inputs
-        or ("tail" in arguments.inputs and bool((selected_distributions & TAIL_DISTRIBUTIONS) - {"cauchy"}))
-    )
+    compares_implementations = _compares_implementations(arguments)
     if compares_implementations and arguments.repeats % 2 != 0:
         parser.error("--repeats must be even when comparing implementations so execution order stays balanced")
     if arguments.iterations is not None and arguments.iterations <= 0:
@@ -432,10 +436,7 @@ def main() -> None:
         and "rng" in selected_operations
         and bool({"poisson", "poisson_log"}.intersection(selected_distributions))
     )
-    compares_implementations = len(set(arguments.implementations)) > 1 and (
-        "ordinary" in arguments.inputs
-        or ("tail" in arguments.inputs and bool((selected_distributions & TAIL_DISTRIBUTIONS) - {"cauchy"}))
-    )
+    compares_implementations = _compares_implementations(arguments)
     print_environment(
         dtype,
         compile_repeats=arguments.compile_repeats,
@@ -444,6 +445,15 @@ def main() -> None:
         compares_implementations=compares_implementations,
     )
     notes = []
+    if (
+        selected_distributions.intersection({"negative_binomial", "negative_binomial_log"})
+        and selected_operations.intersection({"logcdf_value_and_grad", "logsf_value_and_grad"})
+        and "jax" in selected_implementations
+    ):
+        notes.append(
+            "Public JAX Negative Binomial tail gradients are omitted because betainc does not support "
+            "shape derivatives; mmmJAX timings include both mean (or log-mean) and concentration gradients"
+        )
     if "concentrated" in arguments.inputs and "jax" in selected_implementations:
         notes.append(
             "Public JAX is omitted from concentrated inputs because it is not numerically equivalent "
@@ -532,6 +542,20 @@ def main() -> None:
             )
         raise SystemExit("No benchmark cases match the selected distributions and inputs")
     print_results(results)
+
+
+def _compares_implementations(arguments: argparse.Namespace) -> bool:
+    distributions = set(arguments.distributions)
+    if set(arguments.operations) <= {"logcdf_value_and_grad", "logsf_value_and_grad"}:
+        distributions -= {"negative_binomial", "negative_binomial_log"}
+    return (
+        len(set(arguments.implementations)) > 1
+        and bool(distributions)
+        and (
+            "ordinary" in arguments.inputs
+            or ("tail" in arguments.inputs and bool((distributions & TAIL_DISTRIBUTIONS) - {"cauchy"}))
+        )
+    )
 
 
 if __name__ == "__main__":
