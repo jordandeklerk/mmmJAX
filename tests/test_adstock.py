@@ -1,4 +1,4 @@
-"""Tests for finite geometric carryover."""
+"""Tests for finite carryover transformations."""
 
 from functools import partial
 
@@ -9,7 +9,7 @@ import pytest
 from numpy.polynomial import Polynomial
 
 import mmmjax
-from mmmjax.adstock import geometric_adstock
+from mmmjax.adstock import delayed_adstock, geometric_adstock
 
 
 def test_geometric_adstock_is_exported() -> None:
@@ -195,24 +195,24 @@ def test_geometric_adstock_invalid_retention_only_affects_its_series(max_lag) ->
 
 
 @pytest.mark.parametrize("dtype", [jnp.int32, jnp.float16, jnp.bfloat16, jnp.float32])
-def test_geometric_adstock_uses_at_least_float32(dtype) -> None:
-    result = geometric_adstock(jnp.ones((4, 2), dtype=dtype), dtype(1), max_lag=2)
+def test_adstock_uses_at_least_float32(adstock, dtype) -> None:
+    result = adstock(jnp.ones((4, 2), dtype=dtype), dtype(1), max_lag=2)
 
     assert result.dtype == jnp.float32
     np.testing.assert_allclose(result, np.array([[1, 1], [2, 2], [3, 3], [3, 3]]) / 3, rtol=1e-7, atol=0)
 
 
-def test_geometric_adstock_respects_default_precision_and_typed_float32() -> None:
-    default = geometric_adstock([1, 2, 3], 0.5, max_lag=2)
-    typed = geometric_adstock(jnp.ones(3, dtype=jnp.float32), 0.5, max_lag=2)
+def test_adstock_respects_default_precision_and_typed_float32(adstock) -> None:
+    default = adstock([1, 2, 3], 0.5, max_lag=2)
+    typed = adstock(jnp.ones(3, dtype=jnp.float32), 0.5, max_lag=2)
 
     assert default.dtype == jnp.asarray(0.5).dtype
     assert typed.dtype == jnp.float32
 
 
 @pytest.mark.parametrize("shape,axis", [((0,), 0), ((0, 3), 0), ((3, 0), 0), ((2, 0, 3), 1)])
-def test_geometric_adstock_preserves_empty_shapes(shape, axis) -> None:
-    result = jax.jit(partial(geometric_adstock, max_lag=2, axis=axis))(jnp.zeros(shape), 0.5)
+def test_adstock_preserves_empty_shapes(adstock, shape, axis) -> None:
+    result = jax.jit(partial(adstock, max_lag=2, axis=axis))(jnp.zeros(shape), 0.5)
 
     assert result.shape == shape
 
@@ -230,35 +230,210 @@ def test_geometric_adstock_preserves_empty_shapes(shape, axis) -> None:
         ({"max_lag": 2, "normalize": 1}, TypeError, "normalize must be a static boolean"),
     ],
 )
-def test_geometric_adstock_rejects_invalid_configuration(options, error, message) -> None:
+def test_adstock_rejects_invalid_configuration(adstock, options, error, message) -> None:
     with pytest.raises(error, match=message):
-        geometric_adstock(jnp.ones(4), 0.5, **options)
+        adstock(jnp.ones(4), 0.5, **options)
 
 
 @pytest.mark.parametrize("name", ["max_lag", "axis", "normalize"])
-def test_geometric_adstock_requires_static_configuration_under_jit(name) -> None:
+def test_adstock_requires_static_configuration_under_jit(adstock, name) -> None:
     options = {"max_lag": 2, "axis": 0, "normalize": True}
     with pytest.raises(TypeError, match=rf"{name} must be a static"):
-        jax.jit(lambda value: geometric_adstock(jnp.ones(4), 0.5, **(options | {name: value})))(options[name])
+        jax.jit(lambda value: adstock(jnp.ones(4), 0.5, **(options | {name: value})))(options[name])
 
 
-def test_geometric_adstock_requires_a_time_dimension() -> None:
+def test_adstock_requires_a_time_dimension(adstock) -> None:
     with pytest.raises(ValueError, match="media must have at least one dimension for time"):
-        geometric_adstock(2.0, 0.5, max_lag=2)
+        adstock(2.0, 0.5, max_lag=2)
 
 
-def test_geometric_adstock_rejects_incompatible_retention_shape() -> None:
+def test_adstock_rejects_incompatible_retention_shape(adstock) -> None:
     with pytest.raises(ValueError, match=r"alpha shape \(4,\).*non-time media shape \(2, 3\)"):
-        geometric_adstock(jnp.ones((2, 7, 3)), jnp.ones(4), max_lag=2, axis=1)
+        adstock(jnp.ones((2, 7, 3)), jnp.ones(4), max_lag=2, axis=1)
 
 
 @pytest.mark.parametrize("name", ["media", "alpha"])
 @pytest.mark.parametrize("value", ["invalid", 1.0j])
-def test_geometric_adstock_requires_real_numeric_inputs(name, value) -> None:
+def test_adstock_requires_real_numeric_inputs(adstock, name, value) -> None:
     arguments = {"media": jnp.ones(4), "alpha": 0.5}
     arguments[name] = value
     with pytest.raises(TypeError, match=rf"{name} must.*real numeric"):
-        geometric_adstock(**arguments, max_lag=2)
+        adstock(**arguments, max_lag=2)
+
+
+def test_delayed_adstock_is_exported() -> None:
+    assert mmmjax.delayed_adstock is delayed_adstock
+    assert "delayed_adstock" in mmmjax.__all__
+
+
+def test_delayed_adstock_includes_delay_in_dtype_promotion() -> None:
+    # A Python float introduces the default float dtype even when media and retention are integers
+    result = delayed_adstock(jnp.ones(3, dtype=jnp.int32), jnp.int32(1), 0.0, max_lag=2)
+
+    assert result.dtype == jnp.asarray(0.0).dtype
+
+
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
+@pytest.mark.parametrize("normalize", [False, True])
+@pytest.mark.parametrize(
+    "alpha,theta,max_lag", [(0.4, 0.0, 0), (0.2, 0.0, 4), (0.6, 1.3, 4), (0.3, 2.5, 12), (1.0, 4.0, 4)]
+)
+def test_delayed_adstock_matches_independent_lag_sum(alpha, theta, max_lag, normalize, dtype) -> None:
+    if dtype == jnp.float64 and not jax.config.x64_enabled:
+        pytest.skip("JAX 64-bit mode is disabled")
+    media = jnp.array([0.0, 2.0, -1.0, 0.5, 3.0, 0.0, 0.0], dtype=dtype)
+    retention, delay = jnp.asarray(alpha, dtype=dtype), jnp.asarray(theta, dtype=dtype)
+    expected = _delayed_reference(media, retention, delay, max_lag=max_lag, normalize=normalize)
+    function = partial(delayed_adstock, max_lag=max_lag, normalize=normalize)
+
+    for result in (function(media, retention, delay), jax.jit(function)(media, retention, delay)):
+        assert result.shape == media.shape
+        assert result.dtype == media.dtype
+        np.testing.assert_allclose(result, expected, rtol=3e-6 if dtype == jnp.float32 else 3e-14, atol=1e-15)
+
+
+@pytest.mark.parametrize("normalize", [False, True])
+def test_delayed_adstock_impulse_peaks_after_exposure(normalize) -> None:
+    media = jnp.array([0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    # With alpha=1/2 and theta=2, the squared distances give exponents 4, 1, 0, 1, 4
+    expected = np.array([0, 1 / 16, 1 / 2, 1, 1 / 2, 1 / 16, 0])
+    if normalize:
+        expected /= 17 / 8
+
+    result = delayed_adstock(media, 0.5, 2.0, max_lag=4, normalize=normalize)
+
+    np.testing.assert_allclose(result, expected, rtol=1e-7, atol=0)
+
+
+def test_delayed_adstock_normalizes_the_full_window_for_short_series() -> None:
+    result = delayed_adstock(jnp.ones(2), 0.5, 2.0, max_lag=4)
+
+    np.testing.assert_allclose(result, [1 / 34, 9 / 34], rtol=1e-7, atol=0)
+
+
+def test_delayed_adstock_accepts_history_by_prepending_and_slicing() -> None:
+    media = np.array([1.0, 4.0, 2.0, 0.0, 3.0, 1.0, 0.0, 2.0, 5.0])
+    expected = _delayed_reference(media, 0.6, 1.2, max_lag=3, normalize=True)[5:]
+
+    result = delayed_adstock(media[2:], 0.6, 1.2, max_lag=3)[3:]
+
+    np.testing.assert_allclose(result, expected, rtol=2e-6, atol=0)
+
+
+@pytest.mark.parametrize("axis", [0, 1, -1])
+@pytest.mark.parametrize("alpha_shape,theta_shape", [((), ()), ((3,), (2, 1)), ((2, 3), (3,))])
+def test_delayed_adstock_broadcasts_parameters_independently(axis, alpha_shape, theta_shape) -> None:
+    media = np.moveaxis(np.arange(42, dtype=np.float32).reshape(2, 3, 7) / 10, -1, axis)
+    alpha = np.linspace(0.1, 0.9, int(np.prod(alpha_shape)), dtype=np.float32).reshape(alpha_shape)
+    theta = np.linspace(0.0, 3.0, int(np.prod(theta_shape)), dtype=np.float32).reshape(theta_shape)
+    expected = _delayed_reference(media, alpha, theta, max_lag=3, normalize=True, axis=axis)
+
+    result = jax.jit(partial(delayed_adstock, max_lag=3, axis=axis))(media, alpha, theta)
+
+    assert result.shape == media.shape
+    np.testing.assert_allclose(result, expected, rtol=3e-6, atol=0)
+
+
+def test_delayed_adstock_vectorizes_over_parameter_draws() -> None:
+    media = jnp.arange(30, dtype=jnp.float32).reshape(5, 2, 3) / 10
+    alpha = jnp.linspace(0.1, 0.9, 12).reshape(4, 3)
+    theta = jnp.linspace(0.0, 2.0, 8).reshape(4, 2, 1)
+    expected = np.stack(
+        [_delayed_reference(media, a, t, max_lag=2, normalize=True) for a, t in zip(alpha, theta, strict=True)]
+    )
+    function = jax.vmap(partial(delayed_adstock, max_lag=2), in_axes=(None, 0, 0))
+
+    result = jax.jit(function)(media, alpha, theta)
+
+    assert result.shape == (4, 5, 2, 3)
+    np.testing.assert_allclose(result, expected, rtol=3e-6, atol=0)
+
+
+@pytest.mark.parametrize("normalize", [False, True])
+@pytest.mark.parametrize("alpha,theta", [(0.45, 1.3), (0.2, 0.0), (1.0, 1.5)])
+def test_delayed_adstock_derivatives_match_numpy_finite_differences(alpha, theta, normalize) -> None:
+    media = np.array([2.0, 0.0, 1.0, 3.0, 0.5])
+    parameters = np.array([alpha, theta])
+
+    def reference(values):
+        return _delayed_reference(media, *values, max_lag=3, normalize=normalize).sum()
+
+    def total(values):
+        return delayed_adstock(media, values[0], values[1], max_lag=3, normalize=normalize).sum()
+
+    offsets = np.eye(2) * 1e-4
+    expected_gradient = np.array([(reference(parameters + dx) - reference(parameters - dx)) / 2e-4 for dx in offsets])
+    expected_hessian = np.array(
+        [
+            [
+                (
+                    reference(parameters + dx + dy)
+                    - reference(parameters + dx - dy)
+                    - reference(parameters - dx + dy)
+                    + reference(parameters - dx - dy)
+                )
+                / 4e-8
+                for dy in offsets
+            ]
+            for dx in offsets
+        ]
+    )
+
+    for gradient in (jax.jit(jax.jacfwd(total))(parameters), jax.jit(jax.grad(total))(parameters)):
+        np.testing.assert_allclose(gradient, expected_gradient, rtol=3e-5, atol=2e-6)
+    hessian = jax.jit(jax.hessian(total))(parameters)
+    np.testing.assert_allclose(hessian, expected_hessian, rtol=2e-4, atol=2e-5)
+
+
+def test_delayed_adstock_media_jacobian_has_only_causal_lag_weights() -> None:
+    expected = np.array([[1, 0, 0, 0], [2, 1, 0, 0], [1, 2, 1, 0], [0, 1, 2, 1]]) / 4
+    function = partial(delayed_adstock, alpha=0.5, theta=1.0, max_lag=2)
+
+    for derivative in (jax.jacfwd(function), jax.jacrev(function)):
+        np.testing.assert_allclose(jax.jit(derivative)(jnp.ones(4)), expected, rtol=1e-7, atol=0)
+
+
+@pytest.mark.parametrize("normalize", [False, True])
+def test_delayed_adstock_invalid_parameters_only_affect_their_series(normalize) -> None:
+    alpha = jnp.array([0.5, 1.0, 0.0, -0.1, 1.1, jnp.inf, jnp.nan, 0.5, 0.5, 0.5, 0.5])
+    theta = jnp.array([1.5, 3.0, 1.5, 0.0, 0.0, 0.0, 0.0, -0.1, 3.1, jnp.inf, jnp.nan])
+    media = jnp.ones((5, 11))
+
+    result = jax.jit(partial(delayed_adstock, max_lag=3, normalize=normalize))(media, alpha, theta)
+
+    expected = _delayed_reference(media[:, :2], alpha[:2], theta[:2], max_lag=3, normalize=normalize)
+    np.testing.assert_allclose(result[:, :2], expected, rtol=2e-6, atol=0)
+    assert np.isnan(result[:, 2:]).all()
+
+
+def test_delayed_adstock_rejects_incompatible_delay_shape() -> None:
+    with pytest.raises(ValueError, match=r"theta shape \(4,\).*non-time media shape \(2, 3\)"):
+        delayed_adstock(jnp.ones((2, 7, 3)), 0.5, jnp.ones(4), max_lag=2, axis=1)
+
+
+@pytest.mark.parametrize("theta", ["invalid", 1.0j])
+def test_delayed_adstock_requires_real_numeric_delay(theta) -> None:
+    with pytest.raises(TypeError, match=r"theta must.*real numeric"):
+        delayed_adstock(jnp.ones(4), 0.5, theta, max_lag=2)
+
+
+@pytest.fixture(params=[geometric_adstock, partial(delayed_adstock, theta=0)], ids=["geometric", "delayed"])
+def adstock(request):
+    return request.param
+
+
+def _delayed_reference(media, alpha, theta, *, max_lag, normalize, axis=0):
+    media = np.moveaxis(np.asarray(media, dtype=np.float64), axis, -1)
+    alpha = np.broadcast_to(np.asarray(alpha, dtype=np.float64), media.shape[:-1])
+    theta = np.broadcast_to(np.asarray(theta, dtype=np.float64), media.shape[:-1])
+    weights = alpha[..., None] ** (np.arange(max_lag + 1) - theta[..., None]) ** 2
+    if normalize:
+        weights /= weights.sum(axis=-1, keepdims=True)
+    # Explicit lagged sums check convolution orientation and padding independently of JAX's convolution
+    result = np.zeros_like(media)
+    for lag in range(min(max_lag + 1, media.shape[-1])):
+        result[..., lag:] += media[..., : media.shape[-1] - lag] * weights[..., lag, None]
+    return np.moveaxis(result, -1, axis)
 
 
 def _convolution_reference(media, alpha, *, max_lag, normalize, axis=0):
