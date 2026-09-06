@@ -2,6 +2,8 @@
 
 from datetime import UTC, date, datetime
 
+import jax
+import jax.numpy as jnp
 import narwhals as nw
 import numpy as np
 import pandas as pd
@@ -9,7 +11,8 @@ import polars as pl
 import pyarrow as pa
 import pytest
 
-from mmmjax.data import _prepare_frame, _prepare_panel
+from mmmjax import Model, Real, geometric_adstock, normal
+from mmmjax.data import _prepare_data, _prepare_frame, _prepare_panel
 
 
 @pytest.fixture(params=["pandas", "pandas_nullable", "pandas_arrow", "polars", "pyarrow"])
@@ -23,6 +26,202 @@ def frame_factory(request):
     if request.param == "polars":
         return pl.DataFrame
     return pa.table
+
+
+def test_prepare_data_keeps_block_axes_and_labels_aligned(frame_factory):
+    source = frame_factory(
+        {
+            "week": [2, 1, 1, 2],
+            "geo": ["west", "east", "west", "east"],
+            "sales": [40, 10, 30, 20],
+            "video": np.array([4.5, 1.5, 3.5, 2.5], dtype=np.float32),
+            "promotion": [True, False, False, True],
+            "price": np.array([-0.5, 1.5, 2.5, 0.5], dtype=np.float32),
+        }
+    )
+    before = nw.from_native(source).to_dict(as_series=False)
+
+    result = _prepare_data(
+        source,
+        time="week",
+        groups=["geo"],
+        blocks={"outcome": "sales", "media": ["video"], "controls": ["price", "promotion"]},
+    )
+
+    assert result.time_column == "week"
+    assert result.time_values == (1, 2)
+    assert result.group_columns == ("geo",)
+    assert result.group_values == (("west",), ("east",))
+    assert result.columns == {"outcome": ("sales",), "media": ("video",), "controls": ("price", "promotion")}
+    np.testing.assert_array_equal(result.arrays["outcome"], [[30, 10], [40, 20]])
+    np.testing.assert_array_equal(result.arrays["media"], [[[3.5], [1.5]], [[4.5], [2.5]]])
+    np.testing.assert_array_equal(result.arrays["controls"], [[[2.5, 0], [1.5, 0]], [[-0.5, 1], [0.5, 1]]])
+    assert result.arrays["outcome"].dtype == np.int64
+    assert result.arrays["media"].dtype == np.float32
+    assert result.arrays["controls"].dtype == np.float32
+    assert nw.from_native(source).to_dict(as_series=False) == before
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_prepare_data_distinguishes_a_column_from_a_single_column_block(frame_factory, grouped):
+    source = frame_factory({"date": ["2026-01-05"], "geo": ["east"], "sales": [10]})
+    groups = ["geo"] if grouped else []
+
+    result = _prepare_data(
+        source, time="date", groups=groups, blocks={"outcome": "sales", "features": ["sales"]}, frequency="weekly"
+    )
+
+    assert result.time_values == ("2026-01-05",)
+    assert result.group_values == ((("east",),) if grouped else ())
+    assert result.arrays["outcome"].shape == ((1, 1) if grouped else (1,))
+    assert result.arrays["features"].shape == ((1, 1, 1) if grouped else (1, 1))
+    np.testing.assert_array_equal(result.arrays["features"][..., 0], result.arrays["outcome"])
+
+
+def test_prepare_data_keeps_nested_groups_on_one_observed_series_axis(frame_factory):
+    source = frame_factory(
+        {
+            "week": [2, 1, 2, 1],
+            "region": ["west", "east", "east", "west"],
+            "store": [1, 1, 1, 1],
+            "sales": [40, 10, 20, 30],
+        }
+    )
+
+    result = _prepare_data(source, time="week", groups=["region", "store"], blocks={"outcome": "sales"})
+
+    assert result.group_columns == ("region", "store")
+    assert result.group_values == (("west", 1), ("east", 1))
+    np.testing.assert_array_equal(result.arrays["outcome"], [[30, 10], [40, 20]])
+
+
+def test_prepare_data_packs_hundreds_of_channels_into_one_array(frame_factory):
+    expected = np.arange(3 * 8 * 465, dtype=np.float32).reshape(3, 8, 465)
+    rows = [(time, group) for time in [2, 0, 1] for group in reversed(range(8))]
+    source = frame_factory(
+        {
+            "week": [time for time, _ in rows],
+            "geo": [group for _, group in rows],
+            **{
+                f"channel_{channel}": [expected[time, group, channel] for time, group in rows] for channel in range(465)
+            },
+        }
+    )
+    channels = [f"channel_{channel}" for channel in reversed(range(465))]
+
+    result = _prepare_data(source, time="week", groups=["geo"], blocks={"media": channels})
+
+    assert result.columns["media"] == tuple(channels)
+    assert result.group_values == tuple((group,) for group in reversed(range(8)))
+    np.testing.assert_array_equal(result.arrays["media"], expected[:, ::-1, ::-1])
+    assert len(jax.tree.leaves(result.arrays)) == 1
+
+
+def test_prepare_data_preserves_integer_counts_separately_from_floating_features(frame_factory):
+    source = frame_factory({"week": [1, 2], "counts": [2**53, 2**53 + 1], "media": [0.5, 1.5], "flag": [True, False]})
+
+    result = _prepare_data(source, time="week", blocks={"outcome": "counts", "media": ["media"], "flag": "flag"})
+
+    assert result.arrays["outcome"].dtype == np.int64
+    assert result.arrays["flag"].dtype == np.bool_
+    np.testing.assert_array_equal(result.arrays["outcome"], np.array([2**53, 2**53 + 1], dtype=np.int64))
+
+
+def test_prepare_data_arrays_do_not_modify_the_input_or_each_other(frame_factory):
+    source = frame_factory({"week": [1, 2], "sales": [10, 20]})
+    result = _prepare_data(source, time="week", blocks={"outcome": "sales", "features": ["sales"]})
+
+    result.arrays["outcome"][0] = 0
+
+    assert nw.from_native(source)["sales"].to_list() == [10, 20]
+    np.testing.assert_array_equal(result.arrays["features"], [[10], [20]])
+    result.arrays["features"][1, 0] = 0
+    assert nw.from_native(source)["sales"].to_list() == [10, 20]
+
+
+@pytest.mark.parametrize(
+    "blocks,error,message",
+    [
+        ({}, TypeError, "blocks must be a nonempty mapping"),
+        (["sales"], TypeError, "blocks must be a nonempty mapping"),
+        ({"": "sales"}, ValueError, "block names must be nonempty strings"),
+        ({1: "sales"}, ValueError, "block names must be nonempty strings"),
+        ({"media": None}, TypeError, "block 'media' must select a column"),
+        ({"media": []}, ValueError, "block 'media' must select at least one"),
+        ({"media": [1]}, ValueError, "block 'media' must select at least one"),
+        ({"media": ""}, ValueError, "block 'media' must select at least one"),
+        ({"media": ["sales", "sales"]}, ValueError, "block 'media' contains repeated columns"),
+        ({"outcome": "missing"}, ValueError, "data is missing columns"),
+        ({"outcome": "week"}, ValueError, "column declarations contain repeated names"),
+    ],
+)
+def test_prepare_data_reports_invalid_block_declarations(blocks, error, message):
+    with pytest.raises(error, match=message):
+        _prepare_data(pl.DataFrame({"week": [1], "sales": [10]}), time="week", blocks=blocks)
+
+
+def test_prepare_data_checks_calendar_and_panel_coverage():
+    source = pl.DataFrame({"week": ["2026-01-05", "2026-01-19"], "sales": [10, 20]})
+
+    with pytest.raises(ValueError, match="missing periods"):
+        _prepare_data(source, time="week", blocks={"outcome": "sales"}, frequency="weekly")
+
+    source = pl.DataFrame({"week": [1, 2, 1], "geo": ["east", "east", "west"], "sales": [10, 20, 30]})
+    with pytest.raises(ValueError, match="same time values"):
+        _prepare_data(source, time="week", groups=["geo"], blocks={"outcome": "sales"})
+
+
+def test_prepare_data_works_with_model_densities_and_gradients():
+    data = _prepare_data(
+        pl.DataFrame({"week": [2, 1], "sales": [5.0, 2.0], "video": [2.0, 1.0], "search": [1.0, 3.0]}),
+        time="week",
+        blocks={"outcome": "sales", "media": ["video", "search"]},
+    )
+
+    def log_density(data, beta):
+        return normal(data["outcome"], data["media"] @ beta, 1.0)
+
+    model = Model({"beta": Real(shape=(2,))}, log_density)
+    position = {"beta": jnp.array([0.5, 1.0])}
+    value, gradient = jax.jit(jax.value_and_grad(model.log_density))(position, data.arrays)
+
+    residual = np.array([2.0, 5.0]) - np.array([[1.0, 3.0], [2.0, 1.0]]) @ np.array([0.5, 1.0])
+    expected_density = -0.5 * np.sum(residual**2) - np.log(2 * np.pi)
+    np.testing.assert_allclose(value, expected_density, rtol=1e-6)
+    np.testing.assert_allclose(gradient["beta"], np.array([[1.0, 2.0], [3.0, 1.0]]) @ residual)
+
+
+def test_prepare_data_keeps_labels_out_of_jax_compilation():
+    first = _prepare_data(
+        pl.DataFrame({"week": [1, 2], "sales": [10.0, 20.0]}), time="week", blocks={"outcome": "sales"}
+    )
+    second = _prepare_data(
+        pl.DataFrame({"date": ["2026-01-05", "2026-01-12"], "revenue": [30.0, 40.0]}),
+        time="date",
+        blocks={"outcome": "revenue"},
+    )
+    traces = []
+
+    @jax.jit
+    def total(data):
+        # Changing only labels and values should reuse the same compiled numerical function
+        traces.append(None)
+        return data["outcome"].sum()
+
+    assert float(total(first.arrays)) == 30.0
+    assert float(total(second.arrays)) == 70.0
+    assert len(traces) == 1
+
+
+def test_prepare_data_works_with_batched_adstock(frame_factory):
+    source = frame_factory(
+        {"week": [2, 1, 1, 2], "geo": ["west", "east", "west", "east"], "video": [4.0, 1.0, 3.0, 2.0]}
+    )
+    data = _prepare_data(source, time="week", groups=["geo"], blocks={"media": ["video"]})
+
+    carried = jax.jit(lambda media: geometric_adstock(media, 0.5, max_lag=1, normalize=False))(data.arrays["media"])
+
+    np.testing.assert_array_equal(carried, [[[3.0], [1.0]], [[5.5], [2.5]]])
 
 
 def test_prepare_panel_aligns_groups_without_changing_values_or_dtypes(frame_factory):

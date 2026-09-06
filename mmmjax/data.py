@@ -2,11 +2,121 @@
 
 from calendar import monthrange
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 import narwhals as nw
+import numpy as np
 from narwhals.typing import IntoDataFrameT
+from numpy.typing import NDArray
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class _PanelData:
+    """Keep aligned numerical blocks with their observation and column labels.
+
+    ``arrays`` is a dictionary of NumPy arrays suitable for JAX input. Labels
+    stay outside that dictionary and are not registered as static JAX data.
+    Dtype promotion is local to each block. Choosing a modeling dtype and
+    moving data to a device happen separately.
+    """
+
+    arrays: dict[str, NDArray[np.generic]]
+    time_column: str
+    time_values: tuple[object, ...]
+    group_columns: tuple[str, ...]
+    group_values: tuple[tuple[object, ...], ...]
+    columns: dict[str, tuple[str, ...]]
+
+
+def _prepare_data(
+    frame: IntoDataFrameT,
+    *,
+    time: str,
+    blocks: Mapping[str, str | Sequence[str]],
+    groups: Sequence[str] = (),
+    frequency: str | None = None,
+) -> _PanelData:
+    """Prepare named numerical blocks without losing their dataframe labels.
+
+    Parameters
+    ----------
+    frame : dataframe-like
+        Eager dataframe supported by Narwhals. The input is not modified.
+    time : str
+        Column identifying the observation periods.
+    blocks : mapping of str to str or sequence of str
+        Names for model inputs and their source columns, for example
+        ``{"outcome": "sales", "media": ["search", "video"]}``. A column
+        name produces one value per observation. A sequence keeps a final
+        feature axis, even for a single column. Columns may appear in more
+        than one block, but cannot be repeated within the same block.
+    groups : sequence of str, optional
+        Columns identifying each observed series. Nested group combinations
+        share one array axis rather than forming a Cartesian product.
+    frequency : str, optional
+        Calendar spacing checked by :func:`_prepare_panel`.
+
+    Returns
+    -------
+    _PanelData
+        Arrays ordered as time, group (if supplied), then feature (for
+        sequence selections). Labels follow that exact order. Each block
+        has its own dtype. Columns within a block use NumPy type promotion.
+        Keep count outcomes in a separate block from continuous features
+        to preserve their integer dtype. Arrays do not share memory with
+        the input dataframe.
+    """
+    if not isinstance(blocks, Mapping) or not blocks:
+        raise TypeError("blocks must be a nonempty mapping, such as {'outcome': 'sales', 'media': ['video']}")
+
+    columns: dict[str, tuple[str, ...]] = {}
+    for name, selection in blocks.items():
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"block names must be nonempty strings, got {name!r}")
+        if isinstance(selection, str):
+            names: tuple[str, ...] = (selection,)
+        elif isinstance(selection, Sequence):
+            names = tuple(selection)
+        else:
+            raise TypeError(f"block {name!r} must select a column name or a sequence of column names")
+        if not names or any(not isinstance(column, str) or not column for column in names):
+            raise ValueError(f"block {name!r} must select at least one nonempty string column name. Got {selection!r}")
+        if len(set(names)) != len(names):
+            raise ValueError(
+                f"block {name!r} contains repeated columns {names}. Select each column only once per block"
+            )
+        columns[name] = names
+
+    selected = _prepare_panel(
+        frame,
+        time=time,
+        groups=groups,
+        values=list(dict.fromkeys(column for names in columns.values() for column in names)),
+        frequency=frequency,
+    )
+    time_values = tuple(selected.get_column(time).unique(maintain_order=True).to_list())
+    group_values = tuple(selected.select(groups).unique(maintain_order=True).rows()) if groups else ()
+    observation_shape = (len(time_values), len(group_values)) if groups else (len(time_values),)
+
+    arrays: dict[str, NDArray[np.generic]] = {}
+    for name, names in columns.items():
+        if isinstance(blocks[name], str):
+            arrays[name] = selected.get_column(names[0]).to_numpy().copy().reshape(observation_shape)
+        else:
+            # Stacking numeric series avoids object arrays from mixed pandas column dtypes
+            values = np.stack([selected.get_column(column).to_numpy() for column in names], axis=-1)
+            arrays[name] = values.reshape(*observation_shape, len(names))
+
+    return _PanelData(
+        arrays=arrays,
+        time_column=time,
+        time_values=time_values,
+        group_columns=tuple(groups),
+        group_values=group_values,
+        columns=columns,
+    )
 
 
 def _prepare_panel(
@@ -34,7 +144,7 @@ def _prepare_panel(
     values : sequence of str
         Numeric or boolean columns to retain in the supplied order.
     frequency : str, optional
-        Expected spacing: ``"daily"``, ``"weekly"``, ``"monthly"``,
+        Expected spacing given as ``"daily"``, ``"weekly"``, ``"monthly"``,
         ``"quarterly"``, or ``"yearly"``. Calendar periods follow the first
         observation's day, or month-end if it starts at month-end. Without
         this argument, only coverage of the observed times is checked.
@@ -66,8 +176,8 @@ def _prepare_panel(
     # Keys are unique, so this count proves every observed series has every observed time
     if missing:
         raise ValueError(
-            f"data is missing {missing} combinations of {time!r} and {list(groups)}; "
-            "each observed group must contain the same time values"
+            f"data is missing {missing} combinations of {time!r} and {list(groups)}. "
+            "Each observed group must contain the same time values"
         )
 
     # Sorting by an explicit rank avoids backend-specific ordering of categorical labels
@@ -93,7 +203,7 @@ def _prepare_frame(
         Their combinations must be unique and cannot contain missing values.
     values : sequence of str
         Numeric or boolean columns to retain in the supplied order. Values
-        must be finite and nonmissing; negative values are allowed.
+        must be finite and nonmissing. Negative values are allowed.
 
     Returns
     -------
@@ -105,21 +215,21 @@ def _prepare_frame(
         if isinstance(names, str) or not isinstance(names, Sequence):
             raise TypeError(f"{argument} must be a sequence of column names, such as ['week']")
         if any(not isinstance(name, str) or not name for name in names):
-            raise ValueError(f"{argument} must contain only nonempty string column names; got {names!r}")
+            raise ValueError(f"{argument} must contain only nonempty string column names. Got {names!r}")
     if not keys:
         raise ValueError("keys must include at least one column identifying observations, such as 'week'")
 
     columns = [*keys, *values]
     repeated = [name for name, count in Counter(columns).items() if count > 1]
     if repeated:
-        raise ValueError(f"column declarations contain repeated names {repeated}; select each column only once")
+        raise ValueError(f"column declarations contain repeated names {repeated}. Select each column only once")
 
     # Collecting a lazy or distributed input here could unexpectedly load the entire dataset
     selected = nw.from_native(frame, eager_only=True)
     available = set(selected.columns)
     missing = [name for name in columns if name not in available]
     if missing:
-        raise ValueError(f"data is missing columns {missing}; available columns are {selected.columns}")
+        raise ValueError(f"data is missing columns {missing}. The available columns are {selected.columns}")
     selected = selected.select(columns)
     if selected.is_empty():
         raise ValueError("data must contain at least one observation")
@@ -127,7 +237,7 @@ def _prepare_frame(
     nulls = selected.null_count().rows(named=True)[0]
     missing_values = [name for name, count in nulls.items() if count]
     if missing_values:
-        raise ValueError(f"columns {missing_values} contain missing values; resolve them before preparing the data")
+        raise ValueError(f"columns {missing_values} contain missing values. Resolve them before preparing the data")
 
     schema = selected.schema
     invalid_types = {
@@ -136,7 +246,7 @@ def _prepare_frame(
         if not (schema[name].is_integer() or schema[name].is_float() or schema[name] == nw.Boolean)
     }
     if invalid_types:
-        raise TypeError(f"value columns must be integer, floating-point or boolean; got {invalid_types}")
+        raise TypeError(f"value columns must be integer, floating-point or boolean. Got {invalid_types}")
 
     # Null checks alone miss NaNs in Polars and Arrow, including NaNs used as observation keys
     float_columns = [name for name, dtype in schema.items() if dtype.is_float()]
@@ -144,12 +254,12 @@ def _prepare_frame(
         finite = selected.select(nw.col(*float_columns).is_finite().all()).rows(named=True)[0]
         nonfinite = [name for name, valid in finite.items() if not valid]
         if nonfinite:
-            raise ValueError(f"columns {nonfinite} contain NaN or infinite values; provide finite data")
+            raise ValueError(f"columns {nonfinite} contain NaN or infinite values. Provide finite data")
 
     duplicates = selected.select(keys).is_duplicated()
     if duplicates.any():
         example = selected.select(keys).filter(duplicates).head(1).rows(named=True)[0]
-        raise ValueError(f"data contains duplicate observations for {example}; provide one row per key combination")
+        raise ValueError(f"data contains duplicate observations for {example}. Provide one row per key combination")
 
     return selected
 
@@ -173,7 +283,7 @@ def _validate_calendar(frame: nw.DataFrame[IntoDataFrameT], *, time: str, freque
                     raise ValueError
             except ValueError as error:
                 raise ValueError(
-                    f"time column {time!r} contains {label!r}; use valid dates written as YYYY-MM-DD "
+                    f"time column {time!r} contains {label!r}. Use valid dates written as YYYY-MM-DD "
                     "or convert the column to a date/datetime dtype"
                 ) from error
             times.append(datetime.combine(parsed, datetime.min.time()))
@@ -181,8 +291,8 @@ def _validate_calendar(frame: nw.DataFrame[IntoDataFrameT], *, time: str, freque
             representations.add("datetime")
             if label.utcoffset() is not None:
                 raise ValueError(
-                    f"time column {time!r} contains timezone-aware timestamps; "
-                    "convert them to observation dates in the intended timezone before preparing the panel"
+                    f"time column {time!r} contains timezone-aware timestamps. "
+                    "Convert them to observation dates in the intended timezone before preparing the panel"
                 )
             times.append(label)
         elif isinstance(label, date):
@@ -190,14 +300,14 @@ def _validate_calendar(frame: nw.DataFrame[IntoDataFrameT], *, time: str, freque
             times.append(datetime.combine(label, datetime.min.time()))
         else:
             raise TypeError(
-                f"frequency={frequency!r} requires dates in time column {time!r}, got {label!r}; "
-                "use dates, timezone-naive datetimes, or YYYY-MM-DD strings"
+                f"frequency={frequency!r} requires dates in time column {time!r}, got {label!r}. "
+                "Use dates, timezone-naive datetimes, or YYYY-MM-DD strings"
             )
 
     if len(representations) > 1:
         raise TypeError(
-            f"time column {time!r} mixes date representations; "
-            "convert the entire column to a single date/datetime dtype before preparing the panel"
+            f"time column {time!r} mixes date representations. "
+            "Convert the entire column to a single date/datetime dtype before preparing the panel"
         )
 
     times.sort()
@@ -215,7 +325,7 @@ def _validate_calendar(frame: nw.DataFrame[IntoDataFrameT], *, time: str, freque
             expected = first.replace(year=year, month=month + 1, day=day)
         if observed != expected:
             raise ValueError(
-                f"time column {time!r} does not follow frequency={frequency!r}: "
-                f"expected {expected.isoformat(sep=' ')}, found {observed.isoformat(sep=' ')}; "
-                "check for missing periods or an incorrect frequency"
+                f"time column {time!r} does not follow frequency={frequency!r}, "
+                f"expected {expected.isoformat(sep=' ')}, found {observed.isoformat(sep=' ')}. "
+                "Check for missing periods or an incorrect frequency"
             )

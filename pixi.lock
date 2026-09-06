@@ -8024,11 +8024,12 @@ packages:
 - pypi: ./
   name: mmmjax
   version: 0.0.1
-  sha256: c743dae5485efb6720baca355202c7d3a9696ca4b325dd04b3312160c0399637
+  sha256: 069e161b8721d4b3c5c23c49877a2456d701bed05255ecb3b600ea6fa768fa4e
   requires_dist:
   - jax>=0.10.0,<0.11
   - jaxtyping>=0.2.36
   - narwhals>=2.0
+  - numpy>=2.0
   - asv>=0.6.6,<0.7 ; extra == 'benchmark'
   - asv-runner==0.3.1 ; extra == 'benchmark'
   - spin>=0.18,<0.19 ; extra == 'benchmark'
