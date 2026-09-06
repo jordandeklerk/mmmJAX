@@ -66,9 +66,13 @@ Negative Binomial
 
    negative_binomial
    negative_binomial_logpmf
+   negative_binomial_logcdf
+   negative_binomial_logsf
    negative_binomial_rng
    negative_binomial_log
    negative_binomial_log_logpmf
+   negative_binomial_log_logcdf
+   negative_binomial_log_logsf
    negative_binomial_log_rng
 
 Categorical

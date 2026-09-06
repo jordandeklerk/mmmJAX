@@ -652,6 +652,67 @@ def test_negative_binomial_log_probability_references_match_jax_and_scipy() -> N
     )
 
 
+@pytest.mark.parametrize("name", ["negative_binomial", "negative_binomial_log"])
+@pytest.mark.parametrize("operation", ["logcdf", "logsf"])
+@pytest.mark.parametrize("input_set", ["ordinary", "tail"])
+@pytest.mark.parametrize("profile_name", ["vector", "likelihood", "channel_prior"])
+def test_negative_binomial_benchmark_tails_match_scipy_and_jax(name, operation, input_set, profile_name) -> None:
+    profile = PROFILES[profile_name]
+    distribution = DISTRIBUTIONS_BY_NAME[name]
+    dtype = jnp.asarray(0.0).dtype
+    values, parameter, concentration = make_tail_arguments(distribution, profile, input_set, operation, dtype)
+    implementation = getattr(mmmjax, f"{name}_{operation}")
+    reference = getattr(JAX_REFERENCES[name], operation)
+    assert reference is not None
+    assert values.shape == profile.value_shape
+    assert parameter.shape == concentration.shape == profile.parameter_shape
+    assert distribution.gradient_argnums == (1, 2)
+
+    counts = np.floor(np.asarray(values, dtype=np.float64))
+    parameters = np.stack([np.asarray(parameter, dtype=np.float64), np.asarray(concentration, dtype=np.float64)])
+
+    def scipy_log_probability(parameters):
+        location, phi = parameters
+        mean = np.exp(location) if name == "negative_binomial_log" else location
+        return getattr(stats.nbinom, operation)(counts, phi, phi / (phi + mean))
+
+    expected = scipy_log_probability(parameters)
+    expected_gradients = []
+    for index in range(2):
+        # Difference SciPy's independently implemented tail rather than JAX's missing shape derivative
+        offset = np.zeros_like(parameters)
+        offset[index] = np.maximum(1.0, np.abs(parameters[index])) * 1e-4
+        shifted = [scipy_log_probability(parameters + multiplier * offset) for multiplier in (-2, -1, 1, 2)]
+        derivative = (shifted[0] - 8 * shifted[1] + 8 * shifted[2] - shifted[3]) / (12 * offset[index])
+        expected_gradients.append(derivative.sum(axis=tuple(range(len(profile.sample_shape)))))
+
+    result = jax.jit(implementation)(values, parameter, concentration)
+    jax_result = jax.jit(reference)(values, parameter, concentration)
+
+    def summed(current_parameter, current_concentration):
+        return jnp.sum(implementation(values, current_parameter, current_concentration))
+
+    gradients = jax.jit(jax.grad(summed, argnums=(0, 1)))(parameter, concentration)
+    _, forward = jax.jit(lambda mu, phi: jax.jvp(summed, (mu, phi), (jnp.ones_like(mu), jnp.ones_like(phi))))(
+        parameter, concentration
+    )
+
+    tolerance = 2e-10 if jax.config.x64_enabled else 8e-5
+    gradient_tolerance = 2e-8 if jax.config.x64_enabled else 3e-4
+    np.testing.assert_allclose(result, expected, rtol=tolerance, atol=0)
+    np.testing.assert_allclose(result, jax_result, rtol=tolerance, atol=0)
+    for actual, target in zip(gradients, expected_gradients, strict=True):
+        np.testing.assert_allclose(actual, target, rtol=gradient_tolerance, atol=1e-8)
+    np.testing.assert_allclose(
+        forward, sum(value.sum() for value in expected_gradients), rtol=gradient_tolerance, atol=1e-8
+    )
+    if input_set == "tail":
+        assert np.all(np.isfinite(expected))
+        assert np.all(expected < -4)
+        assert np.min(expected) < -34
+        assert np.all(values > 0)
+
+
 def test_negative_binomial_rng_references_use_gamma_poisson_mixture() -> None:
     key = jax.random.key(0)
     means = jnp.array([0.5, 3.0, 20.0])

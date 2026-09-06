@@ -10,9 +10,13 @@ from scipy import special, stats
 from mmmjax import (
     negative_binomial,
     negative_binomial_log,
+    negative_binomial_log_logcdf,
     negative_binomial_log_logpmf,
+    negative_binomial_log_logsf,
     negative_binomial_log_rng,
+    negative_binomial_logcdf,
     negative_binomial_logpmf,
+    negative_binomial_logsf,
     negative_binomial_rng,
     poisson_log_logpmf,
 )
@@ -809,3 +813,374 @@ def test_negative_binomial_rng_rejects_incompatible_parameter_shapes() -> None:
 def test_negative_binomial_rngs_reject_complex_arguments(function, arguments, name: str) -> None:
     with pytest.raises(TypeError, match=rf"argument '{name}'.*real numeric dtype"):
         function(jax.random.key(0), *arguments)
+
+
+@pytest.mark.parametrize(
+    "function, reference",
+    [(negative_binomial_logcdf, stats.nbinom.logcdf), (negative_binomial_logsf, stats.nbinom.logsf)],
+)
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
+def test_negative_binomial_tails_match_scipy(function, reference, dtype) -> None:
+    if dtype == jnp.float64 and not jax.config.x64_enabled:
+        pytest.skip("JAX 64-bit mode is disabled")
+    values = jnp.array([[-jnp.inf], [-1.0], [0.0], [0.9], [1.0], [8.7], [30.0], [jnp.inf], [jnp.nan]], dtype=dtype)
+    means = jnp.array([0.2, 4.0, 25.0], dtype=dtype)
+    concentrations = jnp.array([0.5, 2.0, 20.0], dtype=dtype)
+    means_reference = np.asarray(means, dtype=np.float64)
+    concentrations_reference = np.asarray(concentrations, dtype=np.float64)
+    probabilities = concentrations_reference / (concentrations_reference + means_reference)
+    expected = reference(np.asarray(values, dtype=np.float64), concentrations_reference, probabilities)
+    if function is negative_binomial_logsf:
+        # SciPy's generic logsf can lose relative accuracy when the survival probability is nearly one
+        cdf = stats.nbinom.cdf(np.asarray(values, dtype=np.float64), concentrations_reference, probabilities)
+        small_cdf = np.where(cdf < 0.5, cdf, 0.0)
+        expected = np.where(cdf < 0.5, np.log1p(-small_cdf), expected)
+
+    result = function(values, means, concentrations)
+    compiled = jax.jit(function)(values, means, concentrations)
+
+    tolerance = 4e-5 if dtype == jnp.float32 else 2e-11
+    np.testing.assert_allclose(result, expected, rtol=tolerance, atol=0, equal_nan=True)
+    np.testing.assert_allclose(compiled, expected, rtol=tolerance, atol=0, equal_nan=True)
+
+
+@pytest.mark.parametrize("function", [negative_binomial_logcdf, negative_binomial_logsf])
+def test_negative_binomial_tails_validate_parameters_before_support(function) -> None:
+    invalid = jnp.array([-jnp.inf, -1.0, 0.0, jnp.inf, jnp.nan])
+    thresholds = jnp.array([[-1.0], [0.0], [2.0], [jnp.inf]])
+
+    assert jnp.all(jnp.isnan(function(thresholds, invalid, 1.0)))
+    assert jnp.all(jnp.isnan(function(thresholds, 1.0, invalid)))
+    assert function(jnp.empty((0,)), 2.0, 1.5).shape == (0,)
+
+
+@pytest.mark.parametrize("function", [negative_binomial_logcdf, negative_binomial_logsf])
+@pytest.mark.parametrize("index, name", [(0, "value"), (1, "mean"), (2, "concentration")])
+def test_negative_binomial_tails_reject_complex_arguments(function, index, name) -> None:
+    arguments = [1.0, 2.0, 3.0]
+    arguments[index] = 1.0 + 0.0j
+    with pytest.raises(TypeError, match=rf"argument '{name}'.*real numeric dtype"):
+        function(*arguments)
+
+
+@pytest.mark.parametrize("function", [negative_binomial_logcdf, negative_binomial_logsf])
+def test_negative_binomial_tail_boundary_parameter_gradients_are_zero(function) -> None:
+    thresholds = jnp.array([-jnp.inf, -1.0, jnp.inf])
+    gradients = jax.jit(jax.vmap(jax.grad(function, argnums=(1, 2)), in_axes=(0, None, None)))(thresholds, 2.0, 3.0)
+
+    np.testing.assert_array_equal(gradients, np.zeros((2, 3)))
+
+
+@pytest.mark.parametrize("upper_tail", [False, True])
+@pytest.mark.parametrize(
+    "threshold, mean, concentration", [(0, 2.0, 1.0), (1, 4.0, 0.5), (8, 2.0, 2.0), (8, 6.0, 2.0), (30, 25.0, 20.0)]
+)
+def test_negative_binomial_tail_gradients_match_mass_sums(upper_tail, threshold, mean, concentration) -> None:
+    function = negative_binomial_logsf if upper_tail else negative_binomial_logcdf
+    expected, expected_gradient, _ = _negative_binomial_tail_reference(threshold, mean, concentration, upper_tail)
+
+    result, gradients = jax.jit(jax.value_and_grad(function, argnums=(1, 2)))(
+        threshold, jnp.float32(mean), jnp.float32(concentration)
+    )
+
+    np.testing.assert_allclose(result, expected, rtol=4e-5, atol=0)
+    np.testing.assert_allclose(gradients, expected_gradient, rtol=2e-4, atol=2e-7)
+
+
+@pytest.mark.parametrize("upper_tail", [False, True])
+def test_negative_binomial_tails_support_broadcast_jvp_and_vmap(upper_tail) -> None:
+    function = negative_binomial_logsf if upper_tail else negative_binomial_logcdf
+    thresholds = jnp.array([[0.0], [1.0], [8.0]], dtype=jnp.float32)
+    means = jnp.array([2.0, 4.0], dtype=jnp.float32)
+    concentrations = jnp.array([1.0, 0.5], dtype=jnp.float32)
+    mean_tangent = jnp.array([0.3, -0.2], dtype=jnp.float32)
+    concentration_tangent = jnp.array([-0.1, 0.4], dtype=jnp.float32)
+    expected_gradients = np.array(
+        [
+            [
+                _negative_binomial_tail_reference(int(k), float(mu), float(phi), upper_tail)[1]
+                for mu, phi in zip(means, concentrations, strict=True)
+            ]
+            for k in thresholds[:, 0]
+        ]
+    )
+    expected_tangent = expected_gradients[..., 0] * mean_tangent + expected_gradients[..., 1] * concentration_tangent
+
+    result, tangent = jax.jvp(
+        lambda mu, phi: function(thresholds, mu, phi),
+        (means, concentrations),
+        (mean_tangent, concentration_tangent),
+    )
+    gradient = jax.jit(jax.grad(lambda mu, phi: function(thresholds, mu, phi).sum(), argnums=(0, 1)))(
+        means, concentrations
+    )
+    vectorized = jax.jit(jax.vmap(lambda k: function(k, means, concentrations)))(thresholds[:, 0])
+
+    np.testing.assert_allclose(vectorized, result, rtol=4e-5, atol=0)
+    np.testing.assert_allclose(tangent, expected_tangent, rtol=2e-4, atol=1e-6)
+    np.testing.assert_allclose(np.stack(gradient, axis=-1), expected_gradients.sum(axis=0), rtol=2e-4, atol=1e-6)
+
+
+@pytest.mark.parametrize("upper_tail, threshold, mean, concentration", [(False, 3, 1e6, 20.0), (True, 200, 0.5, 3.0)])
+def test_negative_binomial_tails_remain_finite_after_probability_underflow(
+    upper_tail, threshold, mean, concentration
+) -> None:
+    function = negative_binomial_logsf if upper_tail else negative_binomial_logcdf
+    expected, expected_gradient, expected_hessian = _negative_binomial_tail_reference(
+        threshold, mean, concentration, upper_tail
+    )
+    parameters = jnp.array([mean, concentration], dtype=jnp.float32)
+    assert np.exp(expected) < np.finfo(np.float32).tiny
+
+    def log_probability(parameters):
+        return function(threshold, *parameters)
+
+    result, gradient = jax.jit(jax.value_and_grad(log_probability))(parameters)
+    hessian = jax.jit(jax.hessian(log_probability))(parameters)
+
+    np.testing.assert_allclose(result, expected, rtol=2e-5, atol=0)
+    np.testing.assert_allclose(gradient, expected_gradient, rtol=2e-4, atol=0)
+    np.testing.assert_allclose(hessian, expected_hessian, rtol=3e-4, atol=1e-10)
+
+
+@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+@pytest.mark.parametrize("upper_tail", [False, True])
+@pytest.mark.parametrize("threshold", [0, 8])
+def test_negative_binomial_tail_hessians_match_mass_sums(upper_tail, threshold) -> None:
+    function = negative_binomial_logsf if upper_tail else negative_binomial_logcdf
+    expected, expected_gradient, expected_hessian = _negative_binomial_tail_reference(threshold, 6.0, 2.0, upper_tail)
+    parameters = jnp.array([6.0, 2.0], dtype=jnp.float64)
+
+    def log_probability(parameters):
+        return function(threshold, *parameters)
+
+    result, gradient = jax.jit(jax.value_and_grad(log_probability))(parameters)
+    hessian = jax.jit(jax.hessian(log_probability))(parameters)
+
+    np.testing.assert_allclose(result, expected, rtol=2e-11, atol=0)
+    np.testing.assert_allclose(gradient, expected_gradient, rtol=2e-10, atol=1e-12)
+    np.testing.assert_allclose(hessian, expected_hessian, rtol=2e-9, atol=1e-12)
+
+
+@pytest.mark.parametrize(
+    "function, reference, log_mean",
+    [
+        (negative_binomial_logcdf, stats.nbinom.logcdf, False),
+        (negative_binomial_logsf, stats.nbinom.logsf, False),
+        (negative_binomial_log_logcdf, stats.nbinom.logcdf, True),
+        (negative_binomial_log_logsf, stats.nbinom.logsf, True),
+    ],
+)
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
+def test_negative_binomial_tails_handle_large_counts(function, reference, log_mean, dtype) -> None:
+    if dtype == jnp.float64 and not jax.config.x64_enabled:
+        pytest.skip("JAX 64-bit mode is disabled")
+    means = jnp.array([100.0, 100.0, 10000.0, 10000.0, 10000.0, 10000.0, 10000.0], dtype=dtype)
+    concentrations = jnp.array([0.1, 1.0, 0.1, 1.0, 2.5, 20.0, 100.0], dtype=dtype)
+    parameters = np.stack([np.asarray(means, dtype=np.float64), np.asarray(concentrations, dtype=np.float64)])
+
+    def scipy_log_probability(parameters):
+        mean, concentration = parameters
+        return reference(10000, concentration, concentration / (concentration + mean))
+
+    expected = scipy_log_probability(parameters)
+    if reference == stats.nbinom.logcdf:
+        # Finite sums avoid amplifying small errors in SciPy's CDF when differencing shape parameters
+        expected_gradients = np.array(
+            [
+                _negative_binomial_tail_reference(10000, mean, concentration, False)[1]
+                for mean, concentration in parameters.T
+            ]
+        ).T
+    else:
+        expected_gradients = []
+        for index in range(2):
+            offset = np.zeros_like(parameters)
+            offset[index] = parameters[index] * 1e-4
+            values = [scipy_log_probability(parameters + multiplier * offset) for multiplier in (-2, -1, 1, 2)]
+            expected_gradients.append((values[0] - 8 * values[1] + 8 * values[2] - values[3]) / (12 * offset[index]))
+
+    if log_mean:
+        expected_gradients[0] *= parameters[0]
+    result, gradients = jax.jit(jax.vmap(jax.value_and_grad(function, argnums=(1, 2)), in_axes=(None, 0, 0)))(
+        10000, jnp.log(means) if log_mean else means, concentrations
+    )
+
+    # Large counts amplify rounding of near-one Beta arguments; float64 gives tighter agreement
+    tolerance = 5e-4 if dtype == jnp.float32 else 2e-9
+    gradient_atol = 1e-6 if dtype == jnp.float32 else 1e-10
+    np.testing.assert_allclose(result, expected, rtol=tolerance, atol=np.finfo(np.dtype(dtype)).tiny)
+    np.testing.assert_allclose(gradients, expected_gradients, rtol=tolerance, atol=gradient_atol)
+
+
+@pytest.mark.parametrize("upper_tail", [False, True])
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
+def test_negative_binomial_log_tails_match_scipy(upper_tail, dtype) -> None:
+    if dtype == jnp.float64 and not jax.config.x64_enabled:
+        pytest.skip("JAX 64-bit mode is disabled")
+    function = negative_binomial_log_logsf if upper_tail else negative_binomial_log_logcdf
+    reference = stats.nbinom.logsf if upper_tail else stats.nbinom.logcdf
+    thresholds = jnp.array([[-jnp.inf], [-1], [0], [1.9], [8], [30], [jnp.inf], [jnp.nan]], dtype=dtype)
+    log_means = jnp.array([-2.0, 0.0, 2.0, 4.0], dtype=dtype)
+    concentrations = jnp.array([0.5, 1.0, 2.0, 20.0], dtype=dtype)
+    phi = np.asarray(concentrations, dtype=np.float64)
+    probability = special.expit(np.log(phi) - np.asarray(log_means, dtype=np.float64))
+    expected = reference(np.asarray(thresholds, dtype=np.float64), phi, probability)
+    if upper_tail:
+        cdf = stats.nbinom.cdf(np.asarray(thresholds, dtype=np.float64), phi, probability)
+        expected = np.where(cdf < 0.5, np.log1p(-np.where(cdf < 0.5, cdf, 0.0)), expected)
+
+    result = function(thresholds, log_means, concentrations)
+    compiled = jax.jit(function)(thresholds, log_means, concentrations)
+
+    tolerance = 4e-5 if dtype == jnp.float32 else 2e-11
+    np.testing.assert_allclose(result, expected, rtol=tolerance, atol=0, equal_nan=True)
+    np.testing.assert_allclose(compiled, expected, rtol=tolerance, atol=0, equal_nan=True)
+
+
+@pytest.mark.parametrize("function", [negative_binomial_log_logcdf, negative_binomial_log_logsf])
+def test_negative_binomial_log_tails_validate_inputs_and_support(function) -> None:
+    thresholds = jnp.array([[-jnp.inf], [-1.0], [0.0], [2.0], [jnp.inf]])
+    assert jnp.all(jnp.isnan(function(thresholds, jnp.array([-jnp.inf, jnp.inf, jnp.nan]), 1.0)))
+    assert jnp.all(jnp.isnan(function(thresholds, 0.0, jnp.array([-jnp.inf, -1.0, 0.0, jnp.inf, jnp.nan]))))
+    assert function(jnp.empty((0,)), 0.0, 1.5).shape == (0,)
+
+    boundary_gradients = jax.jit(jax.vmap(jax.grad(function, argnums=(1, 2)), in_axes=(0, None, None)))(
+        jnp.array([-jnp.inf, -1.0, jnp.inf]), 0.0, 1.5
+    )
+    np.testing.assert_array_equal(boundary_gradients, np.zeros((2, 3)))
+    for index, name in enumerate(("value", "log_mean", "concentration")):
+        arguments = [1.0, 0.0, 2.0]
+        arguments[index] = 1.0j
+        with pytest.raises(TypeError, match=rf"argument '{name}'.*real numeric dtype"):
+            function(*arguments)
+
+
+@pytest.mark.parametrize("upper_tail", [False, True])
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
+def test_negative_binomial_log_tail_derivatives_match_mass_sums(upper_tail, dtype) -> None:
+    if dtype == jnp.float64 and not jax.config.x64_enabled:
+        pytest.skip("JAX 64-bit mode is disabled")
+    function = negative_binomial_log_logsf if upper_tail else negative_binomial_log_logcdf
+    thresholds = jnp.array([0, 1, 8, 8, 30])
+    parameters = jnp.array(
+        [[np.log(2), 1], [np.log(4), 0.5], [np.log(2), 2], [np.log(6), 2], [np.log(25), 20]], dtype=dtype
+    )
+    expected_values, expected_gradients, expected_hessians = [], [], []
+    for threshold, (log_mean, concentration) in zip(
+        np.asarray(thresholds), np.asarray(parameters, dtype=np.float64), strict=True
+    ):
+        mean = np.exp(log_mean)
+        value, gradient, hessian = _negative_binomial_tail_reference(threshold, mean, concentration, upper_tail)
+        # The log-mean Hessian includes both the transformed Hessian and the second derivative of exp
+        jacobian = np.diag([mean, 1.0])
+        transformed_hessian = jacobian @ hessian @ jacobian
+        transformed_hessian[0, 0] += mean * gradient[0]
+        expected_values.append(value)
+        expected_gradients.append(jacobian @ gradient)
+        expected_hessians.append(transformed_hessian)
+
+    def log_probability(parameters, threshold):
+        return function(threshold, *parameters)
+
+    result, gradient = jax.jit(jax.vmap(jax.value_and_grad(log_probability)))(parameters, thresholds)
+    hessian = jax.jit(jax.vmap(jax.hessian(log_probability)))(parameters, thresholds)
+    _, tangent = jax.jvp(
+        lambda eta, phi: function(thresholds, eta, phi),
+        tuple(parameters.T),
+        (jnp.full((5,), 0.3, dtype=dtype), jnp.full((5,), -0.2, dtype=dtype)),
+    )
+    expected_gradients = np.asarray(expected_gradients)
+
+    tolerance = 5e-4 if dtype == jnp.float32 else 2e-9
+    absolute = 2e-6 if dtype == jnp.float32 else 2e-11
+    np.testing.assert_allclose(result, expected_values, rtol=tolerance, atol=0)
+    np.testing.assert_allclose(gradient, expected_gradients, rtol=tolerance, atol=absolute)
+    np.testing.assert_allclose(hessian, expected_hessians, rtol=tolerance, atol=absolute)
+    np.testing.assert_allclose(tangent, expected_gradients @ np.array([0.3, -0.2]), rtol=tolerance, atol=absolute)
+
+
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
+@pytest.mark.parametrize("upper_tail, log_mean", [(False, 80.0), (False, 1000.0), (True, -80.0), (True, -1000.0)])
+def test_negative_binomial_log_tails_preserve_extreme_log_means(upper_tail, log_mean, dtype) -> None:
+    if dtype == jnp.float64 and not jax.config.x64_enabled:
+        pytest.skip("JAX 64-bit mode is disabled")
+    function = negative_binomial_log_logsf if upper_tail else negative_binomial_log_logcdf
+    thresholds = np.array([0, 1, 8])
+    concentrations = np.array([0.5, 2.0, 20.0])
+    expected, expected_gradients = [], []
+    for threshold, concentration in zip(thresholds, concentrations, strict=True):
+        # Sum log masses directly, since SciPy's probability parameter rounds to an endpoint here
+        # In the upper tail these tiny means make the first omitted mass negligible relative to the sum
+        counts = np.arange(threshold + 1, threshold + 101) if upper_tail else np.arange(threshold + 1)
+        log_p = special.log_expit(np.log(concentration) - log_mean)
+        log_q = special.log_expit(log_mean - np.log(concentration))
+        log_masses = (
+            special.gammaln(counts + concentration)
+            - special.gammaln(concentration)
+            - special.gammaln(counts + 1)
+            + concentration * log_p
+            + counts * log_q
+        )
+        log_probability = special.logsumexp(log_masses)
+        if upper_tail:
+            assert log_masses[-1] - log_probability < np.log(1e-13)
+        weights = np.exp(log_masses - log_probability)
+        mean_score = counts * np.exp(log_p) - concentration * np.exp(log_q)
+        concentration_score = (
+            special.digamma(counts + concentration)
+            - special.digamma(concentration)
+            + log_p
+            + np.exp(log_q)
+            - counts * np.exp(log_p) / concentration
+        )
+        expected.append(log_probability)
+        expected_gradients.append([weights @ mean_score, weights @ concentration_score])
+
+    result, gradient = jax.jit(jax.vmap(jax.value_and_grad(function, argnums=(1, 2)), in_axes=(0, None, 0)))(
+        jnp.asarray(thresholds), dtype(log_mean), jnp.asarray(concentrations, dtype=dtype)
+    )
+
+    tolerance = 2e-5 if dtype == jnp.float32 else 2e-12
+    absolute = 2e-6 if dtype == jnp.float32 else 2e-12
+    np.testing.assert_allclose(result, expected, rtol=tolerance, atol=0)
+    np.testing.assert_allclose(np.stack(gradient, axis=-1), expected_gradients, rtol=tolerance, atol=absolute)
+
+
+def _negative_binomial_tail_reference(threshold, mean, concentration, upper_tail):
+    # Summing masses and their analytic scores avoids using incomplete Beta as its own gradient oracle
+    counts = np.arange(threshold + 1, max(threshold + 1000, 2000)) if upper_tail else np.arange(threshold + 1)
+    probability = concentration / (concentration + mean)
+    log_masses = stats.nbinom.logpmf(counts, concentration, probability)
+    log_probability = special.logsumexp(log_masses)
+    if upper_tail:
+        remaining = stats.nbinom.logsf(counts[-1], concentration, probability)
+        assert remaining - log_probability < np.log(1e-13)
+    weights = np.exp(log_masses - log_probability)
+    parameter_sum = mean + concentration
+    scores = np.stack(
+        [
+            counts / mean - (counts + concentration) / parameter_sum,
+            special.digamma(counts + concentration)
+            - special.digamma(concentration)
+            + np.log(concentration)
+            + 1
+            - np.log(parameter_sum)
+            - (counts + concentration) / parameter_sum,
+        ],
+        axis=-1,
+    )
+    mass_hessians = np.empty((counts.size, 2, 2))
+    mass_hessians[:, 0, 0] = -counts / mean**2 + (counts + concentration) / parameter_sum**2
+    mass_hessians[:, 0, 1] = mass_hessians[:, 1, 0] = (counts - mean) / parameter_sum**2
+    mass_hessians[:, 1, 1] = (
+        special.polygamma(1, counts + concentration)
+        - special.polygamma(1, concentration)
+        + 1 / concentration
+        - 1 / parameter_sum
+        + (counts - mean) / parameter_sum**2
+    )
+    gradient = weights @ scores
+    hessian = np.einsum("n,nij->ij", weights, mass_hessians + scores[:, :, None] * scores[:, None, :])
+    hessian -= np.outer(gradient, gradient)
+    return log_probability, gradient, hessian
