@@ -42,6 +42,7 @@ documentation = "https://mmmjax.readthedocs.io"
 test = [
     "pytest",
     "pytest-cov",
+    "pytest-split>=0.11,<0.12",
     "pytest-timeout",
     "pytest-xdist>=3.8",
     "scipy>=1.14",
