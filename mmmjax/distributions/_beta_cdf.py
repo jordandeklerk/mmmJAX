@@ -1,5 +1,6 @@
 """Incomplete Beta derivatives for distribution tails."""
 
+from functools import partial
 from typing import cast
 
 import jax
@@ -9,41 +10,51 @@ from jax.scipy.special import betainc, digamma
 from mmmjax.distributions._beta import _beta_logpdf
 
 
-@jax.custom_jvp
-def _log_betainc(alpha: jax.Array, beta: jax.Array, value: jax.Array) -> jax.Array:
+@partial(jax.custom_jvp, nondiff_argnums=(3,))
+def _log_betainc(alpha: jax.Array, beta: jax.Array, value: jax.Array, log_value: bool = False) -> jax.Array:
     r"""Evaluate log regularized incomplete Beta without reflection.
 
     Callers must provide finite positive shapes and a value satisfying
     :math:`0 < x \leq (\alpha + 1) / (\alpha + \beta + 2)`.
+    With ``log_value=True``, the last array holds :math:`\log x` instead.
     """
+    log_argument = value if log_value else jnp.log(value)
+    value = jnp.exp(value) if log_value else value
     alpha, beta, value = jnp.broadcast_arrays(alpha, beta, value)
     fraction = _beta_fraction(alpha, beta, value)[0]
     # Native betainc can lose normalization accuracy at large shapes or underflow before taking a log
-    return _beta_logpdf(value, alpha, beta) + jnp.log(value) + jnp.log1p(-value) - jnp.log(alpha) + jnp.log(fraction)
+    return _beta_logpdf(value, alpha, beta) + log_argument + jnp.log1p(-value) - jnp.log(alpha) + jnp.log(fraction)
 
 
 @_log_betainc.defjvp
 def _log_betainc_jvp(
+    log_value: bool,
     primals: tuple[jax.Array, jax.Array, jax.Array],
     tangents: tuple[jax.Array, jax.Array, jax.Array],
 ) -> tuple[jax.Array, jax.Array]:
     alpha, beta, value = primals
     alpha_tangent, beta_tangent, value_tangent = tangents
+    log_argument = value if log_value else jnp.log(value)
+    value = jnp.exp(value) if log_value else value
     fraction, alpha_derivative, beta_derivative = _beta_fraction(*jnp.broadcast_arrays(alpha, beta, value))
     log_density, shape_tangent = jax.jvp(
         _beta_logpdf,
         (value, alpha, beta),
         (jnp.zeros_like(value), alpha_tangent, beta_tangent),
     )
-    log_probability = log_density + jnp.log(value) + jnp.log1p(-value) - jnp.log(alpha) + jnp.log(fraction)
+    log_probability = log_density + log_argument + jnp.log1p(-value) - jnp.log(alpha) + jnp.log(fraction)
 
     # Reuse the fraction's partials instead of reverse-differentiating its iteration history
     # The value derivative is the Beta density divided by its cumulative probability
+    # Cancel dx/dlog(x) analytically so a tiny argument does not overflow an intermediate derivative
+    value_derivative = (alpha / fraction) / (1 - value)
+    if not log_value:
+        value_derivative = value_derivative / value
     tangent = (
         shape_tangent
         + (alpha_derivative / fraction - 1 / alpha) * alpha_tangent
         + (beta_derivative / fraction) * beta_tangent
-        + ((alpha / fraction) / value / (1 - value)) * value_tangent
+        + value_derivative * value_tangent
     )
     return log_probability, tangent
 

@@ -7,7 +7,23 @@ import pytest
 from jax.scipy.special import betainc
 from scipy import integrate, special, stats
 
-from mmmjax.distributions._beta_cdf import _betainc
+from mmmjax.distributions._beta_cdf import _betainc, _log_betainc
+
+
+def test_log_betainc_log_argument_derivative_avoids_reciprocal_overflow() -> None:
+    # I_x(a, 1) = x**a gives an exact oracle even when a/x exceeds the float32 range
+    parameters = jnp.array([100.0, -85.0], dtype=jnp.float32)
+
+    def log_probability(parameters):
+        alpha, log_value = parameters
+        return _log_betainc(alpha, jnp.float32(1), log_value, True)
+
+    result, gradient = jax.jit(jax.value_and_grad(log_probability))(parameters)
+    hessian = jax.jit(jax.hessian(log_probability))(parameters)
+
+    np.testing.assert_allclose(result, -8500.0, rtol=2e-6, atol=0)
+    np.testing.assert_allclose(gradient, [-85.0, 100.0], rtol=2e-6, atol=0)
+    np.testing.assert_allclose(hessian, [[0.0, 1.0], [1.0, 0.0]], rtol=2e-6, atol=2e-7)
 
 
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])

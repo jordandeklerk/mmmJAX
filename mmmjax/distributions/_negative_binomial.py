@@ -326,6 +326,84 @@ def negative_binomial_log(
     return jnp.sum(negative_binomial_log_logpmf(value, log_mean, concentration))
 
 
+def negative_binomial_log_logcdf(
+    value: ArrayLike,
+    log_mean: ArrayLike,
+    concentration: ArrayLike,
+) -> jax.Array:
+    r"""Evaluate the Negative Binomial log CDF with a log-mean parameter.
+
+    For threshold :math:`x \geq 0`, log mean :math:`\eta \in \mathbb{R}`,
+    and concentration :math:`\phi > 0`, the cumulative probability is
+
+    .. math::
+
+        \log P(X \leq x)
+        = \log I_{\phi/(\phi + e^\eta)}(\phi, \lfloor x \rfloor + 1),
+
+    where :math:`I_z(a, b)` is the regularized incomplete Beta function.
+    The calculation uses the log mean without first exponentiating it.
+
+    Parameters
+    ----------
+    value
+        Thresholds at which to evaluate the cumulative probability.
+        Fractional thresholds are rounded down to the nearest integer.
+    log_mean
+        Finite logarithm of the positive mean parameter.
+    concentration
+        Finite positive concentration parameter.
+
+    Returns
+    -------
+    jax.Array
+        Log cumulative probabilities with the broadcast shape of the
+        arguments. Negative thresholds produce ``-inf`` and positive
+        infinity produces zero. An invalid parameter or ``nan`` threshold
+        produces ``nan``.
+    """
+    return _negative_binomial_log_probability(value, log_mean, concentration, upper_tail=False, log_mean=True)
+
+
+def negative_binomial_log_logsf(
+    value: ArrayLike,
+    log_mean: ArrayLike,
+    concentration: ArrayLike,
+) -> jax.Array:
+    r"""Evaluate the Negative Binomial log survival with a log-mean parameter.
+
+    For threshold :math:`x \geq 0`, log mean :math:`\eta \in \mathbb{R}`,
+    and concentration :math:`\phi > 0`, the survival probability is
+
+    .. math::
+
+        \log P(X > x)
+        = \log I_{e^\eta/(\phi + e^\eta)}(\lfloor x \rfloor + 1, \phi),
+
+    where :math:`I_z(a, b)` is the regularized incomplete Beta function.
+    The calculation uses the log mean without first exponentiating it.
+
+    Parameters
+    ----------
+    value
+        Thresholds at which to evaluate the survival probability.
+        Fractional thresholds are rounded down to the nearest integer.
+    log_mean
+        Finite logarithm of the positive mean parameter.
+    concentration
+        Finite positive concentration parameter.
+
+    Returns
+    -------
+    jax.Array
+        Log survival probabilities with the broadcast shape of the
+        arguments. Negative thresholds produce zero and positive infinity
+        produces ``-inf``. An invalid parameter or ``nan`` threshold
+        produces ``nan``.
+    """
+    return _negative_binomial_log_probability(value, log_mean, concentration, upper_tail=True, log_mean=True)
+
+
 def negative_binomial_log_rng(
     key: jax.Array,
     log_mean: ArrayLike,
@@ -373,32 +451,42 @@ def _negative_binomial_log_probability(
     concentration: ArrayLike,
     *,
     upper_tail: bool,
+    log_mean: bool = False,
 ) -> jax.Array:
     value_array = _as_real_array("value", value)
-    mean_array, concentration_array = _promote_inexact(("mean", mean), ("concentration", concentration))
-    valid_parameters = (
-        jnp.isfinite(mean_array) & (mean_array > 0) & jnp.isfinite(concentration_array) & (concentration_array > 0)
+    mean_array, concentration_array = _promote_inexact(
+        ("log_mean" if log_mean else "mean", mean), ("concentration", concentration)
     )
+    valid_mean = jnp.isfinite(mean_array)
+    if not log_mean:
+        valid_mean &= mean_array > 0
+    valid_parameters = valid_mean & jnp.isfinite(concentration_array) & (concentration_array > 0)
     finite_threshold = jnp.isfinite(value_array) & (value_array >= 0)
     count = jnp.floor(jnp.where(finite_threshold, value_array, 0)).astype(mean_array.dtype)
     evaluate = finite_threshold & valid_parameters
-    zero_count = count == 0
+    zero_count = (count == 0) & (not log_mean)
 
-    # For zero counts the CDF is exactly the zero-count mass, including its concentration derivative
-    zero_mean = jnp.where(evaluate & zero_count, mean_array, 1.0)
-    zero_concentration = jnp.where(evaluate & zero_count, concentration_array, 1.0)
-    zero_logcdf = _negative_binomial_log_mass(jnp.zeros_like(count), zero_mean, zero_concentration)
-    zero_log_probability = jax.nn.log1mexp(-zero_logcdf) if upper_tail else zero_logcdf
+    if not log_mean:
+        # For zero counts the CDF is exactly the zero-count mass, including its concentration derivative
+        zero_mean = jnp.where(evaluate & zero_count, mean_array, 1.0)
+        zero_concentration = jnp.where(evaluate & zero_count, concentration_array, 1.0)
+        zero_logcdf = _negative_binomial_log_mass(jnp.zeros_like(count), zero_mean, zero_concentration)
+        zero_log_probability = jax.nn.log1mexp(-zero_logcdf) if upper_tail else zero_logcdf
 
     safe_mean = jnp.where(evaluate & ~zero_count, mean_array, 1.0)
     safe_concentration = jnp.where(evaluate & ~zero_count, concentration_array, 1.0)
     count_shape = jnp.where(evaluate & ~zero_count, count + 1, 2.0)
     # Compute the smaller probability directly and its complement by subtraction
     # This avoids overflowing the parameter sum or rounding both probabilities independently
-    mean_is_smaller = safe_mean <= safe_concentration
-    smaller = jnp.where(mean_is_smaller, safe_mean, safe_concentration)
-    larger = jnp.where(mean_is_smaller, safe_concentration, safe_mean)
-    ratio = smaller / larger
+    if log_mean:
+        log_odds = safe_mean - jnp.log(safe_concentration)
+        mean_is_smaller = log_odds <= 0
+        ratio = jnp.exp(jnp.where(mean_is_smaller, log_odds, -log_odds))
+    else:
+        mean_is_smaller = safe_mean <= safe_concentration
+        smaller = jnp.where(mean_is_smaller, safe_mean, safe_concentration)
+        larger = jnp.where(mean_is_smaller, safe_concentration, safe_mean)
+        ratio = smaller / larger
     small_probability = ratio / (1 + ratio)
     probability = jnp.where(mean_is_smaller, 1 - small_probability, small_probability)
     complement = jnp.where(mean_is_smaller, small_probability, 1 - small_probability)
@@ -408,18 +496,34 @@ def _negative_binomial_log_probability(
     second_shape = jnp.where(reflected, safe_concentration, count_shape)
     argument = jnp.where(reflected, complement, probability)
     interior = (argument > 0) & (argument < 1)
+    beta_value = jax.nn.log_sigmoid(jnp.where(reflected, log_odds, -log_odds)) if log_mean else argument
     log_beta = _log_betainc(
         jnp.where(interior, first_shape, 2.0),
         jnp.where(interior, second_shape, 2.0),
-        jnp.where(interior, argument, 0.25),
+        jnp.where(interior, beta_value, jnp.log(0.25) if log_mean else 0.25),
+        log_mean,
     )
     log_beta = jnp.where(argument == 0, -jnp.inf, jnp.where(argument == 1, 0.0, log_beta))
+
+    if log_mean:
+        # At an underflowed Beta argument the continued fraction tends to one
+        # Express its prefactor through the NB mass to retain the log probability and its derivatives
+        underflow = argument == 0
+        tail_count = jnp.where(underflow, jnp.where(reflected, count + 1, count), 1.0)
+        tail_mean = jnp.where(underflow, safe_mean, 0.0)
+        tail_concentration = jnp.where(underflow, safe_concentration, 1.0)
+        log_prefactor = _negative_binomial_log_mean_log_mass(tail_count, tail_mean, tail_concentration)
+        lower_adjustment = jax.nn.log_sigmoid(tail_mean - jnp.log(tail_concentration))
+        lower_adjustment -= _log_concentration_fraction(tail_count, tail_concentration)
+        log_prefactor += jnp.where(reflected, 0.0, lower_adjustment)
+        log_beta = jnp.where(underflow, log_prefactor, log_beta)
 
     # Computing the opposite tail avoids subtracting a CDF rounded to one
     direct_tail = reflected == upper_tail
     complement_log_beta = jnp.where(direct_tail, -1.0, log_beta)
     log_probability = jnp.where(direct_tail, log_beta, jax.nn.log1mexp(-complement_log_beta))
-    log_probability = jnp.where(zero_count, zero_log_probability, log_probability)
+    if not log_mean:
+        log_probability = jnp.where(zero_count, zero_log_probability, log_probability)
     log_probability = jnp.where(value_array < 0, 0.0 if upper_tail else -jnp.inf, log_probability)
     log_probability = jnp.where(jnp.isposinf(value_array), -jnp.inf if upper_tail else 0.0, log_probability)
     return jnp.where(valid_parameters & ~jnp.isnan(value_array), log_probability, jnp.nan)
