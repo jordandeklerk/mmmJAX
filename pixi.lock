@@ -717,6 +717,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/coverage-7.15.4-py314h0993b80_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/docutils-0.21.2-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/exceptiongroup-1.3.1-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/execnet-2.1.2-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/flatbuffers-25.9.23-hb7d4c21_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/flit-4.0.2-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/flit-core-4.0.2-pyhc364b38_0.conda
@@ -765,6 +766,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-9.1.1-pyhc364b38_2.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-cov-7.1.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-timeout-2.4.0-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-xdist-3.8.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/python-3.14.7-h399a421_100_cp314.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python_abi-3.14-8_cp314.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/re2-2025.11.05-h5301d42_1.conda
@@ -795,6 +797,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/osx-64/coverage-7.15.4-py314h3704e15_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/docutils-0.21.2-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/exceptiongroup-1.3.1-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/execnet-2.1.2-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/flatbuffers-25.9.23-h6982a40_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/flit-4.0.2-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/flit-core-4.0.2-pyhc364b38_0.conda
@@ -839,6 +842,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-9.1.1-pyhc364b38_2.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-cov-7.1.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-timeout-2.4.0-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-xdist-3.8.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/python-3.14.7-hb933c43_100_cp314.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python_abi-3.14-8_cp314.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/re2-2025.11.05-h77e0585_1.conda
@@ -869,6 +873,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/coverage-7.15.4-py314h4f7d693_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/docutils-0.21.2-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/exceptiongroup-1.3.1-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/execnet-2.1.2-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/flatbuffers-25.9.23-h9e8ef45_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/flit-4.0.2-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/flit-core-4.0.2-pyhc364b38_0.conda
@@ -913,6 +918,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-9.1.1-pyhc364b38_2.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-cov-7.1.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-timeout-2.4.0-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-xdist-3.8.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/python-3.14.7-hf4d206d_100_cp314.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python_abi-3.14-8_cp314.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/re2-2025.11.05-ha480c28_1.conda
@@ -951,6 +957,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/coverage-7.15.4-py314h0993b80_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/docutils-0.21.2-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/exceptiongroup-1.3.1-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/execnet-2.1.2-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/flatbuffers-25.9.23-hb7d4c21_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/flit-4.0.2-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/flit-core-4.0.2-pyhc364b38_0.conda
@@ -999,6 +1006,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-9.1.1-pyhc364b38_2.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-cov-7.1.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-timeout-2.4.0-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-xdist-3.8.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/python-3.14.7-h399a421_100_cp314.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python_abi-3.14-8_cp314.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/re2-2025.11.05-h5301d42_1.conda
@@ -1029,6 +1037,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/osx-64/coverage-7.15.4-py314h3704e15_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/docutils-0.21.2-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/exceptiongroup-1.3.1-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/execnet-2.1.2-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/flatbuffers-25.9.23-h6982a40_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/flit-4.0.2-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/flit-core-4.0.2-pyhc364b38_0.conda
@@ -1073,6 +1082,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-9.1.1-pyhc364b38_2.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-cov-7.1.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-timeout-2.4.0-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-xdist-3.8.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/python-3.14.7-hb933c43_100_cp314.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python_abi-3.14-8_cp314.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/re2-2025.11.05-h77e0585_1.conda
@@ -1103,6 +1113,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/coverage-7.15.4-py314h4f7d693_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/docutils-0.21.2-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/exceptiongroup-1.3.1-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/execnet-2.1.2-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/flatbuffers-25.9.23-h9e8ef45_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/flit-4.0.2-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/flit-core-4.0.2-pyhc364b38_0.conda
@@ -1147,6 +1158,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-9.1.1-pyhc364b38_2.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-cov-7.1.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-timeout-2.4.0-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-xdist-3.8.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/python-3.14.7-hf4d206d_100_cp314.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python_abi-3.14-8_cp314.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/re2-2025.11.05-ha480c28_1.conda
@@ -1759,6 +1771,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/coverage-7.15.4-py314h0993b80_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/docutils-0.23-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/exceptiongroup-1.3.1-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/execnet-2.1.2-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/flit-4.0.2-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/flit-core-4.0.2-pyhc364b38_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/h2-4.4.1-pyhcf101f3_0.conda
@@ -1795,6 +1808,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-9.1.1-pyhc364b38_2.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-cov-7.1.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-timeout-2.4.0-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-xdist-3.8.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/python-3.14.7-h399a421_100_cp314.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python_abi-3.14-8_cp314.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/readline-8.3-hd6e31c0_1.conda
@@ -2563,6 +2577,17 @@ packages:
   - pkg:pypi/exceptiongroup?source=hash-mapping
   size: 21333
   timestamp: 1763918099466
+- conda: https://conda.anaconda.org/conda-forge/noarch/execnet-2.1.2-pyhd8ed1ab_0.conda
+  sha256: 1acc6a420efc5b64c384c1f35f49129966f8a12c93b4bb2bdc30079e5dc9d8a8
+  md5: a57b4be42619213a94f31d2c69c5dda7
+  depends:
+  - python >=3.10
+  license: MIT
+  license_family: MIT
+  purls:
+  - pkg:pypi/execnet?source=hash-mapping
+  size: 39499
+  timestamp: 1762974150770
 - conda: https://conda.anaconda.org/conda-forge/noarch/executing-2.2.1-pyhd8ed1ab_0.conda
   sha256: 210c8165a58fdbf16e626aac93cc4c14dbd551a01d1516be5ecad795d2422cad
   md5: ff9efb7f7469aed3c4a8106ffa29593c
@@ -5209,7 +5234,7 @@ packages:
 - pypi: ./
   name: mmmjax
   version: 0.0.1
-  sha256: 419b57dd744373a4e05fc2d76eee1e21abebc911c95218031f38275aff85b3a7
+  sha256: d8a8f18651b07fb995fd5065b7cc2bd23735f298463bca8e4a32c39296b347fc
   requires_dist:
   - jax>=0.10.0,<0.11
   - jaxtyping>=0.2.36
@@ -5232,6 +5257,7 @@ packages:
   - pytest ; extra == 'test'
   - pytest-cov ; extra == 'test'
   - pytest-timeout ; extra == 'test'
+  - pytest-xdist>=3.8 ; extra == 'test'
   - scipy>=1.14 ; extra == 'test'
   requires_python: '>=3.11'
 - conda: https://conda.anaconda.org/conda-forge/noarch/munkres-1.1.4-pyhd8ed1ab_1.conda
@@ -6296,6 +6322,21 @@ packages:
   - pkg:pypi/pytest-timeout?source=hash-mapping
   size: 20137
   timestamp: 1746533140824
+- conda: https://conda.anaconda.org/conda-forge/noarch/pytest-xdist-3.8.0-pyhd8ed1ab_0.conda
+  sha256: b7b58a5be090883198411337b99afb6404127809c3d1c9f96e99b59f36177a96
+  md5: 8375cfbda7c57fbceeda18229be10417
+  depends:
+  - execnet >=2.1
+  - pytest >=7.0.0
+  - python >=3.9
+  constrains:
+  - psutil >=3.0
+  license: MIT
+  license_family: MIT
+  purls:
+  - pkg:pypi/pytest-xdist?source=hash-mapping
+  size: 39300
+  timestamp: 1751452761594
 - conda: https://conda.anaconda.org/conda-forge/linux-64/python-3.14.7-h399a421_100_cp314.conda
   build_number: 100
   sha256: ee59fa05898243b9a068476f4bed9461abef4487ebcdc094f569c4c47dc4a732

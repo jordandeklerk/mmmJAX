@@ -14,10 +14,12 @@ jax = ">=0.10.0,<0.11"
 pytest = ">=7.0.0"
 pytest-cov = ">=4.0.0"
 pytest-timeout = ">=2.0.0"
+pytest-xdist = ">=3.8"
 scipy = ">=1.14"
 
 [feature.dev.tasks]
 tests = "pytest -vv"
+tests-parallel = { cmd = "pytest -vv -n auto --maxprocesses=4 --dist=worksteal --durations=20", env = { JAX_PLATFORMS = "cpu" } }
 
 [feature.benchmark.dependencies]
 asv = ">=0.6.6,<0.7"

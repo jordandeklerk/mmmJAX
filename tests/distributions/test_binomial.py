@@ -1,6 +1,7 @@
 """Tests for Binomial distribution functions."""
 
 import math
+from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -444,19 +445,22 @@ def test_binomial_tail_batches_preserve_shared_parameter_derivatives(counts, fun
 
     # Shared parameters must accumulate derivatives across all thresholds
     # Scalar vmap tests don't check these reductions
-    def evaluate(current_parameter, current_counts):
-        return jnp.sum(function(current_counts, 8, current_parameter))
-
     tolerance = 2e-11 if jax.config.x64_enabled else 3e-5
     np.testing.assert_allclose(jax.jit(function)(counts, 8, parameter), expected_log, rtol=tolerance, atol=tolerance)
     np.testing.assert_allclose(
-        jax.jit(jax.grad(evaluate))(parameter, counts), derivative.sum(axis=0), rtol=tolerance, atol=tolerance
+        _summed_tail_derivative(function, jax.grad, counts, 8, parameter),
+        derivative.sum(axis=0),
+        rtol=tolerance,
+        atol=tolerance,
     )
     np.testing.assert_allclose(
-        jax.jit(jax.jacfwd(evaluate))(parameter, counts), derivative.sum(axis=0), rtol=tolerance, atol=tolerance
+        _summed_tail_derivative(function, jax.jacfwd, counts, 8, parameter),
+        derivative.sum(axis=0),
+        rtol=tolerance,
+        atol=tolerance,
     )
     np.testing.assert_allclose(
-        jax.jit(jax.hessian(evaluate))(parameter, counts),
+        _summed_tail_derivative(function, jax.hessian, counts, 8, parameter),
         np.diag(curvature.sum(axis=0)),
         rtol=tolerance,
         atol=tolerance,
@@ -972,3 +976,12 @@ def test_binomial_rngs_can_be_vectorized_over_keys(function, parameters) -> None
     expected = jnp.stack([function(key, *parameters) for key in keys])
 
     assert jnp.array_equal(result, expected)
+
+
+@partial(jax.jit, static_argnames=("function", "differentiate"))
+def _summed_tail_derivative(function, differentiate, counts, trials, parameter):
+    # Reuse each compiled derivative across batches without capturing their counts as constants
+    def summed(parameter):
+        return jnp.sum(function(counts, trials, parameter))
+
+    return differentiate(summed)(parameter)
