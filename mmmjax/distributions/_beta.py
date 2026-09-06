@@ -45,11 +45,11 @@ def beta_logpdf(
 
     Parameters
     ----------
-    value
+    value : array_like
         Values at which to evaluate the density.
-    alpha
+    alpha : array_like
         Positive first shape parameter.
-    beta
+    beta : array_like
         Positive second shape parameter.
 
     Returns
@@ -76,11 +76,11 @@ def beta(
 
     Parameters
     ----------
-    value
+    value : array_like
         Values at which to evaluate the density.
-    alpha
+    alpha : array_like
         Positive first shape parameter.
-    beta
+    beta : array_like
         Positive second shape parameter.
 
     Returns
@@ -103,15 +103,15 @@ def beta_rng(
 
     Parameters
     ----------
-    key
+    key : jax.Array
         JAX random key controlling the draw. Reusing a key repeats the same
         sample. Use ``jax.random.split`` to create keys for new random
         operations.
-    alpha
+    alpha : array_like
         Positive first shape parameter.
-    beta
+    beta : array_like
         Positive second shape parameter.
-    sample_shape
+    sample_shape : tuple of int, default ()
         Independent sample dimensions prepended to the broadcast parameter shape.
         The tuple must be static when the function is JIT-compiled.
 

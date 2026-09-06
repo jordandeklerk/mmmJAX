@@ -29,11 +29,11 @@ def uniform_logpdf(
 
     Parameters
     ----------
-    value
+    value : array_like
         Values at which to evaluate the density.
-    lower
+    lower : array_like
         Finite lower bounds.
-    upper
+    upper : array_like
         Finite upper bounds greater than ``lower``.
 
     Returns
@@ -68,11 +68,11 @@ def uniform(
 
     Parameters
     ----------
-    value
+    value : array_like
         Values at which to evaluate the density.
-    lower
+    lower : array_like
         Finite lower bounds.
-    upper
+    upper : array_like
         Finite upper bounds greater than ``lower``.
 
     Returns
@@ -104,11 +104,11 @@ def uniform_logcdf(
 
     Parameters
     ----------
-    value
+    value : array_like
         Values at which to evaluate the cumulative probability.
-    lower
+    lower : array_like
         Finite lower bounds.
-    upper
+    upper : array_like
         Finite upper bounds greater than ``lower``.
 
     Returns
@@ -163,11 +163,11 @@ def uniform_logsf(
 
     Parameters
     ----------
-    value
+    value : array_like
         Values at which to evaluate the survival probability.
-    lower
+    lower : array_like
         Finite lower bounds.
-    upper
+    upper : array_like
         Finite upper bounds greater than ``lower``.
 
     Returns
@@ -213,15 +213,15 @@ def uniform_rng(
 
     Parameters
     ----------
-    key
+    key : jax.Array
         JAX random key controlling the draw. Reusing a key repeats the same
         sample. Use ``jax.random.split`` to create keys for new random
         operations.
-    lower
+    lower : array_like
         Finite lower bounds.
-    upper
+    upper : array_like
         Finite upper bounds greater than ``lower``.
-    sample_shape
+    sample_shape : tuple of int, default ()
         Independent sample dimensions prepended to the broadcast parameter shape.
         The tuple must be static when the function is JIT-compiled.
 

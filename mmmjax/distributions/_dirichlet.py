@@ -38,10 +38,10 @@ def dirichlet_logpdf(
 
     Parameters
     ----------
-    value
+    value : array_like
         Simplex values. The final axis contains the components and every
         leading axis is a batch dimension.
-    concentration
+    concentration : array_like
         Positive concentration parameters. The final axis must match the
         event size of ``value`` and leading axes are broadcast as batches.
 
@@ -115,9 +115,9 @@ def dirichlet(
 
     Parameters
     ----------
-    value
+    value : array_like
         Simplex values with event components along the final axis.
-    concentration
+    concentration : array_like
         Positive concentration parameters with the same final event size.
 
     Returns
@@ -139,14 +139,14 @@ def dirichlet_rng(
 
     Parameters
     ----------
-    key
+    key : jax.Array
         JAX random key controlling the draw. Reusing a key repeats the same
         sample. Use ``jax.random.split`` to create keys for new random
         operations.
-    concentration
+    concentration : array_like
         Positive concentration parameters. The final axis contains the
         Dirichlet event and every leading axis is a batch dimension.
-    sample_shape
+    sample_shape : tuple of int, default ()
         Independent sample dimensions prepended to the concentration batch
         shape. The tuple must be static when the function is JIT-compiled.
 

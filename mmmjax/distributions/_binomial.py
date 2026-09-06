@@ -34,12 +34,12 @@ def binomial_logpmf(
 
     Parameters
     ----------
-    value
+    value : array_like
         Numbers of successes at which to evaluate the probability mass.
-    trials
+    trials : array_like
         Numbers of independent trials. Values must be finite nonnegative
         integers.
-    probability
+    probability : array_like
         Success probabilities in the closed interval from zero to one.
 
     Returns
@@ -96,12 +96,12 @@ def binomial(
 
     Parameters
     ----------
-    value
+    value : array_like
         Numbers of successes at which to evaluate the probability mass.
-    trials
+    trials : array_like
         Numbers of independent trials. Values must be finite nonnegative
         integers.
-    probability
+    probability : array_like
         Success probabilities in the closed interval from zero to one.
 
     Returns
@@ -128,13 +128,13 @@ def binomial_logcdf(value: ArrayLike, trials: ArrayLike, probability: ArrayLike)
 
     Parameters
     ----------
-    value
+    value : array_like
         Thresholds at which to evaluate the cumulative probability.
         Fractional thresholds are rounded down to the nearest integer.
-    trials
+    trials : array_like
         Numbers of independent trials. Values must be finite nonnegative
         integers.
-    probability
+    probability : array_like
         Success probabilities in the closed interval from zero to one.
 
     Returns
@@ -169,13 +169,13 @@ def binomial_logsf(value: ArrayLike, trials: ArrayLike, probability: ArrayLike) 
 
     Parameters
     ----------
-    value
+    value : array_like
         Thresholds at which to evaluate the survival probability.
         Fractional thresholds are rounded down to the nearest integer.
-    trials
+    trials : array_like
         Numbers of independent trials. Values must be finite nonnegative
         integers.
-    probability
+    probability : array_like
         Success probabilities in the closed interval from zero to one.
 
     Returns
@@ -205,18 +205,18 @@ def binomial_rng(
 
     Parameters
     ----------
-    key
+    key : jax.Array
         JAX random key controlling the draw. Reusing a key repeats the same
         sample. Use ``jax.random.split`` to create keys for new random
         operations.
-    trials
+    trials : array_like
         Numbers of independent trials. Values must be finite nonnegative
         integers.
-    probability
+    probability : array_like
         Success probabilities in the closed interval from zero to one. The
         caller must provide valid probabilities because invalid values do not
         have a defined sampling result.
-    sample_shape
+    sample_shape : tuple of int, default ()
         Independent sample dimensions prepended to the broadcast parameter
         shape. The tuple must be static when the function is JIT-compiled.
 
@@ -258,12 +258,12 @@ def binomial_logit_logpmf(
 
     Parameters
     ----------
-    value
+    value : array_like
         Numbers of successes at which to evaluate the probability mass.
-    trials
+    trials : array_like
         Numbers of independent trials. Values must be finite nonnegative
         integers.
-    logits
+    logits : array_like
         Log odds of success.
 
     Returns
@@ -321,12 +321,12 @@ def binomial_logit(
 
     Parameters
     ----------
-    value
+    value : array_like
         Numbers of successes at which to evaluate the probability mass.
-    trials
+    trials : array_like
         Numbers of independent trials. Values must be finite nonnegative
         integers.
-    logits
+    logits : array_like
         Log odds of success.
 
     Returns
@@ -355,13 +355,13 @@ def binomial_logit_logcdf(value: ArrayLike, trials: ArrayLike, logits: ArrayLike
 
     Parameters
     ----------
-    value
+    value : array_like
         Thresholds at which to evaluate the cumulative probability.
         Fractional thresholds are rounded down to the nearest integer.
-    trials
+    trials : array_like
         Numbers of independent trials. Values must be finite nonnegative
         integers.
-    logits
+    logits : array_like
         Log odds of success. Negative and positive infinity correspond to
         success probabilities of zero and one, respectively.
 
@@ -397,13 +397,13 @@ def binomial_logit_logsf(value: ArrayLike, trials: ArrayLike, logits: ArrayLike)
 
     Parameters
     ----------
-    value
+    value : array_like
         Thresholds at which to evaluate the survival probability.
         Fractional thresholds are rounded down to the nearest integer.
-    trials
+    trials : array_like
         Numbers of independent trials. Values must be finite nonnegative
         integers.
-    logits
+    logits : array_like
         Log odds of success. Negative and positive infinity correspond to
         success probabilities of zero and one, respectively.
 
@@ -434,17 +434,17 @@ def binomial_logit_rng(
 
     Parameters
     ----------
-    key
+    key : jax.Array
         JAX random key controlling the draw. Reusing a key repeats the same
         sample. Use ``jax.random.split`` to create keys for new random
         operations.
-    trials
+    trials : array_like
         Numbers of independent trials. Values must be finite nonnegative
         integers.
-    logits
+    logits : array_like
         Log odds of success. The caller must not provide ``nan`` because it
         does not have a defined sampling result.
-    sample_shape
+    sample_shape : tuple of int, default ()
         Independent sample dimensions prepended to the broadcast parameter
         shape. The tuple must be static when the function is JIT-compiled.
 

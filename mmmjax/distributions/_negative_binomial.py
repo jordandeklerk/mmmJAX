@@ -44,12 +44,12 @@ def negative_binomial_logpmf(
 
     Parameters
     ----------
-    value
+    value : array_like
         Counts at which to evaluate the probability mass. Values must be
         nonnegative integers.
-    mean
+    mean : array_like
         Finite positive mean parameter.
-    concentration
+    concentration : array_like
         Finite positive concentration parameter. Larger values reduce
         overdispersion relative to a Poisson distribution.
 
@@ -96,12 +96,12 @@ def negative_binomial(
 
     Parameters
     ----------
-    value
+    value : array_like
         Counts at which to evaluate the probability mass. Values must be
         nonnegative integers.
-    mean
+    mean : array_like
         Finite positive mean parameter.
-    concentration
+    concentration : array_like
         Finite positive concentration parameter.
 
     Returns
@@ -132,12 +132,12 @@ def negative_binomial_logcdf(
 
     Parameters
     ----------
-    value
+    value : array_like
         Thresholds at which to evaluate the cumulative probability.
         Fractional thresholds are rounded down to the nearest integer.
-    mean
+    mean : array_like
         Finite positive mean parameter.
-    concentration
+    concentration : array_like
         Finite positive concentration parameter.
 
     Returns
@@ -170,12 +170,12 @@ def negative_binomial_logsf(
 
     Parameters
     ----------
-    value
+    value : array_like
         Thresholds at which to evaluate the survival probability.
         Fractional thresholds are rounded down to the nearest integer.
-    mean
+    mean : array_like
         Finite positive mean parameter.
-    concentration
+    concentration : array_like
         Finite positive concentration parameter.
 
     Returns
@@ -200,15 +200,15 @@ def negative_binomial_rng(
 
     Parameters
     ----------
-    key
+    key : jax.Array
         JAX random key controlling the draw. Reusing a key repeats the same
         sample. Use ``jax.random.split`` to create keys for new random
         operations.
-    mean
+    mean : array_like
         Finite positive mean parameter.
-    concentration
+    concentration : array_like
         Finite positive concentration parameter.
-    sample_shape
+    sample_shape : tuple of int, default ()
         Independent sample dimensions prepended to the broadcast parameter
         shape. The tuple must be static when the function is JIT-compiled.
 
@@ -256,12 +256,12 @@ def negative_binomial_log_logpmf(
 
     Parameters
     ----------
-    value
+    value : array_like
         Counts at which to evaluate the probability mass. Values must be
         nonnegative integers.
-    log_mean
+    log_mean : array_like
         Finite logarithm of the Negative Binomial mean.
-    concentration
+    concentration : array_like
         Finite positive concentration parameter. Larger values reduce
         overdispersion relative to a Poisson distribution.
 
@@ -309,12 +309,12 @@ def negative_binomial_log(
 
     Parameters
     ----------
-    value
+    value : array_like
         Counts at which to evaluate the probability mass. Values must be
         nonnegative integers.
-    log_mean
+    log_mean : array_like
         Finite logarithm of the Negative Binomial mean.
-    concentration
+    concentration : array_like
         Finite positive concentration parameter.
 
     Returns
@@ -346,12 +346,12 @@ def negative_binomial_log_logcdf(
 
     Parameters
     ----------
-    value
+    value : array_like
         Thresholds at which to evaluate the cumulative probability.
         Fractional thresholds are rounded down to the nearest integer.
-    log_mean
+    log_mean : array_like
         Finite logarithm of the positive mean parameter.
-    concentration
+    concentration : array_like
         Finite positive concentration parameter.
 
     Returns
@@ -385,12 +385,12 @@ def negative_binomial_log_logsf(
 
     Parameters
     ----------
-    value
+    value : array_like
         Thresholds at which to evaluate the survival probability.
         Fractional thresholds are rounded down to the nearest integer.
-    log_mean
+    log_mean : array_like
         Finite logarithm of the positive mean parameter.
-    concentration
+    concentration : array_like
         Finite positive concentration parameter.
 
     Returns
@@ -415,15 +415,15 @@ def negative_binomial_log_rng(
 
     Parameters
     ----------
-    key
+    key : jax.Array
         JAX random key controlling the draw. Reusing a key repeats the same
         sample. Use ``jax.random.split`` to create keys for new random
         operations.
-    log_mean
+    log_mean : array_like
         Finite logarithm of the Negative Binomial mean.
-    concentration
+    concentration : array_like
         Finite positive concentration parameter.
-    sample_shape
+    sample_shape : tuple of int, default ()
         Independent sample dimensions prepended to the broadcast parameter
         shape. The tuple must be static when the function is JIT-compiled.
 

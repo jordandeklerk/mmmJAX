@@ -32,10 +32,10 @@ def poisson_logpmf(value: ArrayLike, rate: ArrayLike) -> jax.Array:
 
     Parameters
     ----------
-    value
+    value : array_like
         Counts at which to evaluate the probability mass. Values must be
         nonnegative integers.
-    rate
+    rate : array_like
         Finite nonnegative rate parameter, equal to both the mean and
         variance.
 
@@ -77,10 +77,10 @@ def poisson(value: ArrayLike, rate: ArrayLike) -> jax.Array:
 
     Parameters
     ----------
-    value
+    value : array_like
         Counts at which to evaluate the probability mass. Values must be
         nonnegative integers.
-    rate
+    rate : array_like
         Finite nonnegative rate parameter, equal to both the mean and
         variance.
 
@@ -108,10 +108,10 @@ def poisson_logcdf(value: ArrayLike, rate: ArrayLike) -> jax.Array:
 
     Parameters
     ----------
-    value
+    value : array_like
         Thresholds at which to evaluate the cumulative probability.
         Fractional thresholds are rounded down to the nearest integer.
-    rate
+    rate : array_like
         Finite nonnegative rate parameter. Zero represents a distribution
         concentrated at zero.
 
@@ -143,10 +143,10 @@ def poisson_logsf(value: ArrayLike, rate: ArrayLike) -> jax.Array:
 
     Parameters
     ----------
-    value
+    value : array_like
         Thresholds at which to evaluate the survival probability.
         Fractional thresholds are rounded down to the nearest integer.
-    rate
+    rate : array_like
         Finite nonnegative rate parameter. Zero represents a distribution
         concentrated at zero.
 
@@ -171,13 +171,13 @@ def poisson_rng(
 
     Parameters
     ----------
-    key
+    key : jax.Array
         JAX random key controlling the draw. Reusing a key repeats the same
         sample. Use ``jax.random.split`` to create keys for new random
         operations.
-    rate
+    rate : array_like
         Finite nonnegative rate parameter.
-    sample_shape
+    sample_shape : tuple of int, default ()
         Independent sample dimensions prepended to the parameter shape. The
         tuple must be static when the function is JIT-compiled.
 
@@ -209,10 +209,10 @@ def poisson_log_logpmf(value: ArrayLike, log_rate: ArrayLike) -> jax.Array:
 
     Parameters
     ----------
-    value
+    value : array_like
         Counts at which to evaluate the probability mass. Values must be
         nonnegative integers.
-    log_rate
+    log_rate : array_like
         Logarithm of the Poisson rate. Negative infinity represents a
         degenerate distribution at zero.
 
@@ -256,10 +256,10 @@ def poisson_log(value: ArrayLike, log_rate: ArrayLike) -> jax.Array:
 
     Parameters
     ----------
-    value
+    value : array_like
         Counts at which to evaluate the probability mass. Values must be
         nonnegative integers.
-    log_rate
+    log_rate : array_like
         Logarithm of the Poisson rate.
 
     Returns
@@ -286,10 +286,10 @@ def poisson_log_logcdf(value: ArrayLike, log_rate: ArrayLike) -> jax.Array:
 
     Parameters
     ----------
-    value
+    value : array_like
         Thresholds at which to evaluate the cumulative probability.
         Fractional thresholds are rounded down to the nearest integer.
-    log_rate
+    log_rate : array_like
         Logarithm of the Poisson rate. Negative infinity represents a
         distribution concentrated at zero. Positive infinity gives the
         limiting probabilities as the rate increases without bound.
@@ -321,10 +321,10 @@ def poisson_log_logsf(value: ArrayLike, log_rate: ArrayLike) -> jax.Array:
 
     Parameters
     ----------
-    value
+    value : array_like
         Thresholds at which to evaluate the survival probability.
         Fractional thresholds are rounded down to the nearest integer.
-    log_rate
+    log_rate : array_like
         Logarithm of the Poisson rate. Negative infinity represents a
         distribution concentrated at zero. Positive infinity gives the
         limiting probabilities as the rate increases without bound.
@@ -349,14 +349,14 @@ def poisson_log_rng(
 
     Parameters
     ----------
-    key
+    key : jax.Array
         JAX random key controlling the draw. Reusing a key repeats the same
         sample. Use ``jax.random.split`` to create keys for new random
         operations.
-    log_rate
+    log_rate : array_like
         Logarithm of the Poisson rate. Negative infinity represents a
         degenerate distribution at zero.
-    sample_shape
+    sample_shape : tuple of int, default ()
         Independent sample dimensions prepended to the parameter shape. The
         tuple must be static when the function is JIT-compiled.
 

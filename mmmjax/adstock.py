@@ -37,22 +37,22 @@ def geometric_adstock(
 
     Parameters
     ----------
-    media
+    media : array_like
         Real-valued array with at least one dimension. Observations along
         ``axis`` must represent equally spaced time periods. Other axes
         identify independent series, such as channels and geographies.
-    alpha
+    alpha : array_like
         Finite retention parameter between zero and one, inclusive. Its
         shape must broadcast to the shape of ``media`` with the time axis
         removed. For ``media.shape == (time, geo, channel)``, channel-level
         parameters have shape ``(channel,)`` and geo-channel parameters
         have shape ``(geo, channel)``. Use ``jax.vmap`` for additional draws.
-    max_lag
+    max_lag : int
         Nonnegative number of previous periods to include. The window has
         ``max_lag + 1`` weights, including the current period.
-    axis
+    axis : int, default 0
         Time axis in ``media``. Defaults to the first axis.
-    normalize
+    normalize : bool, default True
         Whether to divide the weights by their sum. Defaults to ``True``.
         ``max_lag``, ``axis``, and ``normalize`` must be static under JIT.
 
@@ -120,27 +120,27 @@ def delayed_adstock(
 
     Parameters
     ----------
-    media
+    media : array_like
         Real-valued array with at least one dimension. Observations along
         ``axis`` must represent equally spaced periods. Other axes identify
         independent series, such as channels and geographies.
-    alpha
+    alpha : array_like
         Finite retention parameter greater than zero and at most one.
         Smaller values concentrate the effect around ``theta``. Zero is
         excluded because all weights vanish for a fractional delay.
         Its shape must broadcast to the non-time shape of ``media``.
-    theta
+    theta : array_like
         Finite peak delay between zero and ``max_lag``, inclusive, measured
         in periods. Its shape must broadcast to the non-time shape of
         ``media`` independently of ``alpha``. For inputs shaped
         ``(time, geo, channel)``, parameters can have shape ``(channel,)``,
         ``(geo, 1)``, or ``(geo, channel)``. Use ``jax.vmap`` for extra draws.
-    max_lag
+    max_lag : int
         Nonnegative number of previous periods to include. The window has
         ``max_lag + 1`` weights, including the current period.
-    axis
+    axis : int, default 0
         Time axis in ``media``. Defaults to the first axis.
-    normalize
+    normalize : bool, default True
         Whether to divide the weights by their sum. Defaults to ``True``.
         ``max_lag``, ``axis``, and ``normalize`` must be static under JIT.
 

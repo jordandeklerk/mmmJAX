@@ -34,11 +34,11 @@ def multinomial_logpmf(
 
     Parameters
     ----------
-    value
+    value : array_like
         Nonnegative category counts. The final axis contains the categories,
         every leading axis is a batch dimension, and the total count is
         inferred from each event.
-    probabilities
+    probabilities : array_like
         Category probabilities. The final axis contains the categories and
         every leading axis is a batch dimension.
 
@@ -101,9 +101,9 @@ def multinomial(
 
     Parameters
     ----------
-    value
+    value : array_like
         Nonnegative category counts with categories along the final axis.
-    probabilities
+    probabilities : array_like
         Category probabilities with categories along the final axis.
 
     Returns
@@ -126,18 +126,18 @@ def multinomial_rng(
 
     Parameters
     ----------
-    key
+    key : jax.Array
         JAX random key controlling the draw. Reusing a key repeats the same
         sample. Use ``jax.random.split`` to create keys for new random
         operations.
-    probabilities
+    probabilities : array_like
         Category probabilities. The final axis contains the categories and
         every leading axis is a batch dimension. Each vector must be finite,
         nonnegative, and sum to one.
-    trials
+    trials : array_like
         Total counts assigned across the categories. Values must be finite
         nonnegative integers.
-    sample_shape
+    sample_shape : tuple of int, default ()
         Independent sample dimensions prepended to the broadcast parameter
         shape. The tuple must be static when the function is JIT-compiled.
 
@@ -178,11 +178,11 @@ def multinomial_logit_logpmf(
 
     Parameters
     ----------
-    value
+    value : array_like
         Nonnegative category counts. The final axis contains the categories,
         every leading axis is a batch dimension, and the total count is
         inferred from each event.
-    logits
+    logits : array_like
         Unnormalized category log probabilities. The final axis contains the
         categories and every leading axis is a batch dimension. A ``-inf``
         logit masks that category when another category has finite weight.
@@ -246,9 +246,9 @@ def multinomial_logit(
 
     Parameters
     ----------
-    value
+    value : array_like
         Nonnegative category counts with categories along the final axis.
-    logits
+    logits : array_like
         Unnormalized category log probabilities with categories along the
         final axis.
 
@@ -272,20 +272,20 @@ def multinomial_logit_rng(
 
     Parameters
     ----------
-    key
+    key : jax.Array
         JAX random key controlling the draw. Reusing a key repeats the same
         sample. Use ``jax.random.split`` to create keys for new random
         operations.
-    logits
+    logits : array_like
         Unnormalized category log probabilities. The final axis contains the
         categories and every leading axis is a batch dimension. A ``-inf``
         logit is never drawn when another category has finite weight. Each
         vector must contain at least one finite value and must not contain
         ``nan`` or ``+inf``.
-    trials
+    trials : array_like
         Total counts assigned across the categories. Values must be finite
         nonnegative integers.
-    sample_shape
+    sample_shape : tuple of int, default ()
         Independent sample dimensions prepended to the broadcast parameter
         shape. The tuple must be static when the function is JIT-compiled.
 
