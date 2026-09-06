@@ -9,6 +9,8 @@ version = "0.0.1"
 [dependencies]
 python = ">=3.11,<3.15"
 jax = ">=0.10.0,<0.11"
+narwhals = ">=2.0"
+numpy = ">=2.0"
 
 [feature.dev.dependencies]
 pytest = ">=7.0.0"
@@ -17,6 +19,9 @@ pytest-split = ">=0.11,<0.12"
 pytest-timeout = ">=2.0.0"
 pytest-xdist = ">=3.8"
 scipy = ">=1.14"
+pandas = ">=2.2"
+polars = ">=1.0"
+pyarrow = ">=16.0"
 
 [feature.dev.tasks]
 tests = "pytest -vv"
