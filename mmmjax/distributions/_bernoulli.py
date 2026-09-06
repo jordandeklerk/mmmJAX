@@ -24,9 +24,9 @@ def bernoulli_logpmf(value: ArrayLike, probability: ArrayLike) -> jax.Array:
 
     Parameters
     ----------
-    value
+    value : array_like
         Binary outcomes at which to evaluate the probability mass.
-    probability
+    probability : array_like
         Success probabilities in the closed interval from zero to one.
 
     Returns
@@ -62,9 +62,9 @@ def bernoulli(value: ArrayLike, probability: ArrayLike) -> jax.Array:
 
     Parameters
     ----------
-    value
+    value : array_like
         Binary outcomes at which to evaluate the probability mass.
-    probability
+    probability : array_like
         Success probabilities in the closed interval from zero to one.
 
     Returns
@@ -93,10 +93,10 @@ def bernoulli_logcdf(value: ArrayLike, probability: ArrayLike) -> jax.Array:
 
     Parameters
     ----------
-    value
+    value : array_like
         Thresholds at which to evaluate the cumulative probability.
         Fractional thresholds are allowed.
-    probability
+    probability : array_like
         Success probabilities in the closed interval from zero to one.
 
     Returns
@@ -137,10 +137,10 @@ def bernoulli_logsf(value: ArrayLike, probability: ArrayLike) -> jax.Array:
 
     Parameters
     ----------
-    value
+    value : array_like
         Thresholds at which to evaluate the probability of a strictly larger
         outcome. Fractional thresholds are allowed.
-    probability
+    probability : array_like
         Success probabilities in the closed interval from zero to one.
 
     Returns
@@ -174,15 +174,15 @@ def bernoulli_rng(
 
     Parameters
     ----------
-    key
+    key : jax.Array
         JAX random key controlling the draw. Reusing a key repeats the same
         sample. Use ``jax.random.split`` to create keys for new random
         operations.
-    probability
+    probability : array_like
         Success probabilities in the closed interval from zero to one. The
         caller must provide valid probabilities because invalid values do not
         have a defined sampling result.
-    sample_shape
+    sample_shape : tuple of int, default ()
         Independent sample dimensions prepended to the parameter shape. The
         tuple must be static when the function is JIT-compiled.
 
@@ -217,9 +217,9 @@ def bernoulli_logit_logpmf(value: ArrayLike, logits: ArrayLike) -> jax.Array:
 
     Parameters
     ----------
-    value
+    value : array_like
         Binary outcomes at which to evaluate the probability mass.
-    logits
+    logits : array_like
         Log odds of success.
 
     Returns
@@ -247,9 +247,9 @@ def bernoulli_logit(value: ArrayLike, logits: ArrayLike) -> jax.Array:
 
     Parameters
     ----------
-    value
+    value : array_like
         Binary outcomes at which to evaluate the probability mass.
-    logits
+    logits : array_like
         Log odds of success.
 
     Returns
@@ -278,10 +278,10 @@ def bernoulli_logit_logcdf(value: ArrayLike, logits: ArrayLike) -> jax.Array:
 
     Parameters
     ----------
-    value
+    value : array_like
         Thresholds at which to evaluate the cumulative probability.
         Fractional thresholds are allowed.
-    logits
+    logits : array_like
         Log odds of success. Infinite logits represent deterministic outcomes.
 
     Returns
@@ -322,10 +322,10 @@ def bernoulli_logit_logsf(value: ArrayLike, logits: ArrayLike) -> jax.Array:
 
     Parameters
     ----------
-    value
+    value : array_like
         Thresholds at which to evaluate the probability of a strictly larger
         outcome. Fractional thresholds are allowed.
-    logits
+    logits : array_like
         Log odds of success. Infinite logits represent deterministic outcomes.
 
     Returns
@@ -359,14 +359,14 @@ def bernoulli_logit_rng(
 
     Parameters
     ----------
-    key
+    key : jax.Array
         JAX random key controlling the draw. Reusing a key repeats the same
         sample. Use ``jax.random.split`` to create keys for new random
         operations.
-    logits
+    logits : array_like
         Log odds of success. The caller must not provide ``nan`` because it
         does not have a defined sampling result.
-    sample_shape
+    sample_shape : tuple of int, default ()
         Independent sample dimensions prepended to the parameter shape. The
         tuple must be static when the function is JIT-compiled.
 

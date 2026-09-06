@@ -27,13 +27,14 @@ class Model:
     Parameters
     ----------
     parameters : mapping of str to Parameterization
-        Named declarations for every model parameter
+        Named declarations for every model parameter.
     log_density : callable
         Scalar log density in the constrained model space. It receives data
-        followed by either every named model parameter or ``**parameters``
+        followed by either every named model parameter or ``**parameters``.
     generate : callable, optional
         Generated-quantities function. It receives a JAX random key, data, and
-        either the named model parameters it needs or ``**parameters``
+        either the named model parameters it needs or ``**parameters``.
+        If omitted, generated quantities are unavailable.
     """
 
     _parameterizations: tuple[tuple[str, Parameterization], ...]
@@ -66,19 +67,55 @@ class Model:
         return dict(self._parameterizations)
 
     def constrain(self, position: ParameterValues) -> dict[str, jax.Array]:
-        """Map a complete unconstrained position into model space."""
+        """Map a complete unconstrained position into model space.
+
+        Parameters
+        ----------
+        position : mapping of str to array_like
+            Unconstrained values for every declared parameter, with each
+            value matching its declaration's ``position_shape``.
+
+        Returns
+        -------
+        dict of str to jax.Array
+            Constrained values indexed by parameter name.
+        """
         _validate_value_names(position, self._parameterizations, name="position")
         return {name: parameterization.constrain(position[name]) for name, parameterization in self._parameterizations}
 
     def unconstrain(self, parameters: ParameterValues) -> dict[str, jax.Array]:
-        """Map a complete set of model parameters into inference space."""
+        """Map a complete set of model parameters into inference space.
+
+        Parameters
+        ----------
+        parameters : mapping of str to array_like
+            Constrained values for every declared parameter, with each
+            value matching its declaration's ``shape`` and constraints.
+
+        Returns
+        -------
+        dict of str to jax.Array
+            Unconstrained values indexed by parameter name.
+        """
         _validate_value_names(parameters, self._parameterizations, name="parameters")
         return {
             name: parameterization.unconstrain(parameters[name]) for name, parameterization in self._parameterizations
         }
 
     def initialize_random(self, key: jax.Array) -> dict[str, jax.Array]:
-        """Draw an unconstrained initial position from one JAX random key."""
+        """Draw an unconstrained initial position from one JAX random key.
+
+        Parameters
+        ----------
+        key : jax.Array
+            JAX random key, split internally across parameter declarations.
+            Use a fresh key for each independent initialization.
+
+        Returns
+        -------
+        dict of str to jax.Array
+            Initial values with each declaration's ``position_shape``.
+        """
         keys = jax.random.split(key, len(self._parameterizations))
         return {
             name: parameterization.initialize(parameter_key)
@@ -97,11 +134,25 @@ class Model:
             + \sum_k A_k(z_k),
 
         where :math:`A_k` is the log-density adjustment supplied by each
-        parameterization
+        parameterization.
 
         ``data`` may be any JAX-compatible PyTree. Passing it explicitly keeps
         the same compiled model reusable across datasets with matching shapes
-        and dtypes
+        and dtypes.
+
+        Parameters
+        ----------
+        position : mapping of str to array_like
+            Unconstrained values for every declared parameter, with each
+            value matching its declaration's ``position_shape``.
+        data : object
+            Data passed as the first argument to the log-density callback.
+            Use a JAX-compatible PyTree when applying JAX transformations.
+
+        Returns
+        -------
+        jax.Array
+            Scalar model log density plus parameterization adjustments.
         """
         parameters = self.constrain(position)
         density = _as_scalar(self._log_density(data, **parameters), name="log_density")
@@ -121,7 +172,25 @@ class Model:
         parameters: ParameterValues,
         data: object,
     ) -> dict[str, jax.Array]:
-        """Evaluate generated quantities from constrained model parameters."""
+        """Evaluate generated quantities from constrained model parameters.
+
+        Parameters
+        ----------
+        key : jax.Array
+            JAX random key passed to the generation callback. The callback
+            must split it when drawing multiple independent samples.
+        parameters : mapping of str to array_like
+            Constrained values for every declared parameter. Only the names
+            requested by the generation callback are passed to it.
+        data : object
+            Data passed as the second argument to the generation callback.
+            Use a JAX-compatible PyTree when applying JAX transformations.
+
+        Returns
+        -------
+        dict of str to jax.Array
+            Generated quantities indexed by the names returned by the callback.
+        """
         if self._generate is None:
             raise RuntimeError("generated quantities are unavailable because this model has no generate callback")
 

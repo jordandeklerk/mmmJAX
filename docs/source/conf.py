@@ -77,6 +77,7 @@ copybutton_prompt_is_regexp = True
 
 autosummary_generate = True
 autodoc_member_order = "bysource"
+autodoc_typehints = "none"
 napoleon_numpy_docstring = True
 napoleon_google_docstring = False
 
@@ -89,3 +90,15 @@ intersphinx_mapping = {
 myst_enable_extensions = ["linkify", "colon_fence", "dollarmath"]
 myst_heading_anchors = 3
 nb_execution_mode = "off"
+
+
+def _format_dtype_default(app, what, name, obj, options, signature, return_annotation):
+    """Render the float dtype default as valid Python in API signatures."""
+    if signature is not None:
+        signature = signature.replace("<class 'float'>", "float")
+    return signature, return_annotation
+
+
+def setup(app):
+    """Register API signature formatting."""
+    app.connect("autodoc-process-signature", _format_dtype_default)

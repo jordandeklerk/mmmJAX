@@ -26,9 +26,9 @@ def exponential_logpdf(value: ArrayLike, rate: ArrayLike) -> jax.Array:
 
     Parameters
     ----------
-    value
+    value : array_like
         Values at which to evaluate the density.
-    rate
+    rate : array_like
         Positive rate parameter, equal to the inverse scale.
 
     Returns
@@ -52,9 +52,9 @@ def exponential(value: ArrayLike, rate: ArrayLike) -> jax.Array:
 
     Parameters
     ----------
-    value
+    value : array_like
         Values at which to evaluate the density.
-    rate
+    rate : array_like
         Positive rate parameter, equal to the inverse scale.
 
     Returns
@@ -83,9 +83,9 @@ def exponential_logcdf(value: ArrayLike, rate: ArrayLike) -> jax.Array:
 
     Parameters
     ----------
-    value
+    value : array_like
         Values at which to evaluate the cumulative probability.
-    rate
+    rate : array_like
         Positive rate parameter, equal to the inverse scale.
 
     Returns
@@ -135,9 +135,9 @@ def exponential_logsf(value: ArrayLike, rate: ArrayLike) -> jax.Array:
 
     Parameters
     ----------
-    value
+    value : array_like
         Values at which to evaluate the survival probability.
-    rate
+    rate : array_like
         Positive rate parameter, equal to the inverse scale.
 
     Returns
@@ -171,13 +171,13 @@ def exponential_rng(
 
     Parameters
     ----------
-    key
+    key : jax.Array
         JAX random key controlling the draw. Reusing a key repeats the same
         sample. Use ``jax.random.split`` to create keys for new random
         operations.
-    rate
+    rate : array_like
         Positive rate parameter, equal to the inverse scale.
-    sample_shape
+    sample_shape : tuple of int, default ()
         Independent sample dimensions prepended to the parameter shape. The
         tuple must be static when the function is JIT-compiled.
 

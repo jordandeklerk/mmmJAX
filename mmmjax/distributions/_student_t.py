@@ -35,13 +35,13 @@ def student_t_logpdf(
 
     Parameters
     ----------
-    value
+    value : array_like
         Values at which to evaluate the density.
-    degrees_of_freedom
+    degrees_of_freedom : array_like
         Positive degrees of freedom.
-    location
+    location : array_like
         Location of the distribution.
-    scale
+    scale : array_like
         Positive scale parameter. This is not the standard deviation except
         in the Normal limit.
 
@@ -206,13 +206,13 @@ def student_t(
 
     Parameters
     ----------
-    value
+    value : array_like
         Values at which to evaluate the density.
-    degrees_of_freedom
+    degrees_of_freedom : array_like
         Positive degrees of freedom.
-    location
+    location : array_like
         Location of the distribution.
-    scale
+    scale : array_like
         Positive scale parameter.
 
     Returns
@@ -236,17 +236,17 @@ def student_t_rng(
 
     Parameters
     ----------
-    key
+    key : jax.Array
         JAX random key controlling the draw. Reusing a key repeats the same
         sample. Use ``jax.random.split`` to create keys for new random
         operations.
-    degrees_of_freedom
+    degrees_of_freedom : array_like
         Positive degrees of freedom.
-    location
+    location : array_like
         Location of the distribution.
-    scale
+    scale : array_like
         Positive scale parameter.
-    sample_shape
+    sample_shape : tuple of int, default ()
         Independent sample dimensions prepended to the broadcast parameter shape.
         The tuple must be static when the function is JIT-compiled.
 

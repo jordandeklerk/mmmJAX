@@ -39,80 +39,80 @@ class Parameterization(Protocol):
         ...
 
     def constrain(self, position: ArrayLike) -> jax.Array:
-        """Map an unconstrained position into model space."""
+        """Map an unconstrained position into model space.
+
+        Parameters
+        ----------
+        position : array_like
+            Unconstrained values with shape ``position_shape``. Values are
+            converted to the declared ``dtype``.
+
+        Returns
+        -------
+        jax.Array
+            Constrained values with shape ``shape``.
+        """
         ...
 
     def unconstrain(self, parameter: ArrayLike) -> jax.Array:
-        """Map a parameter from model space into inference space."""
+        """Map a parameter from model space into inference space.
+
+        Parameters
+        ----------
+        parameter : array_like
+            Model-space values with shape ``shape``, satisfying the declared
+            parameter constraints. Values are converted to the declared ``dtype``.
+
+        Returns
+        -------
+        jax.Array
+            Unconstrained values with shape ``position_shape``.
+        """
         ...
 
     def log_density_adjustment(self, position: ArrayLike) -> jax.Array:
-        """Return the scalar log-density adjustment for ``position``."""
+        """Return the scalar log-density adjustment for ``position``.
+
+        Parameters
+        ----------
+        position : array_like
+            Unconstrained values with shape ``position_shape``. Values are
+            converted to the declared ``dtype``.
+
+        Returns
+        -------
+        jax.Array
+            Scalar adjustment to add to the model-space log density.
+        """
         ...
 
     def initialize(self, key: jax.Array) -> jax.Array:
-        """Generate an initial position using a caller-managed PRNG key."""
+        """Generate an initial position using a caller-managed PRNG key.
+
+        Parameters
+        ----------
+        key : jax.Array
+            JAX random key. Use a fresh key for each independent initialization.
+
+        Returns
+        -------
+        jax.Array
+            Unconstrained initial values with shape ``position_shape``.
+        """
         ...
 
 
 @dataclass(frozen=True, slots=True)
 class Real:
-    """Unconstrained real parameter with the identity parameterization."""
+    """Unconstrained real parameter with the identity parameterization.
 
-    shape: tuple[int, ...] = ()
-    dtype: DTypeLike = float
-
-    def __post_init__(self) -> None:
-        """Normalize metadata so equal specifications share JIT cache keys."""
-        _validate_shape(self.shape)
-        object.__setattr__(self, "dtype", _canonicalize_dtype(self.dtype))
-
-    @property
-    def position_shape(self) -> tuple[int, ...]:
-        """Shape of the parameter in unconstrained inference space."""
-        return self.shape
-
-    def constrain(self, position: ArrayLike) -> jax.Array:
-        """Apply the identity map from inference space to model space."""
-        return _as_array(
-            position,
-            name="position",
-            shape=self.position_shape,
-            dtype=self.dtype,
-        )
-
-    def unconstrain(self, parameter: ArrayLike) -> jax.Array:
-        """Apply the identity map from model space to inference space."""
-        return _as_array(
-            parameter,
-            name="parameter",
-            shape=self.shape,
-            dtype=self.dtype,
-        )
-
-    def log_density_adjustment(self, position: ArrayLike) -> jax.Array:
-        """Return the zero adjustment for the identity parameterization."""
-        position = _as_array(
-            position,
-            name="position",
-            shape=self.position_shape,
-            dtype=self.dtype,
-        )
-        return jnp.zeros((), dtype=position.dtype)
-
-    def initialize(self, key: jax.Array) -> jax.Array:
-        """Draw an unconstrained initial position uniformly from ``[-2, 2)``."""
-        return _initialize(key, shape=self.position_shape, dtype=self.dtype)
-
-
-@dataclass(frozen=True, slots=True)
-class Positive:
-    """Positive parameter using an exponential parameterization.
-
-    ``unconstrain`` assumes its input is strictly positive. Support validation
-    belongs at the eager model boundary so this numerical kernel remains safe
-    to use with traced JAX arrays. Finite-precision arithmetic can round
-    constrained values to zero for extreme negative positions.
+    Parameters
+    ----------
+    shape : tuple of int, default ()
+        Positive dimensions in model space. An empty tuple declares a scalar.
+    dtype : data-type, default float
+        Floating-point dtype for parameters and unconstrained positions.
+        The default ``float`` follows JAX's precision setting.
     """
 
     shape: tuple[int, ...] = ()
@@ -129,7 +129,130 @@ class Positive:
         return self.shape
 
     def constrain(self, position: ArrayLike) -> jax.Array:
-        """Map an unconstrained position to the positive reals."""
+        """Apply the identity map from inference space to model space.
+
+        Parameters
+        ----------
+        position : array_like
+            Unconstrained values with shape ``position_shape``. Values are
+            converted to the declared ``dtype``.
+
+        Returns
+        -------
+        jax.Array
+            Constrained values with shape ``shape``.
+        """
+        return _as_array(
+            position,
+            name="position",
+            shape=self.position_shape,
+            dtype=self.dtype,
+        )
+
+    def unconstrain(self, parameter: ArrayLike) -> jax.Array:
+        """Apply the identity map from model space to inference space.
+
+        Parameters
+        ----------
+        parameter : array_like
+            Model-space values with shape ``shape``, satisfying the declared
+            parameter constraints. Values are converted to the declared ``dtype``.
+
+        Returns
+        -------
+        jax.Array
+            Unconstrained values with shape ``position_shape``.
+        """
+        return _as_array(
+            parameter,
+            name="parameter",
+            shape=self.shape,
+            dtype=self.dtype,
+        )
+
+    def log_density_adjustment(self, position: ArrayLike) -> jax.Array:
+        """Return the zero adjustment for the identity parameterization.
+
+        Parameters
+        ----------
+        position : array_like
+            Unconstrained values with shape ``position_shape``. Values are
+            converted to the declared ``dtype``.
+
+        Returns
+        -------
+        jax.Array
+            Scalar adjustment to add to the model-space log density.
+        """
+        position = _as_array(
+            position,
+            name="position",
+            shape=self.position_shape,
+            dtype=self.dtype,
+        )
+        return jnp.zeros((), dtype=position.dtype)
+
+    def initialize(self, key: jax.Array) -> jax.Array:
+        """Draw an unconstrained initial position uniformly from ``[-2, 2)``.
+
+        Parameters
+        ----------
+        key : jax.Array
+            JAX random key. Use a fresh key for each independent initialization.
+
+        Returns
+        -------
+        jax.Array
+            Unconstrained initial values with shape ``position_shape``.
+        """
+        return _initialize(key, shape=self.position_shape, dtype=self.dtype)
+
+
+@dataclass(frozen=True, slots=True)
+class Positive:
+    """Positive parameter using an exponential parameterization.
+
+    ``unconstrain`` assumes its input is strictly positive. Support validation
+    belongs at the eager model boundary so this numerical kernel remains safe
+    to use with traced JAX arrays. Finite-precision arithmetic can round
+    constrained values to zero for extreme negative positions.
+
+    Parameters
+    ----------
+    shape : tuple of int, default ()
+        Positive dimensions in model space. An empty tuple declares a scalar.
+    dtype : data-type, default float
+        Floating-point dtype for parameters and unconstrained positions.
+        The default ``float`` follows JAX's precision setting.
+    """
+
+    shape: tuple[int, ...] = ()
+    dtype: DTypeLike = float
+
+    def __post_init__(self) -> None:
+        """Normalize metadata so equal specifications share JIT cache keys."""
+        _validate_shape(self.shape)
+        object.__setattr__(self, "dtype", _canonicalize_dtype(self.dtype))
+
+    @property
+    def position_shape(self) -> tuple[int, ...]:
+        """Shape of the parameter in unconstrained inference space."""
+        return self.shape
+
+    def constrain(self, position: ArrayLike) -> jax.Array:
+        """Map an unconstrained position to the positive reals.
+
+        Parameters
+        ----------
+        position : array_like
+            Unconstrained values with shape ``position_shape``. Values are
+            converted to the declared ``dtype``.
+
+        Returns
+        -------
+        jax.Array
+            Constrained values with shape ``shape``.
+        """
         position = _as_array(
             position,
             name="position",
@@ -139,7 +262,19 @@ class Positive:
         return jnp.exp(position)
 
     def unconstrain(self, parameter: ArrayLike) -> jax.Array:
-        """Map a positive parameter to unconstrained inference space."""
+        """Map a positive parameter to unconstrained inference space.
+
+        Parameters
+        ----------
+        parameter : array_like
+            Model-space values with shape ``shape``, satisfying the declared
+            parameter constraints. Values are converted to the declared ``dtype``.
+
+        Returns
+        -------
+        jax.Array
+            Unconstrained values with shape ``position_shape``.
+        """
         parameter = _as_array(
             parameter,
             name="parameter",
@@ -149,7 +284,19 @@ class Positive:
         return jnp.log(parameter)
 
     def log_density_adjustment(self, position: ArrayLike) -> jax.Array:
-        """Return the log absolute Jacobian determinant of ``exp``."""
+        """Return the log absolute Jacobian determinant of ``exp``.
+
+        Parameters
+        ----------
+        position : array_like
+            Unconstrained values with shape ``position_shape``. Values are
+            converted to the declared ``dtype``.
+
+        Returns
+        -------
+        jax.Array
+            Scalar adjustment to add to the model-space log density.
+        """
         position = _as_array(
             position,
             name="position",
@@ -159,7 +306,18 @@ class Positive:
         return jnp.sum(position)
 
     def initialize(self, key: jax.Array) -> jax.Array:
-        """Draw an unconstrained initial position uniformly from ``[-2, 2)``."""
+        """Draw an unconstrained initial position uniformly from ``[-2, 2)``.
+
+        Parameters
+        ----------
+        key : jax.Array
+            JAX random key. Use a fresh key for each independent initialization.
+
+        Returns
+        -------
+        jax.Array
+            Unconstrained initial values with shape ``position_shape``.
+        """
         return _initialize(key, shape=self.position_shape, dtype=self.dtype)
 
 
@@ -174,6 +332,16 @@ class LowerBound:
     validation belongs at the eager model boundary so this numerical kernel
     remains safe to use with traced JAX arrays. Finite-precision arithmetic can
     round constrained values to the boundary for extreme negative positions.
+
+    Parameters
+    ----------
+    lower : float
+        Finite scalar lower bound, excluded from the parameter support.
+    shape : tuple of int, default ()
+        Positive dimensions in model space. An empty tuple declares a scalar.
+    dtype : data-type, default float
+        Floating-point dtype for parameters and unconstrained positions.
+        The default ``float`` follows JAX's precision setting.
     """
 
     lower: float
@@ -194,7 +362,19 @@ class LowerBound:
         return self.shape
 
     def constrain(self, position: ArrayLike) -> jax.Array:
-        """Apply the lower-bound transform to an unconstrained position."""
+        """Apply the lower-bound transform to an unconstrained position.
+
+        Parameters
+        ----------
+        position : array_like
+            Unconstrained values with shape ``position_shape``. Values are
+            converted to the declared ``dtype``.
+
+        Returns
+        -------
+        jax.Array
+            Constrained values with shape ``shape``.
+        """
         position = _as_array(
             position,
             name="position",
@@ -205,7 +385,19 @@ class LowerBound:
         return lower + jnp.exp(position)
 
     def unconstrain(self, parameter: ArrayLike) -> jax.Array:
-        """Map a lower-bounded parameter to unconstrained inference space."""
+        """Map a lower-bounded parameter to unconstrained inference space.
+
+        Parameters
+        ----------
+        parameter : array_like
+            Model-space values with shape ``shape``, satisfying the declared
+            parameter constraints. Values are converted to the declared ``dtype``.
+
+        Returns
+        -------
+        jax.Array
+            Unconstrained values with shape ``position_shape``.
+        """
         parameter = _as_array(
             parameter,
             name="parameter",
@@ -216,7 +408,19 @@ class LowerBound:
         return jnp.log(parameter - lower)
 
     def log_density_adjustment(self, position: ArrayLike) -> jax.Array:
-        """Return the log absolute Jacobian determinant of the transform."""
+        """Return the log absolute Jacobian determinant of the transform.
+
+        Parameters
+        ----------
+        position : array_like
+            Unconstrained values with shape ``position_shape``. Values are
+            converted to the declared ``dtype``.
+
+        Returns
+        -------
+        jax.Array
+            Scalar adjustment to add to the model-space log density.
+        """
         position = _as_array(
             position,
             name="position",
@@ -226,7 +430,18 @@ class LowerBound:
         return jnp.sum(position)
 
     def initialize(self, key: jax.Array) -> jax.Array:
-        """Draw an unconstrained initial position uniformly from ``[-2, 2)``."""
+        """Draw an unconstrained initial position uniformly from ``[-2, 2)``.
+
+        Parameters
+        ----------
+        key : jax.Array
+            JAX random key. Use a fresh key for each independent initialization.
+
+        Returns
+        -------
+        jax.Array
+            Unconstrained initial values with shape ``position_shape``.
+        """
         return _initialize(key, shape=self.position_shape, dtype=self.dtype)
 
 
@@ -241,6 +456,16 @@ class UpperBound:
     validation belongs at the eager model boundary so this numerical kernel
     remains safe to use with traced JAX arrays. Finite-precision arithmetic can
     round constrained values to the boundary for extreme negative positions.
+
+    Parameters
+    ----------
+    upper : float
+        Finite scalar upper bound, excluded from the parameter support.
+    shape : tuple of int, default ()
+        Positive dimensions in model space. An empty tuple declares a scalar.
+    dtype : data-type, default float
+        Floating-point dtype for parameters and unconstrained positions.
+        The default ``float`` follows JAX's precision setting.
     """
 
     upper: float
@@ -261,7 +486,19 @@ class UpperBound:
         return self.shape
 
     def constrain(self, position: ArrayLike) -> jax.Array:
-        """Apply the upper-bound transform to an unconstrained position."""
+        """Apply the upper-bound transform to an unconstrained position.
+
+        Parameters
+        ----------
+        position : array_like
+            Unconstrained values with shape ``position_shape``. Values are
+            converted to the declared ``dtype``.
+
+        Returns
+        -------
+        jax.Array
+            Constrained values with shape ``shape``.
+        """
         position = _as_array(
             position,
             name="position",
@@ -272,7 +509,19 @@ class UpperBound:
         return upper - jnp.exp(position)
 
     def unconstrain(self, parameter: ArrayLike) -> jax.Array:
-        """Map an upper-bounded parameter to unconstrained inference space."""
+        """Map an upper-bounded parameter to unconstrained inference space.
+
+        Parameters
+        ----------
+        parameter : array_like
+            Model-space values with shape ``shape``, satisfying the declared
+            parameter constraints. Values are converted to the declared ``dtype``.
+
+        Returns
+        -------
+        jax.Array
+            Unconstrained values with shape ``position_shape``.
+        """
         parameter = _as_array(
             parameter,
             name="parameter",
@@ -283,7 +532,19 @@ class UpperBound:
         return jnp.log(upper - parameter)
 
     def log_density_adjustment(self, position: ArrayLike) -> jax.Array:
-        """Return the log absolute Jacobian determinant of the transform."""
+        """Return the log absolute Jacobian determinant of the transform.
+
+        Parameters
+        ----------
+        position : array_like
+            Unconstrained values with shape ``position_shape``. Values are
+            converted to the declared ``dtype``.
+
+        Returns
+        -------
+        jax.Array
+            Scalar adjustment to add to the model-space log density.
+        """
         position = _as_array(
             position,
             name="position",
@@ -293,7 +554,18 @@ class UpperBound:
         return jnp.sum(position)
 
     def initialize(self, key: jax.Array) -> jax.Array:
-        """Draw an unconstrained initial position uniformly from ``[-2, 2)``."""
+        """Draw an unconstrained initial position uniformly from ``[-2, 2)``.
+
+        Parameters
+        ----------
+        key : jax.Array
+            JAX random key. Use a fresh key for each independent initialization.
+
+        Returns
+        -------
+        jax.Array
+            Unconstrained initial values with shape ``position_shape``.
+        """
         return _initialize(key, shape=self.position_shape, dtype=self.dtype)
 
 
@@ -308,6 +580,18 @@ class Interval:
     ``unconstrain`` assumes its input is inside the interval. Finite-precision
     arithmetic can round constrained values to a boundary for extreme
     positions.
+
+    Parameters
+    ----------
+    lower : float
+        Finite scalar lower bound, excluded from the parameter support.
+    upper : float
+        Finite scalar upper bound, excluded from the parameter support.
+    shape : tuple of int, default ()
+        Positive dimensions in model space. An empty tuple declares a scalar.
+    dtype : data-type, default float
+        Floating-point dtype for parameters and unconstrained positions.
+        The default ``float`` follows JAX's precision setting.
     """
 
     lower: float
@@ -341,7 +625,19 @@ class Interval:
         return self.shape
 
     def constrain(self, position: ArrayLike) -> jax.Array:
-        """Map an unconstrained position into the open interval."""
+        """Map an unconstrained position into the open interval.
+
+        Parameters
+        ----------
+        position : array_like
+            Unconstrained values with shape ``position_shape``. Values are
+            converted to the declared ``dtype``.
+
+        Returns
+        -------
+        jax.Array
+            Constrained values with shape ``shape``.
+        """
         position = _as_array(
             position,
             name="position",
@@ -355,7 +651,19 @@ class Interval:
         return lower + width * unit
 
     def unconstrain(self, parameter: ArrayLike) -> jax.Array:
-        """Map an interval-constrained parameter to inference space."""
+        """Map an interval-constrained parameter to inference space.
+
+        Parameters
+        ----------
+        parameter : array_like
+            Model-space values with shape ``shape``, satisfying the declared
+            parameter constraints. Values are converted to the declared ``dtype``.
+
+        Returns
+        -------
+        jax.Array
+            Unconstrained values with shape ``position_shape``.
+        """
         parameter = _as_array(
             parameter,
             name="parameter",
@@ -367,7 +675,19 @@ class Interval:
         return jnp.log(parameter - lower) - jnp.log(upper - parameter)
 
     def log_density_adjustment(self, position: ArrayLike) -> jax.Array:
-        """Return the scalar log absolute Jacobian determinant."""
+        """Return the scalar log absolute Jacobian determinant.
+
+        Parameters
+        ----------
+        position : array_like
+            Unconstrained values with shape ``position_shape``. Values are
+            converted to the declared ``dtype``.
+
+        Returns
+        -------
+        jax.Array
+            Scalar adjustment to add to the model-space log density.
+        """
         position = _as_array(
             position,
             name="position",
@@ -379,7 +699,18 @@ class Interval:
         return jnp.sum(adjustment)
 
     def initialize(self, key: jax.Array) -> jax.Array:
-        """Draw an unconstrained initial position uniformly from ``[-2, 2)``."""
+        """Draw an unconstrained initial position uniformly from ``[-2, 2)``.
+
+        Parameters
+        ----------
+        key : jax.Array
+            JAX random key. Use a fresh key for each independent initialization.
+
+        Returns
+        -------
+        jax.Array
+            Unconstrained initial values with shape ``position_shape``.
+        """
         return _initialize(key, shape=self.position_shape, dtype=self.dtype)
 
 
@@ -396,6 +727,15 @@ class Simplex:
     one. Support validation belongs at the eager model boundary so this
     numerical kernel remains safe to use with traced JAX arrays. Softmax can
     round weights to zero for extreme finite positions.
+
+    Parameters
+    ----------
+    shape : tuple of int
+        Positive dimensions in model space. The final axis contains the
+        simplex weights; leading axes identify independent simplexes.
+    dtype : data-type, default float
+        Floating-point dtype for parameters and unconstrained positions.
+        The default ``float`` follows JAX's precision setting.
     """
 
     shape: tuple[int, ...]
@@ -414,7 +754,19 @@ class Simplex:
         return (*self.shape[:-1], self.shape[-1] - 1)
 
     def constrain(self, position: ArrayLike) -> jax.Array:
-        """Map isometric log-ratio coordinates to simplex weights."""
+        """Map isometric log-ratio coordinates to simplex weights.
+
+        Parameters
+        ----------
+        position : array_like
+            Unconstrained values with shape ``position_shape``. Values are
+            converted to the declared ``dtype``.
+
+        Returns
+        -------
+        jax.Array
+            Constrained values with shape ``shape``.
+        """
         position = _as_array(
             position,
             name="position",
@@ -424,7 +776,19 @@ class Simplex:
         return jax.nn.softmax(_simplex_logits(position), axis=-1)
 
     def unconstrain(self, parameter: ArrayLike) -> jax.Array:
-        """Map simplex weights to isometric log-ratio coordinates."""
+        """Map simplex weights to isometric log-ratio coordinates.
+
+        Parameters
+        ----------
+        parameter : array_like
+            Model-space values with shape ``shape``, satisfying the declared
+            parameter constraints. Values are converted to the declared ``dtype``.
+
+        Returns
+        -------
+        jax.Array
+            Unconstrained values with shape ``position_shape``.
+        """
         parameter = _as_array(
             parameter,
             name="parameter",
@@ -437,7 +801,19 @@ class Simplex:
         return (cumulative_log_weights - dimensions * log_parameter[..., 1:]) / jnp.sqrt(dimensions * (dimensions + 1))
 
     def log_density_adjustment(self, position: ArrayLike) -> jax.Array:
-        """Return the scalar log absolute Jacobian determinant."""
+        """Return the scalar log absolute Jacobian determinant.
+
+        Parameters
+        ----------
+        position : array_like
+            Unconstrained values with shape ``position_shape``. Values are
+            converted to the declared ``dtype``.
+
+        Returns
+        -------
+        jax.Array
+            Scalar adjustment to add to the model-space log density.
+        """
         position = _as_array(
             position,
             name="position",
@@ -449,7 +825,18 @@ class Simplex:
         return jnp.sum(log_weights) + prod(self.shape[:-1]) * 0.5 * jnp.log(event_size)
 
     def initialize(self, key: jax.Array) -> jax.Array:
-        """Draw an unconstrained initial position uniformly from ``[-2, 2)``."""
+        """Draw an unconstrained initial position uniformly from ``[-2, 2)``.
+
+        Parameters
+        ----------
+        key : jax.Array
+            JAX random key. Use a fresh key for each independent initialization.
+
+        Returns
+        -------
+        jax.Array
+            Unconstrained initial values with shape ``position_shape``.
+        """
         return _initialize(key, shape=self.position_shape, dtype=self.dtype)
 
 

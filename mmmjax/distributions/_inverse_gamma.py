@@ -35,11 +35,11 @@ def inverse_gamma_logpdf(
 
     Parameters
     ----------
-    value
+    value : array_like
         Values at which to evaluate the density.
-    shape
+    shape : array_like
         Positive shape parameter.
-    scale
+    scale : array_like
         Positive scale parameter.
 
     Returns
@@ -67,11 +67,11 @@ def inverse_gamma(
 
     Parameters
     ----------
-    value
+    value : array_like
         Values at which to evaluate the density.
-    shape
+    shape : array_like
         Positive shape parameter.
-    scale
+    scale : array_like
         Positive scale parameter.
 
     Returns
@@ -103,11 +103,11 @@ def inverse_gamma_logcdf(
 
     Parameters
     ----------
-    value
+    value : array_like
         Values at which to evaluate the cumulative probability.
-    shape
+    shape : array_like
         Positive shape parameter.
-    scale
+    scale : array_like
         Positive scale parameter.
 
     Returns
@@ -139,11 +139,11 @@ def inverse_gamma_logsf(
 
     Parameters
     ----------
-    value
+    value : array_like
         Values at which to evaluate the survival probability.
-    shape
+    shape : array_like
         Positive shape parameter.
-    scale
+    scale : array_like
         Positive scale parameter.
 
     Returns
@@ -166,15 +166,15 @@ def inverse_gamma_rng(
 
     Parameters
     ----------
-    key
+    key : jax.Array
         JAX random key controlling the draw. Reusing a key repeats the same
         sample. Use ``jax.random.split`` to create keys for new random
         operations.
-    shape
+    shape : array_like
         Positive shape parameter.
-    scale
+    scale : array_like
         Positive scale parameter.
-    sample_shape
+    sample_shape : tuple of int, default ()
         Independent sample dimensions prepended to the broadcast parameter shape.
         The tuple must be static when the function is JIT-compiled.
 

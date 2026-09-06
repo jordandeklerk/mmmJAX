@@ -22,9 +22,9 @@ def categorical_logpmf(
 
     Parameters
     ----------
-    value
+    value : array_like
         Zero-based category indices. Every axis is a batch dimension.
-    probabilities
+    probabilities : array_like
         Category probabilities. The final axis contains the categories and
         every leading axis is a batch dimension.
 
@@ -80,9 +80,9 @@ def categorical(
 
     Parameters
     ----------
-    value
+    value : array_like
         Zero-based category indices.
-    probabilities
+    probabilities : array_like
         Category probabilities with categories along the final axis.
 
     Returns
@@ -104,17 +104,17 @@ def categorical_rng(
 
     Parameters
     ----------
-    key
+    key : jax.Array
         JAX random key controlling the draw. Reusing a key repeats the same
         sample. Use ``jax.random.split`` to create keys for new random
         operations.
-    probabilities
+    probabilities : array_like
         Category probabilities. The final axis contains the categories and
         every leading axis is a batch dimension. A zero probability is never
         drawn when another category has positive probability. The caller
         must provide valid probability vectors because invalid values do not
         have a defined sampling result.
-    sample_shape
+    sample_shape : tuple of int, default ()
         Independent sample dimensions prepended to the probability batch
         shape. The tuple must be static when the function is JIT-compiled.
 
@@ -147,9 +147,9 @@ def categorical_logit_logpmf(
 
     Parameters
     ----------
-    value
+    value : array_like
         Zero-based category indices. Every axis is a batch dimension.
-    logits
+    logits : array_like
         Unnormalized category log probabilities. The final axis contains the
         categories and every leading axis is a batch dimension. A ``-inf``
         logit masks that category when another category has finite weight.
@@ -208,9 +208,9 @@ def categorical_logit(
 
     Parameters
     ----------
-    value
+    value : array_like
         Zero-based category indices.
-    logits
+    logits : array_like
         Unnormalized category log probabilities with categories along the
         final axis.
 
@@ -233,17 +233,17 @@ def categorical_logit_rng(
 
     Parameters
     ----------
-    key
+    key : jax.Array
         JAX random key controlling the draw. Reusing a key repeats the same
         sample. Use ``jax.random.split`` to create keys for new random
         operations.
-    logits
+    logits : array_like
         Unnormalized category log probabilities. The final axis contains the
         categories and every leading axis is a batch dimension. A ``-inf``
         logit is never drawn when another category has finite weight. The
         caller must not provide ``nan`` or ``+inf``, or an event with no
         finite logit, because they do not have a defined sampling result.
-    sample_shape
+    sample_shape : tuple of int, default ()
         Independent sample dimensions prepended to the logit batch shape. The
         tuple must be static when the function is JIT-compiled.
 

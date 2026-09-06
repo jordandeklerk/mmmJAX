@@ -26,9 +26,9 @@ def half_normal_logpdf(value: ArrayLike, scale: ArrayLike) -> jax.Array:
 
     Parameters
     ----------
-    value
+    value : array_like
         Values at which to evaluate the density.
-    scale
+    scale : array_like
         Positive standard deviation of the underlying zero-centered Normal
         distribution.
 
@@ -55,9 +55,9 @@ def half_normal(value: ArrayLike, scale: ArrayLike) -> jax.Array:
 
     Parameters
     ----------
-    value
+    value : array_like
         Values at which to evaluate the density.
-    scale
+    scale : array_like
         Positive standard deviation of the underlying zero-centered Normal
         distribution.
 
@@ -84,9 +84,9 @@ def half_normal_logcdf(value: ArrayLike, scale: ArrayLike) -> jax.Array:
 
     Parameters
     ----------
-    value
+    value : array_like
         Values at which to evaluate the cumulative probability.
-    scale
+    scale : array_like
         Positive standard deviation of the underlying zero-centered Normal
         distribution.
 
@@ -118,9 +118,9 @@ def half_normal_logsf(value: ArrayLike, scale: ArrayLike) -> jax.Array:
 
     Parameters
     ----------
-    value
+    value : array_like
         Values at which to evaluate the survival probability.
-    scale
+    scale : array_like
         Positive standard deviation of the underlying zero-centered Normal
         distribution.
 
@@ -145,14 +145,14 @@ def half_normal_rng(
 
     Parameters
     ----------
-    key
+    key : jax.Array
         JAX random key controlling the draw. Reusing a key repeats the same
         sample. Use ``jax.random.split`` to create keys for new random
         operations.
-    scale
+    scale : array_like
         Positive standard deviation of the underlying zero-centered Normal
         distribution.
-    sample_shape
+    sample_shape : tuple of int, default ()
         Independent sample dimensions prepended to the parameter shape. The
         tuple must be static when the function is JIT-compiled.
 
