@@ -7,6 +7,63 @@ import narwhals as nw
 from narwhals.typing import IntoDataFrameT
 
 
+def _prepare_panel(
+    frame: IntoDataFrameT,
+    *,
+    time: str,
+    groups: Sequence[str] = (),
+    values: Sequence[str],
+) -> nw.DataFrame[IntoDataFrameT]:
+    """Arrange a complete observation panel in time-major order.
+
+    Parameters
+    ----------
+    frame : dataframe-like
+        Eager dataframe supported by Narwhals. The input is not modified.
+    time : str
+        Time column, already represented in a form that sorts chronologically.
+        Date parsing and calendar-frequency validation happen separately.
+    groups : sequence of str, optional
+        Columns identifying each observed series. Combinations retain their
+        first-appearance order across time. With no groups, the input is a
+        single series.
+    values : sequence of str
+        Numeric or boolean columns to retain in the supplied order.
+
+    Returns
+    -------
+    narwhals.DataFrame
+        Rows sorted by time, with the same observed groups in the same order
+        at every time. Nested group labels stay together rather than forming
+        every possible combination. No missing observations are filled.
+
+    Notes
+    -----
+    This checks coverage of the observed times, not whether those times are
+    regularly spaced. A period missing from every group is not detected here.
+    """
+    if isinstance(groups, str) or not isinstance(groups, Sequence):
+        raise TypeError("groups must be a sequence of column names, such as ['region'], or () for a single series")
+    selected = _prepare_frame(frame, keys=[time, *groups], values=values)
+    if not groups:
+        return selected.sort(time)
+
+    series = selected.select(groups).unique(keep="first", maintain_order=True)
+    n_times = selected.get_column(time).n_unique()
+    missing = n_times * series.shape[0] - selected.shape[0]
+    # Keys are unique, so this count proves every observed series has every observed time
+    if missing:
+        raise ValueError(
+            f"data is missing {missing} combinations of {time!r} and {list(groups)}; "
+            "each observed group must contain the same time values"
+        )
+
+    # Sorting by an explicit rank avoids backend-specific ordering of categorical labels
+    rank = nw.generate_temporary_column_name(n_bytes=8, columns=selected.columns)
+    series = series.with_row_index(rank)
+    return selected.join(series, on=list(groups), how="left").sort([time, rank]).select(selected.columns)
+
+
 def _prepare_frame(
     frame: IntoDataFrameT,
     *,
