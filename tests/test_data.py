@@ -254,8 +254,10 @@ def test_prepare_data_example_keeps_channel_order_and_sorts_observations(frame_f
         {
             "week": ["2026-01-12", "2026-01-05", "2026-01-19"],
             "sales": [140, 100, 120],
-            "search": [60.0, 40.0, 50.0],
-            "video": [80.0, 60.0, 70.0],
+            "video_impressions": [14_000, 10_000, 12_000],
+            "video_spend": [130.0, 80.0, 95.0],
+            "search_impressions": [6_000, 5_000, 4_500],
+            "search_spend": [60.0, 40.0, 50.0],
         }
     )
 
@@ -263,7 +265,9 @@ def test_prepare_data_example_keeps_channel_order_and_sorts_observations(frame_f
         source,
         time="week",
         outcome="sales",
-        media=["video", "search"],
+        media=["video_impressions", "search_impressions"],
+        spend=["video_spend", "search_spend"],
+        channels=["video", "search"],
         frequency="weekly",
     )
     inputs = data.arrays
@@ -271,8 +275,14 @@ def test_prepare_data_example_keeps_channel_order_and_sorts_observations(frame_f
     assert isinstance(data, PreparedData)
     assert data.time_values == ("2026-01-05", "2026-01-12", "2026-01-19")
     assert data.group_columns == data.group_values == ()
-    assert data.columns == {"outcome": ("sales",), "media": ("video", "search")}
-    np.testing.assert_array_equal(inputs["media"], [[60.0, 40.0], [80.0, 60.0], [70.0, 50.0]])
+    assert data.channels == ("video", "search")
+    assert data.columns == {
+        "outcome": ("sales",),
+        "media": ("video_impressions", "search_impressions"),
+        "spend": ("video_spend", "search_spend"),
+    }
+    np.testing.assert_array_equal(inputs["media"], [[10_000, 5_000], [14_000, 6_000], [12_000, 4_500]])
+    np.testing.assert_array_equal(inputs["spend"], [[80.0, 40.0], [130.0, 60.0], [95.0, 50.0]])
     np.testing.assert_array_equal(inputs["outcome"], [100, 140, 120])
 
 

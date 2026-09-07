@@ -301,30 +301,36 @@ def prepare_data(
 
     Examples
     --------
-    Select an outcome and two media channels from weekly observations.
-    Rows are sorted by week while channels keep the requested order.
+    Prepare weekly sales with separate impressions and spending for two
+    media channels. Rows are sorted by week while channels keep the
+    requested order.
 
     .. ipython::
 
         In [1]: import polars as pl
            ...: from mmmjax import prepare_data
-           ...: spend = pl.DataFrame({
+           ...: df = pl.DataFrame({
            ...:     "week": ["2026-01-12", "2026-01-05", "2026-01-19"],
            ...:     "sales": [140, 100, 120],
-           ...:     "search": [60.0, 40.0, 50.0],
-           ...:     "video": [80.0, 60.0, 70.0],
+           ...:     "video_impressions": [14_000, 10_000, 12_000],
+           ...:     "video_spend": [130.0, 80.0, 95.0],
+           ...:     "search_impressions": [6_000, 5_000, 4_500],
+           ...:     "search_spend": [60.0, 40.0, 50.0],
            ...: })
 
         In [2]: data = prepare_data(
-           ...:     spend,
+           ...:     df,
            ...:     time="week",
            ...:     outcome="sales",
-           ...:     media=["video", "search"],
-           ...:     spend=["video", "search"],
+           ...:     media=["video_impressions", "search_impressions"],
+           ...:     spend=["video_spend", "search_spend"],
+           ...:     channels=["video", "search"],
            ...:     frequency="weekly",
            ...: )
            ...: data.channels
 
+    For a spend-based model, select the spending columns for both
+    ``media`` and ``spend`` instead.
     """
     selections = {"outcome": outcome, "media": media, "spend": spend, "controls": controls}
     columns: dict[str, tuple[str, ...]] = {}
