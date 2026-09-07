@@ -80,6 +80,8 @@ autodoc_member_order = "bysource"
 autodoc_typehints = "none"
 napoleon_numpy_docstring = True
 napoleon_google_docstring = False
+# Let autodoc index each field once while keeping its description in the class docstring
+napoleon_use_ivar = True
 
 # Keep example output compact without rounding the values used in calculations
 ipython_execlines = [

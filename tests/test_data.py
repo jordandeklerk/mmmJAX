@@ -11,8 +11,16 @@ import polars as pl
 import pyarrow as pa
 import pytest
 
-from mmmjax import Model, Real, geometric_adstock, normal
-from mmmjax.data import _prepare_data, _prepare_frame, _prepare_panel
+import mmmjax
+from mmmjax import Model, PreparedData, Real, geometric_adstock, normal, prepare_data
+from mmmjax.data import _prepare_frame, _prepare_panel
+
+
+def test_data_api_exports_public_entry_points():
+    assert mmmjax.data.__all__ == ["PreparedData", "prepare_data"]
+    assert {"PreparedData", "prepare_data"}.issubset(mmmjax.__all__)
+    assert PreparedData is mmmjax.data.PreparedData
+    assert prepare_data is mmmjax.data.prepare_data
 
 
 @pytest.fixture(params=["pandas", "pandas_nullable", "pandas_arrow", "polars", "pyarrow"])
@@ -28,8 +36,34 @@ def frame_factory(request):
     return pa.table
 
 
+def test_prepare_data_example_keeps_channel_order_and_sorts_observations(frame_factory):
+    source = frame_factory(
+        {
+            "week": ["2026-01-12", "2026-01-05", "2026-01-19"],
+            "sales": [140, 100, 120],
+            "search": [60.0, 40.0, 50.0],
+            "video": [80.0, 60.0, 70.0],
+        }
+    )
+
+    data = prepare_data(
+        source,
+        time="week",
+        blocks={"outcome": "sales", "media": ["video", "search"]},
+        frequency="weekly",
+    )
+    inputs = data.to_jax()
+
+    assert isinstance(data, PreparedData)
+    assert data.time_values == ("2026-01-05", "2026-01-12", "2026-01-19")
+    assert data.group_columns == data.group_values == ()
+    assert data.columns == {"outcome": ("sales",), "media": ("video", "search")}
+    np.testing.assert_array_equal(inputs["media"], [[60.0, 40.0], [80.0, 60.0], [70.0, 50.0]])
+    np.testing.assert_array_equal(inputs["outcome"], [100, 140, 120])
+
+
 @pytest.mark.parametrize("x64", [False, True])
-def test_panel_data_to_jax_follows_precision_setting_without_changing_host_data(frame_factory, x64):
+def test_prepared_data_to_jax_follows_precision_setting_without_changing_host_data(frame_factory, x64):
     source = frame_factory(
         {
             "week": [2, 1],
@@ -38,7 +72,7 @@ def test_panel_data_to_jax_follows_precision_setting_without_changing_host_data(
             "promotion": [True, False],
         }
     )
-    data = _prepare_data(source, time="week", blocks={"outcome": "sales", "media": ["video"], "flag": "promotion"})
+    data = prepare_data(source, time="week", blocks={"outcome": "sales", "media": ["video"], "flag": "promotion"})
     before = {name: array.copy() for name, array in data.arrays.items()}
 
     with jax.enable_x64(x64):
@@ -60,8 +94,8 @@ def test_panel_data_to_jax_follows_precision_setting_without_changing_host_data(
 
 
 @pytest.mark.parametrize("dtype", [np.float32, "float32", np.float64, "float64"])
-def test_panel_data_to_jax_respects_explicit_floating_precision(dtype):
-    data = _prepare_data(pl.DataFrame({"week": [1], "value": [1.5]}), time="week", blocks={"value": "value"})
+def test_prepared_data_to_jax_respects_explicit_floating_precision(dtype):
+    data = prepare_data(pl.DataFrame({"week": [1], "value": [1.5]}), time="week", blocks={"value": "value"})
 
     with jax.enable_x64(True):
         result = data.to_jax(dtype=dtype)
@@ -70,16 +104,16 @@ def test_panel_data_to_jax_respects_explicit_floating_precision(dtype):
 
 
 @pytest.mark.parametrize("dtype", [np.float64, "float64", np.dtype("float64")])
-def test_panel_data_to_jax_does_not_silently_narrow_explicit_float64(dtype):
-    data = _prepare_data(pl.DataFrame({"week": [1], "value": [1.5]}), time="week", blocks={"value": "value"})
+def test_prepared_data_to_jax_does_not_silently_narrow_explicit_float64(dtype):
+    data = prepare_data(pl.DataFrame({"week": [1], "value": [1.5]}), time="week", blocks={"value": "value"})
 
     with jax.enable_x64(False), pytest.raises(ValueError, match=r"explicit dtype float64.*JAX_ENABLE_X64=true"):
         data.to_jax(dtype=dtype)
 
 
 @pytest.mark.parametrize("dtype", [None, np.int32, np.bool_, np.complex64, np.float16, "not-a-dtype"])
-def test_panel_data_to_jax_requires_a_supported_floating_dtype(dtype):
-    data = _prepare_data(pl.DataFrame({"week": [1], "value": [1.5]}), time="week", blocks={"value": "value"})
+def test_prepared_data_to_jax_requires_a_supported_floating_dtype(dtype):
+    data = prepare_data(pl.DataFrame({"week": [1], "value": [1.5]}), time="week", blocks={"value": "value"})
 
     with pytest.raises(TypeError, match="dtype must be float32 or float64"):
         data.to_jax(dtype=dtype)
@@ -95,9 +129,9 @@ def test_panel_data_to_jax_requires_a_supported_floating_dtype(dtype):
         (np.uint64, np.uint32, [0, np.iinfo(np.uint32).max]),
     ],
 )
-def test_panel_data_to_jax_preserves_representable_integers(source_dtype, expected_dtype, values):
+def test_prepared_data_to_jax_preserves_representable_integers(source_dtype, expected_dtype, values):
     original = np.array(values, dtype=source_dtype)
-    data = _prepare_data(pl.DataFrame({"week": [1, 2], "counts": original}), time="week", blocks={"counts": "counts"})
+    data = prepare_data(pl.DataFrame({"week": [1, 2], "counts": original}), time="week", blocks={"counts": "counts"})
 
     with jax.enable_x64(False):
         result = data.to_jax()
@@ -114,8 +148,8 @@ def test_panel_data_to_jax_preserves_representable_integers(source_dtype, expect
         (np.uint64, int(np.iinfo(np.uint32).max) + 1),
     ],
 )
-def test_panel_data_to_jax_rejects_integer_wraparound(dtype, value):
-    data = _prepare_data(
+def test_prepared_data_to_jax_rejects_integer_wraparound(dtype, value):
+    data = prepare_data(
         pl.DataFrame({"week": [1], "sales": np.array([value], dtype=dtype)}), time="week", blocks={"outcome": "sales"}
     )
 
@@ -129,9 +163,9 @@ def test_panel_data_to_jax_rejects_integer_wraparound(dtype, value):
     assert int(np.asarray(result["outcome"])[0]) == value
 
 
-def test_panel_data_to_jax_keeps_large_counts_exact_in_64_bit_mode():
+def test_prepared_data_to_jax_keeps_large_counts_exact_in_64_bit_mode():
     counts = np.array([2**53, 2**53 + 1], dtype=np.int64)
-    data = _prepare_data(pl.DataFrame({"week": [1, 2], "counts": counts}), time="week", blocks={"counts": "counts"})
+    data = prepare_data(pl.DataFrame({"week": [1, 2], "counts": counts}), time="week", blocks={"counts": "counts"})
 
     with jax.enable_x64(True):
         result = data.to_jax(dtype=np.float32)
@@ -142,8 +176,8 @@ def test_panel_data_to_jax_keeps_large_counts_exact_in_64_bit_mode():
 
 
 @pytest.mark.parametrize("value", [1e100, -1e100])
-def test_panel_data_to_jax_reports_floating_overflow_before_transfer(value):
-    data = _prepare_data(pl.DataFrame({"week": [1], "spend": [value]}), time="week", blocks={"media": ["spend"]})
+def test_prepared_data_to_jax_reports_floating_overflow_before_transfer(value):
+    data = prepare_data(pl.DataFrame({"week": [1], "spend": [value]}), time="week", blocks={"media": ["spend"]})
 
     with jax.enable_x64(False), pytest.raises(ValueError, match=r"block 'media'.*not finite as float32.*rescale"):
         data.to_jax()
@@ -155,8 +189,8 @@ def test_panel_data_to_jax_reports_floating_overflow_before_transfer(value):
 
 
 @pytest.mark.parametrize("sharded", [False, True])
-def test_panel_data_to_jax_places_all_blocks_on_the_requested_device(sharded):
-    data = _prepare_data(
+def test_prepared_data_to_jax_places_all_blocks_on_the_requested_device(sharded):
+    data = prepare_data(
         pl.DataFrame({"week": [1, 2], "sales": [10, 20], "video": [1.5, 2.5]}),
         time="week",
         blocks={"outcome": "sales", "media": ["video"]},
@@ -172,9 +206,9 @@ def test_panel_data_to_jax_places_all_blocks_on_the_requested_device(sharded):
 
 
 @pytest.mark.parametrize("dtype", [np.float32, np.int32, np.bool_])
-def test_panel_data_to_jax_does_not_share_mutable_host_buffers(dtype):
+def test_prepared_data_to_jax_does_not_share_mutable_host_buffers(dtype):
     original = np.array([0, 1], dtype=dtype)
-    data = _prepare_data(pl.DataFrame({"week": [1, 2], "value": original}), time="week", blocks={"value": "value"})
+    data = prepare_data(pl.DataFrame({"week": [1, 2], "value": original}), time="week", blocks={"value": "value"})
     result = data.to_jax(dtype=np.float32, device=jax.devices("cpu")[0])
     jax.block_until_ready(result)
 
@@ -196,7 +230,7 @@ def test_prepare_data_keeps_block_axes_and_labels_aligned(frame_factory):
     )
     before = nw.from_native(source).to_dict(as_series=False)
 
-    result = _prepare_data(
+    result = prepare_data(
         source,
         time="week",
         groups=["geo"],
@@ -222,7 +256,7 @@ def test_prepare_data_distinguishes_a_column_from_a_single_column_block(frame_fa
     source = frame_factory({"date": ["2026-01-05"], "geo": ["east"], "sales": [10]})
     groups = ["geo"] if grouped else []
 
-    result = _prepare_data(
+    result = prepare_data(
         source, time="date", groups=groups, blocks={"outcome": "sales", "features": ["sales"]}, frequency="weekly"
     )
 
@@ -243,7 +277,7 @@ def test_prepare_data_keeps_nested_groups_on_one_observed_series_axis(frame_fact
         }
     )
 
-    result = _prepare_data(source, time="week", groups=["region", "store"], blocks={"outcome": "sales"})
+    result = prepare_data(source, time="week", groups=["region", "store"], blocks={"outcome": "sales"})
 
     assert result.group_columns == ("region", "store")
     assert result.group_values == (("west", 1), ("east", 1))
@@ -264,7 +298,7 @@ def test_prepare_data_packs_hundreds_of_channels_into_one_array(frame_factory):
     )
     channels = [f"channel_{channel}" for channel in reversed(range(465))]
 
-    result = _prepare_data(source, time="week", groups=["geo"], blocks={"media": channels})
+    result = prepare_data(source, time="week", groups=["geo"], blocks={"media": channels})
 
     assert result.columns["media"] == tuple(channels)
     assert result.group_values == tuple((group,) for group in reversed(range(8)))
@@ -275,7 +309,7 @@ def test_prepare_data_packs_hundreds_of_channels_into_one_array(frame_factory):
 def test_prepare_data_preserves_integer_counts_separately_from_floating_features(frame_factory):
     source = frame_factory({"week": [1, 2], "counts": [2**53, 2**53 + 1], "media": [0.5, 1.5], "flag": [True, False]})
 
-    result = _prepare_data(source, time="week", blocks={"outcome": "counts", "media": ["media"], "flag": "flag"})
+    result = prepare_data(source, time="week", blocks={"outcome": "counts", "media": ["media"], "flag": "flag"})
 
     assert result.arrays["outcome"].dtype == np.int64
     assert result.arrays["flag"].dtype == np.bool_
@@ -284,7 +318,7 @@ def test_prepare_data_preserves_integer_counts_separately_from_floating_features
 
 def test_prepare_data_arrays_do_not_modify_the_input_or_each_other(frame_factory):
     source = frame_factory({"week": [1, 2], "sales": [10, 20]})
-    result = _prepare_data(source, time="week", blocks={"outcome": "sales", "features": ["sales"]})
+    result = prepare_data(source, time="week", blocks={"outcome": "sales", "features": ["sales"]})
 
     result.arrays["outcome"][0] = 0
 
@@ -312,22 +346,22 @@ def test_prepare_data_arrays_do_not_modify_the_input_or_each_other(frame_factory
 )
 def test_prepare_data_reports_invalid_block_declarations(blocks, error, message):
     with pytest.raises(error, match=message):
-        _prepare_data(pl.DataFrame({"week": [1], "sales": [10]}), time="week", blocks=blocks)
+        prepare_data(pl.DataFrame({"week": [1], "sales": [10]}), time="week", blocks=blocks)
 
 
 def test_prepare_data_checks_calendar_and_panel_coverage():
     source = pl.DataFrame({"week": ["2026-01-05", "2026-01-19"], "sales": [10, 20]})
 
     with pytest.raises(ValueError, match="missing periods"):
-        _prepare_data(source, time="week", blocks={"outcome": "sales"}, frequency="weekly")
+        prepare_data(source, time="week", blocks={"outcome": "sales"}, frequency="weekly")
 
     source = pl.DataFrame({"week": [1, 2, 1], "geo": ["east", "east", "west"], "sales": [10, 20, 30]})
     with pytest.raises(ValueError, match="same time values"):
-        _prepare_data(source, time="week", groups=["geo"], blocks={"outcome": "sales"})
+        prepare_data(source, time="week", groups=["geo"], blocks={"outcome": "sales"})
 
 
 def test_prepare_data_works_with_model_densities_and_gradients():
-    data = _prepare_data(
+    data = prepare_data(
         pl.DataFrame({"week": [2, 1], "sales": [5.0, 2.0], "video": [2.0, 1.0], "search": [1.0, 3.0]}),
         time="week",
         blocks={"outcome": "sales", "media": ["video", "search"]},
@@ -347,10 +381,10 @@ def test_prepare_data_works_with_model_densities_and_gradients():
 
 
 def test_prepare_data_keeps_labels_out_of_jax_compilation():
-    first = _prepare_data(
+    first = prepare_data(
         pl.DataFrame({"week": [1, 2], "sales": [10.0, 20.0]}), time="week", blocks={"outcome": "sales"}
     )
-    second = _prepare_data(
+    second = prepare_data(
         pl.DataFrame({"date": ["2026-01-05", "2026-01-12"], "revenue": [30.0, 40.0]}),
         time="date",
         blocks={"outcome": "revenue"},
@@ -372,7 +406,7 @@ def test_prepare_data_works_with_batched_adstock(frame_factory):
     source = frame_factory(
         {"week": [2, 1, 1, 2], "geo": ["west", "east", "west", "east"], "video": [4.0, 1.0, 3.0, 2.0]}
     )
-    data = _prepare_data(source, time="week", groups=["geo"], blocks={"media": ["video"]})
+    data = prepare_data(source, time="week", groups=["geo"], blocks={"media": ["video"]})
 
     carried = jax.jit(lambda media: geometric_adstock(media, 0.5, max_lag=1, normalize=False))(data.to_jax()["media"])
 

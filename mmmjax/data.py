@@ -14,14 +14,40 @@ from jax.typing import DTypeLike
 from narwhals.typing import IntoDataFrameT
 from numpy.typing import NDArray
 
+__all__ = ["PreparedData", "prepare_data"]
+
 
 @dataclass(frozen=True, slots=True, eq=False)
-class _PanelData:
-    """Keep aligned numerical blocks with their observation and column labels.
+class PreparedData:
+    """Store prepared model inputs together with their observation labels.
 
-    ``arrays`` contains the host-side NumPy arrays. Use ``to_jax`` to choose
-    floating-point precision and transfer them for modeling. Labels stay
-    outside the returned dictionary and are not registered as static JAX data.
+    Use :func:`prepare_data` to create this object from a dataframe with
+    validation and alignment. Constructing it directly does not validate data.
+
+    Attributes
+    ----------
+    arrays : dict of str to numpy.ndarray
+        Named numerical blocks, ordered by time, group if supplied, then
+        feature for sequence selections. Each array is independent of
+        the source dataframe and other blocks.
+    time_column : str
+        Source column identifying observation periods.
+    time_values : tuple
+        Sorted time labels corresponding to the first array axis.
+    group_columns : tuple of str
+        Source columns identifying each series. Empty for a single series.
+    group_values : tuple of tuple
+        Observed group combinations in first-appearance order, matching
+        the group axis. Empty when no group columns were supplied.
+    columns : dict of str to tuple of str
+        Source columns for each block, in the selected order. A single
+        column selection is recorded as a one-element tuple.
+
+    Notes
+    -----
+    The arrays and dictionaries remain editable. Keep their shapes and
+    ordering consistent with the labels. :meth:`to_jax` produces an
+    independent dictionary of JAX arrays for model calculations.
     """
 
     arrays: dict[str, NDArray[np.generic]]
@@ -98,22 +124,27 @@ class _PanelData:
         return cast(dict[str, jax.Array], jax.device_put(converted, device=device))
 
 
-def _prepare_data(
+def prepare_data(
     frame: IntoDataFrameT,
     *,
     time: str,
     blocks: Mapping[str, str | Sequence[str]],
     groups: Sequence[str] = (),
     frequency: str | None = None,
-) -> _PanelData:
-    """Prepare named numerical blocks without losing their dataframe labels.
+) -> PreparedData:
+    """Prepare a dataframe for modeling while keeping its observation labels.
 
     Parameters
     ----------
     frame : dataframe-like
-        Eager dataframe supported by Narwhals. The input is not modified.
+        Eager dataframe supported by Narwhals, including pandas and Polars
+        DataFrames and PyArrow Tables. Block values must be numeric or
+        boolean, finite, and nonmissing. The input is not modified.
     time : str
-        Column identifying the observation periods.
+        Column identifying observation periods, with values that sort
+        chronologically. Each combination of time and group must be unique.
+        Calendar checks accept dates, timezone-naive datetimes, or strings
+        written as ``YYYY-MM-DD``. Original labels are retained.
     blocks : mapping of str to str or sequence of str
         Names for model inputs and their source columns, for example
         ``{"outcome": "sales", "media": ["search", "video"]}``. A column
@@ -121,20 +152,76 @@ def _prepare_data(
         feature axis, even for a single column. Columns may appear in more
         than one block, but cannot be repeated within the same block.
     groups : sequence of str, optional
-        Columns identifying each observed series. Nested group combinations
-        share one array axis rather than forming a Cartesian product.
+        Columns identifying each observed series, such as ``["region"]``.
+        Every observed group must have the same time periods. Group
+        combinations retain their first-appearance order and share one
+        array axis. Omit this argument for a single series with no group axis.
     frequency : str, optional
-        Calendar spacing checked by :func:`_prepare_panel`.
+        Expected spacing given as ``"daily"``, ``"weekly"``, ``"monthly"``,
+        ``"quarterly"``, or ``"yearly"``. Calendar periods follow the first
+        observation's day, or month-end if it starts at month-end. Supply
+        this to detect periods missing from every group. Without it, only
+        coverage of the observed times is checked.
 
     Returns
     -------
-    _PanelData
+    PreparedData
         Arrays ordered as time, group (if supplied), then feature (for
         sequence selections). Labels follow that exact order. Each block
         has its own dtype. Columns within a block use NumPy type promotion.
         Keep count outcomes in a separate block from continuous features
         to preserve their integer dtype. Arrays do not share memory with
         the input dataframe.
+
+    Notes
+    -----
+    All blocks share the same observation periods. Missing observations
+    are reported, not filled or treated as zero. Calendar checks cover only
+    the span between the first and last supplied times.
+
+    Block names describe your model inputs but do not add role-specific
+    checks. For example, naming a block ``"media"`` does not require its
+    values to be nonnegative or associate it with spending columns.
+
+    Each call prepares its input independently. Group and feature ordering
+    must match the model before using separately prepared prediction data.
+    Call :meth:`PreparedData.to_jax` once before model calculations. Dataframe
+    preparation belongs outside JAX transformations such as ``jax.jit``.
+
+    Examples
+    --------
+    Select an outcome and two media channels from weekly observations.
+    Rows are sorted by week while channels keep the requested order.
+
+    .. ipython::
+
+        In [1]: import polars as pl
+           ...: from mmmjax import prepare_data
+           ...: spend = pl.DataFrame({
+           ...:     "week": ["2026-01-12", "2026-01-05", "2026-01-19"],
+           ...:     "sales": [140, 100, 120],
+           ...:     "search": [60.0, 40.0, 50.0],
+           ...:     "video": [80.0, 60.0, 70.0],
+           ...: })
+
+        In [2]: data = prepare_data(
+           ...:     spend,
+           ...:     time="week",
+           ...:     blocks={
+           ...:         "outcome": "sales",
+           ...:         "media": ["video", "search"],
+           ...:     },
+           ...:     frequency="weekly",
+           ...: )
+           ...: data.columns["media"]
+
+    Convert the numerical blocks for use in a model. Labels remain on
+    ``data`` so you can identify the observations and channels later.
+
+    .. ipython::
+
+        In [3]: inputs = data.to_jax()
+           ...: inputs["media"]
     """
     if not isinstance(blocks, Mapping) or not blocks:
         raise TypeError("blocks must be a nonempty mapping, such as {'outcome': 'sales', 'media': ['video']}")
@@ -177,7 +264,7 @@ def _prepare_data(
             values = np.stack([selected.get_column(column).to_numpy() for column in names], axis=-1)
             arrays[name] = values.reshape(*observation_shape, len(names))
 
-    return _PanelData(
+    return PreparedData(
         arrays=arrays,
         time_column=time,
         time_values=time_values,
