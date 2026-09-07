@@ -2,7 +2,7 @@
 
 from calendar import monthrange
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import cast
@@ -22,14 +22,15 @@ class PreparedData:
     """Store prepared model inputs together with their observation labels.
 
     Use :func:`prepare_data` to create this object from a dataframe with
-    validation and alignment. Constructing it directly does not validate data.
+    validation and labeled arrays. Constructing it directly does not validate data.
 
     Attributes
     ----------
     arrays : dict of str to numpy.ndarray
-        Named numerical blocks, ordered by time, group if supplied, then
-        feature for sequence selections. Each array is independent of
-        the source dataframe and other blocks.
+        Selected outcome, media, spend, and controls, ordered by time,
+        group if supplied, then channel or control. Outcome has no final
+        feature axis. Each array is independent of the source dataframe
+        and other inputs.
     time_column : str
         Source column identifying observation periods.
     time_values : tuple
@@ -37,17 +38,19 @@ class PreparedData:
     group_columns : tuple of str
         Source columns identifying each series. Empty for a single series.
     group_values : tuple of tuple
-        Observed group combinations in first-appearance order, matching
-        the group axis. Empty when no group columns were supplied.
+        Observed group combinations matching the group axis. Preparation
+        uses first-appearance order. Empty when no group columns were supplied.
     columns : dict of str to tuple of str
-        Source columns for each block, in the selected order. A single
-        column selection is recorded as a one-element tuple.
+        Source columns for each input, in the selected order. The outcome
+        column is recorded as a one-element tuple.
+    channels : tuple of str
+        Shared channel labels for the final axis of media and spend.
+        Empty when media was not supplied.
 
     Notes
     -----
     The arrays and dictionaries remain editable. Keep their shapes and
-    ordering consistent with the labels. :meth:`to_jax` produces an
-    independent dictionary of JAX arrays for model calculations.
+    ordering consistent with the labels.
     """
 
     arrays: dict[str, NDArray[np.generic]]
@@ -56,14 +59,15 @@ class PreparedData:
     group_columns: tuple[str, ...]
     group_values: tuple[tuple[object, ...], ...]
     columns: dict[str, tuple[str, ...]]
+    channels: tuple[str, ...]
 
-    def to_jax(
+    def _to_jax(
         self,
         *,
         dtype: DTypeLike = float,
         device: jax.Device | jax.sharding.Sharding | None = None,
     ) -> dict[str, jax.Array]:
-        """Convert numerical blocks to JAX arrays without transferring labels.
+        """Convert numerical inputs for internal model evaluation.
 
         Parameters
         ----------
@@ -123,12 +127,104 @@ class PreparedData:
 
         return cast(dict[str, jax.Array], jax.device_put(converted, device=device))
 
+    def _align_to(self, reference: "PreparedData") -> "PreparedData":
+        """Match reference ordering for internal prediction preparation.
+
+        Return independent arrays without changing dates or dtypes. Omitted
+        inputs are allowed, so the calling workflow must check which inputs
+        its model needs. Missing labels and changed channel assignments are
+        rejected rather than filled or inferred.
+        """
+        if not isinstance(reference, PreparedData):
+            raise TypeError("reference must be PreparedData returned by prepare_data")
+        if self.group_columns != reference.group_columns:
+            raise ValueError(
+                f"group columns must match the reference {reference.group_columns}, got {self.group_columns}. "
+                "Use the same groups selection when calling prepare_data"
+            )
+
+        observation_indices = [np.arange(len(self.time_values))]
+        if self.group_columns:
+            try:
+                positions = {label: index for index, label in enumerate(self.group_values)}
+                reference_groups = set(reference.group_values)
+            except TypeError as error:
+                raise TypeError(
+                    f"group columns {self.group_columns} contain labels that cannot be matched. "
+                    "Use scalar group labels such as strings, numbers or dates"
+                ) from error
+            missing = [label for label in reference.group_values if label not in positions]
+            unexpected = [label for label in self.group_values if label not in reference_groups]
+            if missing or unexpected:
+                raise ValueError(
+                    f"group labels do not match the reference for {self.group_columns}. "
+                    f"Missing groups {missing} and unexpected groups {unexpected}. "
+                    "Supply exactly the reference groups before alignment"
+                )
+            observation_indices.append(np.asarray([positions[label] for label in reference.group_values]))
+
+        unknown = [name for name in self.arrays if name not in reference.arrays]
+        if unknown:
+            raise ValueError(f"inputs {unknown} do not exist in the reference. Supply inputs used by the model")
+
+        arrays: dict[str, NDArray[np.generic]] = {}
+        columns: dict[str, tuple[str, ...]] = {}
+        for name, reference_array in reference.arrays.items():
+            if name not in self.arrays:
+                continue
+            array = self.arrays[name]
+            reference_columns = reference.columns[name]
+            reference_column_set = set(reference_columns)
+            column_positions = {column: index for index, column in enumerate(self.columns[name])}
+            missing_columns = [column for column in reference_columns if column not in column_positions]
+            unexpected_columns = [column for column in self.columns[name] if column not in reference_column_set]
+            if missing_columns or unexpected_columns:
+                raise ValueError(
+                    f"columns for {name!r} do not match the reference. "
+                    f"Missing columns {missing_columns} and unexpected columns {unexpected_columns}. "
+                    "Select the same source columns before alignment"
+                )
+            if array.ndim != reference_array.ndim:
+                raise ValueError(
+                    f"input {name!r} has a different number of axes from the reference. "
+                    "Prepare both inputs with prepare_data without changing their array shapes"
+                )
+
+            indices = observation_indices
+            if array.ndim > len(observation_indices):
+                feature_order = [column_positions[column] for column in reference_columns]
+                if name in ("media", "spend"):
+                    aligned_channels = tuple(self.channels[index] for index in feature_order)
+                    if aligned_channels != reference.channels:
+                        raise ValueError(
+                            f"channel labels for {name!r} do not match the reference. "
+                            "Use the same channel-to-column assignments when calling prepare_data"
+                        )
+                indices = [*indices, np.asarray(feature_order)]
+            # Reorder both axes in one copy instead of gathering whole blocks twice
+            arrays[name] = array[np.ix_(*indices)]
+            columns[name] = reference_columns
+
+        return PreparedData(
+            arrays=arrays,
+            time_column=self.time_column,
+            time_values=self.time_values,
+            group_columns=self.group_columns,
+            group_values=reference.group_values,
+            columns=columns,
+            channels=reference.channels if "media" in arrays else (),
+        )
+
 
 def prepare_data(
     frame: IntoDataFrameT,
     *,
     time: str,
-    blocks: Mapping[str, str | Sequence[str]],
+    outcome: str | None = None,
+    media: Sequence[str] | None = None,
+    spend: Sequence[str] | None = None,
+    controls: Sequence[str] | None = None,
+    channels: Sequence[str] | None = None,
     groups: Sequence[str] = (),
     frequency: str | None = None,
 ) -> PreparedData:
@@ -138,19 +234,33 @@ def prepare_data(
     ----------
     frame : dataframe-like
         Eager dataframe supported by Narwhals, including pandas and Polars
-        DataFrames and PyArrow Tables. Block values must be numeric or
+        DataFrames and PyArrow Tables. Selected values must be numeric or
         boolean, finite, and nonmissing. The input is not modified.
     time : str
         Column identifying observation periods, with values that sort
         chronologically. Each combination of time and group must be unique.
         Calendar checks accept dates, timezone-naive datetimes, or strings
         written as ``YYYY-MM-DD``. Original labels are retained.
-    blocks : mapping of str to str or sequence of str
-        Names for model inputs and their source columns, for example
-        ``{"outcome": "sales", "media": ["search", "video"]}``. A column
-        name produces one value per observation. A sequence keeps a final
-        feature axis, even for a single column. Columns may appear in more
-        than one block, but cannot be repeated within the same block.
+    outcome : str, optional
+        Column containing the response, such as sales or conversions.
+        Omit it when preparing prediction data without observed outcomes.
+    media : sequence of str, optional
+        Columns containing nonnegative media inputs, such as impressions
+        or spending. Their order defines the channel axis. Use a list
+        even for one channel.
+    spend : sequence of str, optional
+        Columns containing nonnegative spending for the selected media.
+        Supply one column per media channel in the same order. If media
+        already contains spending, the same columns can be selected here.
+        Omit this argument when separate spending inputs are not needed.
+    controls : sequence of str, optional
+        Columns containing additional predictors, such as price or
+        promotion indicators. Their order defines the control axis.
+        Negative values are allowed for controls and the outcome.
+    channels : sequence of str, optional
+        Unique channel names shared by media and spend, such as
+        ``["video", "search"]``. These match the selected columns by
+        position. Defaults to the media column names. Requires ``media``.
     groups : sequence of str, optional
         Columns identifying each observed series, such as ``["region"]``.
         Every observed group must have the same time periods. Group
@@ -166,27 +276,28 @@ def prepare_data(
     Returns
     -------
     PreparedData
-        Arrays ordered as time, group (if supplied), then feature (for
-        sequence selections). Labels follow that exact order. Each block
-        has its own dtype. Columns within a block use NumPy type promotion.
-        Keep count outcomes in a separate block from continuous features
-        to preserve their integer dtype. Arrays do not share memory with
-        the input dataframe.
+        Named arrays for the supplied inputs, ordered as time, group
+        (if supplied), then channel or control. Outcome has no final
+        feature axis. Media, spend, and controls keep that axis even for
+        a single column. Integer outcomes retain their dtype separately
+        from continuous inputs. Columns within an input use NumPy type
+        promotion. Arrays do not share memory with the input dataframe.
 
     Notes
     -----
-    All blocks share the same observation periods. Missing observations
-    are reported, not filled or treated as zero. Calendar checks cover only
-    the span between the first and last supplied times.
+    Supply at least one of outcome, media, or controls. All inputs share
+    the same observation periods. Missing observations are reported, not
+    filled or treated as zero. Calendar checks cover only the span between
+    the first and last supplied times. No scaling or transformations are
+    applied.
 
-    Block names describe your model inputs but do not add role-specific
-    checks. For example, naming a block ``"media"`` does not require its
-    values to be nonnegative or associate it with spending columns.
+    Media, spend, and channel names are paired by position. Matching
+    lengths are checked, but column names cannot establish whether a
+    media measurement and spending value belong to the same channel.
 
-    Each call prepares its input independently. Group and feature ordering
-    must match the model before using separately prepared prediction data.
-    Call :meth:`PreparedData.to_jax` once before model calculations. Dataframe
-    preparation belongs outside JAX transformations such as ``jax.jit``.
+    Each call prepares its input independently.
+    Dataframe preparation belongs outside JAX transformations such as
+    ``jax.jit``.
 
     Examples
     --------
@@ -207,42 +318,53 @@ def prepare_data(
         In [2]: data = prepare_data(
            ...:     spend,
            ...:     time="week",
-           ...:     blocks={
-           ...:         "outcome": "sales",
-           ...:         "media": ["video", "search"],
-           ...:     },
+           ...:     outcome="sales",
+           ...:     media=["video", "search"],
+           ...:     spend=["video", "search"],
            ...:     frequency="weekly",
            ...: )
-           ...: data.columns["media"]
+           ...: data.channels
 
-    Convert the numerical blocks for use in a model. Labels remain on
-    ``data`` so you can identify the observations and channels later.
-
-    .. ipython::
-
-        In [3]: inputs = data.to_jax()
-           ...: inputs["media"]
     """
-    if not isinstance(blocks, Mapping) or not blocks:
-        raise TypeError("blocks must be a nonempty mapping, such as {'outcome': 'sales', 'media': ['video']}")
-
+    selections = {"outcome": outcome, "media": media, "spend": spend, "controls": controls}
     columns: dict[str, tuple[str, ...]] = {}
-    for name, selection in blocks.items():
-        if not isinstance(name, str) or not name:
-            raise ValueError(f"block names must be nonempty strings, got {name!r}")
-        if isinstance(selection, str):
+    for name, selection in selections.items():
+        if selection is None:
+            continue
+        if name == "outcome":
+            if not isinstance(selection, str):
+                raise TypeError("outcome must be a column name, such as 'sales'")
             names: tuple[str, ...] = (selection,)
-        elif isinstance(selection, Sequence):
+        elif isinstance(selection, Sequence) and not isinstance(selection, str):
             names = tuple(selection)
         else:
-            raise TypeError(f"block {name!r} must select a column name or a sequence of column names")
+            raise TypeError(f"{name} must be a sequence of column names. Use a list even for one column")
         if not names or any(not isinstance(column, str) or not column for column in names):
-            raise ValueError(f"block {name!r} must select at least one nonempty string column name. Got {selection!r}")
+            raise ValueError(f"{name} must select at least one nonempty string column name. Got {selection!r}")
         if len(set(names)) != len(names):
-            raise ValueError(
-                f"block {name!r} contains repeated columns {names}. Select each column only once per block"
-            )
+            raise ValueError(f"{name} contains repeated columns {names}. Select each column only once per input")
         columns[name] = names
+
+    if not columns:
+        raise ValueError("select at least one of outcome, media or controls when preparing data")
+    if spend is not None and "media" not in columns:
+        raise ValueError("spend requires media columns so spending can be associated with each channel")
+    if spend is not None and len(columns["spend"]) != len(columns["media"]):
+        raise ValueError("spend must select one column per media channel in the same order")
+
+    channel_names = columns.get("media", ())
+    if channels is not None:
+        if "media" not in columns:
+            raise ValueError("channels requires media columns to label")
+        if isinstance(channels, str) or not isinstance(channels, Sequence):
+            raise TypeError("channels must be a sequence of names, such as ['video', 'search']")
+        channel_names = tuple(channels)
+        if any(not isinstance(name, str) or not name for name in channel_names):
+            raise ValueError("channels must contain only nonempty string names")
+        if len(set(channel_names)) != len(channel_names):
+            raise ValueError("channels must contain unique names. Give each media channel a different name")
+        if len(channel_names) != len(columns["media"]):
+            raise ValueError("channels must contain one name per media column in the same order")
 
     selected = _prepare_panel(
         frame,
@@ -257,12 +379,20 @@ def prepare_data(
 
     arrays: dict[str, NDArray[np.generic]] = {}
     for name, names in columns.items():
-        if isinstance(blocks[name], str):
+        if name == "outcome":
             arrays[name] = selected.get_column(names[0]).to_numpy().copy().reshape(observation_shape)
         else:
             # Stacking numeric series avoids object arrays from mixed pandas column dtypes
             values = np.stack([selected.get_column(column).to_numpy() for column in names], axis=-1)
             arrays[name] = values.reshape(*observation_shape, len(names))
+        if name in ("media", "spend"):
+            negative = np.any(np.less(arrays[name], 0), axis=tuple(range(arrays[name].ndim - 1)))
+            negative_columns = [names[index] for index in np.flatnonzero(negative)]
+            if negative_columns:
+                raise ValueError(
+                    f"{name} columns {negative_columns} contain negative values. "
+                    "Use nonnegative media measurements and spending before preparing data"
+                )
 
     return PreparedData(
         arrays=arrays,
@@ -271,6 +401,7 @@ def prepare_data(
         group_columns=tuple(groups),
         group_values=group_values,
         columns=columns,
+        channels=channel_names,
     )
 
 

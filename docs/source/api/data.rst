@@ -2,8 +2,14 @@ Data preparation
 ================
 
 Prepare dataframe inputs with time, group, and column labels intact.
-Use ``prepare_data`` to select and validate observations, then
-``PreparedData.to_jax`` to convert the numerical blocks for modeling.
+Use ``prepare_data`` to select and validate the outcome, media, spend,
+and controls. The returned ``PreparedData`` keeps the selected values
+together with their observation and channel labels.
+
+Media and spend columns are paired in the order supplied. Optional
+``channels`` names label their shared channel axis and default to the
+media column names. Select the same columns for media and spend when
+the model uses spending as its media input.
 
 .. currentmodule:: mmmjax
 

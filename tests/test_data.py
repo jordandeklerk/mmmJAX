@@ -20,6 +20,8 @@ def test_data_api_exports_public_entry_points():
     assert mmmjax.data.__all__ == ["PreparedData", "prepare_data"]
     assert {"PreparedData", "prepare_data"}.issubset(mmmjax.__all__)
     assert PreparedData is mmmjax.data.PreparedData
+    assert not hasattr(PreparedData, "align_to")
+    assert not hasattr(PreparedData, "to_jax")
     assert prepare_data is mmmjax.data.prepare_data
 
 
@@ -36,6 +38,217 @@ def frame_factory(request):
     return pa.table
 
 
+def test_align_to_reorders_groups_and_features_without_changing_dates(frame_factory):
+    training = prepare_data(
+        pl.DataFrame(
+            {
+                "week": [1, 1],
+                "region": ["west", "east"],
+                "sales": [10, 20],
+                "video": [80.0, 60.0],
+                "search": [40.0, 30.0],
+                "promotion": [False, False],
+            }
+        ),
+        time="week",
+        groups=["region"],
+        outcome="sales",
+        media=["video", "search"],
+        controls=["promotion"],
+    )
+    prediction = prepare_data(
+        frame_factory(
+            {
+                "week": [4, 3, 3, 4, 5, 5],
+                "region": ["east", "east", "west", "west", "east", "west"],
+                "video": [40.0, 30.0, 300.0, 400.0, 50.0, 500.0],
+                "search": [4.0, 3.0, 30.0, 40.0, 5.0, 50.0],
+                "promotion": [True, False, True, False, True, False],
+            }
+        ),
+        time="week",
+        groups=["region"],
+        controls=["promotion"],
+        media=["search", "video"],
+    )
+
+    aligned = prediction._align_to(training)
+
+    assert aligned.time_column == "week"
+    assert aligned.time_values == (3, 4, 5)
+    assert aligned.group_columns == ("region",)
+    assert aligned.group_values == (("west",), ("east",))
+    assert list(aligned.arrays) == ["media", "controls"]
+    assert aligned.columns == {"media": ("video", "search"), "controls": ("promotion",)}
+    assert aligned.channels == ("video", "search")
+    np.testing.assert_array_equal(
+        aligned.arrays["media"], [[[300, 30], [30, 3]], [[400, 40], [40, 4]], [[500, 50], [50, 5]]]
+    )
+    np.testing.assert_array_equal(aligned.arrays["controls"], [[[True], [False]], [[False], [True]], [[False], [True]]])
+    assert aligned.arrays["media"].dtype == prediction.arrays["media"].dtype
+    assert aligned.arrays["controls"].dtype == np.bool_
+    assert prediction.group_values == (("east",), ("west",))
+    assert prediction.columns["media"] == ("search", "video")
+    assert prediction.channels == ("search", "video")
+    assert list(prediction.arrays) == ["media", "controls"]
+    np.testing.assert_array_equal(training.arrays["media"], [[[80, 40], [60, 30]]])
+
+    # Distinct group and channel coefficients make a swapped label change the predictions
+    coefficients = jnp.array([[1.0, 2.0], [3.0, 4.0]])
+    predict = jax.jit(lambda inputs: jnp.sum(inputs["media"] * coefficients, axis=-1))
+    np.testing.assert_array_equal(predict(aligned._to_jax()), [[360, 102], [480, 136], [600, 170]])
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_align_to_preserves_singleton_axes_and_copies_unchanged_blocks(frame_factory, grouped):
+    source = frame_factory({"week": [2, 1], "region": ["west", "west"], "count": [20, 10]})
+    data = prepare_data(
+        source,
+        time="week",
+        groups=["region"] if grouped else (),
+        outcome="count",
+        media=["count"],
+    )
+
+    aligned = data._align_to(data)
+
+    assert aligned is not data
+    assert aligned.arrays is not data.arrays
+    assert aligned.columns is not data.columns
+    for name, array in aligned.arrays.items():
+        assert array.shape == data.arrays[name].shape
+        assert array.dtype == data.arrays[name].dtype
+        assert not np.shares_memory(array, data.arrays[name])
+        np.testing.assert_array_equal(array, data.arrays[name])
+        array[...] = 0
+        assert np.all(data.arrays[name] > 0)
+
+
+def test_align_to_matches_nested_group_combinations():
+    training = prepare_data(
+        pl.DataFrame({"week": [1, 1, 1], "region": ["west", "east", "east"], "store": [1, 2, 1], "value": [1, 2, 3]}),
+        time="week",
+        groups=["region", "store"],
+        outcome="value",
+    )
+    prediction = prepare_data(
+        pd.DataFrame(
+            {"week": [2, 2, 2], "region": ["east", "west", "east"], "store": [1, 1, 2], "value": [30, 10, 20]}
+        ),
+        time="week",
+        groups=["region", "store"],
+        outcome="value",
+    )
+
+    aligned = prediction._align_to(training)
+
+    assert aligned.group_values == (("west", 1), ("east", 2), ("east", 1))
+    np.testing.assert_array_equal(aligned.arrays["outcome"], [[10, 20, 30]])
+
+
+@pytest.mark.parametrize("groups", [["east"], ["east", "west", "north"], ["east", "north"]])
+def test_align_to_rejects_missing_or_unexpected_groups(groups):
+    training = prepare_data(
+        pl.DataFrame({"week": [1, 1], "region": ["west", "east"], "value": [1, 2]}),
+        time="week",
+        groups=["region"],
+        outcome="value",
+    )
+    prediction = prepare_data(
+        pl.DataFrame({"week": [2] * len(groups), "region": groups, "value": [3] * len(groups)}),
+        time="week",
+        groups=["region"],
+        outcome="value",
+    )
+
+    with pytest.raises(ValueError, match=r"group labels do not match.*region") as error:
+        prediction._align_to(training)
+
+    if "west" not in groups:
+        assert "Missing groups [('west',)]" in str(error.value)
+    if "north" in groups:
+        assert "unexpected groups [('north',)]" in str(error.value)
+
+
+@pytest.mark.parametrize("groups", [(), ["region"], ["store", "region"]])
+def test_align_to_requires_matching_group_columns(groups):
+    source = pl.DataFrame({"week": [1], "region": ["west"], "store": [1], "value": [1]})
+    training = prepare_data(source, time="week", groups=["region", "store"], outcome="value")
+    prediction = prepare_data(source, time="week", groups=groups, outcome="value")
+
+    with pytest.raises(ValueError, match=r"group columns must match.*same groups selection"):
+        prediction._align_to(training)
+
+
+@pytest.mark.parametrize("reference_has_lists", [False, True])
+def test_align_to_reports_list_valued_group_cells(reference_has_lists):
+    scalar = prepare_data(
+        pl.DataFrame({"week": [1, 1], "region": ["west", "east"], "value": [1, 2]}),
+        time="week",
+        groups=["region"],
+        outcome="value",
+    )
+    nested = prepare_data(
+        pl.DataFrame({"week": [1, 1], "region": [["west"], ["east"]], "value": [1, 2]}),
+        time="week",
+        groups=["region"],
+        outcome="value",
+    )
+    prediction, reference = (scalar, nested) if reference_has_lists else (nested, scalar)
+
+    with pytest.raises(TypeError, match=r"group columns.*region.*Use scalar group labels"):
+        prediction._align_to(reference)
+
+
+@pytest.mark.parametrize("columns", [["video"], ["video", "search", "social"], ["video", "social"]])
+def test_align_to_rejects_missing_or_unexpected_columns(columns):
+    source = pl.DataFrame({"week": [1], "video": [1.0], "search": [2.0], "social": [3.0]})
+    training = prepare_data(source, time="week", media=["video", "search"])
+    prediction = prepare_data(source, time="week", media=columns)
+
+    with pytest.raises(ValueError, match="columns for 'media' do not match") as error:
+        prediction._align_to(training)
+
+    if "search" not in columns:
+        assert "Missing columns ['search']" in str(error.value)
+    if "social" in columns:
+        assert "unexpected columns ['social']" in str(error.value)
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+@pytest.mark.parametrize("reshape_reference", [False, True])
+def test_align_to_rejects_manually_changed_array_layout(grouped, reshape_reference):
+    source = pl.DataFrame({"week": [1], "region": ["west"], "sales": [10]})
+    groups = ["region"] if grouped else ()
+    training = prepare_data(source, time="week", groups=groups, outcome="sales")
+    prediction = prepare_data(source, time="week", groups=groups, outcome="sales")
+    changed = training if reshape_reference else prediction
+    changed.arrays["outcome"] = changed.arrays["outcome"][..., None]
+
+    with pytest.raises(ValueError, match="input 'outcome' has a different number of axes"):
+        prediction._align_to(training)
+
+
+def test_align_to_rejects_additional_inputs_and_different_outcome_columns():
+    source = pl.DataFrame({"week": [1], "sales": [10], "other": [20]})
+    training = prepare_data(source, time="week", outcome="sales")
+    unknown = prepare_data(source, time="week", controls=["sales"])
+    renamed = prepare_data(source, time="week", outcome="other")
+
+    with pytest.raises(ValueError, match=r"inputs.*controls.*do not exist in the reference"):
+        unknown._align_to(training)
+    with pytest.raises(ValueError, match=r"'outcome'.*Missing columns.*sales.*unexpected columns.*other"):
+        renamed._align_to(training)
+
+
+@pytest.mark.parametrize("reference", [None, {}, "training"])
+def test_align_to_requires_prepared_reference_data(reference):
+    data = prepare_data(pl.DataFrame({"week": [1], "sales": [10]}), time="week", outcome="sales")
+
+    with pytest.raises(TypeError, match="reference must be PreparedData returned by prepare_data"):
+        data._align_to(reference)
+
+
 def test_prepare_data_example_keeps_channel_order_and_sorts_observations(frame_factory):
     source = frame_factory(
         {
@@ -49,10 +262,11 @@ def test_prepare_data_example_keeps_channel_order_and_sorts_observations(frame_f
     data = prepare_data(
         source,
         time="week",
-        blocks={"outcome": "sales", "media": ["video", "search"]},
+        outcome="sales",
+        media=["video", "search"],
         frequency="weekly",
     )
-    inputs = data.to_jax()
+    inputs = data.arrays
 
     assert isinstance(data, PreparedData)
     assert data.time_values == ("2026-01-05", "2026-01-12", "2026-01-19")
@@ -72,17 +286,17 @@ def test_prepared_data_to_jax_follows_precision_setting_without_changing_host_da
             "promotion": [True, False],
         }
     )
-    data = prepare_data(source, time="week", blocks={"outcome": "sales", "media": ["video"], "flag": "promotion"})
+    data = prepare_data(source, time="week", outcome="sales", media=["video"], controls=["promotion"])
     before = {name: array.copy() for name, array in data.arrays.items()}
 
     with jax.enable_x64(x64):
-        result = data.to_jax()
+        result = data._to_jax()
         assert jax.config.x64_enabled == x64
 
     assert set(result) == set(data.arrays)
     assert result["media"].dtype == (np.float64 if x64 else np.float32)
     assert result["outcome"].dtype == (np.int64 if x64 else np.int32)
-    assert result["flag"].dtype == np.bool_
+    assert result["controls"].dtype == np.bool_
     for name, array in result.items():
         assert isinstance(array, jax.Array)
         assert array.shape == before[name].shape
@@ -90,33 +304,33 @@ def test_prepared_data_to_jax_follows_precision_setting_without_changing_host_da
         np.testing.assert_array_equal(data.arrays[name], before[name])
         assert data.arrays[name].dtype == before[name].dtype
     assert data.time_values == (1, 2)
-    assert data.columns == {"outcome": ("sales",), "media": ("video",), "flag": ("promotion",)}
+    assert data.columns == {"outcome": ("sales",), "media": ("video",), "controls": ("promotion",)}
 
 
 @pytest.mark.parametrize("dtype", [np.float32, "float32", np.float64, "float64"])
 def test_prepared_data_to_jax_respects_explicit_floating_precision(dtype):
-    data = prepare_data(pl.DataFrame({"week": [1], "value": [1.5]}), time="week", blocks={"value": "value"})
+    data = prepare_data(pl.DataFrame({"week": [1], "value": [1.5]}), time="week", outcome="value")
 
     with jax.enable_x64(True):
-        result = data.to_jax(dtype=dtype)
+        result = data._to_jax(dtype=dtype)
 
-    assert result["value"].dtype == np.dtype(dtype)
+    assert result["outcome"].dtype == np.dtype(dtype)
 
 
 @pytest.mark.parametrize("dtype", [np.float64, "float64", np.dtype("float64")])
 def test_prepared_data_to_jax_does_not_silently_narrow_explicit_float64(dtype):
-    data = prepare_data(pl.DataFrame({"week": [1], "value": [1.5]}), time="week", blocks={"value": "value"})
+    data = prepare_data(pl.DataFrame({"week": [1], "value": [1.5]}), time="week", outcome="value")
 
     with jax.enable_x64(False), pytest.raises(ValueError, match=r"explicit dtype float64.*JAX_ENABLE_X64=true"):
-        data.to_jax(dtype=dtype)
+        data._to_jax(dtype=dtype)
 
 
 @pytest.mark.parametrize("dtype", [None, np.int32, np.bool_, np.complex64, np.float16, "not-a-dtype"])
 def test_prepared_data_to_jax_requires_a_supported_floating_dtype(dtype):
-    data = prepare_data(pl.DataFrame({"week": [1], "value": [1.5]}), time="week", blocks={"value": "value"})
+    data = prepare_data(pl.DataFrame({"week": [1], "value": [1.5]}), time="week", outcome="value")
 
     with pytest.raises(TypeError, match="dtype must be float32 or float64"):
-        data.to_jax(dtype=dtype)
+        data._to_jax(dtype=dtype)
 
 
 @pytest.mark.parametrize(
@@ -131,13 +345,13 @@ def test_prepared_data_to_jax_requires_a_supported_floating_dtype(dtype):
 )
 def test_prepared_data_to_jax_preserves_representable_integers(source_dtype, expected_dtype, values):
     original = np.array(values, dtype=source_dtype)
-    data = prepare_data(pl.DataFrame({"week": [1, 2], "counts": original}), time="week", blocks={"counts": "counts"})
+    data = prepare_data(pl.DataFrame({"week": [1, 2], "counts": original}), time="week", outcome="counts")
 
     with jax.enable_x64(False):
-        result = data.to_jax()
+        result = data._to_jax()
 
-    assert result["counts"].dtype == expected_dtype
-    np.testing.assert_array_equal(result["counts"], original)
+    assert result["outcome"].dtype == expected_dtype
+    np.testing.assert_array_equal(result["outcome"], original)
 
 
 @pytest.mark.parametrize(
@@ -150,14 +364,14 @@ def test_prepared_data_to_jax_preserves_representable_integers(source_dtype, exp
 )
 def test_prepared_data_to_jax_rejects_integer_wraparound(dtype, value):
     data = prepare_data(
-        pl.DataFrame({"week": [1], "sales": np.array([value], dtype=dtype)}), time="week", blocks={"outcome": "sales"}
+        pl.DataFrame({"week": [1], "sales": np.array([value], dtype=dtype)}), time="week", outcome="sales"
     )
 
     with jax.enable_x64(False), pytest.raises(ValueError, match=r"block 'outcome'.*integers.*JAX_ENABLE_X64=true"):
-        data.to_jax()
+        data._to_jax()
 
     with jax.enable_x64(True):
-        result = data.to_jax()
+        result = data._to_jax()
 
     assert result["outcome"].dtype == dtype
     assert int(np.asarray(result["outcome"])[0]) == value
@@ -165,27 +379,27 @@ def test_prepared_data_to_jax_rejects_integer_wraparound(dtype, value):
 
 def test_prepared_data_to_jax_keeps_large_counts_exact_in_64_bit_mode():
     counts = np.array([2**53, 2**53 + 1], dtype=np.int64)
-    data = prepare_data(pl.DataFrame({"week": [1, 2], "counts": counts}), time="week", blocks={"counts": "counts"})
+    data = prepare_data(pl.DataFrame({"week": [1, 2], "counts": counts}), time="week", outcome="counts")
 
     with jax.enable_x64(True):
-        result = data.to_jax(dtype=np.float32)
+        result = data._to_jax(dtype=np.float32)
 
     # The floating-point precision choice must not turn count outcomes into rounded floats
-    assert result["counts"].dtype == np.int64
-    np.testing.assert_array_equal(result["counts"], counts)
+    assert result["outcome"].dtype == np.int64
+    np.testing.assert_array_equal(result["outcome"], counts)
 
 
 @pytest.mark.parametrize("value", [1e100, -1e100])
 def test_prepared_data_to_jax_reports_floating_overflow_before_transfer(value):
-    data = prepare_data(pl.DataFrame({"week": [1], "spend": [value]}), time="week", blocks={"media": ["spend"]})
+    data = prepare_data(pl.DataFrame({"week": [1], "response": [value]}), time="week", outcome="response")
 
-    with jax.enable_x64(False), pytest.raises(ValueError, match=r"block 'media'.*not finite as float32.*rescale"):
-        data.to_jax()
+    with jax.enable_x64(False), pytest.raises(ValueError, match=r"block 'outcome'.*not finite as float32.*rescale"):
+        data._to_jax()
 
     with jax.enable_x64(True):
-        result = data.to_jax(dtype=np.float64)
+        result = data._to_jax(dtype=np.float64)
 
-    np.testing.assert_array_equal(result["media"], [[value]])
+    np.testing.assert_array_equal(result["outcome"], [value])
 
 
 @pytest.mark.parametrize("sharded", [False, True])
@@ -193,12 +407,13 @@ def test_prepared_data_to_jax_places_all_blocks_on_the_requested_device(sharded)
     data = prepare_data(
         pl.DataFrame({"week": [1, 2], "sales": [10, 20], "video": [1.5, 2.5]}),
         time="week",
-        blocks={"outcome": "sales", "media": ["video"]},
+        outcome="sales",
+        media=["video"],
     )
     device = jax.devices("cpu")[0]
     destination = jax.sharding.SingleDeviceSharding(device) if sharded else device
 
-    result = data.to_jax(device=destination)
+    result = data._to_jax(device=destination)
 
     for array in result.values():
         assert array.devices() == {device}
@@ -208,13 +423,13 @@ def test_prepared_data_to_jax_places_all_blocks_on_the_requested_device(sharded)
 @pytest.mark.parametrize("dtype", [np.float32, np.int32, np.bool_])
 def test_prepared_data_to_jax_does_not_share_mutable_host_buffers(dtype):
     original = np.array([0, 1], dtype=dtype)
-    data = prepare_data(pl.DataFrame({"week": [1, 2], "value": original}), time="week", blocks={"value": "value"})
-    result = data.to_jax(dtype=np.float32, device=jax.devices("cpu")[0])
+    data = prepare_data(pl.DataFrame({"week": [1, 2], "value": original}), time="week", outcome="value")
+    result = data._to_jax(dtype=np.float32, device=jax.devices("cpu")[0])
     jax.block_until_ready(result)
 
-    data.arrays["value"][:] = 0
+    data.arrays["outcome"][:] = 0
 
-    np.testing.assert_array_equal(result["value"], original)
+    np.testing.assert_array_equal(result["outcome"], original)
 
 
 def test_prepare_data_keeps_block_axes_and_labels_aligned(frame_factory):
@@ -234,7 +449,9 @@ def test_prepare_data_keeps_block_axes_and_labels_aligned(frame_factory):
         source,
         time="week",
         groups=["geo"],
-        blocks={"outcome": "sales", "media": ["video"], "controls": ["price", "promotion"]},
+        outcome="sales",
+        media=["video"],
+        controls=["price", "promotion"],
     )
 
     assert result.time_column == "week"
@@ -256,15 +473,13 @@ def test_prepare_data_distinguishes_a_column_from_a_single_column_block(frame_fa
     source = frame_factory({"date": ["2026-01-05"], "geo": ["east"], "sales": [10]})
     groups = ["geo"] if grouped else []
 
-    result = prepare_data(
-        source, time="date", groups=groups, blocks={"outcome": "sales", "features": ["sales"]}, frequency="weekly"
-    )
+    result = prepare_data(source, time="date", groups=groups, outcome="sales", media=["sales"], frequency="weekly")
 
     assert result.time_values == ("2026-01-05",)
     assert result.group_values == ((("east",),) if grouped else ())
     assert result.arrays["outcome"].shape == ((1, 1) if grouped else (1,))
-    assert result.arrays["features"].shape == ((1, 1, 1) if grouped else (1, 1))
-    np.testing.assert_array_equal(result.arrays["features"][..., 0], result.arrays["outcome"])
+    assert result.arrays["media"].shape == ((1, 1, 1) if grouped else (1, 1))
+    np.testing.assert_array_equal(result.arrays["media"][..., 0], result.arrays["outcome"])
 
 
 def test_prepare_data_keeps_nested_groups_on_one_observed_series_axis(frame_factory):
@@ -277,14 +492,14 @@ def test_prepare_data_keeps_nested_groups_on_one_observed_series_axis(frame_fact
         }
     )
 
-    result = prepare_data(source, time="week", groups=["region", "store"], blocks={"outcome": "sales"})
+    result = prepare_data(source, time="week", groups=["region", "store"], outcome="sales")
 
     assert result.group_columns == ("region", "store")
     assert result.group_values == (("west", 1), ("east", 1))
     np.testing.assert_array_equal(result.arrays["outcome"], [[30, 10], [40, 20]])
 
 
-def test_prepare_data_packs_hundreds_of_channels_into_one_array(frame_factory):
+def test_prepared_data_keeps_hundreds_of_channels_aligned(frame_factory):
     expected = np.arange(3 * 8 * 465, dtype=np.float32).reshape(3, 8, 465)
     rows = [(time, group) for time in [2, 0, 1] for group in reversed(range(8))]
     source = frame_factory(
@@ -298,73 +513,201 @@ def test_prepare_data_packs_hundreds_of_channels_into_one_array(frame_factory):
     )
     channels = [f"channel_{channel}" for channel in reversed(range(465))]
 
-    result = prepare_data(source, time="week", groups=["geo"], blocks={"media": channels})
+    result = prepare_data(source, time="week", groups=["geo"], media=channels)
 
     assert result.columns["media"] == tuple(channels)
     assert result.group_values == tuple((group,) for group in reversed(range(8)))
     np.testing.assert_array_equal(result.arrays["media"], expected[:, ::-1, ::-1])
     assert len(jax.tree.leaves(result.arrays)) == 1
 
+    reference = prepare_data(
+        nw.from_native(source).sort(["week", "geo"]).to_native(),
+        time="week",
+        groups=["geo"],
+        media=list(reversed(channels)),
+    )
+    aligned = result._align_to(reference)
+
+    np.testing.assert_array_equal(aligned.arrays["media"], expected)
+    source_dtype = nw.from_native(source).get_column(channels[0]).to_numpy().dtype
+    assert aligned.arrays["media"].dtype == source_dtype
+    assert aligned.columns == reference.columns
+    assert aligned.group_values == reference.group_values
+    assert len(jax.tree.leaves(aligned.arrays)) == 1
+
 
 def test_prepare_data_preserves_integer_counts_separately_from_floating_features(frame_factory):
     source = frame_factory({"week": [1, 2], "counts": [2**53, 2**53 + 1], "media": [0.5, 1.5], "flag": [True, False]})
 
-    result = prepare_data(source, time="week", blocks={"outcome": "counts", "media": ["media"], "flag": "flag"})
+    result = prepare_data(source, time="week", outcome="counts", media=["media"], controls=["flag"])
 
     assert result.arrays["outcome"].dtype == np.int64
-    assert result.arrays["flag"].dtype == np.bool_
+    assert result.arrays["controls"].dtype == np.bool_
     np.testing.assert_array_equal(result.arrays["outcome"], np.array([2**53, 2**53 + 1], dtype=np.int64))
 
 
 def test_prepare_data_arrays_do_not_modify_the_input_or_each_other(frame_factory):
     source = frame_factory({"week": [1, 2], "sales": [10, 20]})
-    result = prepare_data(source, time="week", blocks={"outcome": "sales", "features": ["sales"]})
+    result = prepare_data(source, time="week", outcome="sales", media=["sales"])
 
     result.arrays["outcome"][0] = 0
 
     assert nw.from_native(source)["sales"].to_list() == [10, 20]
-    np.testing.assert_array_equal(result.arrays["features"], [[10], [20]])
-    result.arrays["features"][1, 0] = 0
+    np.testing.assert_array_equal(result.arrays["media"], [[10], [20]])
+    result.arrays["media"][1, 0] = 0
     assert nw.from_native(source)["sales"].to_list() == [10, 20]
 
 
+def test_prepare_data_keeps_media_spend_and_channel_labels_together(frame_factory):
+    source = frame_factory(
+        {
+            "week": [3, 1, 2],
+            "sales": [30, 10, 20],
+            "video_views": [300.0, 100.0, 200.0],
+            "search_clicks": [60.0, 20.0, 40.0],
+            "video_cost": [90.0, 30.0, 60.0],
+            "search_cost": [120.0, 40.0, 80.0],
+            "price": [-3.0, -1.0, -2.0],
+            "promotion": [True, False, True],
+        }
+    )
+    training = prepare_data(
+        source,
+        time="week",
+        outcome="sales",
+        media=["video_views", "search_clicks"],
+        spend=["video_cost", "search_cost"],
+        channels=["video", "search"],
+        controls=["price", "promotion"],
+    )
+    prediction = prepare_data(
+        source,
+        time="week",
+        media=["search_clicks", "video_views"],
+        spend=["search_cost", "video_cost"],
+        channels=["search", "video"],
+        controls=["promotion", "price"],
+    )
+
+    aligned = prediction._align_to(training)
+
+    assert aligned.channels == ("video", "search")
+    assert aligned.columns == {
+        "media": ("video_views", "search_clicks"),
+        "spend": ("video_cost", "search_cost"),
+        "controls": ("price", "promotion"),
+    }
+    np.testing.assert_array_equal(aligned.arrays["media"], [[100, 20], [200, 40], [300, 60]])
+    np.testing.assert_array_equal(aligned.arrays["spend"], [[30, 40], [60, 80], [90, 120]])
+    np.testing.assert_array_equal(aligned.arrays["controls"], [[-1, 0], [-2, 1], [-3, 1]])
+    assert prediction.channels == ("search", "video")
+    np.testing.assert_array_equal(prediction.arrays["spend"], [[40, 30], [80, 60], [120, 90]])
+    assert set(aligned._to_jax()) == {"media", "spend", "controls"}
+
+
 @pytest.mark.parametrize(
-    "blocks,error,message",
+    "media,spend,channels",
     [
-        ({}, TypeError, "blocks must be a nonempty mapping"),
-        (["sales"], TypeError, "blocks must be a nonempty mapping"),
-        ({"": "sales"}, ValueError, "block names must be nonempty strings"),
-        ({1: "sales"}, ValueError, "block names must be nonempty strings"),
-        ({"media": None}, TypeError, "block 'media' must select a column"),
-        ({"media": []}, ValueError, "block 'media' must select at least one"),
-        ({"media": [1]}, ValueError, "block 'media' must select at least one"),
-        ({"media": ""}, ValueError, "block 'media' must select at least one"),
-        ({"media": ["sales", "sales"]}, ValueError, "block 'media' contains repeated columns"),
+        (["video", "search"], ["video_cost", "search_cost"], ["video", "social"]),
+        (["search", "video"], ["video_cost", "search_cost"], ["video", "search"]),
+        (["video", "search"], ["search_cost", "video_cost"], ["video", "search"]),
+    ],
+)
+def test_align_to_rejects_changed_channel_assignments(media, spend, channels):
+    source = pl.DataFrame({"week": [1], "video": [10], "search": [20], "video_cost": [30], "search_cost": [40]})
+    training = prepare_data(source, time="week", media=["video", "search"], spend=["video_cost", "search_cost"])
+    prediction = prepare_data(source, time="week", media=media, spend=spend, channels=channels)
+
+    with pytest.raises(ValueError, match=r"channel labels for.*same channel-to-column assignments"):
+        prediction._align_to(training)
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_prepare_data_can_use_spending_as_media_without_sharing_buffers(frame_factory, grouped):
+    source = frame_factory({"week": [2, 1], "region": ["west", "west"], "video": [20.0, 10.0]})
+    data = prepare_data(source, time="week", groups=["region"] if grouped else (), media=("video",), spend=("video",))
+
+    assert data.channels == ("video",)
+    expected = [[[10]], [[20]]] if grouped else [[10], [20]]
+    np.testing.assert_array_equal(data.arrays["media"], expected)
+    np.testing.assert_array_equal(data.arrays["spend"], expected)
+    data.arrays["media"][...] = 0
+    np.testing.assert_array_equal(data.arrays["spend"], expected)
+    assert nw.from_native(source)["video"].to_list() == [20.0, 10.0]
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+@pytest.mark.parametrize("role", ["media", "spend"])
+def test_prepare_data_reports_negative_media_and_spending_columns(frame_factory, role, grouped):
+    source = frame_factory({"week": [2, 1], "region": ["west", "west"], "video": [0, 10], "search": [-1, 20]})
+    selections = {"media": ["video"], role: ["search"]}
+
+    with pytest.raises(ValueError, match=rf"{role} columns.*search.*negative values"):
+        prepare_data(source, time="week", groups=["region"] if grouped else (), **selections)
+
+
+def test_prepare_data_allows_signed_outcomes_and_controls(frame_factory):
+    data = prepare_data(
+        frame_factory({"week": [2, 1], "response": [-10, 5], "price": [-0.5, 1.5], "video": [0, 10]}),
+        time="week",
+        outcome="response",
+        controls=["price"],
+        media=["video"],
+    )
+    np.testing.assert_array_equal(data.arrays["outcome"], [5, -10])
+    np.testing.assert_array_equal(data.arrays["controls"], [[1.5], [-0.5]])
+    np.testing.assert_array_equal(data.arrays["media"], [[10], [0]])
+
+
+@pytest.mark.parametrize(
+    "selection,error,message",
+    [
+        ({}, ValueError, "select at least one of outcome, media or controls"),
+        ({"media": None}, ValueError, "select at least one"),
+        ({"outcome": ["sales"]}, TypeError, "outcome must be a column name"),
+        ({"outcome": ""}, ValueError, "outcome must select at least one nonempty"),
+        ({"media": "sales"}, TypeError, "media must be a sequence"),
+        ({"controls": "sales"}, TypeError, "controls must be a sequence"),
+        ({"media": []}, ValueError, "media must select at least one"),
+        ({"media": [1]}, ValueError, "media must select at least one"),
+        ({"media": ["sales", "sales"]}, ValueError, "media contains repeated columns"),
+        ({"controls": ["sales", "sales"]}, ValueError, "controls contains repeated columns"),
+        ({"spend": ["sales"]}, ValueError, "spend requires media"),
+        ({"media": ["sales"], "spend": "sales"}, TypeError, "spend must be a sequence"),
+        ({"media": ["sales"], "spend": ["sales", "other"]}, ValueError, "spend must select one column per media"),
+        ({"outcome": "sales", "channels": ["video"]}, ValueError, "channels requires media"),
+        ({"media": ["sales"], "channels": "video"}, TypeError, "channels must be a sequence"),
+        ({"media": ["sales"], "channels": []}, ValueError, "channels must contain one name per media"),
+        ({"media": ["sales"], "channels": [1]}, ValueError, "channels must contain only nonempty string"),
+        ({"media": ["sales"], "channels": [""]}, ValueError, "channels must contain only nonempty string"),
+        ({"media": ["sales"], "channels": ["video", "video"]}, ValueError, "channels must contain unique names"),
+        ({"media": ["sales"], "channels": ["video", "search"]}, ValueError, "channels must contain one name per media"),
         ({"outcome": "missing"}, ValueError, "data is missing columns"),
         ({"outcome": "week"}, ValueError, "column declarations contain repeated names"),
     ],
 )
-def test_prepare_data_reports_invalid_block_declarations(blocks, error, message):
+def test_prepare_data_reports_invalid_input_selections(selection, error, message):
     with pytest.raises(error, match=message):
-        prepare_data(pl.DataFrame({"week": [1], "sales": [10]}), time="week", blocks=blocks)
+        prepare_data(pl.DataFrame({"week": [1], "sales": [10]}), time="week", **selection)
 
 
 def test_prepare_data_checks_calendar_and_panel_coverage():
     source = pl.DataFrame({"week": ["2026-01-05", "2026-01-19"], "sales": [10, 20]})
 
     with pytest.raises(ValueError, match="missing periods"):
-        prepare_data(source, time="week", blocks={"outcome": "sales"}, frequency="weekly")
+        prepare_data(source, time="week", outcome="sales", frequency="weekly")
 
     source = pl.DataFrame({"week": [1, 2, 1], "geo": ["east", "east", "west"], "sales": [10, 20, 30]})
     with pytest.raises(ValueError, match="same time values"):
-        prepare_data(source, time="week", groups=["geo"], blocks={"outcome": "sales"})
+        prepare_data(source, time="week", groups=["geo"], outcome="sales")
 
 
 def test_prepare_data_works_with_model_densities_and_gradients():
     data = prepare_data(
         pl.DataFrame({"week": [2, 1], "sales": [5.0, 2.0], "video": [2.0, 1.0], "search": [1.0, 3.0]}),
         time="week",
-        blocks={"outcome": "sales", "media": ["video", "search"]},
+        outcome="sales",
+        media=["video", "search"],
     )
 
     def log_density(data, beta):
@@ -372,7 +715,7 @@ def test_prepare_data_works_with_model_densities_and_gradients():
 
     model = Model({"beta": Real(shape=(2,))}, log_density)
     position = {"beta": jnp.array([0.5, 1.0])}
-    value, gradient = jax.jit(jax.value_and_grad(model.log_density))(position, data.to_jax())
+    value, gradient = jax.jit(jax.value_and_grad(model.log_density))(position, data._to_jax())
 
     residual = np.array([2.0, 5.0]) - np.array([[1.0, 3.0], [2.0, 1.0]]) @ np.array([0.5, 1.0])
     expected_density = -0.5 * np.sum(residual**2) - np.log(2 * np.pi)
@@ -381,13 +724,11 @@ def test_prepare_data_works_with_model_densities_and_gradients():
 
 
 def test_prepare_data_keeps_labels_out_of_jax_compilation():
-    first = prepare_data(
-        pl.DataFrame({"week": [1, 2], "sales": [10.0, 20.0]}), time="week", blocks={"outcome": "sales"}
-    )
+    first = prepare_data(pl.DataFrame({"week": [1, 2], "sales": [10.0, 20.0]}), time="week", outcome="sales")
     second = prepare_data(
         pl.DataFrame({"date": ["2026-01-05", "2026-01-12"], "revenue": [30.0, 40.0]}),
         time="date",
-        blocks={"outcome": "revenue"},
+        outcome="revenue",
     )
     traces = []
 
@@ -397,8 +738,8 @@ def test_prepare_data_keeps_labels_out_of_jax_compilation():
         traces.append(None)
         return data["outcome"].sum()
 
-    assert float(total(first.to_jax())) == 30.0
-    assert float(total(second.to_jax())) == 70.0
+    assert float(total(first._to_jax())) == 30.0
+    assert float(total(second._to_jax())) == 70.0
     assert len(traces) == 1
 
 
@@ -406,9 +747,9 @@ def test_prepare_data_works_with_batched_adstock(frame_factory):
     source = frame_factory(
         {"week": [2, 1, 1, 2], "geo": ["west", "east", "west", "east"], "video": [4.0, 1.0, 3.0, 2.0]}
     )
-    data = prepare_data(source, time="week", groups=["geo"], blocks={"media": ["video"]})
+    data = prepare_data(source, time="week", groups=["geo"], media=["video"])
 
-    carried = jax.jit(lambda media: geometric_adstock(media, 0.5, max_lag=1, normalize=False))(data.to_jax()["media"])
+    carried = jax.jit(lambda media: geometric_adstock(media, 0.5, max_lag=1, normalize=False))(data._to_jax()["media"])
 
     np.testing.assert_array_equal(carried, [[[3.0], [1.0]], [[5.5], [2.5]]])
 
