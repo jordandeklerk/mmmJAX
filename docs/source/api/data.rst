@@ -11,6 +11,11 @@ for their associated costs. Columns are paired in the order supplied. Optional
 media column names. Select the same columns for media and spend when
 the model uses spending as its media input.
 
+Supply earlier media observations with ``media_history`` to retain exposure
+before the first modeling period. This dataframe needs only the selected time,
+group, and media columns. Outcomes, controls, and spend retain their original
+periods. Preparation stores the history without applying adstock.
+
 .. currentmodule:: mmmjax
 
 .. autosummary::
