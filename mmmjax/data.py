@@ -27,20 +27,20 @@ class PreparedData:
     Attributes
     ----------
     arrays : dict of str to numpy.ndarray
-        Selected outcome, media, organic media, spend, controls, and
-        treatments, ordered by time, group if supplied, then feature.
+        Selected model inputs, ordered by time, group if supplied, then feature.
         Outcome has no final feature axis. Each array is independent of
-        the source dataframe and other inputs. Paid and organic media
-        include earlier observations when history is supplied. Other
+        the source dataframe and other inputs. Paid media, organic media,
+        reach, and media frequency include any earlier history. Other
         inputs cover only the modeling periods.
     time_column : str
         Source column identifying observation periods.
     time_values : tuple
-        Sorted modeling periods for outcome, spend, controls, and treatments.
+        Sorted modeling periods for outcome, both spend inputs, controls,
+        and treatments.
     media_time_values : tuple
-        Shared time labels for paid and organic media, including any earlier
-        history. Without history these match ``time_values``. Empty when
-        neither media input was supplied.
+        Shared time labels for media, organic media, reach, and media frequency,
+        including any earlier history. Without history these match
+        ``time_values``. Empty when no exposure inputs were supplied.
     group_columns : tuple of str
         Source columns identifying each series. Empty for a single series.
     group_values : tuple of tuple
@@ -55,6 +55,10 @@ class PreparedData:
     organic_channels : tuple of str
         Channel labels for the final axis of organic media, independent of
         paid channel labels. Empty when organic media was not supplied.
+    rf_channels : tuple of str
+        Shared channel labels for reach, media frequency, and their spend.
+        These use a separate axis from media and organic media channels.
+        Empty when reach and frequency inputs were not supplied.
 
     Notes
     -----
@@ -71,6 +75,7 @@ class PreparedData:
     columns: dict[str, tuple[str, ...]]
     channels: tuple[str, ...]
     organic_channels: tuple[str, ...] = ()
+    rf_channels: tuple[str, ...] = ()
 
     def _to_jax(
         self,
@@ -99,7 +104,10 @@ class PreparedData:
             - **outcome** : Observed response values without a feature axis
             - **media** : Media values, including any earlier history
             - **organic_media** : Organic exposure values over the same media periods
+            - **reach** : Audience reached, including any earlier history
+            - **media_frequency** : Average exposures per person over the same media periods
             - **spend** : Spending for the modeling periods, ordered by channel
+            - **rf_spend** : Spending for reach and frequency channels over modeling periods
             - **controls** : Additional predictors in the selected column order
             - **treatments** : Non-media inputs in the selected column order
 
@@ -205,13 +213,17 @@ class PreparedData:
                 )
 
             indices = observation_indices
-            if name in ("media", "organic_media"):
+            if name in ("media", "organic_media", "reach", "media_frequency"):
                 indices = [np.arange(len(self.media_time_values)), *observation_indices[1:]]
             if array.ndim > len(observation_indices):
                 feature_order = [column_positions[column] for column in reference_columns]
-                if name in ("media", "spend", "organic_media"):
-                    channel_labels = self.organic_channels if name == "organic_media" else self.channels
-                    reference_labels = reference.organic_channels if name == "organic_media" else reference.channels
+                if name in ("media", "spend", "organic_media", "reach", "media_frequency", "rf_spend"):
+                    if name in ("reach", "media_frequency", "rf_spend"):
+                        channel_labels, reference_labels = self.rf_channels, reference.rf_channels
+                    elif name == "organic_media":
+                        channel_labels, reference_labels = self.organic_channels, reference.organic_channels
+                    else:
+                        channel_labels, reference_labels = self.channels, reference.channels
                     aligned_channels = tuple(channel_labels[index] for index in feature_order)
                     if aligned_channels != reference_labels:
                         raise ValueError(
@@ -227,12 +239,15 @@ class PreparedData:
             arrays=arrays,
             time_column=self.time_column,
             time_values=self.time_values,
-            media_time_values=self.media_time_values if "media" in arrays or "organic_media" in arrays else (),
+            media_time_values=(
+                self.media_time_values if any(name in arrays for name in ("media", "organic_media", "reach")) else ()
+            ),
             group_columns=self.group_columns,
             group_values=reference.group_values,
             columns=columns,
             channels=reference.channels if "media" in arrays else (),
             organic_channels=reference.organic_channels if "organic_media" in arrays else (),
+            rf_channels=reference.rf_channels if "reach" in arrays else (),
         )
 
 
@@ -243,12 +258,16 @@ def prepare_data(
     outcome: str | None = None,
     media: Sequence[str] | None = None,
     organic_media: Sequence[str] | None = None,
+    reach: Sequence[str] | None = None,
+    media_frequency: Sequence[str] | None = None,
     media_history: IntoDataFrameT | None = None,
     spend: Sequence[str] | None = None,
+    rf_spend: Sequence[str] | None = None,
     controls: Sequence[str] | None = None,
     treatments: Sequence[str] | None = None,
     channels: Sequence[str] | None = None,
     organic_channels: Sequence[str] | None = None,
+    rf_channels: Sequence[str] | None = None,
     groups: Sequence[str] = (),
     frequency: str | None = None,
 ) -> PreparedData:
@@ -277,20 +296,36 @@ def prepare_data(
         as email clicks or impressions from organic social posts. Their
         order defines a separate organic channel axis. Use a list even
         for one channel. Paid media and spend are not required.
+    reach : sequence of str, optional
+        Columns containing the nonnegative audience reached by each paid
+        channel in each period. Supply these together with ``media_frequency``
+        in matching channel order. These channels have their own axis and
+        do not require a separate ``media`` selection.
+    media_frequency : sequence of str, optional
+        Columns containing the nonnegative average number of exposures per
+        person reached. Supply one column per ``reach`` channel in the same
+        order. This describes advertising exposure, not the observation
+        calendar controlled by ``frequency``.
     media_history : dataframe-like, optional
-        Earlier paid and organic media observations used to calculate
+        Earlier exposure observations used to calculate
         carryover into the first modeling periods. Include every selected
-        ``media`` and ``organic_media`` column, with the same time and group
-        columns as ``frame``. Both media inputs share this history window.
+        ``media``, ``organic_media``, ``reach``, and ``media_frequency`` column,
+        with the same time and group columns as ``frame``. All exposure inputs
+        share this history window.
         Include only periods before ``frame`` and all its groups. Outcomes,
         controls, treatments, and separate spend columns are not required.
         Supply ``frequency`` to check for missing periods across both
-        dataframes. Requires ``media`` or ``organic_media``.
+        dataframes. Requires ``media``, ``organic_media``, or ``reach``.
     spend : sequence of str, optional
         Columns containing nonnegative spending for the selected media.
         Supply one column per media channel in the same order. If media
         already contains spending, the same columns can be selected here.
         Omit this argument when separate spending inputs are not needed.
+    rf_spend : sequence of str, optional
+        Columns containing nonnegative spending for reach and frequency
+        channels. Supply one column per ``reach`` channel in the same order.
+        These values cover only the modeling periods. Omit this argument
+        when spending inputs are not needed.
     controls : sequence of str, optional
         Columns containing adjustment variables, such as temperature or
         economic indicators. Their order defines the control axis.
@@ -310,6 +345,10 @@ def prepare_data(
         Unique names for the organic media channels, such as
         ``["email", "social"]``. These match ``organic_media`` columns by
         position and default to their column names. Requires ``organic_media``.
+    rf_channels : sequence of str, optional
+        Unique names shared by reach, media frequency, and their spend.
+        These match the selected columns by position and default to the
+        ``reach`` column names. Requires ``reach`` and ``media_frequency``.
     groups : sequence of str, optional
         Columns identifying each observed series, such as ``["region"]``.
         Every observed group must have the same time periods. Group
@@ -329,14 +368,16 @@ def prepare_data(
         Prepared inputs containing:
 
         - **arrays** : Dictionary of NumPy arrays for the supplied ``outcome``,
-          ``media``, ``organic_media``, ``spend``, ``controls``, and
-          ``treatments``. Omitted inputs have no entry
+          ``media``, ``organic_media``, ``reach``, ``media_frequency``,
+          ``spend``, ``rf_spend``, ``controls``, and ``treatments``.
+          Omitted inputs have no entry
         - **time_column** : Name of the source column identifying time periods
-        - **time_values** : Sorted modeling periods for outcome, spend,
+        - **time_values** : Sorted modeling periods for outcome, both spend inputs,
           controls, and treatments
-        - **media_time_values** : Shared paid and organic media periods,
-          including any earlier history. Matches ``time_values`` without
-          history. Empty when neither media input was supplied
+        - **media_time_values** : Shared exposure periods for media, organic
+          media, reach, and media frequency, including any earlier history.
+          Matches ``time_values`` without
+          history. Empty when no exposure inputs were supplied
         - **group_columns** : Selected group-column names. Empty for a single
           series without groups
         - **group_values** : Observed group-label tuples in array order,
@@ -347,6 +388,8 @@ def prepare_data(
           order. Empty without media
         - **organic_channels** : Organic channel names in array order.
           Empty without organic media
+        - **rf_channels** : Shared reach, media frequency, and spend channel
+          names in array order. Empty without reach and frequency inputs
 
         Arrays are ordered by time, group (if supplied), then feature.
         Outcome has no final feature axis. All other inputs keep that axis
@@ -418,12 +461,39 @@ def prepare_data(
            ...:     media_history=history,
            ...: )
            ...: data.media_time_values
+
+    For a channel measured through reach and average exposure frequency,
+    select the paired columns and their associated spend.
+
+    .. ipython::
+
+        In [4]: rf_frame = pl.DataFrame({
+           ...:     "week": ["2026-01-05", "2026-01-12"],
+           ...:     "sales": [100, 140],
+           ...:     "video_reach": [5_000, 7_000],
+           ...:     "video_frequency": [2.0, 2.5],
+           ...:     "video_spend": [80.0, 130.0],
+           ...: })
+           ...: rf_data = prepare_data(
+           ...:     rf_frame,
+           ...:     time="week",
+           ...:     outcome="sales",
+           ...:     reach=["video_reach"],
+           ...:     media_frequency=["video_frequency"],
+           ...:     rf_spend=["video_spend"],
+           ...:     rf_channels=["video"],
+           ...:     frequency="weekly",
+           ...: )
+           ...: rf_data.rf_channels
     """
     selections = {
         "outcome": outcome,
         "media": media,
         "organic_media": organic_media,
+        "reach": reach,
+        "media_frequency": media_frequency,
         "spend": spend,
+        "rf_spend": rf_spend,
         "controls": controls,
         "treatments": treatments,
     }
@@ -445,24 +515,34 @@ def prepare_data(
             raise ValueError(f"{name} contains repeated columns {names}. Select each column only once per input")
         columns[name] = names
 
-    media_inputs = tuple(name for name in ("media", "organic_media") if name in columns)
+    media_inputs = tuple(name for name in ("media", "organic_media", "reach", "media_frequency") if name in columns)
     if media_history is not None and not media_inputs:
         raise ValueError(
-            "media_history requires media or organic_media columns. Select the same media columns in both dataframes"
+            "media_history requires media, organic_media or reach columns. "
+            "Select the same exposure columns in both dataframes"
         )
     if not columns:
         raise ValueError(
-            "select at least one of outcome, media, organic_media, controls or treatments when preparing data"
+            "select at least one of outcome, media, organic_media, reach, controls or treatments when preparing data"
         )
-    if spend is not None and "media" not in columns:
-        raise ValueError("spend requires media columns so spending can be associated with each channel")
-    if spend is not None and len(columns["spend"]) != len(columns["media"]):
-        raise ValueError("spend must select one column per media channel in the same order")
+    if ("reach" in columns) != ("media_frequency" in columns):
+        missing = "media_frequency" if "reach" in columns else "reach"
+        raise ValueError(
+            f"reach and media_frequency must be supplied together. Add {missing} columns in matching channel order"
+        )
+    for name, media_input in (("spend", "media"), ("rf_spend", "reach"), ("media_frequency", "reach")):
+        if name not in columns:
+            continue
+        if media_input not in columns:
+            raise ValueError(f"{name} requires {media_input} columns so spending can be associated with each channel")
+        if len(columns[name]) != len(columns[media_input]):
+            raise ValueError(f"{name} must select one column per {media_input} channel in the same order")
 
     channel_names: dict[str, tuple[str, ...]] = {}
     for name, selection, media_input in (
         ("channels", channels, "media"),
         ("organic_channels", organic_channels, "organic_media"),
+        ("rf_channels", rf_channels, "reach"),
     ):
         labels = columns.get(media_input, ())
         if selection is not None:
@@ -499,7 +579,7 @@ def prepare_data(
             # Stacking numeric series avoids object arrays from mixed pandas column dtypes
             values = np.stack([selected.get_column(column).to_numpy() for column in names], axis=-1)
             arrays[name] = values.reshape(*observation_shape, len(names))
-        if name in ("media", "organic_media", "spend"):
+        if name in ("media", "organic_media", "reach", "media_frequency", "spend", "rf_spend"):
             negative = np.any(np.less(arrays[name], 0), axis=tuple(range(arrays[name].ndim - 1)))
             negative_columns = [names[index] for index in np.flatnonzero(negative)]
             if negative_columns:
@@ -518,6 +598,7 @@ def prepare_data(
         columns=columns,
         channels=channel_names["media"],
         organic_channels=channel_names["organic_media"],
+        rf_channels=channel_names["reach"],
     )
     if media_history is None:
         return data
@@ -528,8 +609,11 @@ def prepare_data(
         groups=groups,
         media=columns.get("media"),
         organic_media=columns.get("organic_media"),
+        reach=columns.get("reach"),
+        media_frequency=columns.get("media_frequency"),
         channels=channel_names["media"] if "media" in columns else None,
         organic_channels=channel_names["organic_media"] if "organic_media" in columns else None,
+        rf_channels=channel_names["reach"] if "reach" in columns else None,
     )._align_to(data)
     try:
         overlaps = history.time_values[-1] >= time_values[0]
