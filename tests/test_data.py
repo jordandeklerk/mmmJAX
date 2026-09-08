@@ -110,6 +110,7 @@ def test_prepare_data_ignores_unselected_treatments(frame_factory):
     assert data.columns == {"outcome": ("sales",)}
 
 
+@pytest.mark.parametrize("role", ["treatments", "organic_media"])
 @pytest.mark.parametrize(
     ("values", "error", "message"),
     [
@@ -120,18 +121,50 @@ def test_prepare_data_ignores_unselected_treatments(frame_factory):
         (["yes", "no"], TypeError, r"value columns must be.*promotion"),
     ],
 )
-def test_prepare_data_validates_treatment_values(frame_factory, values, error, message):
+def test_prepare_data_validates_optional_input_values(frame_factory, role, values, error, message):
     # Nullable pandas attempts an integer cast while inferring columns containing infinity
     with np.errstate(invalid="ignore"):
         source = frame_factory({"week": [1, 2], "promotion": values})
     with pytest.raises(error, match=message):
-        prepare_data(source, time="week", treatments=["promotion"])
+        prepare_data(source, time="week", **{role: ["promotion"]})
 
 
 def test_prepare_data_rejects_duplicate_treatment_observations(frame_factory):
     source = frame_factory({"week": [1, 1], "promotion": [True, False]})
     with pytest.raises(ValueError, match=r"duplicate observations.*week"):
         prepare_data(source, time="week", treatments=["promotion"])
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+@pytest.mark.parametrize("with_history", [False, True])
+@pytest.mark.parametrize("values", [[True, False], [2, 3], [0.5, 1.25]])
+def test_prepare_data_accepts_organic_only_inputs(frame_factory, grouped, with_history, values):
+    source = frame_factory({"week": [3, 2], "region": ["west", "west"], "newsletter": values})
+    history = frame_factory({"week": [1], "region": ["west"], "newsletter": [values[0]]})
+    data = prepare_data(
+        source,
+        time="week",
+        groups=["region"] if grouped else (),
+        organic_media=("newsletter",),
+        media_history=history if with_history else None,
+    )
+
+    assert set(data.arrays) == {"organic_media"}
+    assert data.columns == {"organic_media": ("newsletter",)}
+    assert data.channels == ()
+    assert data.organic_channels == ("newsletter",)
+    assert data.time_values == (2, 3)
+    assert data.media_time_values == ((1, 2, 3) if with_history else (2, 3))
+    expected = ([values[0]] if with_history else []) + [values[1], values[0]]
+    expected = [[[value]] for value in expected] if grouped else [[value] for value in expected]
+    np.testing.assert_array_equal(data.arrays["organic_media"], expected)
+    assert data.arrays["organic_media"].dtype == np.asarray(values).dtype
+
+
+def test_prepare_data_rejects_negative_organic_exposure(frame_factory):
+    source = frame_factory({"week": [1, 2], "newsletter": [1.0, -1.0]})
+    with pytest.raises(ValueError, match=r"organic_media.*newsletter.*negative"):
+        prepare_data(source, time="week", organic_media=["newsletter"])
 
 
 @pytest.mark.parametrize("with_media", [False, True])
@@ -162,6 +195,8 @@ def test_media_history_extends_only_media_and_aligns_nested_groups(frame_factory
             "cost": [8.0, 0.6, 6.0, 0.8],
             "promotion": [True, False, True, False],
             "price_change": [-1.0, 0.5, -2.0, 0.25],
+            "newsletter": [4000, 300, 3000, 400],
+            "blog": [80, 6, 60, 8],
         }
     )
     history = pl.DataFrame(
@@ -171,6 +206,8 @@ def test_media_history_extends_only_media_and_aligns_nested_groups(frame_factory
             "store": [2, 1, 1, 2],
             "search": [20, 100, 200, 10],
             "video": [2, 10, 20, 1],
+            "newsletter": [200, 1000, 2000, 100],
+            "blog": [4, 20, 40, 2],
         }
     )
     data = prepare_data(
@@ -183,6 +220,8 @@ def test_media_history_extends_only_media_and_aligns_nested_groups(frame_factory
         controls=["promotion"],
         treatments=["price_change"],
         channels=["Video", "Search"],
+        organic_media=["blog", "newsletter"],
+        organic_channels=["Blog", "Email"],
         media_history=history,
     )
 
@@ -190,6 +229,12 @@ def test_media_history_extends_only_media_and_aligns_nested_groups(frame_factory
     assert data.media_time_values == (1, 2, 3, 4)
     assert data.group_values == (("west", 1), ("east", 2))
     assert data.channels == ("Video", "Search")
+    assert data.organic_channels == ("Blog", "Email")
+    assert data.columns["organic_media"] == ("blog", "newsletter")
+    np.testing.assert_array_equal(
+        data.arrays["organic_media"],
+        [[[20, 1000], [2, 100]], [[40, 2000], [4, 200]], [[60, 3000], [6, 300]], [[80, 4000], [8, 400]]],
+    )
     assert data.columns["media"] == ("video", "search")
     np.testing.assert_array_equal(
         data.arrays["media"],
@@ -213,6 +258,7 @@ def test_media_history_extends_only_media_and_aligns_nested_groups(frame_factory
     )
     aligned = reference._align_to(data)
     assert aligned.media_time_values == (5,)
+    assert aligned.organic_channels == ()
     assert aligned.arrays["media"].shape == (1, 2, 2)
     reordered = data._align_to(data)
     assert reordered.media_time_values == data.media_time_values
@@ -278,7 +324,7 @@ def test_media_history_rejects_overlapping_or_later_periods(last_history_time):
 
 
 def test_media_history_requires_media_columns():
-    with pytest.raises(ValueError, match="media_history requires media columns"):
+    with pytest.raises(ValueError, match="media_history requires media or organic_media columns"):
         prepare_data(
             pl.DataFrame({"week": [2], "sales": [10]}),
             time="week",
@@ -301,6 +347,7 @@ def test_media_history_requires_the_same_groups(history_groups):
         )
 
 
+@pytest.mark.parametrize("role", ["media", "organic_media"])
 @pytest.mark.parametrize(
     ("history", "message"),
     [
@@ -312,7 +359,7 @@ def test_media_history_requires_the_same_groups(history_groups):
         ({"week": [1, 1], "video": [1, 2]}, "duplicate observations"),
     ],
 )
-def test_media_history_validates_selected_observations(frame_factory, history, message):
+def test_media_history_validates_selected_observations(frame_factory, role, history, message):
     # Nullable pandas inference tries an integer cast on infinity before our validation runs
     with np.errstate(invalid="ignore"):
         source = frame_factory(history)
@@ -320,11 +367,26 @@ def test_media_history_validates_selected_observations(frame_factory, history, m
         prepare_data(
             pl.DataFrame({"week": [3], "video": [1]}),
             time="week",
-            media=["video"],
+            **{role: ["video"]},
             media_history=source,
         )
 
 
+@pytest.mark.parametrize("missing", ["video", "newsletter"])
+def test_media_history_requires_every_selected_exposure_column(missing):
+    history = {"week": [1], "video": [10], "newsletter": [20]}
+    del history[missing]
+    with pytest.raises(ValueError, match=rf"missing columns.*{missing}"):
+        prepare_data(
+            pl.DataFrame({"week": [2], "video": [30], "newsletter": [40]}),
+            time="week",
+            media=["video"],
+            organic_media=["newsletter"],
+            media_history=pl.DataFrame(history),
+        )
+
+
+@pytest.mark.parametrize("role", ["media", "organic_media"])
 @pytest.mark.parametrize("representation", [str, date.fromisoformat, datetime.fromisoformat])
 @pytest.mark.parametrize(
     ("frequency", "history_times", "times"),
@@ -334,12 +396,12 @@ def test_media_history_validates_selected_observations(frame_factory, history, m
     ],
 )
 def test_media_history_checks_one_calendar_across_both_windows(
-    frame_factory, representation, frequency, history_times, times
+    frame_factory, role, representation, frequency, history_times, times
 ):
     data = prepare_data(
         frame_factory({"time": list(map(representation, times)), "video": [1, 2]}),
         time="time",
-        media=["video"],
+        **{role: ["video"]},
         frequency=frequency,
         media_history=frame_factory(
             {"time": list(map(representation, history_times)), "video": [3] * len(history_times)}
@@ -496,6 +558,60 @@ def test_align_to_reorders_treatments_independently_of_media_history(frame_facto
     np.testing.assert_array_equal(training.arrays["treatments"], [[[0, 0.5], [0, 0.25]]])
 
 
+def test_align_to_reorders_organic_history_without_requiring_paid_media(frame_factory):
+    reference = prepare_data(
+        pl.DataFrame({"week": [1, 1], "region": ["west", "east"], "video": [1, 2], "email": [3, 4], "blog": [5, 6]}),
+        time="week",
+        groups=["region"],
+        media=["video"],
+        channels=["Paid"],
+        organic_media=["email", "blog"],
+        organic_channels=["Email", "Blog"],
+    )
+    prediction = prepare_data(
+        frame_factory(
+            {
+                "week": [3, 2, 2, 3],
+                "region": ["east", "east", "west", "west"],
+                "email": [4, 3, 30, 40],
+                "blog": [8, 6, 60, 80],
+            }
+        ),
+        time="week",
+        groups=["region"],
+        organic_media=["blog", "email"],
+        organic_channels=["Blog", "Email"],
+        media_history=frame_factory({"week": [1, 1], "region": ["east", "west"], "email": [2, 20], "blog": [4, 40]}),
+    )
+    before = prediction.arrays["organic_media"].copy()
+    aligned = prediction._align_to(reference)
+
+    assert set(aligned.arrays) == {"organic_media"}
+    assert aligned.columns == {"organic_media": ("email", "blog")}
+    assert aligned.channels == ()
+    assert aligned.organic_channels == ("Email", "Blog")
+    assert aligned.group_values == (("west",), ("east",))
+    assert aligned.time_values == (2, 3)
+    assert aligned.media_time_values == (1, 2, 3)
+    np.testing.assert_array_equal(
+        aligned.arrays["organic_media"], [[[20, 40], [2, 4]], [[30, 60], [3, 6]], [[40, 80], [4, 8]]]
+    )
+    assert aligned.arrays["organic_media"].dtype == prediction.arrays["organic_media"].dtype
+    assert prediction.organic_channels == ("Blog", "Email")
+    aligned.arrays["organic_media"][...] = 0
+    np.testing.assert_array_equal(prediction.arrays["organic_media"], before)
+
+
+@pytest.mark.parametrize("labels", [["Email", "Blog"], ["Blog", "Other"]])
+def test_align_to_rejects_changed_organic_channel_assignments(labels):
+    source = pl.DataFrame({"week": [1], "email": [10], "blog": [20]})
+    reference = prepare_data(source, time="week", organic_media=["email", "blog"], organic_channels=["Email", "Blog"])
+    prediction = prepare_data(source, time="week", organic_media=["blog", "email"], organic_channels=labels)
+
+    with pytest.raises(ValueError, match=r"channel labels for 'organic_media'.*channel-to-column assignments"):
+        prediction._align_to(reference)
+
+
 @pytest.mark.parametrize("grouped", [False, True])
 def test_align_to_preserves_singleton_axes_and_copies_unchanged_blocks(frame_factory, grouped):
     source = frame_factory({"week": [2, 1], "region": ["west", "west"], "count": [20, 10]})
@@ -597,7 +713,7 @@ def test_align_to_reports_list_valued_group_cells(reference_has_lists):
         prediction._align_to(reference)
 
 
-@pytest.mark.parametrize("role", ["media", "treatments"])
+@pytest.mark.parametrize("role", ["media", "treatments", "organic_media"])
 @pytest.mark.parametrize("columns", [["video"], ["video", "search", "social"], ["video", "social"]])
 def test_align_to_rejects_missing_or_unexpected_columns(role, columns):
     source = pl.DataFrame({"week": [1], "video": [1.0], "search": [2.0], "social": [3.0]})
@@ -627,7 +743,7 @@ def test_align_to_rejects_manually_changed_array_layout(grouped, reshape_referen
         prediction._align_to(training)
 
 
-@pytest.mark.parametrize("role", ["controls", "treatments"])
+@pytest.mark.parametrize("role", ["controls", "treatments", "organic_media"])
 def test_align_to_rejects_additional_inputs_and_different_outcome_columns(role):
     source = pl.DataFrame({"week": [1], "sales": [10], "other": [20]})
     training = prepare_data(source, time="week", outcome="sales")
@@ -1105,7 +1221,7 @@ def test_prepare_data_allows_signed_outcomes_and_controls(frame_factory):
 @pytest.mark.parametrize(
     "selection,error,message",
     [
-        ({}, ValueError, "select at least one of outcome, media, controls or treatments"),
+        ({}, ValueError, "select at least one of outcome, media, organic_media, controls or treatments"),
         ({"media": None}, ValueError, "select at least one"),
         ({"outcome": ["sales"]}, TypeError, "outcome must be a column name"),
         ({"outcome": ""}, ValueError, "outcome must select at least one nonempty"),
@@ -1118,6 +1234,38 @@ def test_prepare_data_allows_signed_outcomes_and_controls(frame_factory):
         ({"treatments": ["sales", "sales"]}, ValueError, "treatments contains repeated columns"),
         ({"treatments": ["missing"]}, ValueError, "data is missing columns.*missing"),
         ({"treatments": ["week"]}, ValueError, "column declarations contain repeated names.*week"),
+        ({"organic_media": "sales"}, TypeError, "organic_media must be a sequence"),
+        ({"organic_media": []}, ValueError, "organic_media must select at least one"),
+        ({"organic_media": [1]}, ValueError, "organic_media must select at least one"),
+        ({"organic_media": [""]}, ValueError, "organic_media must select at least one"),
+        ({"organic_media": ["sales", "sales"]}, ValueError, "organic_media contains repeated columns"),
+        ({"organic_media": ["missing"]}, ValueError, "data is missing columns.*missing"),
+        ({"organic_media": ["week"]}, ValueError, "column declarations contain repeated names.*week"),
+        ({"organic_media": ["sales"], "spend": ["sales"]}, ValueError, "spend requires media"),
+        ({"organic_media": ["sales"], "channels": ["Email"]}, ValueError, "channels requires media"),
+        ({"outcome": "sales", "organic_channels": ["Email"]}, ValueError, "organic_channels requires organic_media"),
+        ({"organic_media": ["sales"], "organic_channels": "Email"}, TypeError, "organic_channels must be a sequence"),
+        ({"organic_media": ["sales"], "organic_channels": []}, ValueError, "organic_channels must contain one name"),
+        (
+            {"organic_media": ["sales"], "organic_channels": [1]},
+            ValueError,
+            "organic_channels must contain only nonempty",
+        ),
+        (
+            {"organic_media": ["sales"], "organic_channels": [""]},
+            ValueError,
+            "organic_channels must contain only nonempty",
+        ),
+        (
+            {"organic_media": ["sales"], "organic_channels": ["Email", "Email"]},
+            ValueError,
+            "organic_channels must contain unique names",
+        ),
+        (
+            {"organic_media": ["sales"], "organic_channels": ["Email", "Blog"]},
+            ValueError,
+            "organic_channels must contain one name",
+        ),
         ({"media": []}, ValueError, "media must select at least one"),
         ({"media": [1]}, ValueError, "media must select at least one"),
         ({"media": ["sales", "sales"]}, ValueError, "media contains repeated columns"),
@@ -1141,7 +1289,7 @@ def test_prepare_data_reports_invalid_input_selections(selection, error, message
         prepare_data(pl.DataFrame({"week": [1], "sales": [10]}), time="week", **selection)
 
 
-@pytest.mark.parametrize("role", ["outcome", "treatments"])
+@pytest.mark.parametrize("role", ["outcome", "treatments", "organic_media"])
 def test_prepare_data_checks_calendar_and_panel_coverage(role):
     selection = {role: "sales" if role == "outcome" else ["sales"]}
     source = pl.DataFrame({"week": ["2026-01-05", "2026-01-19"], "sales": [10, 20]})
