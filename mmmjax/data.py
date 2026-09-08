@@ -28,16 +28,17 @@ class PreparedData:
     ----------
     arrays : dict of str to numpy.ndarray
         Time-varying inputs are ordered by time, group if supplied, then
-        feature. Outcome has no final feature axis. Population is stored
-        once per group, or as a scalar without groups. Each array is independent
-        of the source dataframe and other inputs. All paid and organic exposure
-        inputs, including reach and frequency, include any earlier history.
-        Other time-varying inputs cover only the modeling periods.
+        feature. Outcome and revenue per outcome have no final feature axis.
+        Population is stored once per group, or as a scalar without groups.
+        Each array is independent of the source dataframe and other inputs.
+        All paid and organic exposure inputs, including reach and frequency,
+        include any earlier history. Other time-varying inputs cover only
+        the modeling periods.
     time_column : str
         Source column identifying observation periods.
     time_values : tuple
-        Sorted modeling periods for outcome, both spend inputs, controls,
-        and treatments.
+        Sorted modeling periods for outcome, revenue per outcome, both spend
+        inputs, controls, and treatments.
     media_time_values : tuple
         Shared time labels for all paid and organic exposure inputs, including
         any earlier history. Without history these match ``time_values``.
@@ -48,8 +49,8 @@ class PreparedData:
         Observed group combinations matching the group axis. Preparation
         uses first-appearance order. Empty when no group columns were supplied.
     columns : dict of str to tuple of str
-        Source columns for each input, in the selected order. Outcome and
-        population columns are each recorded as a one-element tuple.
+        Source columns for each input, in the selected order. Outcome,
+        revenue per outcome, and population each use a one-element tuple.
     channels : tuple of str
         Shared channel labels for the final axis of media and spend.
         Empty when media was not supplied.
@@ -108,6 +109,7 @@ class PreparedData:
             Dictionary containing the supplied inputs:
 
             - **outcome** : Observed response values without a feature axis
+            - **revenue_per_outcome** : Revenue per response unit for each modeling period and group
             - **population** : One population estimate per group, or a scalar without groups
             - **media** : Media values, including any earlier history
             - **organic_media** : Organic exposure values over the same media periods
@@ -272,6 +274,7 @@ def prepare_data(
     *,
     time: str,
     outcome: str | None = None,
+    revenue_per_outcome: str | None = None,
     population: str | None = None,
     media: Sequence[str] | None = None,
     organic_media: Sequence[str] | None = None,
@@ -307,6 +310,12 @@ def prepare_data(
     outcome : str, optional
         Column containing the response, such as sales or conversions.
         Omit it when preparing prediction data without observed outcomes.
+    revenue_per_outcome : str, optional
+        Column containing the average revenue per response unit, such as
+        revenue per sale or conversion. Values can vary by period and group
+        and must be numeric, finite, and nonnegative, not boolean.
+        Stored separately without converting the outcome to revenue.
+        Can also be supplied for prediction data without observed outcomes.
     population : str, optional
         Column containing a positive population estimate for each group.
         Repeat the same value across that group's modeling periods. Without
@@ -350,8 +359,8 @@ def prepare_data(
         with the same time and group columns as ``frame``. All exposure
         inputs share this history window.
         Include only periods before ``frame`` and all its groups. Outcomes,
-        population, controls, treatments, and separate spend columns are
-        not required.
+        revenue per outcome, population, controls, treatments, and separate
+        spend columns are not required.
         Supply ``frequency`` to check for missing periods across both
         dataframes. Requires ``media``, ``organic_media``, ``reach``, or
         ``organic_reach``.
@@ -411,13 +420,13 @@ def prepare_data(
         Prepared inputs containing:
 
         - **arrays** : Dictionary of NumPy arrays for the supplied ``outcome``,
-          ``population``, ``media``, ``organic_media``, ``reach``,
+          ``revenue_per_outcome``, ``population``, ``media``, ``organic_media``, ``reach``,
           ``media_frequency``, ``organic_reach``, ``organic_frequency``,
           ``spend``, ``rf_spend``, ``controls``, and ``treatments``.
           Omitted inputs have no entry
         - **time_column** : Name of the source column identifying time periods
-        - **time_values** : Sorted modeling periods for outcome, both spend inputs,
-          controls, and treatments
+        - **time_values** : Sorted modeling periods for outcome, revenue per
+          outcome, both spend inputs, controls, and treatments
         - **media_time_values** : Shared periods for all paid and organic
           exposure inputs, including any earlier history. Matches
           ``time_values`` without history. Empty without exposure inputs
@@ -437,8 +446,9 @@ def prepare_data(
           names in array order. Empty without organic reach and frequency inputs
 
         Time-varying arrays are ordered by time, group (if supplied), then
-        feature. Outcome has no final feature axis. Population has shape
-        ``(n_groups,)``, or ``()`` without groups, and follows ``group_values``.
+        feature. Outcome and revenue per outcome have no final feature axis.
+        Population has shape ``(n_groups,)``, or ``()`` without groups, and
+        follows ``group_values``.
         All other inputs keep a feature axis even for a single column.
         Integer outcomes and population estimates retain their dtype
         separately from continuous inputs. Columns within an input use NumPy
@@ -455,11 +465,13 @@ def prepare_data(
            ...: from mmmjax import prepare_data
            ...: # Search uses impressions, while video uses reach and frequency
            ...: # Email and social are organic channels without associated spend
+           ...: # Sales counts units sold, and unit_revenue is revenue per sale
            ...: df = pl.DataFrame({
            ...:     "week": ["2026-01-05", "2026-01-05",
            ...:              "2026-01-12", "2026-01-12"],
            ...:     "region": ["west", "east", "west", "east"],
            ...:     "sales": [100, 80, 140, 90],
+           ...:     "unit_revenue": [11.5, 10.5, 9.5, 10.0],
            ...:     "residents": [50_000, 30_000, 50_000, 30_000],
            ...:     "search_impressions": [5_000, 3_000, 6_000, 4_000],
            ...:     "search_spend": [40.0, 30.0, 60.0, 45.0],
@@ -491,6 +503,7 @@ def prepare_data(
            ...:     groups=["region"],
            ...:     frequency="weekly",
            ...:     outcome="sales",
+           ...:     revenue_per_outcome="unit_revenue",
            ...:     population="residents",
            ...:     media=["search_impressions"],
            ...:     spend=["search_spend"],
@@ -512,6 +525,7 @@ def prepare_data(
     """
     selections = {
         "outcome": outcome,
+        "revenue_per_outcome": revenue_per_outcome,
         "population": population,
         "media": media,
         "organic_media": organic_media,
@@ -528,9 +542,9 @@ def prepare_data(
     for name, selection in selections.items():
         if selection is None:
             continue
-        if name in ("outcome", "population"):
+        if name in ("outcome", "revenue_per_outcome", "population"):
             if not isinstance(selection, str):
-                example = "sales" if name == "outcome" else "residents"
+                example = {"outcome": "sales", "revenue_per_outcome": "unit_revenue", "population": "residents"}[name]
                 raise TypeError(f"{name} must be a column name, such as {example!r}")
             names: tuple[str, ...] = (selection,)
         elif isinstance(selection, Sequence) and not isinstance(selection, str):
@@ -555,8 +569,8 @@ def prepare_data(
         )
     if not columns:
         raise ValueError(
-            "select at least one of outcome, population, media, organic_media, reach, organic_reach, "
-            "controls or treatments when preparing data"
+            "select at least one of outcome, revenue_per_outcome, population, media, organic_media, "
+            "reach, organic_reach, controls or treatments when preparing data"
         )
     for reach_input, frequency_input in (("reach", "media_frequency"), ("organic_reach", "organic_frequency")):
         if (reach_input in columns) != (frequency_input in columns):
@@ -634,8 +648,18 @@ def prepare_data(
                     "Choose a fixed population estimate for each series before preparing data"
                 )
             arrays[name] = values[:1].reshape(observation_shape[1:]).copy()
-        elif name == "outcome":
+        elif name in ("outcome", "revenue_per_outcome"):
             arrays[name] = selected.get_column(names[0]).to_numpy().copy().reshape(observation_shape)
+            if name == "revenue_per_outcome":
+                if arrays[name].dtype == np.bool_:
+                    raise TypeError(
+                        f"revenue_per_outcome column {names[0]!r} contains boolean values. Use numeric revenue amounts"
+                    )
+                if np.any(np.less(arrays[name], 0)):
+                    raise ValueError(
+                        f"revenue_per_outcome column {names[0]!r} contains negative values. "
+                        "Provide nonnegative revenue per response unit"
+                    )
         else:
             # Stacking numeric series avoids object arrays from mixed pandas column dtypes
             values = np.stack([selected.get_column(column).to_numpy() for column in names], axis=-1)

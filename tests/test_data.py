@@ -38,6 +38,139 @@ def frame_factory(request):
     return pa.table
 
 
+def test_prepare_data_keeps_revenue_per_outcome_aligned_with_observations(frame_factory):
+    source = frame_factory(
+        {
+            "week": [2, 1, 1, 1, 2, 2],
+            "region": ["west", "east", "west", "west", "east", "west"],
+            "store": [1, 2, 2, 1, 2, 2],
+            "conversions": [11, 20, 30, 10, 21, 31],
+            "unit_revenue": [2.5, 3.0, 0.0, 2.0, 3.5, 4.0],
+            "impressions": [110, 200, 300, 100, 210, 310],
+        }
+    )
+    before = nw.from_native(source).to_dict(as_series=False)
+    data = prepare_data(
+        source,
+        time="week",
+        groups=["region", "store"],
+        outcome="conversions",
+        revenue_per_outcome="unit_revenue",
+        media=["impressions"],
+        controls=["unit_revenue"],
+        media_history=frame_factory(
+            {"week": [0, 0, 0], "region": ["west", "west", "east"], "store": [2, 1, 2], "impressions": [3, 1, 2]}
+        ),
+    )
+
+    assert data.group_values == (("west", 1), ("east", 2), ("west", 2))
+    assert data.time_values == (1, 2)
+    assert data.media_time_values == (0, 1, 2)
+    assert data.columns["revenue_per_outcome"] == ("unit_revenue",)
+    np.testing.assert_array_equal(data.arrays["outcome"], [[10, 20, 30], [11, 21, 31]])
+    np.testing.assert_array_equal(data.arrays["revenue_per_outcome"], [[2.0, 3.0, 0.0], [2.5, 3.5, 4.0]])
+    np.testing.assert_array_equal(data.arrays["media"], [[[1], [2], [3]], [[100], [200], [300]], [[110], [210], [310]]])
+    assert data.arrays["outcome"].dtype == nw.from_native(source).get_column("conversions").to_numpy().dtype
+    data.arrays["revenue_per_outcome"][...] = 0
+    np.testing.assert_array_equal(data.arrays["controls"], [[[2.0], [3.0], [0.0]], [[2.5], [3.5], [4.0]]])
+    assert nw.from_native(source).to_dict(as_series=False) == before
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+@pytest.mark.parametrize("values", [[0, 0], [1, 1], [2.5, 1.5]])
+def test_prepare_data_accepts_revenue_per_outcome_without_observed_outcomes(frame_factory, grouped, values):
+    data = prepare_data(
+        frame_factory({"week": [2, 1], "region": ["west", "west"], "unit_revenue": values}),
+        time="week",
+        groups=["region"] if grouped else (),
+        revenue_per_outcome="unit_revenue",
+    )
+
+    expected = np.array(values[::-1])
+    assert set(data.arrays) == {"revenue_per_outcome"}
+    assert data.columns == {"revenue_per_outcome": ("unit_revenue",)}
+    assert data.media_time_values == ()
+    np.testing.assert_array_equal(data.arrays["revenue_per_outcome"], expected[:, None] if grouped else expected)
+
+
+@pytest.mark.parametrize(
+    "value,error,message",
+    [
+        (-1, ValueError, "revenue_per_outcome column 'unit_revenue'.*negative values"),
+        (True, TypeError, "revenue_per_outcome column 'unit_revenue'.*boolean values"),
+        (None, ValueError, "unit_revenue.*missing values"),
+        (np.nan, ValueError, "unit_revenue.*(missing values|NaN or infinite)"),
+        (np.inf, ValueError, "unit_revenue.*NaN or infinite"),
+        ("unknown", TypeError, "value columns must be.*unit_revenue"),
+    ],
+)
+def test_prepare_data_rejects_invalid_revenue_per_outcome(frame_factory, value, error, message):
+    # pandas tries an integer cast while inferring nullable dtypes for infinite inputs
+    with np.errstate(invalid="ignore"):
+        source = frame_factory({"week": [1], "unit_revenue": [value]})
+    with pytest.raises(error, match=message):
+        prepare_data(source, time="week", revenue_per_outcome="unit_revenue")
+
+
+@pytest.mark.parametrize(
+    "selection,error,message",
+    [
+        (["unit_revenue"], TypeError, "revenue_per_outcome must be a column name"),
+        ("", ValueError, "revenue_per_outcome must select at least one nonempty"),
+        ("missing", ValueError, "missing columns.*missing"),
+        ("week", ValueError, "column declarations contain repeated names.*week"),
+    ],
+)
+def test_prepare_data_validates_revenue_per_outcome_selection(selection, error, message):
+    with pytest.raises(error, match=message):
+        prepare_data(pl.DataFrame({"week": [1], "unit_revenue": [2.5]}), time="week", revenue_per_outcome=selection)
+
+
+def test_align_to_reorders_revenue_per_outcome_without_replacing_prediction_values(frame_factory):
+    reference = prepare_data(
+        frame_factory({"week": [1, 1], "region": ["west", "east"], "unit_revenue": [1.0, 2.0]}),
+        time="week",
+        groups=["region"],
+        revenue_per_outcome="unit_revenue",
+    )
+    prediction = prepare_data(
+        frame_factory(
+            {"week": [3, 2, 2, 3], "region": ["east", "west", "east", "west"], "unit_revenue": [3.5, 4.5, 5.5, 6.5]}
+        ),
+        time="week",
+        groups=["region"],
+        revenue_per_outcome="unit_revenue",
+    )
+    aligned = prediction._align_to(reference)
+
+    assert aligned.group_values == reference.group_values
+    assert aligned.time_values == (2, 3)
+    assert aligned.columns == {"revenue_per_outcome": ("unit_revenue",)}
+    np.testing.assert_array_equal(aligned.arrays["revenue_per_outcome"], [[4.5, 5.5], [6.5, 3.5]])
+    aligned.arrays["revenue_per_outcome"][...] = 0
+    np.testing.assert_array_equal(prediction.arrays["revenue_per_outcome"], [[5.5, 4.5], [3.5, 6.5]])
+    np.testing.assert_array_equal(reference.arrays["revenue_per_outcome"], [[1.0, 2.0]])
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_prepared_revenue_per_outcome_retains_shape_and_precision_in_jax(grouped):
+    data = prepare_data(
+        pl.DataFrame({"week": [2, 1], "region": ["west", "west"], "conversions": [8, 4], "unit_revenue": [2.5, 1.5]}),
+        time="week",
+        groups=["region"] if grouped else (),
+        outcome="conversions",
+        revenue_per_outcome="unit_revenue",
+    )
+    inputs = data._to_jax(dtype=np.float32)
+    assert inputs["revenue_per_outcome"].shape == inputs["outcome"].shape
+    assert inputs["revenue_per_outcome"].dtype == np.float32
+    assert inputs["outcome"].dtype == (np.int64 if jax.config.x64_enabled else np.int32)
+    revenue = jax.jit(lambda values: values["outcome"] * values["revenue_per_outcome"])(inputs)
+    np.testing.assert_array_equal(revenue, [[6.0], [20.0]] if grouped else [6.0, 20.0])
+    data.arrays["revenue_per_outcome"][...] = 0
+    np.testing.assert_array_equal(inputs["revenue_per_outcome"], [[1.5], [2.5]] if grouped else [1.5, 2.5])
+
+
 def test_prepare_data_stores_population_once_per_observed_group(frame_factory):
     source = frame_factory(
         {
@@ -1859,8 +1992,8 @@ def test_prepare_data_allows_signed_outcomes_and_controls(frame_factory):
         (
             {},
             ValueError,
-            "select at least one of outcome, population, media, organic_media, reach, organic_reach, "
-            "controls or treatments",
+            "select at least one of outcome, revenue_per_outcome, population, media, organic_media, "
+            "reach, organic_reach, controls or treatments",
         ),
         ({"media": None}, ValueError, "select at least one"),
         ({"outcome": ["sales"]}, TypeError, "outcome must be a column name"),
