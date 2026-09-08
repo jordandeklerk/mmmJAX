@@ -75,6 +75,8 @@ jobs:
         run: pixi run --frozen -e dev bash .github/scripts/tests.sh
       - name: Upload test results
         if: always()
+        # Report uploads are optional and must not change the test outcome
+        continue-on-error: true
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: tests-pixi-${{ matrix.group }}
@@ -122,6 +124,8 @@ jobs:
 
       - name: Upload test results
         if: always()
+        # Report uploads are optional and must not change the test outcome
+        continue-on-error: true
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: tests-${{ matrix.config.python-version }}-${{ matrix.config.x64 }}-${{ matrix.group }}
