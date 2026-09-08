@@ -38,6 +38,102 @@ def frame_factory(request):
     return pa.table
 
 
+def test_prepare_data_keeps_treatments_separate_and_orders_their_axes(frame_factory):
+    source = frame_factory(
+        {
+            "week": [2, 1, 1, 2],
+            "region": ["west", "east", "west", "east"],
+            "store": [1, 2, 1, 2],
+            "sales": [40, 10, 30, 20],
+            "video": [4.5, 1.5, 3.5, 2.5],
+            "cost": [45, 15, 35, 25],
+            "temperature": [-4.0, -1.0, -3.0, -2.0],
+            "promotion": [True, False, True, False],
+            "price_change": [-0.5, 1.5, 2.5, 0.5],
+        }
+    )
+    before = nw.from_native(source).to_dict(as_series=False)
+
+    data = prepare_data(
+        source,
+        time="week",
+        groups=["region", "store"],
+        outcome="sales",
+        media=["video"],
+        spend=["cost"],
+        controls=["temperature"],
+        treatments=["price_change", "promotion"],
+        channels=["Video"],
+    )
+
+    assert set(data.arrays) == {"outcome", "media", "spend", "controls", "treatments"}
+    assert data.columns["treatments"] == ("price_change", "promotion")
+    assert data.columns["controls"] == ("temperature",)
+    assert data.time_values == (1, 2)
+    assert data.group_values == (("west", 1), ("east", 2))
+    assert data.channels == ("Video",)
+    np.testing.assert_array_equal(data.arrays["treatments"], [[[2.5, 1], [1.5, 0]], [[-0.5, 1], [0.5, 0]]])
+    np.testing.assert_array_equal(data.arrays["outcome"], [[30, 10], [40, 20]])
+    np.testing.assert_array_equal(data.arrays["media"], [[[3.5], [1.5]], [[4.5], [2.5]]])
+    np.testing.assert_array_equal(data.arrays["spend"], [[[35], [15]], [[45], [25]]])
+    np.testing.assert_array_equal(data.arrays["controls"], [[[-3], [-1]], [[-4], [-2]]])
+    assert np.issubdtype(data.arrays["outcome"].dtype, np.integer)
+    assert np.issubdtype(data.arrays["treatments"].dtype, np.floating)
+    assert nw.from_native(source).to_dict(as_series=False) == before
+
+    data.arrays["treatments"][...] = 0
+    assert nw.from_native(source).to_dict(as_series=False) == before
+    np.testing.assert_array_equal(data.arrays["controls"], [[[-3], [-1]], [[-4], [-2]]])
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+@pytest.mark.parametrize("values", [[True, False], [-2, 3], [-0.5, 1.25]])
+def test_prepare_data_accepts_treatments_without_other_inputs(frame_factory, grouped, values):
+    source = frame_factory({"week": [2, 1], "region": ["west", "west"], "promotion": values})
+    data = prepare_data(source, time="week", groups=["region"] if grouped else (), treatments=("promotion",))
+
+    assert set(data.arrays) == {"treatments"}
+    assert data.columns == {"treatments": ("promotion",)}
+    assert data.time_values == (1, 2)
+    assert data.media_time_values == ()
+    assert data.channels == ()
+    expected = [[[values[1]]], [[values[0]]]] if grouped else [[values[1]], [values[0]]]
+    np.testing.assert_array_equal(data.arrays["treatments"], expected)
+    assert data.arrays["treatments"].dtype == np.asarray(values).dtype
+
+
+def test_prepare_data_ignores_unselected_treatments(frame_factory):
+    source = frame_factory({"week": [1, 2], "sales": [10, 20], "promotion": [None, "unknown"]})
+    data = prepare_data(source, time="week", outcome="sales", treatments=None)
+
+    assert set(data.arrays) == {"outcome"}
+    assert data.columns == {"outcome": ("sales",)}
+
+
+@pytest.mark.parametrize(
+    ("values", "error", "message"),
+    [
+        ([1.0, None], ValueError, r"promotion.*missing values"),
+        ([1.0, np.nan], ValueError, r"promotion.*(missing|NaN or infinite) values"),
+        ([1.0, np.inf], ValueError, r"promotion.*NaN or infinite values"),
+        ([1.0, -np.inf], ValueError, r"promotion.*NaN or infinite values"),
+        (["yes", "no"], TypeError, r"value columns must be.*promotion"),
+    ],
+)
+def test_prepare_data_validates_treatment_values(frame_factory, values, error, message):
+    # Nullable pandas attempts an integer cast while inferring columns containing infinity
+    with np.errstate(invalid="ignore"):
+        source = frame_factory({"week": [1, 2], "promotion": values})
+    with pytest.raises(error, match=message):
+        prepare_data(source, time="week", treatments=["promotion"])
+
+
+def test_prepare_data_rejects_duplicate_treatment_observations(frame_factory):
+    source = frame_factory({"week": [1, 1], "promotion": [True, False]})
+    with pytest.raises(ValueError, match=r"duplicate observations.*week"):
+        prepare_data(source, time="week", treatments=["promotion"])
+
+
 @pytest.mark.parametrize("with_media", [False, True])
 def test_prepare_data_without_history_keeps_the_existing_time_window(frame_factory, with_media):
     data = prepare_data(
@@ -65,6 +161,7 @@ def test_media_history_extends_only_media_and_aligns_nested_groups(frame_factory
             "search": [400.0, 30.0, 300.0, 40.0],
             "cost": [8.0, 0.6, 6.0, 0.8],
             "promotion": [True, False, True, False],
+            "price_change": [-1.0, 0.5, -2.0, 0.25],
         }
     )
     history = pl.DataFrame(
@@ -84,6 +181,7 @@ def test_media_history_extends_only_media_and_aligns_nested_groups(frame_factory
         media=["video", "search"],
         spend=["cost", "search"],
         controls=["promotion"],
+        treatments=["price_change"],
         channels=["Video", "Search"],
         media_history=history,
     )
@@ -100,6 +198,7 @@ def test_media_history_extends_only_media_and_aligns_nested_groups(frame_factory
     np.testing.assert_array_equal(data.arrays["outcome"], [[30, 3], [40, 4]])
     np.testing.assert_array_equal(data.arrays["spend"], [[[6, 300], [0.6, 30]], [[8, 400], [0.8, 40]]])
     np.testing.assert_array_equal(data.arrays["controls"], [[[True], [False]], [[True], [False]]])
+    np.testing.assert_array_equal(data.arrays["treatments"], [[[-2.0], [0.5]], [[-1.0], [0.25]]])
     assert np.issubdtype(data.arrays["outcome"].dtype, np.integer)
     assert data.arrays["controls"].dtype == np.bool_
     assert np.issubdtype(data.arrays["media"].dtype, np.floating)
@@ -918,12 +1017,19 @@ def test_prepare_data_allows_signed_outcomes_and_controls(frame_factory):
 @pytest.mark.parametrize(
     "selection,error,message",
     [
-        ({}, ValueError, "select at least one of outcome, media or controls"),
+        ({}, ValueError, "select at least one of outcome, media, controls or treatments"),
         ({"media": None}, ValueError, "select at least one"),
         ({"outcome": ["sales"]}, TypeError, "outcome must be a column name"),
         ({"outcome": ""}, ValueError, "outcome must select at least one nonempty"),
         ({"media": "sales"}, TypeError, "media must be a sequence"),
         ({"controls": "sales"}, TypeError, "controls must be a sequence"),
+        ({"treatments": "sales"}, TypeError, "treatments must be a sequence"),
+        ({"treatments": []}, ValueError, "treatments must select at least one"),
+        ({"treatments": [1]}, ValueError, "treatments must select at least one"),
+        ({"treatments": [""]}, ValueError, "treatments must select at least one"),
+        ({"treatments": ["sales", "sales"]}, ValueError, "treatments contains repeated columns"),
+        ({"treatments": ["missing"]}, ValueError, "data is missing columns.*missing"),
+        ({"treatments": ["week"]}, ValueError, "column declarations contain repeated names.*week"),
         ({"media": []}, ValueError, "media must select at least one"),
         ({"media": [1]}, ValueError, "media must select at least one"),
         ({"media": ["sales", "sales"]}, ValueError, "media contains repeated columns"),
@@ -947,15 +1053,17 @@ def test_prepare_data_reports_invalid_input_selections(selection, error, message
         prepare_data(pl.DataFrame({"week": [1], "sales": [10]}), time="week", **selection)
 
 
-def test_prepare_data_checks_calendar_and_panel_coverage():
+@pytest.mark.parametrize("role", ["outcome", "treatments"])
+def test_prepare_data_checks_calendar_and_panel_coverage(role):
+    selection = {role: "sales" if role == "outcome" else ["sales"]}
     source = pl.DataFrame({"week": ["2026-01-05", "2026-01-19"], "sales": [10, 20]})
 
     with pytest.raises(ValueError, match="missing periods"):
-        prepare_data(source, time="week", outcome="sales", frequency="weekly")
+        prepare_data(source, time="week", frequency="weekly", **selection)
 
     source = pl.DataFrame({"week": [1, 2, 1], "geo": ["east", "east", "west"], "sales": [10, 20, 30]})
     with pytest.raises(ValueError, match="same time values"):
-        prepare_data(source, time="week", groups=["geo"], outcome="sales")
+        prepare_data(source, time="week", groups=["geo"], **selection)
 
 
 def test_prepare_data_works_with_model_densities_and_gradients():

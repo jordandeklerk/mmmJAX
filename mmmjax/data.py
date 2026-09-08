@@ -27,15 +27,15 @@ class PreparedData:
     Attributes
     ----------
     arrays : dict of str to numpy.ndarray
-        Selected outcome, media, spend, and controls, ordered by time,
-        group if supplied, then channel or control. Outcome has no final
+        Selected outcome, media, spend, controls, and treatments, ordered
+        by time, group if supplied, then feature. Outcome has no final
         feature axis. Each array is independent of the source dataframe
         and other inputs. Media includes earlier observations when history
         is supplied. Other inputs cover only the modeling periods.
     time_column : str
         Source column identifying observation periods.
     time_values : tuple
-        Sorted modeling periods for outcome, spend, and controls.
+        Sorted modeling periods for outcome, spend, controls, and treatments.
     media_time_values : tuple
         Sorted time labels for media, including any earlier history.
         Without history these match ``time_values``. Empty without media.
@@ -94,6 +94,7 @@ class PreparedData:
             - **media** : Media values, including any earlier history
             - **spend** : Spending for the modeling periods, ordered by channel
             - **controls** : Additional predictors in the selected column order
+            - **treatments** : Non-media inputs in the selected column order
 
             Omitted inputs have no entry. Shapes and axis order are unchanged.
             The host arrays and labels are retained on this object. Call this
@@ -234,6 +235,7 @@ def prepare_data(
     media_history: IntoDataFrameT | None = None,
     spend: Sequence[str] | None = None,
     controls: Sequence[str] | None = None,
+    treatments: Sequence[str] | None = None,
     channels: Sequence[str] | None = None,
     groups: Sequence[str] = (),
     frequency: str | None = None,
@@ -262,18 +264,25 @@ def prepare_data(
         Earlier media observations used to calculate carryover into the
         first modeling periods. Use the same time, group, and media column
         names as ``frame``. Include only periods before ``frame`` and all
-        its groups. Outcomes, controls, and separate spend columns are not
-        required. Supply ``frequency`` to check for missing periods across
-        both dataframes. Requires ``media``.
+        its groups. Outcomes, controls, treatments, and separate spend
+        columns are not required. Supply ``frequency`` to check for missing
+        periods across both dataframes. Requires ``media``.
     spend : sequence of str, optional
         Columns containing nonnegative spending for the selected media.
         Supply one column per media channel in the same order. If media
         already contains spending, the same columns can be selected here.
         Omit this argument when separate spending inputs are not needed.
     controls : sequence of str, optional
-        Columns containing additional predictors, such as price or
-        promotion indicators. Their order defines the control axis.
+        Columns containing adjustment variables, such as temperature or
+        economic indicators. Their order defines the control axis.
         Negative values are allowed for controls and the outcome.
+    treatments : sequence of str, optional
+        Columns containing non-media inputs whose effects the model will
+        estimate, such as promotions or price changes. Their order defines
+        the treatment axis. Numeric and boolean values are accepted,
+        including negative values. Use a list even for one treatment.
+        These inputs cover only the modeling periods and do not require
+        media or spend. The model determines how their effects are represented.
     channels : sequence of str, optional
         Unique channel names shared by media and spend, such as
         ``["video", "search"]``. These match the selected columns by
@@ -297,10 +306,11 @@ def prepare_data(
         Prepared inputs containing:
 
         - **arrays** : Dictionary of NumPy arrays for the supplied ``outcome``,
-          ``media``, ``spend``, and ``controls``. Omitted inputs have no entry
+          ``media``, ``spend``, ``controls``, and ``treatments``. Omitted inputs
+          have no entry
         - **time_column** : Name of the source column identifying time periods
         - **time_values** : Sorted modeling periods for outcome, spend,
-          and controls
+          controls, and treatments
         - **media_time_values** : Sorted media periods, including any earlier
           history. Matches ``time_values`` without history. Empty without media
         - **group_columns** : Selected group-column names. Empty for a single
@@ -312,16 +322,17 @@ def prepare_data(
         - **channels** : Channel names shared by media and spend in array
           order. Empty without media
 
-        Arrays are ordered by time, group (if supplied), then channel or
-        control. Outcome has no final feature axis. Media, spend, and controls
-        keep that axis even for a single column. Integer outcomes retain their
-        dtype separately from continuous inputs. Columns within an input use
-        NumPy type promotion. Arrays do not share memory with either dataframe.
+        Arrays are ordered by time, group (if supplied), then feature.
+        Outcome has no final feature axis. Media, spend, controls, and
+        treatments keep that axis even for a single column. Integer outcomes
+        retain their dtype separately from continuous inputs. Columns within
+        an input use NumPy type promotion. Arrays do not share memory with
+        either dataframe.
 
     Notes
     -----
-    Supply at least one of outcome, media, or controls. All inputs share
-    the same observation periods, except for optional earlier media history.
+    Supply at least one of outcome, media, controls, or treatments. All inputs
+    share the same observation periods, except for optional earlier media history.
     Missing observations are reported, not filled or treated as zero.
     Calendar checks cover only the span between the first and last supplied
     times. No scaling or transformations are applied.
@@ -387,7 +398,7 @@ def prepare_data(
            ...: )
            ...: data.media_time_values
     """
-    selections = {"outcome": outcome, "media": media, "spend": spend, "controls": controls}
+    selections = {"outcome": outcome, "media": media, "spend": spend, "controls": controls, "treatments": treatments}
     columns: dict[str, tuple[str, ...]] = {}
     for name, selection in selections.items():
         if selection is None:
@@ -409,7 +420,7 @@ def prepare_data(
     if media_history is not None and "media" not in columns:
         raise ValueError("media_history requires media columns. Select the same media columns in both dataframes")
     if not columns:
-        raise ValueError("select at least one of outcome, media or controls when preparing data")
+        raise ValueError("select at least one of outcome, media, controls or treatments when preparing data")
     if spend is not None and "media" not in columns:
         raise ValueError("spend requires media columns so spending can be associated with each channel")
     if spend is not None and len(columns["spend"]) != len(columns["media"]):
