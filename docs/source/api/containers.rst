@@ -10,4 +10,5 @@ Objects returned by data preparation and scaling functions.
    :nosignatures:
 
    PreparedData
+   DataScaling
    Scaling

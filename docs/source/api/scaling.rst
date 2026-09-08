@@ -9,5 +9,6 @@ Estimate reusable transformations for model inputs.
    :toctree: generated
    :nosignatures:
 
+   fit_data_scaling
    fit_scaling
    fit_media_scaling

@@ -7,8 +7,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.typing import ArrayLike
+from numpy.typing import NDArray
 
-__all__ = ["Scaling", "fit_media_scaling", "fit_scaling"]
+from mmmjax.data import PreparedData, _DataLayout
+
+__all__ = ["DataScaling", "Scaling", "fit_data_scaling", "fit_media_scaling", "fit_scaling"]
 
 
 @jax.tree_util.register_dataclass
@@ -130,6 +133,119 @@ class Scaling:
                 "Keep the training feature and group axes, including axes of length one"
             )
         return values_array
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class DataScaling:
+    """Store training transformations together with their input labels.
+
+    Use :func:`fit_data_scaling` to create this object. Transformations are
+    fitted once and reused for later observations. Groups and columns are
+    matched internally, so their order in a new dataframe may differ.
+    New groups or changed channel-to-column assignments are not accepted.
+
+    Use :attr:`transformations` to access individual fitted transformations
+    for JAX computations in the training group and feature order.
+    """
+
+    _fitted: tuple[tuple[str, Scaling], ...]
+    _layout: _DataLayout
+    _population: NDArray[np.generic] | None
+
+    @property
+    def transformations(self) -> dict[str, Scaling]:
+        """Return the fitted transformations for the selected inputs.
+
+        Returns
+        -------
+        dict of str to Scaling
+            Transformations keyed by input name, such as ``media`` or
+            ``controls``. Inputs left in their original units have no entry.
+            Returns a new dictionary without changing the fitted state.
+        """
+        return dict(self._fitted)
+
+    def transform(self, data: PreparedData) -> PreparedData:
+        """Apply training scales and match the training input order.
+
+        Parameters
+        ----------
+        data : PreparedData
+            Data returned by :func:`prepare_data`. New periods and media
+            history are allowed. Inputs may be omitted, such as outcomes
+            not yet observed. Supplied inputs must retain their training
+            columns, channel assignments, and groups.
+
+        Returns
+        -------
+        PreparedData
+            New prepared inputs containing
+
+            - **arrays** : Scaled selected inputs and copies of untouched inputs
+            - **columns** : Source columns in training order
+            - **group_values** : Groups in training order
+            - **time_values** : Supplied modeling periods
+            - **media_time_values** : Supplied exposure periods, including history
+
+            Channel labels retain their training assignments. Original data
+            is unchanged. Alignment and scaling run before model evaluation,
+            outside JAX transformations.
+        """
+        return self._apply(data, inverse=False)
+
+    def inverse_transform(self, data: PreparedData) -> PreparedData:
+        """Return selected inputs to their original units.
+
+        Parameters
+        ----------
+        data : PreparedData
+            Scaled data with the same input identities as the training data.
+            Supplied groups and columns are matched to their training order.
+
+        Returns
+        -------
+        PreparedData
+            New prepared inputs with selected arrays restored to their
+            original units and copies of untouched arrays. Labels follow
+            the same rules as :meth:`transform`. Restored arrays remain
+            floating-point, including inputs originally stored as integers.
+        """
+        return self._apply(data, inverse=True)
+
+    def _apply(self, data: PreparedData, *, inverse: bool) -> PreparedData:
+        """Align once and apply fitted factors at the data preparation boundary."""
+        if not isinstance(data, PreparedData):
+            raise TypeError("data must be PreparedData returned by prepare_data")
+        aligned = data._align_to(self._layout)
+        if (
+            self._population is not None
+            and "population" in aligned.arrays
+            and any(name in aligned.arrays for name in ("media", "organic_media", "reach", "organic_reach"))
+            and not np.array_equal(aligned.arrays["population"], self._population)
+        ):
+            raise ValueError(
+                "population differs from the estimates used to fit media scaling. "
+                "Keep the training population estimates when reusing these transformations"
+            )
+
+        for name, scaling in self._fitted:
+            if name not in aligned.arrays:
+                continue
+            array = aligned.arrays[name]
+            dtype = jnp.result_type(array, scaling.offset, scaling.scale)
+            # Prepared data stays on the host until it is passed into model evaluation
+            offset, divisor = np.asarray(scaling.offset), np.asarray(scaling.scale)
+            with np.errstate(over="ignore", invalid="ignore"):
+                values = array.astype(dtype)
+                result = values * divisor + offset if inverse else (values - offset) / divisor
+            if not np.isfinite(result).all():
+                raise ValueError(
+                    f"input {name!r} produces nonfinite values after scaling. "
+                    "Check its units and magnitudes or use float64 inputs with JAX 64-bit mode"
+                )
+            aligned.arrays[name] = result
+
+        return aligned
 
 
 def fit_scaling(
@@ -409,3 +525,135 @@ def fit_media_scaling(
         )
 
     return Scaling(offset=jnp.zeros(scale_values.shape, dtype=dtype), scale=jnp.asarray(scale_values))
+
+
+def fit_data_scaling(
+    data: PreparedData,
+    *,
+    media_method: Literal["median", "mean", "max"] | None = "median",
+    scale_outcome: bool = False,
+    scale_controls: bool = True,
+    scale_treatments: bool = True,
+    adjust_population: bool = False,
+) -> DataScaling:
+    """Fit reusable transformations for labeled model inputs.
+
+    By default, scale exposure inputs by their positive medians and
+    standardize controls and non-media treatments. Outcomes stay in their
+    original units unless scaling is requested. Spend, population, revenue
+    per outcome, and both frequency inputs are always left unchanged.
+
+    Parameters
+    ----------
+    data : PreparedData
+        Training data returned by :func:`prepare_data`. Statistics pool
+        periods and groups, retaining one statistic per feature. Exposure
+        statistics include all supplied training media history. Other
+        statistics use only the modeling periods. Inputs are not modified.
+    media_method : {"median", "mean", "max"} or None, default "median"
+        Scaling method for paid and organic media and reach. ``"median"``
+        excludes zeros, ``"mean"`` includes them, and ``"max"`` uses the
+        largest exposure. Each channel needs positive training exposure.
+        Use ``None`` to leave these inputs in their original units.
+    scale_outcome : bool, default False
+        Center the outcome and divide by its training standard deviation.
+        Enable for a model defined on a standardized continuous response.
+        Leave disabled for count likelihoods that need the original counts.
+        Requires an outcome in the training data.
+    scale_controls : bool, default True
+        Standardize each control using its training mean and standard
+        deviation. Omitted controls do not create a transformation.
+    scale_treatments : bool, default True
+        Standardize each non-media treatment, such as product price, using
+        its training mean and standard deviation. Omitted treatments do
+        not create a transformation.
+    adjust_population : bool, default False
+        Adjust exposures by population before estimating channel scales.
+        Requires population in the training data. Does not adjust controls,
+        treatments, or outcomes. Population factors remain fixed when
+        applying the fitted scales. Prediction data may omit population
+        to reuse those factors, but supplied estimates must match the
+        training values when exposure inputs are transformed.
+
+    Returns
+    -------
+    DataScaling
+        Fitted scaling object containing
+
+        - **transformations** : Per-input offsets and divisors, available
+          as individual :class:`Scaling` objects
+
+        The object also retains the input labels needed to align future
+        data, without storing training observations. Its ``transform`` and
+        ``inverse_transform`` methods return new :class:`PreparedData`
+        objects. No statistics are refitted when transforming new data.
+
+    Examples
+    --------
+    Prepare impressions, costs, and a control from a dataframe. Fit the
+    scaling once, then reuse it on a later week with no observed outcome.
+
+    .. ipython::
+
+        In [1]: import polars as pl
+           ...: from mmmjax import fit_data_scaling, prepare_data
+           ...: frame = pl.DataFrame({
+           ...:     "week": [1, 2, 3],
+           ...:     "sales": [100, 120, 140],
+           ...:     "impressions": [0, 1_000, 3_000],
+           ...:     "cost": [0.0, 20.0, 60.0],
+           ...:     "temperature": [10.0, 12.0, 14.0],
+           ...: })
+           ...: data = prepare_data(
+           ...:     frame, time="week", outcome="sales",
+           ...:     media=["impressions"], spend=["cost"],
+           ...:     controls=["temperature"],
+           ...: )
+           ...: scaling = fit_data_scaling(data)
+           ...: scaled = scaling.transform(data)
+           ...: future = prepare_data(
+           ...:     pl.DataFrame({"week": [4], "impressions": [4_000]}),
+           ...:     time="week", media=["impressions"],
+           ...: )
+           ...: scaling.transform(future).arrays["media"]
+    """
+    if not isinstance(data, PreparedData):
+        raise TypeError("data must be PreparedData returned by prepare_data")
+    for name, value in (
+        ("scale_outcome", scale_outcome),
+        ("scale_controls", scale_controls),
+        ("scale_treatments", scale_treatments),
+        ("adjust_population", adjust_population),
+    ):
+        if not isinstance(value, bool):
+            raise TypeError(f"{name} must be True or False, got {value!r}")
+    if media_method is not None:
+        if not isinstance(media_method, str):
+            raise TypeError(f"media_method must be 'median', 'mean', 'max' or None, got {media_method!r}")
+        if media_method not in ("median", "mean", "max"):
+            raise ValueError(f"media_method must be 'median', 'mean', 'max' or None, got {media_method!r}")
+    if scale_outcome and "outcome" not in data.arrays:
+        raise ValueError("scale_outcome requires an outcome selected in prepare_data")
+    if adjust_population and "population" not in data.arrays:
+        raise ValueError("adjust_population requires population selected in prepare_data")
+
+    fitted = {}
+    population = data.arrays["population"] if adjust_population else None
+    media_inputs = ("media", "organic_media", "reach", "organic_reach")
+    if media_method is not None:
+        for name in media_inputs:
+            if name in data.arrays:
+                try:
+                    fitted[name] = fit_media_scaling(data.arrays[name], method=media_method, population=population)
+                except ValueError as error:
+                    raise ValueError(f"Cannot fit scaling for {name!r}. {error}") from error
+
+    observation_axes = (0, 1) if data.group_columns else (0,)
+    for name, enabled in (("outcome", scale_outcome), ("controls", scale_controls), ("treatments", scale_treatments)):
+        if enabled and name in data.arrays:
+            fitted[name] = fit_scaling(data.arrays[name], axis=observation_axes)
+
+    stored_population = (
+        population.copy() if population is not None and any(name in fitted for name in media_inputs) else None
+    )
+    return DataScaling(_fitted=tuple(fitted.items()), _layout=data._layout(), _population=stored_population)
