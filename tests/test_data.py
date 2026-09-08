@@ -786,6 +786,7 @@ def test_prepare_data_example_keeps_channel_order_and_sorts_observations(frame_f
             "video_spend": [130.0, 80.0, 95.0],
             "search_impressions": [6_000, 5_000, 4_500],
             "search_spend": [60.0, 40.0, 50.0],
+            "email_clicks": [90, 60, 80],
             "temperature": [12.0, 10.0, 14.0],
             "product_price": [10.0, 12.0, 11.0],
         }
@@ -796,10 +797,12 @@ def test_prepare_data_example_keeps_channel_order_and_sorts_observations(frame_f
         time="week",
         outcome="sales",
         media=["video_impressions", "search_impressions"],
+        organic_media=["email_clicks"],
         spend=["video_spend", "search_spend"],
         controls=["temperature"],
         treatments=["product_price"],
         channels=["video", "search"],
+        organic_channels=["Email"],
         frequency="weekly",
     )
     inputs = data.arrays
@@ -808,14 +811,17 @@ def test_prepare_data_example_keeps_channel_order_and_sorts_observations(frame_f
     assert data.time_values == ("2026-01-05", "2026-01-12", "2026-01-19")
     assert data.group_columns == data.group_values == ()
     assert data.channels == ("video", "search")
+    assert data.organic_channels == ("Email",)
     assert data.columns == {
         "outcome": ("sales",),
         "media": ("video_impressions", "search_impressions"),
+        "organic_media": ("email_clicks",),
         "spend": ("video_spend", "search_spend"),
         "controls": ("temperature",),
         "treatments": ("product_price",),
     }
     np.testing.assert_array_equal(inputs["media"], [[10_000, 5_000], [14_000, 6_000], [12_000, 4_500]])
+    np.testing.assert_array_equal(inputs["organic_media"], [[60], [90], [80]])
     np.testing.assert_array_equal(inputs["spend"], [[80.0, 40.0], [130.0, 60.0], [95.0, 50.0]])
     np.testing.assert_array_equal(inputs["outcome"], [100, 140, 120])
     np.testing.assert_array_equal(inputs["controls"], [[10.0], [12.0], [14.0]])
@@ -829,12 +835,19 @@ def test_prepared_data_to_jax_follows_precision_setting_without_changing_host_da
             "week": [2, 1],
             "sales": np.array([20, 10], dtype=np.int64),
             "video": np.array([2.5, 1.5], dtype=np.float64),
+            "email_clicks": np.array([12.25, 10.5], dtype=np.float64),
             "promotion": [True, False],
             "price_change": np.array([-0.5, 0.25], dtype=np.float64),
         }
     )
     data = prepare_data(
-        source, time="week", outcome="sales", media=["video"], controls=["promotion"], treatments=["price_change"]
+        source,
+        time="week",
+        outcome="sales",
+        media=["video"],
+        organic_media=["email_clicks"],
+        controls=["promotion"],
+        treatments=["price_change"],
     )
     before = {name: array.copy() for name, array in data.arrays.items()}
 
@@ -844,6 +857,7 @@ def test_prepared_data_to_jax_follows_precision_setting_without_changing_host_da
 
     assert set(result) == set(data.arrays)
     assert result["media"].dtype == (np.float64 if x64 else np.float32)
+    assert result["organic_media"].dtype == (np.float64 if x64 else np.float32)
     assert result["outcome"].dtype == (np.int64 if x64 else np.int32)
     assert result["controls"].dtype == np.bool_
     assert result["treatments"].dtype == (np.float64 if x64 else np.float32)
@@ -859,6 +873,7 @@ def test_prepared_data_to_jax_follows_precision_setting_without_changing_host_da
         "media": ("video",),
         "controls": ("promotion",),
         "treatments": ("price_change",),
+        "organic_media": ("email_clicks",),
     }
 
 
@@ -960,10 +975,13 @@ def test_prepared_data_to_jax_reports_floating_overflow_before_transfer(value):
 @pytest.mark.parametrize("sharded", [False, True])
 def test_prepared_data_to_jax_places_all_blocks_on_the_requested_device(sharded):
     data = prepare_data(
-        pl.DataFrame({"week": [1, 2], "sales": [10, 20], "video": [1.5, 2.5], "promotion": [True, False]}),
+        pl.DataFrame(
+            {"week": [1, 2], "sales": [10, 20], "video": [1.5, 2.5], "email": [2, 1], "promotion": [True, False]}
+        ),
         time="week",
         outcome="sales",
         media=["video"],
+        organic_media=["email"],
         treatments=["promotion"],
     )
     device = jax.devices("cpu")[0]
@@ -976,7 +994,7 @@ def test_prepared_data_to_jax_places_all_blocks_on_the_requested_device(sharded)
         assert array.committed
 
 
-@pytest.mark.parametrize("role", ["outcome", "treatments"])
+@pytest.mark.parametrize("role", ["outcome", "treatments", "organic_media"])
 @pytest.mark.parametrize("dtype", [np.float32, np.int32, np.bool_])
 def test_prepared_data_to_jax_does_not_share_mutable_host_buffers(role, dtype):
     original = np.array([0, 1], dtype=dtype)
@@ -1367,6 +1385,85 @@ def test_prepared_treatments_work_with_grouped_model_densities_and_gradients():
     )
 
 
+def test_paid_and_organic_history_work_with_adstock_and_model_gradients():
+    data = prepare_data(
+        pl.DataFrame(
+            {
+                "week": [3, 2, 2, 3],
+                "region": ["west", "east", "west", "east"],
+                "sales": [15.0, 12.0, 10.0, 25.0],
+                "video": [4.0, 2.0, 3.0, 5.0],
+                "email": [2.0, 3.0, 1.0, 4.0],
+                "social": [4.0, 1.0, 2.0, 3.0],
+            }
+        ),
+        time="week",
+        groups=["region"],
+        outcome="sales",
+        media=["video"],
+        organic_media=["email", "social"],
+        media_history=pl.DataFrame(
+            {"week": [1, 1], "region": ["east", "west"], "video": [1.0, 2.0], "email": [2.0, 4.0], "social": [3.0, 1.0]}
+        ),
+    )
+
+    def expected_sales(inputs, media_decay, organic_decay, media_beta, organic_beta):
+        paid = geometric_adstock(inputs["media"], media_decay, max_lag=1, normalize=False)
+        organic = geometric_adstock(inputs["organic_media"], organic_decay, max_lag=1, normalize=False)
+        n_times = inputs["outcome"].shape[0]
+        return paid[-n_times:, ..., 0] * media_beta + jnp.sum(organic[-n_times:] * organic_beta, axis=-1)
+
+    def log_density(inputs, **parameters):
+        return normal(inputs["outcome"], expected_sales(inputs, **parameters), 1.0)
+
+    def generate(key, inputs, **parameters):
+        return {"mean": expected_sales(inputs, **parameters)}
+
+    model = Model(
+        {
+            "media_decay": Real(),
+            "organic_decay": Real(shape=(2,)),
+            "media_beta": Real(),
+            "organic_beta": Real(shape=(2,)),
+        },
+        log_density,
+        generate,
+    )
+    position = {
+        "media_decay": jnp.asarray(0.5),
+        "organic_decay": jnp.array([0.25, 0.75]),
+        "media_beta": jnp.asarray(2.0),
+        "organic_beta": jnp.array([1.5, 0.5]),
+    }
+    inputs = data._to_jax()
+    value, gradient = jax.jit(jax.value_and_grad(model.log_density))(position, inputs)
+    generated = jax.jit(model.generate)(jax.random.key(0), position, inputs)
+
+    # One lag gives current + decay * previous, including the history row for the first period
+    paid = np.array([[4.0, 2.5], [5.5, 6.0]])
+    organic = np.array([[[2.0, 2.75], [3.5, 3.25]], [[2.25, 5.5], [4.75, 3.75]]])
+    mean = 2.0 * paid + np.sum(organic * np.array([1.5, 0.5]), axis=-1)
+    residual = np.array([[10.0, 12.0], [15.0, 25.0]]) - mean
+    expected_density = -0.5 * np.sum(residual**2) - 0.5 * residual.size * np.log(2.0 * np.pi)
+    np.testing.assert_allclose(generated["mean"], mean, rtol=1e-6)
+    np.testing.assert_allclose(value, expected_density, rtol=1e-6)
+    np.testing.assert_allclose(gradient["media_beta"], np.sum(paid * residual), rtol=1e-6)
+    np.testing.assert_allclose(gradient["organic_beta"], np.sum(organic * residual[..., None], axis=(0, 1)), rtol=1e-6)
+
+    # The decay derivative uses the previous raw exposure multiplied by its coefficient
+    previous_paid = np.array([[2.0, 1.0], [3.0, 2.0]])
+    previous_organic = np.array([[[4.0, 1.0], [2.0, 3.0]], [[1.0, 2.0], [3.0, 1.0]]])
+    np.testing.assert_allclose(gradient["media_decay"], np.sum(2.0 * previous_paid * residual), rtol=1e-6)
+    np.testing.assert_allclose(
+        gradient["organic_decay"],
+        np.sum(previous_organic * np.array([1.5, 0.5]) * residual[..., None], axis=(0, 1)),
+        rtol=1e-6,
+    )
+    assert generated["mean"].shape == (len(data.time_values), len(data.group_values))
+    assert inputs["media"].shape == (3, 2, 1)
+    assert inputs["organic_media"].shape == (3, 2, 2)
+
+
 def test_prepare_data_keeps_labels_out_of_jax_compilation():
     first = prepare_data(pl.DataFrame({"week": [1, 2], "sales": [10.0, 20.0]}), time="week", outcome="sales")
     second = prepare_data(
@@ -1387,13 +1484,14 @@ def test_prepare_data_keeps_labels_out_of_jax_compilation():
     assert len(traces) == 1
 
 
-def test_prepare_data_works_with_batched_adstock(frame_factory):
+@pytest.mark.parametrize("role", ["media", "organic_media"])
+def test_prepare_data_works_with_batched_adstock(frame_factory, role):
     source = frame_factory(
         {"week": [2, 1, 1, 2], "geo": ["west", "east", "west", "east"], "video": [4.0, 1.0, 3.0, 2.0]}
     )
-    data = prepare_data(source, time="week", groups=["geo"], media=["video"])
+    data = prepare_data(source, time="week", groups=["geo"], **{role: ["video"]})
 
-    carried = jax.jit(lambda media: geometric_adstock(media, 0.5, max_lag=1, normalize=False))(data._to_jax()["media"])
+    carried = jax.jit(lambda media: geometric_adstock(media, 0.5, max_lag=1, normalize=False))(data._to_jax()[role])
 
     np.testing.assert_array_equal(carried, [[[3.0], [1.0]], [[5.5], [2.5]]])
 

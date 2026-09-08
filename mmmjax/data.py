@@ -356,9 +356,9 @@ def prepare_data(
 
     Examples
     --------
-    Prepare weekly sales with separate impressions and spending for two
-    media channels. Use product price as a treatment and temperature as a
-    control. Rows are sorted by week while features keep the requested order.
+    Prepare weekly sales with paid impressions, spending, and organic email
+    clicks. Use product price as a treatment and temperature as a control.
+    Rows are sorted by week while features keep the requested order.
 
     .. ipython::
 
@@ -371,6 +371,7 @@ def prepare_data(
            ...:     "video_spend": [130.0, 80.0, 95.0],
            ...:     "search_impressions": [6_000, 5_000, 4_500],
            ...:     "search_spend": [60.0, 40.0, 50.0],
+           ...:     "email_clicks": [90, 60, 80],
            ...:     "temperature": [12.0, 10.0, 14.0],
            ...:     "product_price": [10.0, 12.0, 11.0],
            ...: })
@@ -380,17 +381,19 @@ def prepare_data(
            ...:     time="week",
            ...:     outcome="sales",
            ...:     media=["video_impressions", "search_impressions"],
+           ...:     organic_media=["email_clicks"],
            ...:     spend=["video_spend", "search_spend"],
            ...:     controls=["temperature"],
            ...:     treatments=["product_price"],
            ...:     channels=["video", "search"],
+           ...:     organic_channels=["Email"],
            ...:     frequency="weekly",
            ...: )
-           ...: data.channels, data.columns["treatments"]
+           ...: data.channels, data.organic_channels
 
-    For a spend-based model, select the spending columns for both
-    ``media`` and ``spend`` instead. To include earlier exposure data,
-    pass it as ``media_history`` without adding historical sales values.
+    To include earlier exposure data, pass it as ``media_history`` without
+    adding historical sales values. Include both the paid impressions and
+    organic email clicks.
 
     .. ipython::
 
@@ -398,16 +401,19 @@ def prepare_data(
            ...:     "week": ["2025-12-22", "2025-12-29"],
            ...:     "video_impressions": [8_000, 9_000],
            ...:     "search_impressions": [3_000, 4_000],
+           ...:     "email_clicks": [30, 45],
            ...: })
            ...: data = prepare_data(
            ...:     df,
            ...:     time="week",
            ...:     outcome="sales",
            ...:     media=["video_impressions", "search_impressions"],
+           ...:     organic_media=["email_clicks"],
            ...:     spend=["video_spend", "search_spend"],
            ...:     controls=["temperature"],
            ...:     treatments=["product_price"],
            ...:     channels=["video", "search"],
+           ...:     organic_channels=["Email"],
            ...:     frequency="weekly",
            ...:     media_history=history,
            ...: )
