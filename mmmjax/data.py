@@ -166,9 +166,24 @@ class PreparedData:
 
         return cast(dict[str, jax.Array], jax.device_put(converted, device=device))
 
-    def _align_to(self, reference: "PreparedData") -> "PreparedData":
+    def _layout(self) -> "_DataLayout":
+        """Snapshot input identities and axes without retaining observations."""
+        return _DataLayout(
+            axis_counts={name: array.ndim for name, array in self.arrays.items()},
+            columns=self.columns.copy(),
+            group_columns=self.group_columns,
+            group_values=self.group_values,
+            channels=self.channels,
+            organic_channels=self.organic_channels,
+            rf_channels=self.rf_channels,
+            organic_rf_channels=self.organic_rf_channels,
+        )
+
+    def _align_to(self, reference: "PreparedData | _DataLayout") -> "PreparedData":
         """Match reference ordering for internal prediction preparation."""
-        if not isinstance(reference, PreparedData):
+        if isinstance(reference, PreparedData):
+            reference = reference._layout()
+        if not isinstance(reference, _DataLayout):
             raise TypeError("reference must be PreparedData returned by prepare_data")
         if self.group_columns != reference.group_columns:
             raise ValueError(
@@ -196,14 +211,14 @@ class PreparedData:
                 )
             observation_indices.append(np.asarray([positions[label] for label in reference.group_values]))
 
-        unknown = [name for name in self.arrays if name not in reference.arrays]
+        unknown = [name for name in self.arrays if name not in reference.axis_counts]
         if unknown:
             raise ValueError(f"inputs {unknown} do not exist in the reference. Supply inputs used by the model")
 
         arrays: dict[str, NDArray[np.generic]] = {}
         columns: dict[str, tuple[str, ...]] = {}
         media_inputs = ("media", "organic_media", "reach", "media_frequency", "organic_reach", "organic_frequency")
-        for name, reference_array in reference.arrays.items():
+        for name, reference_ndim in reference.axis_counts.items():
             if name not in self.arrays:
                 continue
             array = self.arrays[name]
@@ -218,7 +233,7 @@ class PreparedData:
                     f"Missing columns {missing_columns} and unexpected columns {unexpected_columns}. "
                     "Select the same source columns before alignment"
                 )
-            if array.ndim != reference_array.ndim:
+            if array.ndim != reference_ndim:
                 raise ValueError(
                     f"input {name!r} has a different number of axes from the reference. "
                     "Prepare both inputs with prepare_data without changing their array shapes"
@@ -267,6 +282,20 @@ class PreparedData:
             rf_channels=reference.rf_channels if "reach" in arrays else (),
             organic_rf_channels=reference.organic_rf_channels if "organic_reach" in arrays else (),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class _DataLayout:
+    """Retain input ordering for reuse independently of training observations."""
+
+    axis_counts: dict[str, int]
+    columns: dict[str, tuple[str, ...]]
+    group_columns: tuple[str, ...]
+    group_values: tuple[tuple[object, ...], ...]
+    channels: tuple[str, ...]
+    organic_channels: tuple[str, ...]
+    rf_channels: tuple[str, ...]
+    organic_rf_channels: tuple[str, ...]
 
 
 def prepare_data(

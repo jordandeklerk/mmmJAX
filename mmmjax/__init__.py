@@ -117,10 +117,12 @@ from mmmjax.distributions import (
 )
 from mmmjax.model import Model
 from mmmjax.parameters import Interval, LowerBound, Parameterization, Positive, Real, Simplex, UpperBound
+from mmmjax.scaling import DataScaling, Scaling, fit_data_scaling, fit_media_scaling, fit_scaling
 
 __version__ = "0.0.1"
 
 __all__ = [
+    "DataScaling",
     "Interval",
     "LowerBound",
     "Model",
@@ -128,6 +130,7 @@ __all__ = [
     "Positive",
     "PreparedData",
     "Real",
+    "Scaling",
     "Simplex",
     "UpperBound",
     "bernoulli",
@@ -173,6 +176,9 @@ __all__ = [
     "exponential_logpdf",
     "exponential_logsf",
     "exponential_rng",
+    "fit_data_scaling",
+    "fit_media_scaling",
+    "fit_scaling",
     "gamma",
     "gamma_logcdf",
     "gamma_logpdf",

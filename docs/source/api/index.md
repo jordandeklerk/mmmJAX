@@ -8,6 +8,7 @@ available from `mmmjax.distributions`.
 
 model
 data
+scaling
 parameters
 adstock
 continuous
