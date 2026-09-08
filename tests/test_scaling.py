@@ -1,7 +1,7 @@
 """Tests for fitted centering and scaling."""
 
 from dataclasses import FrozenInstanceError
-from statistics import median
+from statistics import fmean, median
 
 import jax
 import jax.numpy as jnp
@@ -249,6 +249,18 @@ def test_media_scaling_uses_positive_observations_without_centering():
     np.testing.assert_array_equal(fitted.transform(media), [[0, 0.5], [0.5, 0], [1, 1], [2, 1.5]])
 
 
+@pytest.mark.parametrize("method,expected_scale", [("median", [4, 8]), ("mean", [3.5, 6]), ("max", [8, 12])])
+def test_media_scaling_methods_treat_zero_observations_as_documented(method, expected_scale):
+    media = np.array([[0, 4], [2, 0], [4, 8], [8, 12]], dtype=np.float32)
+
+    fitted = fit_media_scaling(media, method=method)
+
+    np.testing.assert_array_equal(fitted.offset, [[0, 0]])
+    np.testing.assert_array_equal(fitted.scale, [expected_scale])
+    np.testing.assert_allclose(fitted.transform(media), media / expected_scale, rtol=1e-7)
+    np.testing.assert_array_equal(fitted.transform(media)[media == 0], [0, 0])
+
+
 def test_media_scaling_pools_population_adjusted_observations_across_groups():
     media = np.array([[[0, 4], [8, 0]], [[8, 8], [0, 24]], [[16, 0], [16, 40]]])
     fitted = fit_media_scaling(media, population=[2, 4])
@@ -272,21 +284,22 @@ def test_media_scaling_pools_groups_without_population_and_keeps_inactive_groups
     np.testing.assert_array_equal(fitted.transform(media)[:, 0], np.zeros((3, 2)))
 
 
-def test_media_scaling_matches_independent_channel_medians_for_large_grouped_inputs():
+@pytest.mark.parametrize("method,statistic", [("median", median), ("mean", fmean), ("max", max)])
+def test_media_scaling_matches_independent_channel_statistics_for_large_grouped_inputs(method, statistic):
     media = (np.arange(5 * 8 * 465).reshape(5, 8, 465) % 13).astype(np.float32)
     population = np.arange(1, 9, dtype=np.float32)
-    channel_medians = [
-        median(
+    channel_statistics = [
+        statistic(
             float(media[time, group, channel]) / float(population[group])
             for time in range(5)
             for group in range(8)
-            if media[time, group, channel] > 0
+            if method != "median" or media[time, group, channel] > 0
         )
         for channel in range(465)
     ]
-    expected = population[None, :, None] * np.array(channel_medians)[None, None, :]
+    expected = population[None, :, None] * np.array(channel_statistics)[None, None, :]
 
-    fitted = fit_media_scaling(media, population=population)
+    fitted = fit_media_scaling(media, method=method, population=population)
 
     assert fitted.scale.shape == (1, 8, 465)
     np.testing.assert_allclose(fitted.scale, expected, rtol=1e-7)
@@ -302,11 +315,15 @@ def test_media_scaling_single_series_population_cancels_without_changing_the_sca
     np.testing.assert_allclose(fitted.transform(media), unadjusted.transform(media), rtol=1e-7)
 
 
-def test_media_scaling_reuses_training_scales_and_copies_population():
+@pytest.mark.parametrize(
+    "method,expected_scale",
+    [("median", [[4, 12], [8, 24]]), ("mean", [[4, 12], [8, 24]]), ("max", [[6, 16], [12, 32]])],
+)
+def test_media_scaling_reuses_training_scales_and_copies_population(method, expected_scale):
     media = np.array([[[2, 8], [4, 16]], [[6, 16], [12, 32]]], dtype=np.float32)
     original = media.copy()
     population = np.array([2, 4], dtype=np.float32)
-    fitted = fit_media_scaling(media, population=population)
+    fitted = fit_media_scaling(media, method=method, population=population)
 
     np.testing.assert_array_equal(media, original)
     np.testing.assert_array_equal(population, [2, 4])
@@ -314,9 +331,10 @@ def test_media_scaling_reuses_training_scales_and_copies_population():
     population[...] = 1
     future = np.array([[[8, 24], [24, 24]]], dtype=np.float32)
 
-    np.testing.assert_array_equal(fitted.scale, [[[4, 12], [8, 24]]])
-    np.testing.assert_array_equal(fitted.transform(future), [[[2, 2], [3, 1]]])
-    np.testing.assert_array_equal(fitted.inverse_transform([[[2, 2], [3, 1]]]), future)
+    expected = future / np.array([expected_scale])
+    np.testing.assert_array_equal(fitted.scale, [expected_scale])
+    np.testing.assert_allclose(fitted.transform(future), expected, rtol=1e-7)
+    np.testing.assert_allclose(fitted.inverse_transform(expected), future, rtol=1e-7)
 
 
 def test_media_scaling_constant_positive_and_boolean_channels_have_defined_scales():
@@ -329,18 +347,20 @@ def test_media_scaling_constant_positive_and_boolean_channels_have_defined_scale
 
 
 @pytest.mark.parametrize("grouped", [False, True])
-def test_media_scaling_supports_jit_gradients_and_inverse_transform(grouped):
+@pytest.mark.parametrize("method", ["median", "mean", "max"])
+def test_media_scaling_supports_jit_gradients_and_inverse_transform(grouped, method):
     media = np.array([[2, 4], [6, 12]], dtype=np.float32)
     if grouped:
         media = np.stack([media, 2 * media], axis=1)
-    fitted = fit_media_scaling(media, population=[1, 2] if grouped else None)
+    fitted = fit_media_scaling(media, method=method, population=[1, 2] if grouped else None)
     values = jnp.asarray(media[:1])
-    expected_scale = np.array([[[4, 8], [8, 16]]]) if grouped else np.array([[4, 8]])
+    channel_scale = np.array([6, 12]) if method == "max" else np.array([4, 8])
+    expected_scale = np.array([[channel_scale, 2 * channel_scale]]) if grouped else channel_scale[None, :]
 
     result = jax.jit(lambda scaling, x: scaling.transform(x))(fitted, values)
     gradient = jax.jit(jax.grad(lambda x: fitted.transform(x).sum()))(values)
 
-    np.testing.assert_array_equal(result, np.full(values.shape, 0.5))
+    np.testing.assert_allclose(result, np.asarray(values) / expected_scale, rtol=1e-7)
     np.testing.assert_allclose(gradient, 1 / expected_scale, rtol=1e-7)
     np.testing.assert_array_equal(jax.jit(fitted.inverse_transform)(result), values)
 
@@ -364,12 +384,25 @@ def test_media_scaling_rejects_nonreal_media(media):
 
 
 @pytest.mark.parametrize("grouped", [False, True])
-def test_media_scaling_reports_channels_without_positive_training_observations(grouped):
+@pytest.mark.parametrize("method", ["median", "mean", "max"])
+def test_media_scaling_reports_channels_without_positive_training_observations(grouped, method):
     media = np.array([[0, 2, 0], [0, 4, 0]])
     if grouped:
         media = np.stack([media, media], axis=1)
     with pytest.raises(ValueError, match=r"channel.*0.*2"):
-        fit_media_scaling(media)
+        fit_media_scaling(media, method=method)
+
+
+@pytest.mark.parametrize("method", [None, 1, ["median"]])
+def test_media_scaling_requires_a_string_method(method):
+    with pytest.raises(TypeError, match="method"):
+        fit_media_scaling([[1, 2], [3, 4]], method=method)
+
+
+@pytest.mark.parametrize("method", ["", "positive_median", "Mean"])
+def test_media_scaling_reports_unsupported_methods(method):
+    with pytest.raises(ValueError, match=r"method.*median.*mean.*max"):
+        fit_media_scaling([[1, 2], [3, 4]], method=method)
 
 
 @pytest.mark.parametrize("population", [0, -1, np.nan, np.inf, -np.inf])

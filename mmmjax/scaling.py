@@ -1,6 +1,7 @@
 """Reusable centering and scaling for model inputs."""
 
 from dataclasses import dataclass
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -256,26 +257,29 @@ def fit_scaling(
 def fit_media_scaling(
     media: ArrayLike,
     *,
+    method: Literal["median", "mean", "max"] = "median",
     population: ArrayLike | None = None,
 ) -> Scaling:
-    r"""Estimate channel scales from positive media exposures.
+    r"""Estimate reusable channel scales from media exposures.
 
-    Each channel is divided by its median positive exposure, pooled across
-    periods and groups. Zero observations are excluded when estimating the
-    median and remain zero after transformation. Media is not centered.
+    Each channel is divided by a training statistic, pooled across periods
+    and groups. By default, use the median of positive exposures. Mean and
+    maximum scaling are also available. Media is not centered, so periods
+    with no exposure remain zero after transformation.
 
     With population estimates :math:`p_g`, first calculate exposure per
-    person. For training exposures :math:`x_{t,g,c}`, the stored divisor is
+    person. For training exposures :math:`x_{t,g,c}` and the selected
+    statistic :math:`T`, the stored divisor is
 
     .. math::
 
-        m_c = \operatorname{median}
-        \left\{\frac{x_{t,g,c}}{p_g}\;\middle|\;x_{t,g,c} > 0\right\}_{t,g},
-        \qquad s_{g,c} = p_g m_c.
+        a_c = T_{t,g}\!\left(\frac{x_{t,g,c}}{p_g}\right),
+        \qquad s_{g,c} = p_g a_c.
 
+    The median excludes zero exposures, while the mean includes them.
     Transformed exposures are :math:`x_{t,g,c}/s_{g,c}`. Without population,
-    use :math:`p_g = 1`. A single series uses one median per channel without
-    a group axis.
+    use :math:`p_g = 1`. A single series uses one statistic per channel
+    without a group axis.
 
     Parameters
     ----------
@@ -285,6 +289,11 @@ def fit_media_scaling(
         single channel. Each channel needs at least one positive observation
         across the training periods and groups. Suitable for paid or organic
         impressions and reach. Apply frequency transformations separately.
+    method : {"median", "mean", "max"}, default "median"
+        Statistic used to scale each channel. ``"median"`` uses only positive
+        exposures, reducing the influence of unusually large observations.
+        ``"mean"`` includes periods with no exposure. ``"max"`` divides by
+        the largest training exposure. Future values can exceed one.
     population : array_like, optional
         Positive, finite population estimates, not boolean. Supply a scalar
         for ``(time, channel)`` inputs, or one value per group with shape
@@ -298,12 +307,12 @@ def fit_media_scaling(
         Stored transformation containing
 
         - **offset** : Zeros so absent exposure stays zero
-        - **scale** : Positive channel medians multiplied by population
+        - **scale** : Selected channel statistics multiplied by population
           where supplied
 
         Statistics retain a length-one time axis. Grouped inputs have a
         length-one group axis unless population-specific factors are used.
-        Both medians and population factors stay fixed for future calls.
+        Both channel statistics and population factors stay fixed for future calls.
         Keep the training group and channel order. The original inputs are
         unchanged. Fitting runs outside JAX transformations, while applying
         the stored transformation supports JIT, gradients, and vectorization.
@@ -325,7 +334,14 @@ def fit_media_scaling(
            ...: scaling = fit_media_scaling(training.to_numpy())
            ...: future = pl.DataFrame({"search": [4_000.0], "video": [0.0]})
            ...: scaling.transform(future.to_numpy())
+           ...: maximum = fit_media_scaling(training.to_numpy(), method="max")
+           ...: maximum.transform(future.to_numpy())
     """
+    if not isinstance(method, str):
+        raise TypeError(f"method must be 'median', 'mean' or 'max', got {method!r}")
+    if method not in ("median", "mean", "max"):
+        raise ValueError(f"method must be 'median', 'mean' or 'max', got {method!r}")
+
     try:
         media_array = np.asarray(media)
     except (TypeError, ValueError) as error:
@@ -377,10 +393,15 @@ def fit_media_scaling(
             "Check media and population values or remove inactive channels"
         )
 
-    # Pool positive exposures across observations, keeping a separate median for each channel
+    # Fit once on the host, keeping a separate statistic for each channel
     with np.errstate(over="ignore", invalid="ignore"):
-        medians = np.nanmedian(np.where(positive, adjusted, np.nan), axis=axes, keepdims=True)
-        scale_values = (medians * population_factors).astype(dtype)
+        if method == "median":
+            channel_scale = np.nanmedian(np.where(positive, adjusted, np.nan), axis=axes, keepdims=True)
+        elif method == "mean":
+            channel_scale = np.mean(adjusted, axis=axes, keepdims=True)
+        else:
+            channel_scale = np.max(adjusted, axis=axes, keepdims=True)
+        scale_values = (channel_scale * population_factors).astype(dtype)
     if not np.isfinite(scale_values).all() or np.any(scale_values <= 0):
         raise ValueError(
             f"media and population do not produce a positive finite scale in {dtype}. "
