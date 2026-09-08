@@ -1502,8 +1502,17 @@ def test_prepare_data_keeps_nested_groups_on_one_observed_series_axis(frame_fact
     np.testing.assert_array_equal(result.arrays["outcome"], [[30, 10], [40, 20]])
 
 
-def test_prepared_data_keeps_hundreds_of_channels_aligned(frame_factory):
+@pytest.mark.parametrize(
+    "role,frequency_role,channel_axis",
+    [
+        ("media", None, "channels"),
+        ("reach", "media_frequency", "rf_channels"),
+        ("organic_reach", "organic_frequency", "organic_rf_channels"),
+    ],
+)
+def test_prepared_data_keeps_hundreds_of_channels_aligned(frame_factory, role, frequency_role, channel_axis):
     expected = np.arange(3 * 8 * 465, dtype=np.float32).reshape(3, 8, 465)
+    expected_frequency = np.arange(3 * 8 * 465, dtype=np.float32).reshape(3, 8, 465) / 8 + 0.125
     rows = [(time, group) for time in [2, 0, 1] for group in reversed(range(8))]
     source = frame_factory(
         {
@@ -1512,31 +1521,48 @@ def test_prepared_data_keeps_hundreds_of_channels_aligned(frame_factory):
             **{
                 f"channel_{channel}": [expected[time, group, channel] for time, group in rows] for channel in range(465)
             },
+            **(
+                {
+                    f"frequency_{channel}": [expected_frequency[time, group, channel] for time, group in rows]
+                    for channel in range(465)
+                }
+                if frequency_role
+                else {}
+            ),
         }
     )
     channels = [f"channel_{channel}" for channel in reversed(range(465))]
+    selections = {role: channels}
+    expected_arrays = {role: expected}
+    if frequency_role:
+        selections[frequency_role] = [f"frequency_{channel}" for channel in reversed(range(465))]
+        expected_arrays[frequency_role] = expected_frequency
 
-    result = prepare_data(source, time="week", groups=["geo"], media=channels)
+    result = prepare_data(source, time="week", groups=["geo"], **selections)
 
-    assert result.columns["media"] == tuple(channels)
+    assert result.columns == {name: tuple(columns) for name, columns in selections.items()}
+    assert getattr(result, channel_axis) == tuple(channels)
     assert result.group_values == tuple((group,) for group in reversed(range(8)))
-    np.testing.assert_array_equal(result.arrays["media"], expected[:, ::-1, ::-1])
-    assert len(jax.tree.leaves(result.arrays)) == 1
+    for name, values in expected_arrays.items():
+        np.testing.assert_array_equal(result.arrays[name], values[:, ::-1, ::-1])
+    assert len(jax.tree.leaves(result.arrays)) == len(expected_arrays)
 
     reference = prepare_data(
         nw.from_native(source).sort(["week", "geo"]).to_native(),
         time="week",
         groups=["geo"],
-        media=list(reversed(channels)),
+        **{name: list(reversed(columns)) for name, columns in selections.items()},
     )
     aligned = result._align_to(reference)
 
-    np.testing.assert_array_equal(aligned.arrays["media"], expected)
-    source_dtype = nw.from_native(source).get_column(channels[0]).to_numpy().dtype
-    assert aligned.arrays["media"].dtype == source_dtype
+    for name, values in expected_arrays.items():
+        np.testing.assert_array_equal(aligned.arrays[name], values)
+        source_dtype = nw.from_native(source).get_column(selections[name][0]).to_numpy().dtype
+        assert aligned.arrays[name].dtype == source_dtype
+    assert getattr(aligned, channel_axis) == tuple(reversed(channels))
     assert aligned.columns == reference.columns
     assert aligned.group_values == reference.group_values
-    assert len(jax.tree.leaves(aligned.arrays)) == 1
+    assert len(jax.tree.leaves(aligned.arrays)) == len(expected_arrays)
 
 
 def test_prepare_data_preserves_integer_counts_separately_from_floating_features(frame_factory):
@@ -1892,6 +1918,109 @@ def test_paid_and_organic_history_work_with_adstock_and_model_gradients():
     assert generated["mean"].shape == (len(data.time_values), len(data.group_values))
     assert inputs["media"].shape == (3, 2, 1)
     assert inputs["organic_media"].shape == (3, 2, 2)
+
+
+def test_reach_frequency_history_works_with_grouped_model_and_adstock_gradients():
+    data = prepare_data(
+        pl.DataFrame(
+            {
+                "week": [3, 2, 2, 3],
+                "region": ["west", "east", "west", "east"],
+                "sales": [17.0, 9.0, 14.0, 16.0],
+                "video_reach": [4, 2, 3, 5],
+                "audio_reach": [3, 1, 2, 2],
+                "video_frequency": [0.5, 0.5, 2.0, 1.0],
+                "audio_frequency": [2.0, 2.0, 1.5, 1.5],
+                "email_reach": [2, 3, 1, 4],
+                "email_frequency": [1.5, 1.0, 2.0, 0.5],
+            }
+        ),
+        time="week",
+        groups=["region"],
+        outcome="sales",
+        reach=["video_reach", "audio_reach"],
+        media_frequency=["video_frequency", "audio_frequency"],
+        rf_channels=["Video", "Audio"],
+        organic_reach=["email_reach"],
+        organic_frequency=["email_frequency"],
+        organic_rf_channels=["Email"],
+        media_history=pl.DataFrame(
+            {
+                "week": [1, 1],
+                "region": ["east", "west"],
+                "video_reach": [1, 2],
+                "audio_reach": [3, 4],
+                "video_frequency": [2.0, 1.5],
+                "audio_frequency": [1.0, 0.5],
+                "email_reach": [2, 6],
+                "email_frequency": [2.5, 0.5],
+            }
+        ),
+    )
+
+    def expected_sales(inputs, paid_decay, organic_decay, paid_beta, organic_beta):
+        # This test models total exposure so both reach and frequency affect the likelihood
+        paid_exposure = inputs["reach"] * inputs["media_frequency"]
+        organic_exposure = inputs["organic_reach"] * inputs["organic_frequency"]
+        paid = geometric_adstock(paid_exposure, paid_decay, max_lag=1, normalize=False)
+        organic = geometric_adstock(organic_exposure, organic_decay, max_lag=1, normalize=False)
+        n_times = inputs["outcome"].shape[0]
+        return jnp.sum(paid[-n_times:] * paid_beta, axis=-1) + jnp.sum(organic[-n_times:] * organic_beta, axis=-1)
+
+    def log_density(inputs, **parameters):
+        return normal(inputs["outcome"], expected_sales(inputs, **parameters), 2.0)
+
+    def generate(key, inputs, **parameters):
+        return {"mean": expected_sales(inputs, **parameters)}
+
+    model = Model(
+        {
+            "paid_decay": Real(shape=(2,)),
+            "organic_decay": Real(),
+            "paid_beta": Real(shape=(2, 2)),
+            "organic_beta": Real(shape=(2, 1)),
+        },
+        log_density,
+        generate,
+    )
+    paid_beta = np.array([[0.5, 1.5], [2.0, 0.25]])
+    organic_beta = np.array([[1.25], [0.5]])
+    position = {
+        "paid_decay": jnp.array([0.5, 0.25]),
+        "organic_decay": jnp.asarray(0.75),
+        "paid_beta": jnp.asarray(paid_beta),
+        "organic_beta": jnp.asarray(organic_beta),
+    }
+    inputs = data._to_jax()
+    value, gradient = jax.jit(jax.value_and_grad(model.log_density))(position, inputs)
+    generated = jax.jit(model.generate)(jax.random.key(0), position, inputs)
+
+    # Work out the one-lag sums independently so a swapped input or lost history changes the result
+    paid = np.array([[[7.5, 3.5], [2.0, 2.75]], [[5.0, 6.75], [5.5, 3.5]]])
+    organic = np.array([[[4.25], [6.75]], [[4.5], [4.25]]])
+    mean = np.array([[14.3125, 8.0625], [18.25, 14.0]])
+    residual = np.array([[14.0, 9.0], [17.0, 16.0]]) - mean
+    score = residual / 4.0
+    expected_density = -0.5 * np.sum((residual / 2.0) ** 2) - residual.size * np.log(2.0 * np.sqrt(2.0 * np.pi))
+    np.testing.assert_allclose(generated["mean"], mean, rtol=1e-6)
+    np.testing.assert_allclose(value, expected_density, rtol=1e-6)
+    np.testing.assert_allclose(gradient["paid_beta"], np.sum(paid * score[..., None], axis=0), rtol=1e-6)
+    np.testing.assert_allclose(gradient["organic_beta"], np.sum(organic * score[..., None], axis=0), rtol=1e-6)
+
+    # With one lag, differentiating decay leaves the previous period's raw exposure
+    previous_paid = np.array([[[3.0, 2.0], [2.0, 3.0]], [[6.0, 3.0], [1.0, 2.0]]])
+    previous_organic = np.array([[[3.0], [5.0]], [[2.0], [3.0]]])
+    np.testing.assert_allclose(
+        gradient["paid_decay"], np.sum(previous_paid * paid_beta * score[..., None], axis=(0, 1)), rtol=1e-6
+    )
+    np.testing.assert_allclose(
+        gradient["organic_decay"], np.sum(previous_organic * organic_beta * score[..., None]), rtol=1e-6
+    )
+    assert generated["mean"].shape == (2, 2)
+    assert inputs["reach"].shape == inputs["media_frequency"].shape == (3, 2, 2)
+    assert inputs["organic_reach"].shape == inputs["organic_frequency"].shape == (3, 2, 1)
+    assert data.rf_channels == ("Video", "Audio")
+    assert data.organic_rf_channels == ("Email",)
 
 
 def test_prepare_data_keeps_labels_out_of_jax_compilation():
