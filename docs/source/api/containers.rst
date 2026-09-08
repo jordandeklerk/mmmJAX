@@ -1,7 +1,7 @@
 Data containers
 ===============
 
-Objects returned by data preparation functions.
+Objects returned by data preparation and scaling functions.
 
 .. currentmodule:: mmmjax
 
@@ -10,3 +10,4 @@ Objects returned by data preparation functions.
    :nosignatures:
 
    PreparedData
+   Scaling
