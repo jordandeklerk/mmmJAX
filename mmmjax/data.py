@@ -88,9 +88,16 @@ class PreparedData:
         Returns
         -------
         dict of str to jax.Array
-            Named arrays with unchanged shapes and axis order. The host
-            arrays and labels are retained on this object. Call this once
-            before using JAX transformations on a model.
+            Dictionary containing the supplied inputs:
+
+            - **outcome** : Observed response values without a feature axis
+            - **media** : Media values, including any earlier history
+            - **spend** : Spending for the modeling periods, ordered by channel
+            - **controls** : Additional predictors in the selected column order
+
+            Omitted inputs have no entry. Shapes and axis order are unchanged.
+            The host arrays and labels are retained on this object. Call this
+            once before using JAX transformations on a model.
         """
         try:
             requested_dtype = np.dtype(dtype)
@@ -293,14 +300,29 @@ def prepare_data(
     Returns
     -------
     PreparedData
-        Named arrays for the supplied inputs, ordered as time, group
-        (if supplied), then channel or control. Outcome has no final
-        feature axis. Media, spend, and controls keep that axis even for
-        a single column. Integer outcomes retain their dtype separately
-        from continuous inputs. Columns within an input use NumPy type
-        promotion. Arrays do not share memory with the input dataframe.
-        When history is supplied, media uses the longer ``media_time_values``
-        window. All other inputs use ``time_values``.
+        Prepared inputs containing:
+
+        - **arrays** : Dictionary of NumPy arrays for the supplied ``outcome``,
+          ``media``, ``spend``, and ``controls``. Omitted inputs have no entry
+        - **time_column** : Name of the source column identifying time periods
+        - **time_values** : Sorted modeling periods for outcome, spend,
+          and controls
+        - **media_time_values** : Sorted media periods, including any earlier
+          history. Matches ``time_values`` without history. Empty without media
+        - **group_columns** : Selected group-column names. Empty for a single
+          series without groups
+        - **group_values** : Observed group-label tuples in array order,
+          preserving first appearance in ``frame``. Empty without groups
+        - **columns** : Dictionary mapping each supplied input to its source
+          column names in the selected order
+        - **channels** : Channel names shared by media and spend in array
+          order. Empty without media
+
+        Arrays are ordered by time, group (if supplied), then channel or
+        control. Outcome has no final feature axis. Media, spend, and controls
+        keep that axis even for a single column. Integer outcomes retain their
+        dtype separately from continuous inputs. Columns within an input use
+        NumPy type promotion. Arrays do not share memory with either dataframe.
 
     Notes
     -----

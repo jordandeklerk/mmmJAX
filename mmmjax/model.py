@@ -78,7 +78,8 @@ class Model:
         Returns
         -------
         dict of str to jax.Array
-            Constrained values indexed by parameter name.
+            Dictionary mapping every declared parameter name to its
+            constrained array with the declaration's ``shape``.
         """
         _validate_value_names(position, self._parameterizations, name="position")
         return {name: parameterization.constrain(position[name]) for name, parameterization in self._parameterizations}
@@ -95,7 +96,8 @@ class Model:
         Returns
         -------
         dict of str to jax.Array
-            Unconstrained values indexed by parameter name.
+            Dictionary mapping every declared parameter name to its
+            unconstrained array with the declaration's ``position_shape``.
         """
         _validate_value_names(parameters, self._parameterizations, name="parameters")
         return {
@@ -114,7 +116,8 @@ class Model:
         Returns
         -------
         dict of str to jax.Array
-            Initial values with each declaration's ``position_shape``.
+            Dictionary mapping every declared parameter name to its
+            unconstrained initial array with the declaration's ``position_shape``.
         """
         keys = jax.random.split(key, len(self._parameterizations))
         return {
@@ -189,7 +192,8 @@ class Model:
         Returns
         -------
         dict of str to jax.Array
-            Generated quantities indexed by the names returned by the callback.
+            Dictionary mapping the names returned by the generation callback
+            to JAX arrays. The callback determines the keys and array shapes.
         """
         if self._generate is None:
             raise RuntimeError("generated quantities are unavailable because this model has no generate callback")
