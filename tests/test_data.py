@@ -73,6 +73,7 @@ def test_prepare_data_keeps_treatments_separate_and_orders_their_axes(frame_fact
     assert data.group_values == (("west", 1), ("east", 2))
     assert data.channels == ("Video",)
     assert data.rf_channels == ()
+    assert data.organic_rf_channels == ()
     np.testing.assert_array_equal(data.arrays["treatments"], [[[2.5, 1], [1.5, 0]], [[-0.5, 1], [0.5, 0]]])
     np.testing.assert_array_equal(data.arrays["outcome"], [[30, 10], [40, 20]])
     np.testing.assert_array_equal(data.arrays["media"], [[[3.5], [1.5]], [[4.5], [2.5]]])
@@ -182,6 +183,12 @@ def test_prepare_data_keeps_reach_frequency_separate_and_aligns_history(frame_fa
             "frequency_b": [0.0, 0.75, 0.25, 0.5],
             "cost_a": [8.0, 0.6, 6.0, 0.8],
             "cost_b": [4.0, 0.3, 3.0, 0.4],
+            "organic_a": [40, 3, 30, 4],
+            "organic_b": [80, 6, 60, 8],
+            "organic_c": [120, 9, 90, 12],
+            "views_a": [0.4, 0.03, 0.3, 0.04],
+            "views_b": [0.8, 0.06, 0.6, 0.08],
+            "views_c": [1.2, 0.09, 0.9, 0.12],
         }
     )
     history = frame_factory(
@@ -194,6 +201,12 @@ def test_prepare_data_keeps_reach_frequency_separate_and_aligns_history(frame_fa
             "reach_b": [2, 20],
             "frequency_a": [0.2, 2.0],
             "frequency_b": [0.5, 5.0],
+            "organic_a": [2, 20],
+            "organic_b": [4, 40],
+            "organic_c": [6, 60],
+            "views_a": [0.02, 0.2],
+            "views_b": [0.04, 0.4],
+            "views_c": [0.06, 0.6],
         }
     )
     before = nw.from_native(source).to_dict(as_series=False)
@@ -211,6 +224,9 @@ def test_prepare_data_keeps_reach_frequency_separate_and_aligns_history(frame_fa
         channels=["Video"],
         organic_channels=["Email"],
         rf_channels=["B", "A"],
+        organic_reach=["organic_c", "organic_a", "organic_b"],
+        organic_frequency=["views_c", "views_a", "views_b"],
+        organic_rf_channels=["C", "A", "B"],
         frequency="weekly",
         media_history=history,
     )
@@ -222,6 +238,9 @@ def test_prepare_data_keeps_reach_frequency_separate_and_aligns_history(frame_fa
     assert data.columns["reach"] == ("reach_b", "reach_a")
     assert data.columns["media_frequency"] == ("frequency_b", "frequency_a")
     assert data.columns["rf_spend"] == ("cost_b", "cost_a")
+    assert data.organic_rf_channels == ("C", "A", "B")
+    assert data.columns["organic_reach"] == ("organic_c", "organic_a", "organic_b")
+    assert data.columns["organic_frequency"] == ("views_c", "views_a", "views_b")
     np.testing.assert_array_equal(
         data.arrays["reach"], [[[20, 20.5], [2, 2.5]], [[3, 30.5], [0, 3.5]], [[4, 40.5], [0.5, 4.5]]]
     )
@@ -233,6 +252,18 @@ def test_prepare_data_keeps_reach_frequency_separate_and_aligns_history(frame_fa
     np.testing.assert_array_equal(data.arrays["organic_media"], [[[20], [2]], [[30], [3]], [[40], [4]]])
     np.testing.assert_array_equal(data.arrays["spend"], [[[6], [0.6]], [[8], [0.8]]])
     np.testing.assert_array_equal(data.arrays["outcome"], [[30, 3], [40, 4]])
+    np.testing.assert_array_equal(
+        data.arrays["organic_reach"],
+        [[[60, 20, 40], [6, 2, 4]], [[90, 30, 60], [9, 3, 6]], [[120, 40, 80], [12, 4, 8]]],
+    )
+    np.testing.assert_array_equal(
+        data.arrays["organic_frequency"],
+        [
+            [[0.6, 0.2, 0.4], [0.06, 0.02, 0.04]],
+            [[0.9, 0.3, 0.6], [0.09, 0.03, 0.06]],
+            [[1.2, 0.4, 0.8], [0.12, 0.04, 0.08]],
+        ],
+    )
     data.arrays["rf_spend"][...] = 0
     np.testing.assert_array_equal(data.arrays["spend"], [[[6], [0.6]], [[8], [0.8]]])
     assert nw.from_native(source).to_dict(as_series=False) == before
@@ -291,7 +322,7 @@ def test_prepare_data_validates_reach_frequency_selectors_and_labels(selection, 
         prepare_data(pl.DataFrame({"week": [1], "r": [2], "f": [0.5]}), time="week", **inputs)
 
 
-@pytest.mark.parametrize("role", ["reach", "media_frequency", "rf_spend"])
+@pytest.mark.parametrize("role", ["reach", "media_frequency", "rf_spend", "organic_reach", "organic_frequency"])
 @pytest.mark.parametrize(
     "value,error,message",
     [
@@ -303,7 +334,15 @@ def test_prepare_data_validates_reach_frequency_selectors_and_labels(selection, 
     ],
 )
 def test_prepare_data_validates_reach_frequency_values(role, value, error, message):
-    columns = {"week": [1], "reach": [2.5], "media_frequency": [0.5], "rf_spend": [1.0], role: [value]}
+    columns = {
+        "week": [1],
+        "reach": [2.5],
+        "media_frequency": [0.5],
+        "rf_spend": [1.0],
+        "organic_reach": [1.5],
+        "organic_frequency": [0.25],
+        role: [value],
+    }
     with pytest.raises(error, match=message):
         prepare_data(
             pl.DataFrame(columns),
@@ -311,6 +350,8 @@ def test_prepare_data_validates_reach_frequency_values(role, value, error, messa
             reach=["reach"],
             media_frequency=["media_frequency"],
             rf_spend=["rf_spend"],
+            organic_reach=["organic_reach"],
+            organic_frequency=["organic_frequency"],
         )
 
 
@@ -372,12 +413,19 @@ def test_align_to_reorders_reach_frequency_groups_features_and_history():
         assert not np.shares_memory(aligned.arrays[role], prediction.arrays[role])
 
 
-@pytest.mark.parametrize("role", ["reach", "media_frequency", "rf_spend"])
+@pytest.mark.parametrize("role", ["reach", "media_frequency", "rf_spend", "organic_reach", "organic_frequency"])
 def test_align_to_rejects_changed_reach_frequency_channel_assignments(role):
     source = pl.DataFrame({"week": [1], "a": [1], "b": [2]})
-    selection = {"reach": ["a", "b"], "media_frequency": ["a", "b"], "rf_spend": ["a", "b"]}
-    reference = prepare_data(source, time="week", rf_channels=["A", "B"], **selection)
-    prediction = prepare_data(source, time="week", rf_channels=["A", "B"], **{**selection, role: ["b", "a"]})
+    selection = {
+        "reach": ["a", "b"],
+        "media_frequency": ["a", "b"],
+        "rf_spend": ["a", "b"],
+        "organic_reach": ["a", "b"],
+        "organic_frequency": ["a", "b"],
+    }
+    labels = {"rf_channels": ["A", "B"], "organic_rf_channels": ["A", "B"]}
+    reference = prepare_data(source, time="week", **labels, **selection)
+    prediction = prepare_data(source, time="week", **labels, **{**selection, role: ["b", "a"]})
 
     with pytest.raises(ValueError, match=rf"channel labels for '{role}'.*channel-to-column assignments"):
         prediction._align_to(reference)
@@ -390,18 +438,137 @@ def test_prepared_reach_frequency_to_jax_preserves_inputs_and_uses_float_precisi
         reach=["r"],
         media_frequency=["f"],
         rf_spend=["c"],
+        organic_reach=["r"],
+        organic_frequency=["f"],
     )
     device = jax.devices("cpu")[0]
     inputs = data._to_jax(dtype=np.float32, device=device)
     jax.block_until_ready(inputs)
 
-    assert set(inputs) == {"reach", "media_frequency", "rf_spend"}
-    for role, expected in (("reach", [[2.5]]), ("media_frequency", [[0.5]]), ("rf_spend", [[1.25]])):
+    assert set(inputs) == {"reach", "media_frequency", "rf_spend", "organic_reach", "organic_frequency"}
+    for role, expected in (
+        ("reach", [[2.5]]),
+        ("media_frequency", [[0.5]]),
+        ("rf_spend", [[1.25]]),
+        ("organic_reach", [[2.5]]),
+        ("organic_frequency", [[0.5]]),
+    ):
         assert inputs[role].dtype == np.float32
         assert inputs[role].devices() == {device}
         np.testing.assert_array_equal(data.arrays[role], expected)
         data.arrays[role][...] = 0
         np.testing.assert_array_equal(inputs[role], expected)
+
+
+def test_prepare_data_accepts_only_organic_reach_frequency_with_history():
+    data = prepare_data(
+        pl.DataFrame({"week": [3, 2], "audience": [0.0, 2.5], "views": [0.0, 0.5]}),
+        time="week",
+        organic_reach=("audience",),
+        organic_frequency=("views",),
+        media_history=pl.DataFrame({"week": [1], "audience": [1.5], "views": [0.25]}),
+    )
+
+    assert set(data.arrays) == {"organic_reach", "organic_frequency"}
+    assert data.channels == data.organic_channels == data.rf_channels == ()
+    assert data.organic_rf_channels == ("audience",)
+    assert data.time_values == (2, 3)
+    assert data.media_time_values == (1, 2, 3)
+    np.testing.assert_array_equal(data.arrays["organic_reach"], [[1.5], [2.5], [0]])
+    np.testing.assert_array_equal(data.arrays["organic_frequency"], [[0.25], [0.5], [0]])
+
+
+@pytest.mark.parametrize(
+    "selection,message",
+    [
+        ({"organic_reach": ["r"]}, "organic_reach.*organic_frequency.*together"),
+        ({"organic_frequency": ["f"]}, "organic_reach.*organic_frequency.*together"),
+        ({"organic_reach": ["r", "f"], "organic_frequency": ["f"]}, "organic_frequency.*one column per"),
+        ({"outcome": "r", "organic_rf_channels": ["R"]}, "organic_rf_channels requires organic_reach"),
+    ],
+)
+def test_prepare_data_rejects_unpaired_organic_reach_frequency_selections(selection, message):
+    with pytest.raises(ValueError, match=message):
+        prepare_data(pl.DataFrame({"week": [1], "r": [2], "f": [0.5]}), time="week", **selection)
+
+
+@pytest.mark.parametrize(
+    "selection,error,message",
+    [
+        ({"organic_reach": "r"}, TypeError, "organic_reach must be a sequence"),
+        ({"organic_frequency": []}, ValueError, "organic_frequency must select at least one"),
+        ({"organic_reach": ["r", "r"]}, ValueError, "organic_reach contains repeated columns"),
+        ({"organic_frequency": ["missing"]}, ValueError, "missing columns.*missing"),
+        ({"organic_reach": ["week"]}, ValueError, "column declarations contain repeated names.*week"),
+        ({"organic_rf_channels": "R"}, TypeError, "organic_rf_channels must be a sequence"),
+        ({"organic_rf_channels": []}, ValueError, "organic_rf_channels must contain one name"),
+        ({"organic_rf_channels": [""]}, ValueError, "organic_rf_channels must contain only nonempty"),
+        ({"organic_rf_channels": ["R", "R"]}, ValueError, "organic_rf_channels must contain unique names"),
+    ],
+)
+def test_prepare_data_validates_organic_reach_frequency_selectors_and_labels(selection, error, message):
+    inputs = {"organic_reach": ["r"], "organic_frequency": ["f"], **selection}
+    with pytest.raises(error, match=message):
+        prepare_data(pl.DataFrame({"week": [1], "r": [2], "f": [0.5]}), time="week", **inputs)
+
+
+def test_align_to_reorders_organic_reach_frequency_history_and_leaves_paid_inputs_omitted():
+    source = pl.DataFrame(
+        {
+            "week": [3, 2, 2, 3],
+            "region": ["east", "east", "west", "west"],
+            "ra": [4, 3, 30, 40],
+            "rb": [8, 6, 60, 80],
+            "fa": [0.4, 0.3, 3.0, 4.0],
+            "fb": [0.8, 0.6, 6.0, 8.0],
+        }
+    )
+    reference = prepare_data(
+        source.reverse(),
+        time="week",
+        groups=["region"],
+        organic_reach=["ra", "rb"],
+        organic_frequency=["fa", "fb"],
+        organic_rf_channels=["A", "B"],
+        reach=["ra"],
+        media_frequency=["fa"],
+    )
+    prediction = prepare_data(
+        source,
+        time="week",
+        groups=["region"],
+        organic_reach=["rb", "ra"],
+        organic_frequency=["fb", "fa"],
+        organic_rf_channels=["B", "A"],
+        media_history=pl.DataFrame(
+            {
+                "week": [1, 1],
+                "region": ["west", "east"],
+                "ra": [20, 2],
+                "rb": [40, 4],
+                "fa": [2.0, 0.2],
+                "fb": [4.0, 0.4],
+            }
+        ),
+    )
+    aligned = prediction._align_to(reference)
+
+    assert set(aligned.arrays) == {"organic_reach", "organic_frequency"}
+    assert aligned.rf_channels == ()
+    assert aligned.organic_rf_channels == ("A", "B")
+    assert aligned.columns == {"organic_reach": ("ra", "rb"), "organic_frequency": ("fa", "fb")}
+    assert aligned.group_values == (("west",), ("east",))
+    assert aligned.time_values == (2, 3)
+    assert aligned.media_time_values == (1, 2, 3)
+    np.testing.assert_array_equal(
+        aligned.arrays["organic_reach"], [[[20, 40], [2, 4]], [[30, 60], [3, 6]], [[40, 80], [4, 8]]]
+    )
+    np.testing.assert_array_equal(
+        aligned.arrays["organic_frequency"], [[[2, 4], [0.2, 0.4]], [[3, 6], [0.3, 0.6]], [[4, 8], [0.4, 0.8]]]
+    )
+    assert prediction.organic_rf_channels == ("B", "A")
+    for role in ("organic_reach", "organic_frequency"):
+        assert not np.shares_memory(aligned.arrays[role], prediction.arrays[role])
 
 
 @pytest.mark.parametrize("with_media", [False, True])
@@ -561,7 +728,7 @@ def test_media_history_rejects_overlapping_or_later_periods(last_history_time):
 
 
 def test_media_history_requires_media_columns():
-    with pytest.raises(ValueError, match="media_history requires media, organic_media or reach columns"):
+    with pytest.raises(ValueError, match="media_history requires media, organic_media, reach or organic_reach columns"):
         prepare_data(
             pl.DataFrame({"week": [2], "sales": [10]}),
             time="week",
@@ -609,18 +776,38 @@ def test_media_history_validates_selected_observations(frame_factory, role, hist
         )
 
 
-@pytest.mark.parametrize("missing", ["video", "newsletter", "audience", "views"])
+@pytest.mark.parametrize("missing", ["video", "newsletter", "audience", "views", "organic_audience", "organic_views"])
 def test_media_history_requires_every_selected_exposure_column(missing):
-    history = {"week": [1], "video": [10], "newsletter": [20], "audience": [30], "views": [0.5]}
+    history = {
+        "week": [1],
+        "video": [10],
+        "newsletter": [20],
+        "audience": [30],
+        "views": [0.5],
+        "organic_audience": [15],
+        "organic_views": [0.25],
+    }
     del history[missing]
     with pytest.raises(ValueError, match=rf"missing columns.*{missing}"):
         prepare_data(
-            pl.DataFrame({"week": [2], "video": [30], "newsletter": [40], "audience": [50], "views": [0.5]}),
+            pl.DataFrame(
+                {
+                    "week": [2],
+                    "video": [30],
+                    "newsletter": [40],
+                    "audience": [50],
+                    "views": [0.5],
+                    "organic_audience": [25],
+                    "organic_views": [0.25],
+                }
+            ),
             time="week",
             media=["video"],
             organic_media=["newsletter"],
             reach=["audience"],
             media_frequency=["views"],
+            organic_reach=["organic_audience"],
+            organic_frequency=["organic_views"],
             media_history=pl.DataFrame(history),
         )
 
@@ -1478,7 +1665,11 @@ def test_prepare_data_allows_signed_outcomes_and_controls(frame_factory):
 @pytest.mark.parametrize(
     "selection,error,message",
     [
-        ({}, ValueError, "select at least one of outcome, media, organic_media, reach, controls or treatments"),
+        (
+            {},
+            ValueError,
+            "select at least one of outcome, media, organic_media, reach, organic_reach, controls or treatments",
+        ),
         ({"media": None}, ValueError, "select at least one"),
         ({"outcome": ["sales"]}, TypeError, "outcome must be a column name"),
         ({"outcome": ""}, ValueError, "outcome must select at least one nonempty"),
