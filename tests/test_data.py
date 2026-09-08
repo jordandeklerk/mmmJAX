@@ -38,6 +38,252 @@ def frame_factory(request):
     return pa.table
 
 
+@pytest.mark.parametrize("with_media", [False, True])
+def test_prepare_data_without_history_keeps_the_existing_time_window(frame_factory, with_media):
+    data = prepare_data(
+        frame_factory({"week": [2, 1], "sales": [20, 10], "video": [4.0, 2.0]}),
+        time="week",
+        outcome="sales",
+        media=["video"] if with_media else None,
+    )
+
+    assert data.time_values == (1, 2)
+    assert data.media_time_values == ((1, 2) if with_media else ())
+    np.testing.assert_array_equal(data.arrays["outcome"], [10, 20])
+    if with_media:
+        np.testing.assert_array_equal(data.arrays["media"], [[2.0], [4.0]])
+
+
+def test_media_history_extends_only_media_and_aligns_nested_groups(frame_factory):
+    frame = frame_factory(
+        {
+            "week": [4, 3, 3, 4],
+            "region": ["west", "east", "west", "east"],
+            "store": [1, 2, 1, 2],
+            "sales": [40, 3, 30, 4],
+            "video": [40.5, 3.0, 30.0, 4.0],
+            "search": [400.0, 30.0, 300.0, 40.0],
+            "cost": [8.0, 0.6, 6.0, 0.8],
+            "promotion": [True, False, True, False],
+        }
+    )
+    history = pl.DataFrame(
+        {
+            "week": [2, 1, 2, 1],
+            "region": ["east", "west", "west", "east"],
+            "store": [2, 1, 1, 2],
+            "search": [20, 100, 200, 10],
+            "video": [2, 10, 20, 1],
+        }
+    )
+    data = prepare_data(
+        frame,
+        time="week",
+        groups=["region", "store"],
+        outcome="sales",
+        media=["video", "search"],
+        spend=["cost", "search"],
+        controls=["promotion"],
+        channels=["Video", "Search"],
+        media_history=history,
+    )
+
+    assert data.time_values == (3, 4)
+    assert data.media_time_values == (1, 2, 3, 4)
+    assert data.group_values == (("west", 1), ("east", 2))
+    assert data.channels == ("Video", "Search")
+    assert data.columns["media"] == ("video", "search")
+    np.testing.assert_array_equal(
+        data.arrays["media"],
+        [[[10, 100], [1, 10]], [[20, 200], [2, 20]], [[30, 300], [3, 30]], [[40.5, 400], [4, 40]]],
+    )
+    np.testing.assert_array_equal(data.arrays["outcome"], [[30, 3], [40, 4]])
+    np.testing.assert_array_equal(data.arrays["spend"], [[[6, 300], [0.6, 30]], [[8, 400], [0.8, 40]]])
+    np.testing.assert_array_equal(data.arrays["controls"], [[[True], [False]], [[True], [False]]])
+    assert np.issubdtype(data.arrays["outcome"].dtype, np.integer)
+    assert data.arrays["controls"].dtype == np.bool_
+    assert np.issubdtype(data.arrays["media"].dtype, np.floating)
+
+    # History must survive internal reordering even though outcomes have fewer periods
+    reference = prepare_data(
+        pl.DataFrame({"week": [5, 5], "region": ["east", "west"], "store": [2, 1], "video": [0, 0], "search": [0, 0]}),
+        time="week",
+        groups=["region", "store"],
+        media=["search", "video"],
+        channels=["Search", "Video"],
+    )
+    aligned = reference._align_to(data)
+    assert aligned.media_time_values == (5,)
+    assert aligned.arrays["media"].shape == (1, 2, 2)
+    reordered = data._align_to(data)
+    assert reordered.media_time_values == data.media_time_values
+    np.testing.assert_array_equal(reordered.arrays["media"], data.arrays["media"])
+    assert not np.shares_memory(reordered.arrays["media"], data.arrays["media"])
+
+    media_only = prepare_data(
+        frame,
+        time="week",
+        groups=["region", "store"],
+        media=["video", "search"],
+        channels=["Video", "Search"],
+        media_history=history,
+    )._align_to(reference)
+    assert media_only.time_values == (3, 4)
+    assert media_only.media_time_values == (1, 2, 3, 4)
+    assert media_only.group_values == (("east", 2), ("west", 1))
+    assert media_only.channels == ("Search", "Video")
+    np.testing.assert_array_equal(
+        media_only.arrays["media"],
+        [[[10, 1], [100, 10]], [[20, 2], [200, 20]], [[30, 3], [300, 30]], [[40, 4], [400, 40.5]]],
+    )
+
+    data.arrays["media"][...] = -1
+    np.testing.assert_array_equal(history["video"].to_numpy(), [2, 10, 20, 1])
+    np.testing.assert_array_equal(nw.from_native(frame)["video"].to_numpy(), [40.5, 3, 30, 4])
+    np.testing.assert_array_equal(data.arrays["spend"][..., 1], [[300, 30], [400, 40]])
+
+
+def test_media_history_supplies_carryover_without_creating_outcomes(frame_factory):
+    data = prepare_data(
+        pl.DataFrame({"week": [3, 4], "sales": [80, 40], "video": [20.0, 10.0]}),
+        time="week",
+        outcome="sales",
+        media=["video"],
+        spend=["video"],
+        media_history=frame_factory({"week": [2, 1], "video": [60.0, 100.0]}),
+    )
+    inputs = data._to_jax()
+    n_outcomes = len(data.time_values)
+
+    def carried_media(alpha):
+        carried = geometric_adstock(inputs["media"], alpha, max_lag=2, normalize=False)
+        return carried[-n_outcomes:]
+
+    # Check the finite weighted sum directly, without using another adstock implementation
+    np.testing.assert_allclose(jax.jit(carried_media)(0.5), [[75.0], [35.0]])
+    _, gradient = jax.jit(jax.value_and_grad(lambda alpha: carried_media(alpha).sum()))(0.5)
+    np.testing.assert_allclose(gradient, 240.0)
+    np.testing.assert_array_equal(inputs["outcome"], [80, 40])
+    np.testing.assert_array_equal(inputs["spend"], [[20.0], [10.0]])
+
+
+@pytest.mark.parametrize("last_history_time", [3, 4, 5])
+def test_media_history_rejects_overlapping_or_later_periods(last_history_time):
+    with pytest.raises(ValueError, match=r"media_history.*before.*3"):
+        prepare_data(
+            pl.DataFrame({"week": [3, 4], "video": [1, 2]}),
+            time="week",
+            media=["video"],
+            media_history=pl.DataFrame({"week": [1, last_history_time], "video": [3, 4]}),
+        )
+
+
+def test_media_history_requires_media_columns():
+    with pytest.raises(ValueError, match="media_history requires media columns"):
+        prepare_data(
+            pl.DataFrame({"week": [2], "sales": [10]}),
+            time="week",
+            outcome="sales",
+            media_history=pl.DataFrame({"week": [1], "video": [5]}),
+        )
+
+
+@pytest.mark.parametrize("history_groups", [["west"], ["west", "east", "north"]])
+def test_media_history_requires_the_same_groups(history_groups):
+    with pytest.raises(ValueError, match="group labels do not match"):
+        prepare_data(
+            pl.DataFrame({"week": [2, 2], "region": ["west", "east"], "video": [10, 20]}),
+            time="week",
+            groups=["region"],
+            media=["video"],
+            media_history=pl.DataFrame(
+                {"week": [1] * len(history_groups), "region": history_groups, "video": [1] * len(history_groups)}
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("history", "message"),
+    [
+        ({"week": [1], "video": [-1.0]}, "negative"),
+        ({"week": [1], "video": [None]}, "missing values"),
+        ({"week": [1], "video": [np.inf]}, "infinite"),
+        ({"week": [1], "other": [1]}, "missing columns.*video"),
+        ({"week": [], "video": []}, "at least one observation"),
+        ({"week": [1, 1], "video": [1, 2]}, "duplicate observations"),
+    ],
+)
+def test_media_history_validates_selected_observations(frame_factory, history, message):
+    # Nullable pandas inference tries an integer cast on infinity before our validation runs
+    with np.errstate(invalid="ignore"):
+        source = frame_factory(history)
+    with pytest.raises(ValueError, match=message):
+        prepare_data(
+            pl.DataFrame({"week": [3], "video": [1]}),
+            time="week",
+            media=["video"],
+            media_history=source,
+        )
+
+
+@pytest.mark.parametrize("representation", [str, date.fromisoformat, datetime.fromisoformat])
+@pytest.mark.parametrize(
+    ("frequency", "history_times", "times"),
+    [
+        ("weekly", ["2025-12-22", "2025-12-29"], ["2026-01-05", "2026-01-12"]),
+        ("monthly", ["2026-01-30"], ["2026-02-28", "2026-03-30"]),
+    ],
+)
+def test_media_history_checks_one_calendar_across_both_windows(
+    frame_factory, representation, frequency, history_times, times
+):
+    data = prepare_data(
+        frame_factory({"time": list(map(representation, times)), "video": [1, 2]}),
+        time="time",
+        media=["video"],
+        frequency=frequency,
+        media_history=frame_factory(
+            {"time": list(map(representation, history_times)), "video": [3] * len(history_times)}
+        ),
+    )
+
+    assert data.time_values == tuple(map(representation, times))
+    assert data.media_time_values == tuple(map(representation, history_times + times))
+
+
+@pytest.mark.parametrize("history_times", [["2025-12-15", "2025-12-22"], ["2025-12-15", "2025-12-29"]])
+def test_media_history_rejects_calendar_gaps_within_history_or_at_the_boundary(history_times):
+    with pytest.raises(ValueError, match="does not follow frequency='weekly'"):
+        prepare_data(
+            pl.DataFrame({"week": ["2026-01-05", "2026-01-12"], "video": [1, 2]}),
+            time="week",
+            media=["video"],
+            frequency="weekly",
+            media_history=pl.DataFrame({"week": history_times, "video": [3, 4]}),
+        )
+
+
+def test_media_history_reports_incompatible_time_labels():
+    with pytest.raises(TypeError, match=r"media_history.*same.*time"):
+        prepare_data(
+            pl.DataFrame({"week": [date(2026, 1, 5)], "video": [1]}),
+            time="week",
+            media=["video"],
+            media_history=pl.DataFrame({"week": ["2025-12-29"], "video": [2]}),
+        )
+
+
+def test_media_history_rejects_missing_group_periods(frame_factory):
+    with pytest.raises(ValueError, match="missing 1 combinations"):
+        prepare_data(
+            pl.DataFrame({"week": [3, 3], "region": ["east", "west"], "video": [1, 2]}),
+            time="week",
+            groups=["region"],
+            media=["video"],
+            media_history=frame_factory({"week": [1, 1, 2], "region": ["east", "west", "west"], "video": [3, 4, 5]}),
+        )
+
+
 def test_align_to_reorders_groups_and_features_without_changing_dates(frame_factory):
     training = prepare_data(
         pl.DataFrame(

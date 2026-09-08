@@ -3,7 +3,7 @@
 from calendar import monthrange
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from typing import cast
 
@@ -30,11 +30,15 @@ class PreparedData:
         Selected outcome, media, spend, and controls, ordered by time,
         group if supplied, then channel or control. Outcome has no final
         feature axis. Each array is independent of the source dataframe
-        and other inputs.
+        and other inputs. Media includes earlier observations when history
+        is supplied. Other inputs cover only the modeling periods.
     time_column : str
         Source column identifying observation periods.
     time_values : tuple
-        Sorted time labels corresponding to the first array axis.
+        Sorted modeling periods for outcome, spend, and controls.
+    media_time_values : tuple
+        Sorted time labels for media, including any earlier history.
+        Without history these match ``time_values``. Empty without media.
     group_columns : tuple of str
         Source columns identifying each series. Empty for a single series.
     group_values : tuple of tuple
@@ -56,6 +60,7 @@ class PreparedData:
     arrays: dict[str, NDArray[np.generic]]
     time_column: str
     time_values: tuple[object, ...]
+    media_time_values: tuple[object, ...]
     group_columns: tuple[str, ...]
     group_values: tuple[tuple[object, ...], ...]
     columns: dict[str, tuple[str, ...]]
@@ -83,9 +88,16 @@ class PreparedData:
         Returns
         -------
         dict of str to jax.Array
-            Named arrays with unchanged shapes and axis order. The host
-            arrays and labels are retained on this object. Call this once
-            before using JAX transformations on a model.
+            Dictionary containing the supplied inputs:
+
+            - **outcome** : Observed response values without a feature axis
+            - **media** : Media values, including any earlier history
+            - **spend** : Spending for the modeling periods, ordered by channel
+            - **controls** : Additional predictors in the selected column order
+
+            Omitted inputs have no entry. Shapes and axis order are unchanged.
+            The host arrays and labels are retained on this object. Call this
+            once before using JAX transformations on a model.
         """
         try:
             requested_dtype = np.dtype(dtype)
@@ -128,13 +140,7 @@ class PreparedData:
         return cast(dict[str, jax.Array], jax.device_put(converted, device=device))
 
     def _align_to(self, reference: "PreparedData") -> "PreparedData":
-        """Match reference ordering for internal prediction preparation.
-
-        Return independent arrays without changing dates or dtypes. Omitted
-        inputs are allowed, so the calling workflow must check which inputs
-        its model needs. Missing labels and changed channel assignments are
-        rejected rather than filled or inferred.
-        """
+        """Match reference ordering for internal prediction preparation."""
         if not isinstance(reference, PreparedData):
             raise TypeError("reference must be PreparedData returned by prepare_data")
         if self.group_columns != reference.group_columns:
@@ -191,6 +197,8 @@ class PreparedData:
                 )
 
             indices = observation_indices
+            if name == "media":
+                indices = [np.arange(len(self.media_time_values)), *observation_indices[1:]]
             if array.ndim > len(observation_indices):
                 feature_order = [column_positions[column] for column in reference_columns]
                 if name in ("media", "spend"):
@@ -209,6 +217,7 @@ class PreparedData:
             arrays=arrays,
             time_column=self.time_column,
             time_values=self.time_values,
+            media_time_values=self.media_time_values if "media" in arrays else (),
             group_columns=self.group_columns,
             group_values=reference.group_values,
             columns=columns,
@@ -222,6 +231,7 @@ def prepare_data(
     time: str,
     outcome: str | None = None,
     media: Sequence[str] | None = None,
+    media_history: IntoDataFrameT | None = None,
     spend: Sequence[str] | None = None,
     controls: Sequence[str] | None = None,
     channels: Sequence[str] | None = None,
@@ -248,6 +258,13 @@ def prepare_data(
         Columns containing nonnegative media inputs, such as impressions
         or spending. Their order defines the channel axis. Use a list
         even for one channel.
+    media_history : dataframe-like, optional
+        Earlier media observations used to calculate carryover into the
+        first modeling periods. Use the same time, group, and media column
+        names as ``frame``. Include only periods before ``frame`` and all
+        its groups. Outcomes, controls, and separate spend columns are not
+        required. Supply ``frequency`` to check for missing periods across
+        both dataframes. Requires ``media``.
     spend : sequence of str, optional
         Columns containing nonnegative spending for the selected media.
         Supply one column per media channel in the same order. If media
@@ -269,27 +286,45 @@ def prepare_data(
     frequency : str, optional
         Expected spacing given as ``"daily"``, ``"weekly"``, ``"monthly"``,
         ``"quarterly"``, or ``"yearly"``. Calendar periods follow the first
-        observation's day, or month-end if it starts at month-end. Supply
-        this to detect periods missing from every group. Without it, only
-        coverage of the observed times is checked.
+        observation's day, including history if supplied, or month-end if
+        it starts at month-end. Supply this to detect periods missing from
+        every group. Without it, only coverage of the observed times is
+        checked.
 
     Returns
     -------
     PreparedData
-        Named arrays for the supplied inputs, ordered as time, group
-        (if supplied), then channel or control. Outcome has no final
-        feature axis. Media, spend, and controls keep that axis even for
-        a single column. Integer outcomes retain their dtype separately
-        from continuous inputs. Columns within an input use NumPy type
-        promotion. Arrays do not share memory with the input dataframe.
+        Prepared inputs containing:
+
+        - **arrays** : Dictionary of NumPy arrays for the supplied ``outcome``,
+          ``media``, ``spend``, and ``controls``. Omitted inputs have no entry
+        - **time_column** : Name of the source column identifying time periods
+        - **time_values** : Sorted modeling periods for outcome, spend,
+          and controls
+        - **media_time_values** : Sorted media periods, including any earlier
+          history. Matches ``time_values`` without history. Empty without media
+        - **group_columns** : Selected group-column names. Empty for a single
+          series without groups
+        - **group_values** : Observed group-label tuples in array order,
+          preserving first appearance in ``frame``. Empty without groups
+        - **columns** : Dictionary mapping each supplied input to its source
+          column names in the selected order
+        - **channels** : Channel names shared by media and spend in array
+          order. Empty without media
+
+        Arrays are ordered by time, group (if supplied), then channel or
+        control. Outcome has no final feature axis. Media, spend, and controls
+        keep that axis even for a single column. Integer outcomes retain their
+        dtype separately from continuous inputs. Columns within an input use
+        NumPy type promotion. Arrays do not share memory with either dataframe.
 
     Notes
     -----
     Supply at least one of outcome, media, or controls. All inputs share
-    the same observation periods. Missing observations are reported, not
-    filled or treated as zero. Calendar checks cover only the span between
-    the first and last supplied times. No scaling or transformations are
-    applied.
+    the same observation periods, except for optional earlier media history.
+    Missing observations are reported, not filled or treated as zero.
+    Calendar checks cover only the span between the first and last supplied
+    times. No scaling or transformations are applied.
 
     Media, spend, and channel names are paired by position. Matching
     lengths are checked, but column names cannot establish whether a
@@ -330,7 +365,27 @@ def prepare_data(
            ...: data.channels
 
     For a spend-based model, select the spending columns for both
-    ``media`` and ``spend`` instead.
+    ``media`` and ``spend`` instead. To include earlier exposure data,
+    pass it as ``media_history`` without adding historical sales values.
+
+    .. ipython::
+
+        In [3]: history = pl.DataFrame({
+           ...:     "week": ["2025-12-22", "2025-12-29"],
+           ...:     "video_impressions": [8_000, 9_000],
+           ...:     "search_impressions": [3_000, 4_000],
+           ...: })
+           ...: data = prepare_data(
+           ...:     df,
+           ...:     time="week",
+           ...:     outcome="sales",
+           ...:     media=["video_impressions", "search_impressions"],
+           ...:     spend=["video_spend", "search_spend"],
+           ...:     channels=["video", "search"],
+           ...:     frequency="weekly",
+           ...:     media_history=history,
+           ...: )
+           ...: data.media_time_values
     """
     selections = {"outcome": outcome, "media": media, "spend": spend, "controls": controls}
     columns: dict[str, tuple[str, ...]] = {}
@@ -351,6 +406,8 @@ def prepare_data(
             raise ValueError(f"{name} contains repeated columns {names}. Select each column only once per input")
         columns[name] = names
 
+    if media_history is not None and "media" not in columns:
+        raise ValueError("media_history requires media columns. Select the same media columns in both dataframes")
     if not columns:
         raise ValueError("select at least one of outcome, media or controls when preparing data")
     if spend is not None and "media" not in columns:
@@ -377,7 +434,8 @@ def prepare_data(
         time=time,
         groups=groups,
         values=list(dict.fromkeys(column for names in columns.values() for column in names)),
-        frequency=frequency,
+        # History and modeling periods need one calendar anchor, especially across February
+        frequency=frequency if media_history is None else None,
     )
     time_values = tuple(selected.get_column(time).unique(maintain_order=True).to_list())
     group_values = tuple(selected.select(groups).unique(maintain_order=True).rows()) if groups else ()
@@ -400,14 +458,46 @@ def prepare_data(
                     "Use nonnegative media measurements and spending before preparing data"
                 )
 
-    return PreparedData(
+    data = PreparedData(
         arrays=arrays,
         time_column=time,
         time_values=time_values,
+        media_time_values=time_values if "media" in arrays else (),
         group_columns=tuple(groups),
         group_values=group_values,
         columns=columns,
         channels=channel_names,
+    )
+    if media_history is None:
+        return data
+
+    history = prepare_data(
+        media_history,
+        time=time,
+        groups=groups,
+        media=columns["media"],
+        channels=channel_names,
+    )._align_to(data)
+    try:
+        overlaps = history.time_values[-1] >= time_values[0]
+    except TypeError as error:
+        raise TypeError(
+            f"media_history and frame must use the same kind of time labels in column {time!r}. "
+            "Use comparable period numbers or the same date representation in both dataframes"
+        ) from error
+    if overlaps:
+        raise ValueError(
+            f"media_history must contain only periods before the first modeling period {time_values[0]!r}. "
+            f"Its last period is {history.time_values[-1]!r}. Remove overlapping or later observations"
+        )
+
+    media_times = (*history.time_values, *time_values)
+    if frequency is not None:
+        _validate_calendar(media_times, time=time, frequency=frequency)
+    return replace(
+        data,
+        arrays={**arrays, "media": np.concatenate((history.arrays["media"], arrays["media"]), axis=0)},
+        media_time_values=media_times,
     )
 
 
@@ -458,7 +548,7 @@ def _prepare_panel(
         raise TypeError("groups must be a sequence of column names, such as ['region'], or () for a single series")
     selected = _prepare_frame(frame, keys=[time, *groups], values=values)
     if frequency is not None:
-        _validate_calendar(selected, time=time, frequency=frequency)
+        _validate_calendar(selected.get_column(time).unique().to_list(), time=time, frequency=frequency)
     if not groups:
         return selected.sort(time)
 
@@ -556,14 +646,13 @@ def _prepare_frame(
     return selected
 
 
-def _validate_calendar(frame: nw.DataFrame[IntoDataFrameT], *, time: str, frequency: str) -> None:
+def _validate_calendar(labels: Sequence[object], *, time: str, frequency: str) -> None:
     """Check the distinct observation times against a declared calendar spacing."""
     frequencies = ("daily", "weekly", "monthly", "quarterly", "yearly")
     if frequency not in frequencies:
         raise ValueError(f"frequency must be one of {frequencies}, got {frequency!r}")
 
     # Calendar metadata is small even when the panel has many groups and channels
-    labels = frame.get_column(time).unique().to_list()
     times = []
     representations = set()
     for label in labels:
