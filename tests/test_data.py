@@ -444,6 +444,58 @@ def test_align_to_reorders_groups_and_features_without_changing_dates(frame_fact
     np.testing.assert_array_equal(predict(aligned._to_jax()), [[360, 102], [480, 136], [600, 170]])
 
 
+def test_align_to_reorders_treatments_independently_of_media_history(frame_factory):
+    training = prepare_data(
+        pl.DataFrame(
+            {
+                "week": [1, 1],
+                "region": ["west", "east"],
+                "video": [10.0, 20.0],
+                "promotion": [False, False],
+                "price_change": [0.5, 0.25],
+            }
+        ),
+        time="week",
+        groups=["region"],
+        media=["video"],
+        treatments=["promotion", "price_change"],
+    )
+    prediction = prepare_data(
+        frame_factory(
+            {
+                "week": [3, 2, 2, 3],
+                "region": ["east", "east", "west", "west"],
+                "video": [4.0, 3.0, 30.0, 40.0],
+                "promotion": [True, False, True, False],
+                "price_change": [-4.0, -3.0, -30.0, -40.0],
+            }
+        ),
+        time="week",
+        groups=["region"],
+        media=["video"],
+        treatments=["price_change", "promotion"],
+        media_history=pl.DataFrame({"week": [1, 1], "region": ["east", "west"], "video": [2.0, 20.0]}),
+    )
+    before = prediction.arrays["treatments"].copy()
+
+    aligned = prediction._align_to(training)
+
+    assert aligned.time_values == (2, 3)
+    assert aligned.media_time_values == (1, 2, 3)
+    assert aligned.group_values == (("west",), ("east",))
+    assert aligned.columns["treatments"] == ("promotion", "price_change")
+    assert aligned.channels == ("video",)
+    np.testing.assert_array_equal(aligned.arrays["treatments"], [[[1, -30], [0, -3]], [[0, -40], [1, -4]]])
+    np.testing.assert_array_equal(aligned.arrays["media"], [[[20], [2]], [[30], [3]], [[40], [4]]])
+    assert aligned.arrays["treatments"].dtype == prediction.arrays["treatments"].dtype
+    assert prediction.group_values == (("east",), ("west",))
+    assert prediction.columns["treatments"] == ("price_change", "promotion")
+
+    aligned.arrays["treatments"][...] = 0
+    np.testing.assert_array_equal(prediction.arrays["treatments"], before)
+    np.testing.assert_array_equal(training.arrays["treatments"], [[[0, 0.5], [0, 0.25]]])
+
+
 @pytest.mark.parametrize("grouped", [False, True])
 def test_align_to_preserves_singleton_axes_and_copies_unchanged_blocks(frame_factory, grouped):
     source = frame_factory({"week": [2, 1], "region": ["west", "west"], "count": [20, 10]})
@@ -545,13 +597,14 @@ def test_align_to_reports_list_valued_group_cells(reference_has_lists):
         prediction._align_to(reference)
 
 
+@pytest.mark.parametrize("role", ["media", "treatments"])
 @pytest.mark.parametrize("columns", [["video"], ["video", "search", "social"], ["video", "social"]])
-def test_align_to_rejects_missing_or_unexpected_columns(columns):
+def test_align_to_rejects_missing_or_unexpected_columns(role, columns):
     source = pl.DataFrame({"week": [1], "video": [1.0], "search": [2.0], "social": [3.0]})
-    training = prepare_data(source, time="week", media=["video", "search"])
-    prediction = prepare_data(source, time="week", media=columns)
+    training = prepare_data(source, time="week", **{role: ["video", "search"]})
+    prediction = prepare_data(source, time="week", **{role: columns})
 
-    with pytest.raises(ValueError, match="columns for 'media' do not match") as error:
+    with pytest.raises(ValueError, match=f"columns for '{role}' do not match") as error:
         prediction._align_to(training)
 
     if "search" not in columns:
@@ -574,16 +627,30 @@ def test_align_to_rejects_manually_changed_array_layout(grouped, reshape_referen
         prediction._align_to(training)
 
 
-def test_align_to_rejects_additional_inputs_and_different_outcome_columns():
+@pytest.mark.parametrize("role", ["controls", "treatments"])
+def test_align_to_rejects_additional_inputs_and_different_outcome_columns(role):
     source = pl.DataFrame({"week": [1], "sales": [10], "other": [20]})
     training = prepare_data(source, time="week", outcome="sales")
-    unknown = prepare_data(source, time="week", controls=["sales"])
+    unknown = prepare_data(source, time="week", **{role: ["sales"]})
     renamed = prepare_data(source, time="week", outcome="other")
 
-    with pytest.raises(ValueError, match=r"inputs.*controls.*do not exist in the reference"):
+    with pytest.raises(ValueError, match=rf"inputs.*{role}.*do not exist in the reference"):
         unknown._align_to(training)
     with pytest.raises(ValueError, match=r"'outcome'.*Missing columns.*sales.*unexpected columns.*other"):
         renamed._align_to(training)
+
+
+def test_align_to_does_not_fill_omitted_treatments():
+    source = pl.DataFrame({"week": [1, 2], "video": [10.0, 20.0], "promotion": [True, False]})
+    reference = prepare_data(source, time="week", media=["video"], treatments=["promotion"])
+    selected = prepare_data(source, time="week", media=["video"])
+
+    aligned = selected._align_to(reference)
+
+    assert aligned.columns == {"media": ("video",)}
+    assert set(aligned.arrays) == {"media"}
+    assert aligned.channels == ("video",)
+    np.testing.assert_array_equal(aligned.arrays["media"], [[10.0], [20.0]])
 
 
 @pytest.mark.parametrize("reference", [None, {}, "training"])
@@ -603,6 +670,8 @@ def test_prepare_data_example_keeps_channel_order_and_sorts_observations(frame_f
             "video_spend": [130.0, 80.0, 95.0],
             "search_impressions": [6_000, 5_000, 4_500],
             "search_spend": [60.0, 40.0, 50.0],
+            "temperature": [12.0, 10.0, 14.0],
+            "product_price": [10.0, 12.0, 11.0],
         }
     )
 
@@ -612,6 +681,8 @@ def test_prepare_data_example_keeps_channel_order_and_sorts_observations(frame_f
         outcome="sales",
         media=["video_impressions", "search_impressions"],
         spend=["video_spend", "search_spend"],
+        controls=["temperature"],
+        treatments=["product_price"],
         channels=["video", "search"],
         frequency="weekly",
     )
@@ -625,10 +696,14 @@ def test_prepare_data_example_keeps_channel_order_and_sorts_observations(frame_f
         "outcome": ("sales",),
         "media": ("video_impressions", "search_impressions"),
         "spend": ("video_spend", "search_spend"),
+        "controls": ("temperature",),
+        "treatments": ("product_price",),
     }
     np.testing.assert_array_equal(inputs["media"], [[10_000, 5_000], [14_000, 6_000], [12_000, 4_500]])
     np.testing.assert_array_equal(inputs["spend"], [[80.0, 40.0], [130.0, 60.0], [95.0, 50.0]])
     np.testing.assert_array_equal(inputs["outcome"], [100, 140, 120])
+    np.testing.assert_array_equal(inputs["controls"], [[10.0], [12.0], [14.0]])
+    np.testing.assert_array_equal(inputs["treatments"], [[12.0], [10.0], [11.0]])
 
 
 @pytest.mark.parametrize("x64", [False, True])
@@ -639,9 +714,12 @@ def test_prepared_data_to_jax_follows_precision_setting_without_changing_host_da
             "sales": np.array([20, 10], dtype=np.int64),
             "video": np.array([2.5, 1.5], dtype=np.float64),
             "promotion": [True, False],
+            "price_change": np.array([-0.5, 0.25], dtype=np.float64),
         }
     )
-    data = prepare_data(source, time="week", outcome="sales", media=["video"], controls=["promotion"])
+    data = prepare_data(
+        source, time="week", outcome="sales", media=["video"], controls=["promotion"], treatments=["price_change"]
+    )
     before = {name: array.copy() for name, array in data.arrays.items()}
 
     with jax.enable_x64(x64):
@@ -652,6 +730,7 @@ def test_prepared_data_to_jax_follows_precision_setting_without_changing_host_da
     assert result["media"].dtype == (np.float64 if x64 else np.float32)
     assert result["outcome"].dtype == (np.int64 if x64 else np.int32)
     assert result["controls"].dtype == np.bool_
+    assert result["treatments"].dtype == (np.float64 if x64 else np.float32)
     for name, array in result.items():
         assert isinstance(array, jax.Array)
         assert array.shape == before[name].shape
@@ -659,7 +738,12 @@ def test_prepared_data_to_jax_follows_precision_setting_without_changing_host_da
         np.testing.assert_array_equal(data.arrays[name], before[name])
         assert data.arrays[name].dtype == before[name].dtype
     assert data.time_values == (1, 2)
-    assert data.columns == {"outcome": ("sales",), "media": ("video",), "controls": ("promotion",)}
+    assert data.columns == {
+        "outcome": ("sales",),
+        "media": ("video",),
+        "controls": ("promotion",),
+        "treatments": ("price_change",),
+    }
 
 
 @pytest.mark.parametrize("dtype", [np.float32, "float32", np.float64, "float64"])
@@ -760,10 +844,11 @@ def test_prepared_data_to_jax_reports_floating_overflow_before_transfer(value):
 @pytest.mark.parametrize("sharded", [False, True])
 def test_prepared_data_to_jax_places_all_blocks_on_the_requested_device(sharded):
     data = prepare_data(
-        pl.DataFrame({"week": [1, 2], "sales": [10, 20], "video": [1.5, 2.5]}),
+        pl.DataFrame({"week": [1, 2], "sales": [10, 20], "video": [1.5, 2.5], "promotion": [True, False]}),
         time="week",
         outcome="sales",
         media=["video"],
+        treatments=["promotion"],
     )
     device = jax.devices("cpu")[0]
     destination = jax.sharding.SingleDeviceSharding(device) if sharded else device
@@ -775,16 +860,19 @@ def test_prepared_data_to_jax_places_all_blocks_on_the_requested_device(sharded)
         assert array.committed
 
 
+@pytest.mark.parametrize("role", ["outcome", "treatments"])
 @pytest.mark.parametrize("dtype", [np.float32, np.int32, np.bool_])
-def test_prepared_data_to_jax_does_not_share_mutable_host_buffers(dtype):
+def test_prepared_data_to_jax_does_not_share_mutable_host_buffers(role, dtype):
     original = np.array([0, 1], dtype=dtype)
-    data = prepare_data(pl.DataFrame({"week": [1, 2], "value": original}), time="week", outcome="value")
+    selection = {role: "value" if role == "outcome" else ["value"]}
+    data = prepare_data(pl.DataFrame({"week": [1, 2], "value": original}), time="week", **selection)
     result = data._to_jax(dtype=np.float32, device=jax.devices("cpu")[0])
     jax.block_until_ready(result)
 
-    data.arrays["outcome"][:] = 0
+    data.arrays[role][:] = 0
 
-    np.testing.assert_array_equal(result["outcome"], original)
+    assert result[role].dtype == dtype
+    np.testing.assert_array_equal(result[role], original if role == "outcome" else original[:, None])
 
 
 def test_prepare_data_keeps_block_axes_and_labels_aligned(frame_factory):
@@ -1085,6 +1173,50 @@ def test_prepare_data_works_with_model_densities_and_gradients():
     expected_density = -0.5 * np.sum(residual**2) - np.log(2 * np.pi)
     np.testing.assert_allclose(value, expected_density, rtol=1e-6)
     np.testing.assert_allclose(gradient["beta"], np.array([[1.0, 2.0], [3.0, 1.0]]) @ residual)
+
+
+def test_prepared_treatments_work_with_grouped_model_densities_and_gradients():
+    data = prepare_data(
+        pl.DataFrame(
+            {
+                "week": [2, 1, 1, 2],
+                "region": ["west", "east", "west", "east"],
+                "sales": [4.0, 2.0, 1.0, 5.0],
+                "video": [4.0, 1.0, 3.0, 2.0],
+                "promotion": [False, False, True, True],
+                "price_change": [0.5, 0.25, -0.25, -0.5],
+            }
+        ),
+        time="week",
+        groups=["region"],
+        outcome="sales",
+        media=["video"],
+        treatments=["promotion", "price_change"],
+    )
+
+    def log_density(inputs, media_beta, treatment_beta):
+        mean = jnp.sum(inputs["media"] * media_beta, axis=-1)
+        mean += jnp.sum(inputs["treatments"] * treatment_beta, axis=-1)
+        return normal(inputs["outcome"], mean, 2.0)
+
+    model = Model({"media_beta": Real(shape=(2, 1)), "treatment_beta": Real(shape=(2, 2))}, log_density)
+    media_beta = np.array([[0.5], [1.0]])
+    treatment_beta = np.array([[2.0, -1.0], [3.0, 0.5]])
+    position = {"media_beta": jnp.asarray(media_beta), "treatment_beta": jnp.asarray(treatment_beta)}
+    inputs = data._to_jax()
+    value, gradient = jax.jit(jax.value_and_grad(model.log_density))(position, inputs)
+
+    # Use independently ordered arrays and the Normal score to catch swapped features or groups
+    media = np.array([[[3.0], [1.0]], [[4.0], [2.0]]])
+    treatments = np.array([[[1.0, -0.25], [0.0, 0.25]], [[0.0, 0.5], [1.0, -0.5]]])
+    mean = np.sum(media * media_beta, axis=-1) + np.sum(treatments * treatment_beta, axis=-1)
+    residual = np.array([[1.0, 2.0], [4.0, 5.0]]) - mean
+    expected_density = -0.5 * np.sum((residual / 2.0) ** 2) - residual.size * np.log(2.0 * np.sqrt(2.0 * np.pi))
+    np.testing.assert_allclose(value, expected_density, rtol=1e-6)
+    np.testing.assert_allclose(gradient["media_beta"], np.sum(media * residual[..., None] / 4.0, axis=0), rtol=1e-6)
+    np.testing.assert_allclose(
+        gradient["treatment_beta"], np.sum(treatments * residual[..., None] / 4.0, axis=0), rtol=1e-6
+    )
 
 
 def test_prepare_data_keeps_labels_out_of_jax_compilation():

@@ -278,7 +278,7 @@ def prepare_data(
         Negative values are allowed for controls and the outcome.
     treatments : sequence of str, optional
         Columns containing non-media inputs whose effects the model will
-        estimate, such as promotions or price changes. Their order defines
+        estimate, such as product prices or promotions. Their order defines
         the treatment axis. Numeric and boolean values are accepted,
         including negative values. Use a list even for one treatment.
         These inputs cover only the modeling periods and do not require
@@ -348,8 +348,8 @@ def prepare_data(
     Examples
     --------
     Prepare weekly sales with separate impressions and spending for two
-    media channels. Rows are sorted by week while channels keep the
-    requested order.
+    media channels. Use product price as a treatment and temperature as a
+    control. Rows are sorted by week while features keep the requested order.
 
     .. ipython::
 
@@ -362,6 +362,8 @@ def prepare_data(
            ...:     "video_spend": [130.0, 80.0, 95.0],
            ...:     "search_impressions": [6_000, 5_000, 4_500],
            ...:     "search_spend": [60.0, 40.0, 50.0],
+           ...:     "temperature": [12.0, 10.0, 14.0],
+           ...:     "product_price": [10.0, 12.0, 11.0],
            ...: })
 
         In [2]: data = prepare_data(
@@ -370,10 +372,12 @@ def prepare_data(
            ...:     outcome="sales",
            ...:     media=["video_impressions", "search_impressions"],
            ...:     spend=["video_spend", "search_spend"],
+           ...:     controls=["temperature"],
+           ...:     treatments=["product_price"],
            ...:     channels=["video", "search"],
            ...:     frequency="weekly",
            ...: )
-           ...: data.channels
+           ...: data.channels, data.columns["treatments"]
 
     For a spend-based model, select the spending columns for both
     ``media`` and ``spend`` instead. To include earlier exposure data,
@@ -392,6 +396,8 @@ def prepare_data(
            ...:     outcome="sales",
            ...:     media=["video_impressions", "search_impressions"],
            ...:     spend=["video_spend", "search_spend"],
+           ...:     controls=["temperature"],
+           ...:     treatments=["product_price"],
            ...:     channels=["video", "search"],
            ...:     frequency="weekly",
            ...:     media_history=history,
