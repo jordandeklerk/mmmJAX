@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.typing import ArrayLike
 
-__all__ = ["Scaling", "fit_scaling"]
+__all__ = ["Scaling", "fit_media_scaling", "fit_scaling"]
 
 
 @jax.tree_util.register_dataclass
@@ -22,9 +22,9 @@ class Scaling:
 
         z = \frac{x - c}{s}, \qquad x = z s + c.
 
-    Use :func:`fit_scaling` to estimate these values from training data.
-    Applying them to new data does not update them. Direct construction
-    does not validate the supplied values.
+    Use :func:`fit_scaling` or :func:`fit_media_scaling` to estimate these
+    values from training data. Applying them to new data does not update
+    them. Direct construction does not validate the supplied values.
 
     Attributes
     ----------
@@ -32,8 +32,8 @@ class Scaling:
         Values subtracted before scaling. Reduced axes have length one
         so the offsets broadcast across new observations.
     scale : jax.Array
-        Positive divisors with the same shape as ``offset``. Constant
-        training series use a divisor of one.
+        Positive divisors with the same shape as ``offset``. Their values
+        depend on the fitting function used.
 
     Notes
     -----
@@ -105,7 +105,9 @@ class Scaling:
     def _prepare_values(self, values: ArrayLike) -> jax.Array:
         """Check numeric inputs and broadcasting for either transformation."""
         try:
-            values_array = jnp.asarray(values)
+            # Choose floating-point precision before JAX can narrow integer observations
+            dtype = jnp.result_type(*jax.tree_util.tree_leaves(values), self.offset, self.scale)
+            values_array = jnp.asarray(values, dtype=dtype)
         except (TypeError, ValueError) as error:
             raise TypeError("values must be a real numeric array or sequence") from error
         if not (
@@ -126,8 +128,7 @@ class Scaling:
                 f"scaling statistics would expand values from shape {values_array.shape} to {result_shape}. "
                 "Keep the training feature and group axes, including axes of length one"
             )
-        dtype = jnp.result_type(values_array, self.offset, self.scale)
-        return jnp.asarray(values_array, dtype=dtype)
+        return values_array
 
 
 def fit_scaling(
@@ -250,3 +251,140 @@ def fit_scaling(
         )
 
     return Scaling(offset=jnp.asarray(offset), scale=jnp.asarray(scale_values))
+
+
+def fit_media_scaling(
+    media: ArrayLike,
+    *,
+    population: ArrayLike | None = None,
+) -> Scaling:
+    r"""Estimate channel scales from positive media exposures.
+
+    Each channel is divided by its median positive exposure, pooled across
+    periods and groups. Zero observations are excluded when estimating the
+    median and remain zero after transformation. Media is not centered.
+
+    With population estimates :math:`p_g`, first calculate exposure per
+    person. For training exposures :math:`x_{t,g,c}`, the stored divisor is
+
+    .. math::
+
+        m_c = \operatorname{median}
+        \left\{\frac{x_{t,g,c}}{p_g}\;\middle|\;x_{t,g,c} > 0\right\}_{t,g},
+        \qquad s_{g,c} = p_g m_c.
+
+    Transformed exposures are :math:`x_{t,g,c}/s_{g,c}`. Without population,
+    use :math:`p_g = 1`. A single series uses one median per channel without
+    a group axis.
+
+    Parameters
+    ----------
+    media : array_like
+        Finite, nonnegative training exposures shaped ``(time, channel)``
+        or ``(time, group, channel)``. Keep the channel axis even for a
+        single channel. Each channel needs at least one positive observation
+        across the training periods and groups. Suitable for paid or organic
+        impressions and reach. Apply frequency transformations separately.
+    population : array_like, optional
+        Positive, finite population estimates, not boolean. Supply a scalar
+        for ``(time, channel)`` inputs, or one value per group with shape
+        ``(n_groups,)`` for grouped inputs. Omit to skip population adjustment.
+        A scalar population cancels from the normalized result for a single
+        series.
+
+    Returns
+    -------
+    Scaling
+        Stored transformation containing
+
+        - **offset** : Zeros so absent exposure stays zero
+        - **scale** : Positive channel medians multiplied by population
+          where supplied
+
+        Statistics retain a length-one time axis. Grouped inputs have a
+        length-one group axis unless population-specific factors are used.
+        Both medians and population factors stay fixed for future calls.
+        Keep the training group and channel order. The original inputs are
+        unchanged. Fitting runs outside JAX transformations, while applying
+        the stored transformation supports JIT, gradients, and vectorization.
+        Statistics use a common floating-point dtype of at least float32.
+
+    Examples
+    --------
+    Scale two impression columns without changing periods with no activity,
+    then reuse the training scales for a later week.
+
+    .. ipython::
+
+        In [1]: import polars as pl
+           ...: from mmmjax import fit_media_scaling
+           ...: training = pl.DataFrame({
+           ...:     "search": [0.0, 1_000.0, 3_000.0],
+           ...:     "video": [2_000.0, 0.0, 6_000.0],
+           ...: })
+           ...: scaling = fit_media_scaling(training.to_numpy())
+           ...: future = pl.DataFrame({"search": [4_000.0], "video": [0.0]})
+           ...: scaling.transform(future.to_numpy())
+    """
+    try:
+        media_array = np.asarray(media)
+    except (TypeError, ValueError) as error:
+        raise TypeError("media must be a real numeric array or sequence") from error
+    if media_array.dtype.kind not in "biuf":
+        raise TypeError(f"media must have a real numeric dtype, got {media_array.dtype}")
+    if media_array.ndim not in (2, 3) or media_array.size == 0:
+        raise ValueError(
+            "media must have shape (time, channel) or (time, group, channel) with no empty axes. "
+            f"Got shape {media_array.shape}"
+        )
+    if not np.isfinite(media_array).all() or np.any(media_array < 0):
+        raise ValueError("media must contain finite nonnegative exposures. Resolve negative, NaN or infinite values")
+
+    population_factors = np.ones((1,) * media_array.ndim)
+    dtype = jnp.result_type(media_array)
+    if population is not None:
+        try:
+            population_array = np.asarray(population)
+        except (TypeError, ValueError) as error:
+            raise TypeError("population must contain real numeric estimates") from error
+        if population_array.dtype.kind not in "iuf":
+            raise TypeError(f"population must have a real numeric dtype, not boolean, got {population_array.dtype}")
+        expected_shape = (media_array.shape[1],) if media_array.ndim == 3 else ()
+        if population_array.shape != expected_shape:
+            raise ValueError(
+                f"population must have shape {expected_shape} for media with shape {media_array.shape}. "
+                f"Got shape {population_array.shape}"
+            )
+        if not np.isfinite(population_array).all() or np.any(population_array <= 0):
+            raise ValueError("population must contain positive finite estimates. Check each group's population")
+        dtype = jnp.result_type(media_array, population_array)
+        population_factors = population_array.astype(np.float64).reshape(1, *expected_shape, 1)
+
+    if not np.issubdtype(dtype, np.floating):
+        dtype = np.dtype(np.float64 if dtype.itemsize == 8 else np.float32)
+    dtype = jax.dtypes.canonicalize_dtype(np.promote_types(dtype, np.float32))
+    axes = tuple(range(media_array.ndim - 1))
+
+    with np.errstate(over="ignore", invalid="ignore"):
+        adjusted = media_array.astype(np.float64) / population_factors
+    if not np.isfinite(adjusted).all():
+        raise ValueError("media and population produce nonfinite adjusted exposures. Check their units and magnitudes")
+    positive = adjusted > 0
+    inactive_channels = np.flatnonzero(~np.any(positive, axis=axes)).tolist()
+    if inactive_channels:
+        raise ValueError(
+            f"media channels at indices {inactive_channels} have no positive observations to estimate a scale. "
+            "Check media and population values or remove inactive channels"
+        )
+
+    # Pool positive exposures across observations, keeping a separate median for each channel
+    with np.errstate(over="ignore", invalid="ignore"):
+        medians = np.nanmedian(np.where(positive, adjusted, np.nan), axis=axes, keepdims=True)
+        scale_values = (medians * population_factors).astype(dtype)
+    if not np.isfinite(scale_values).all() or np.any(scale_values <= 0):
+        raise ValueError(
+            f"media and population do not produce a positive finite scale in {dtype}. "
+            "Rescale the inputs or use float64 inputs with JAX 64-bit mode"
+        )
+
+    return Scaling(offset=jnp.zeros(scale_values.shape, dtype=dtype), scale=jnp.asarray(scale_values))

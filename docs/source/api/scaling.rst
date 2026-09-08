@@ -10,3 +10,4 @@ Estimate reusable transformations for model inputs.
    :nosignatures:
 
    fit_scaling
+   fit_media_scaling
