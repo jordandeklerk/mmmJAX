@@ -27,11 +27,12 @@ class PreparedData:
     Attributes
     ----------
     arrays : dict of str to numpy.ndarray
-        Selected model inputs, ordered by time, group if supplied, then feature.
-        Outcome has no final feature axis. Each array is independent of
-        the source dataframe and other inputs. All paid and organic exposure
+        Time-varying inputs are ordered by time, group if supplied, then
+        feature. Outcome has no final feature axis. Population is stored
+        once per group, or as a scalar without groups. Each array is independent
+        of the source dataframe and other inputs. All paid and organic exposure
         inputs, including reach and frequency, include any earlier history.
-        Other inputs cover only the modeling periods.
+        Other time-varying inputs cover only the modeling periods.
     time_column : str
         Source column identifying observation periods.
     time_values : tuple
@@ -47,8 +48,8 @@ class PreparedData:
         Observed group combinations matching the group axis. Preparation
         uses first-appearance order. Empty when no group columns were supplied.
     columns : dict of str to tuple of str
-        Source columns for each input, in the selected order. The outcome
-        column is recorded as a one-element tuple.
+        Source columns for each input, in the selected order. Outcome and
+        population columns are each recorded as a one-element tuple.
     channels : tuple of str
         Shared channel labels for the final axis of media and spend.
         Empty when media was not supplied.
@@ -107,6 +108,7 @@ class PreparedData:
             Dictionary containing the supplied inputs:
 
             - **outcome** : Observed response values without a feature axis
+            - **population** : One population estimate per group, or a scalar without groups
             - **media** : Media values, including any earlier history
             - **organic_media** : Organic exposure values over the same media periods
             - **reach** : Audience reached, including any earlier history
@@ -220,6 +222,11 @@ class PreparedData:
                     "Prepare both inputs with prepare_data without changing their array shapes"
                 )
 
+            if name == "population":
+                arrays[name] = array[observation_indices[1]] if self.group_columns else array.copy()
+                columns[name] = reference_columns
+                continue
+
             indices = observation_indices
             if name in media_inputs:
                 indices = [np.arange(len(self.media_time_values)), *observation_indices[1:]]
@@ -265,6 +272,7 @@ def prepare_data(
     *,
     time: str,
     outcome: str | None = None,
+    population: str | None = None,
     media: Sequence[str] | None = None,
     organic_media: Sequence[str] | None = None,
     reach: Sequence[str] | None = None,
@@ -299,6 +307,13 @@ def prepare_data(
     outcome : str, optional
         Column containing the response, such as sales or conversions.
         Omit it when preparing prediction data without observed outcomes.
+    population : str, optional
+        Column containing a positive population estimate for each group.
+        Repeat the same value across that group's modeling periods. Without
+        groups, supply one value repeated across all periods. Integer and
+        floating-point estimates are accepted, but boolean values are not.
+        Population is stored once per group, or as a scalar without groups.
+        Preparation does not scale other inputs or average changing values.
     media : sequence of str, optional
         Columns containing nonnegative paid media inputs, such as impressions
         or spending. Their order defines the channel axis. Use a list
@@ -335,7 +350,8 @@ def prepare_data(
         with the same time and group columns as ``frame``. All exposure
         inputs share this history window.
         Include only periods before ``frame`` and all its groups. Outcomes,
-        controls, treatments, and separate spend columns are not required.
+        population, controls, treatments, and separate spend columns are
+        not required.
         Supply ``frequency`` to check for missing periods across both
         dataframes. Requires ``media``, ``organic_media``, ``reach``, or
         ``organic_reach``.
@@ -395,8 +411,8 @@ def prepare_data(
         Prepared inputs containing:
 
         - **arrays** : Dictionary of NumPy arrays for the supplied ``outcome``,
-          ``media``, ``organic_media``, ``reach``, ``media_frequency``,
-          ``organic_reach``, ``organic_frequency``,
+          ``population``, ``media``, ``organic_media``, ``reach``,
+          ``media_frequency``, ``organic_reach``, ``organic_frequency``,
           ``spend``, ``rf_spend``, ``controls``, and ``treatments``.
           Omitted inputs have no entry
         - **time_column** : Name of the source column identifying time periods
@@ -420,109 +436,83 @@ def prepare_data(
         - **organic_rf_channels** : Shared organic reach and frequency channel
           names in array order. Empty without organic reach and frequency inputs
 
-        Arrays are ordered by time, group (if supplied), then feature.
-        Outcome has no final feature axis. All other inputs keep that axis
-        even for a single column. Integer outcomes retain their dtype
+        Time-varying arrays are ordered by time, group (if supplied), then
+        feature. Outcome has no final feature axis. Population has shape
+        ``(n_groups,)``, or ``()`` without groups, and follows ``group_values``.
+        All other inputs keep a feature axis even for a single column.
+        Integer outcomes and population estimates retain their dtype
         separately from continuous inputs. Columns within an input use NumPy
         type promotion. Arrays do not share memory with either dataframe.
 
     Examples
     --------
-    Prepare weekly sales with paid impressions, spending, and organic email
-    clicks. Use product price as a treatment and temperature as a control.
-    Rows are sorted by week while features keep the requested order.
+    Prepare weekly sales for two regions with paid and organic media,
+    earlier exposure history, and a population estimate for each region.
 
     .. ipython::
 
         In [1]: import polars as pl
            ...: from mmmjax import prepare_data
+           ...: # Search uses impressions, while video uses reach and frequency
+           ...: # Email and social are organic channels without associated spend
            ...: df = pl.DataFrame({
-           ...:     "week": ["2026-01-12", "2026-01-05", "2026-01-19"],
-           ...:     "sales": [140, 100, 120],
-           ...:     "video_impressions": [14_000, 10_000, 12_000],
-           ...:     "video_spend": [130.0, 80.0, 95.0],
-           ...:     "search_impressions": [6_000, 5_000, 4_500],
-           ...:     "search_spend": [60.0, 40.0, 50.0],
-           ...:     "email_clicks": [90, 60, 80],
-           ...:     "temperature": [12.0, 10.0, 14.0],
-           ...:     "product_price": [10.0, 12.0, 11.0],
+           ...:     "week": ["2026-01-05", "2026-01-05",
+           ...:              "2026-01-12", "2026-01-12"],
+           ...:     "region": ["west", "east", "west", "east"],
+           ...:     "sales": [100, 80, 140, 90],
+           ...:     "residents": [50_000, 30_000, 50_000, 30_000],
+           ...:     "search_impressions": [5_000, 3_000, 6_000, 4_000],
+           ...:     "search_spend": [40.0, 30.0, 60.0, 45.0],
+           ...:     "video_reach": [5_000, 3_000, 7_000, 4_000],
+           ...:     "video_frequency": [2.0, 1.5, 2.5, 2.0],
+           ...:     "video_spend": [80.0, 50.0, 130.0, 70.0],
+           ...:     "email_clicks": [60, 40, 90, 50],
+           ...:     "social_reach": [300, 200, 350, 250],
+           ...:     "social_frequency": [1.0, 1.5, 2.0, 1.5],
+           ...:     "temperature": [10.0, 8.0, 12.0, 9.0],
+           ...:     "product_price": [12.0, 11.0, 10.0, 11.0],
            ...: })
-
-        In [2]: data = prepare_data(
-           ...:     df,
-           ...:     time="week",
-           ...:     outcome="sales",
-           ...:     media=["video_impressions", "search_impressions"],
-           ...:     organic_media=["email_clicks"],
-           ...:     spend=["video_spend", "search_spend"],
-           ...:     controls=["temperature"],
-           ...:     treatments=["product_price"],
-           ...:     channels=["video", "search"],
-           ...:     organic_channels=["Email"],
-           ...:     frequency="weekly",
-           ...: )
-           ...: data.channels, data.organic_channels
-
-    To include earlier exposure data, pass it as ``media_history`` without
-    adding historical sales values. Include both the paid impressions and
-    organic email clicks.
-
-    .. ipython::
-
-        In [3]: history = pl.DataFrame({
-           ...:     "week": ["2025-12-22", "2025-12-29"],
-           ...:     "video_impressions": [8_000, 9_000],
-           ...:     "search_impressions": [3_000, 4_000],
-           ...:     "email_clicks": [30, 45],
+           ...: # History needs the same exposure columns, but no sales or spend
+           ...: history = pl.DataFrame({
+           ...:     "week": ["2025-12-29", "2025-12-29"],
+           ...:     "region": ["west", "east"],
+           ...:     "search_impressions": [4_000, 2_500],
+           ...:     "video_reach": [4_000, 2_500],
+           ...:     "video_frequency": [1.5, 1.0],
+           ...:     "email_clicks": [45, 30],
+           ...:     "social_reach": [250, 150],
+           ...:     "social_frequency": [1.0, 1.0],
            ...: })
+           ...: # Select each input and give its channels readable names
+           ...: # Product price is a treatment, and temperature is a control
            ...: data = prepare_data(
            ...:     df,
            ...:     time="week",
-           ...:     outcome="sales",
-           ...:     media=["video_impressions", "search_impressions"],
-           ...:     organic_media=["email_clicks"],
-           ...:     spend=["video_spend", "search_spend"],
-           ...:     controls=["temperature"],
-           ...:     treatments=["product_price"],
-           ...:     channels=["video", "search"],
-           ...:     organic_channels=["Email"],
+           ...:     groups=["region"],
            ...:     frequency="weekly",
-           ...:     media_history=history,
-           ...: )
-           ...: data.media_time_values
-
-    For channels measured through reach and average exposure frequency,
-    select the paired columns. Paid video has associated spend, while
-    organic email is supplied without spend.
-
-    .. ipython::
-
-        In [4]: rf_frame = pl.DataFrame({
-           ...:     "week": ["2026-01-05", "2026-01-12"],
-           ...:     "sales": [100, 140],
-           ...:     "video_reach": [5_000, 7_000],
-           ...:     "video_frequency": [2.0, 2.5],
-           ...:     "video_spend": [80.0, 130.0],
-           ...:     "email_reach": [300, 350],
-           ...:     "email_frequency": [1.0, 2.0],
-           ...: })
-           ...: rf_data = prepare_data(
-           ...:     rf_frame,
-           ...:     time="week",
            ...:     outcome="sales",
+           ...:     population="residents",
+           ...:     media=["search_impressions"],
+           ...:     spend=["search_spend"],
+           ...:     channels=["search"],
            ...:     reach=["video_reach"],
            ...:     media_frequency=["video_frequency"],
-           ...:     organic_reach=["email_reach"],
-           ...:     organic_frequency=["email_frequency"],
            ...:     rf_spend=["video_spend"],
            ...:     rf_channels=["video"],
-           ...:     organic_rf_channels=["email"],
-           ...:     frequency="weekly",
+           ...:     organic_media=["email_clicks"],
+           ...:     organic_channels=["email"],
+           ...:     organic_reach=["social_reach"],
+           ...:     organic_frequency=["social_frequency"],
+           ...:     organic_rf_channels=["social"],
+           ...:     controls=["temperature"],
+           ...:     treatments=["product_price"],
+           ...:     media_history=history,
            ...: )
-           ...: rf_data.rf_channels, rf_data.organic_rf_channels
+           ...: data.group_values
     """
     selections = {
         "outcome": outcome,
+        "population": population,
         "media": media,
         "organic_media": organic_media,
         "reach": reach,
@@ -538,9 +528,10 @@ def prepare_data(
     for name, selection in selections.items():
         if selection is None:
             continue
-        if name == "outcome":
+        if name in ("outcome", "population"):
             if not isinstance(selection, str):
-                raise TypeError("outcome must be a column name, such as 'sales'")
+                example = "sales" if name == "outcome" else "residents"
+                raise TypeError(f"{name} must be a column name, such as {example!r}")
             names: tuple[str, ...] = (selection,)
         elif isinstance(selection, Sequence) and not isinstance(selection, str):
             names = tuple(selection)
@@ -564,7 +555,7 @@ def prepare_data(
         )
     if not columns:
         raise ValueError(
-            "select at least one of outcome, media, organic_media, reach, organic_reach, "
+            "select at least one of outcome, population, media, organic_media, reach, organic_reach, "
             "controls or treatments when preparing data"
         )
     for reach_input, frequency_input in (("reach", "media_frequency"), ("organic_reach", "organic_frequency")):
@@ -623,7 +614,27 @@ def prepare_data(
 
     arrays: dict[str, NDArray[np.generic]] = {}
     for name, names in columns.items():
-        if name == "outcome":
+        if name == "population":
+            values = selected.get_column(names[0]).to_numpy().reshape(observation_shape)
+            if values.dtype == np.bool_:
+                raise TypeError(
+                    f"population column {names[0]!r} contains boolean values. Use numeric population estimates"
+                )
+            if np.any(values <= 0):
+                raise ValueError(
+                    f"population column {names[0]!r} contains zero or negative values. "
+                    "Provide a positive population estimate for each group"
+                )
+            changing = np.any(values != values[0], axis=0)
+            if np.any(changing):
+                affected = [group_values[index] for index in np.flatnonzero(changing)] if groups else []
+                context = f" for groups {affected}" if groups else ""
+                raise ValueError(
+                    f"population column {names[0]!r} changes across periods{context}. "
+                    "Choose a fixed population estimate for each series before preparing data"
+                )
+            arrays[name] = values[:1].reshape(observation_shape[1:]).copy()
+        elif name == "outcome":
             arrays[name] = selected.get_column(names[0]).to_numpy().copy().reshape(observation_shape)
         else:
             # Stacking numeric series avoids object arrays from mixed pandas column dtypes
