@@ -140,13 +140,7 @@ class PreparedData:
         return cast(dict[str, jax.Array], jax.device_put(converted, device=device))
 
     def _align_to(self, reference: "PreparedData") -> "PreparedData":
-        """Match reference ordering for internal prediction preparation.
-
-        Return independent arrays without changing dates or dtypes. Omitted
-        inputs are allowed, so the calling workflow must check which inputs
-        its model needs. Missing labels and changed channel assignments are
-        rejected rather than filled or inferred.
-        """
+        """Match reference ordering for internal prediction preparation."""
         if not isinstance(reference, PreparedData):
             raise TypeError("reference must be PreparedData returned by prepare_data")
         if self.group_columns != reference.group_columns:
