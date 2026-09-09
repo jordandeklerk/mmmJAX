@@ -13,6 +13,7 @@ parameters
 adstock
 saturation
 media
+seasonality
 continuous
 discrete
 multivariate
