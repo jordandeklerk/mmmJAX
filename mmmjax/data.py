@@ -331,6 +331,9 @@ def prepare_data(
         Eager dataframe supported by Narwhals, including pandas and Polars
         DataFrames and PyArrow Tables. Selected values must be numeric or
         boolean, finite, and nonmissing. The input is not modified.
+        For predictions that need only dates and group labels, omit all
+        value selections. The result retains the observation labels without
+        adding placeholder outcomes or other inputs.
     time : str
         Column identifying observation periods, with values that sort
         chronologically. Each combination of time and group must be unique.
@@ -595,11 +598,6 @@ def prepare_data(
         raise ValueError(
             "media_history requires media, organic_media, reach or organic_reach columns. "
             "Select the same exposure columns in both dataframes"
-        )
-    if not columns:
-        raise ValueError(
-            "select at least one of outcome, revenue_per_outcome, population, media, organic_media, "
-            "reach, organic_reach, controls or treatments when preparing data"
         )
     for reach_input, frequency_input in (("reach", "media_frequency"), ("organic_reach", "organic_frequency")):
         if (reach_input in columns) != (frequency_input in columns):

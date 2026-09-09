@@ -136,7 +136,11 @@ class FourierSeasonality:
             group_values = training_groups
 
         return _PreparedFourier(
-            features=fourier_features(positions, period=period, order=self.order),
+            features=fourier_features(
+                positions if reference is None else jnp.asarray(positions, dtype=reference.features.dtype),
+                period=period,
+                order=self.order,
+            ),
             group_indices=jnp.asarray(group_indices, dtype=jnp.int32),
             specification=self,
             origin=origin,
