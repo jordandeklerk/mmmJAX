@@ -115,6 +115,7 @@ from mmmjax.distributions import (
     uniform_logsf,
     uniform_rng,
 )
+from mmmjax.hsgp import hsgp_basis, hsgp_weights
 from mmmjax.media import media_response, reach_frequency_response
 from mmmjax.model import Model
 from mmmjax.parameters import Interval, LowerBound, Parameterization, Positive, Real, Simplex, UpperBound
@@ -195,6 +196,8 @@ __all__ = [
     "half_normal_logsf",
     "half_normal_rng",
     "hill_saturation",
+    "hsgp_basis",
+    "hsgp_weights",
     "inverse_gamma",
     "inverse_gamma_logcdf",
     "inverse_gamma_logpdf",

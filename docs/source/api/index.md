@@ -14,6 +14,7 @@ adstock
 saturation
 media
 seasonality
+hsgp
 continuous
 discrete
 multivariate
