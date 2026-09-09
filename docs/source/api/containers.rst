@@ -1,7 +1,7 @@
 Data containers
 ===============
 
-Objects returned by data preparation and scaling functions.
+Data, fitted transformations, and model configuration objects.
 
 .. currentmodule:: mmmjax
 
@@ -12,3 +12,5 @@ Objects returned by data preparation and scaling functions.
    PreparedData
    DataScaling
    Scaling
+   HSGPConfig
+   FourierSeasonality

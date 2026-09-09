@@ -1,0 +1,377 @@
+"""Seasonal components and features for recurring patterns over time."""
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import date, datetime
+from functools import partial
+from keyword import iskeyword
+
+import jax
+import jax.numpy as jnp
+import numpy as np
+from jax.typing import ArrayLike
+from numpy.typing import NDArray
+
+from mmmjax.data import PreparedData
+from mmmjax.distributions import normal
+from mmmjax.parameters import Real
+
+__all__ = ["FourierSeasonality", "fourier_features"]
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class FourierSeasonality:
+    """Specify a repeating seasonal contribution for model composition.
+
+    Choose the cycle, its flexibility, and the coefficient prior. Internal
+    model preparation converts observation dates, builds Fourier features,
+    and declares the coefficients. The same time reference is retained for
+    prediction. This configuration does not fit a model.
+
+    Parameters
+    ----------
+    period : {"yearly", "monthly", "weekly"} or float, default "yearly"
+        Length of the repeating cycle. Named periods require calendar
+        dates and represent fixed durations of 365.25, 365.25 / 12, and
+        7 days. A numeric period uses days for dated inputs or the original
+        time units for numeric observation labels.
+    order : int, default 2
+        Positive number of harmonics. Higher orders allow more detailed
+        seasonal patterns. Each harmonic adds a sine and a cosine
+        coefficient. No intercept is included.
+    prior : callable, optional
+        Function taking the coefficient array and returning its scalar log
+        density or elementwise log densities. The default assigns
+        independent standard Normal priors. Choose a prior appropriate
+        for the units of the model's outcome or linear predictor. Use a
+        mmmJAX density function or another JAX-compatible callable.
+    name : str, default "seasonality"
+        Parameter name used during model composition. Use distinct names
+        when combining multiple seasonal components.
+    group_specific : bool, default False
+        Whether each prepared group has its own coefficients. The default
+        shares one curve across all groups. Separate coefficients receive
+        independent priors by default, without hierarchical pooling.
+
+    Examples
+    --------
+    Configure an annual pattern with stronger shrinkage on its coefficients.
+    No dates, feature matrices, or coefficient shapes need to be supplied
+    when specifying the component.
+
+    .. ipython::
+
+        In [1]: from functools import partial
+           ...: from mmmjax import FourierSeasonality, normal
+           ...: annual = FourierSeasonality(
+           ...:     period="yearly", order=3, name="annual",
+           ...:     prior=partial(normal, location=0.0, scale=0.2),
+           ...: )
+           ...: annual.period, annual.order
+    """
+
+    period: str | float = "yearly"
+    order: int = 2
+    prior: Callable[[jax.Array], ArrayLike] | None = None
+    name: str = "seasonality"
+    group_specific: bool = False
+
+    def __post_init__(self) -> None:
+        """Validate the static choices before preparing a component."""
+        if isinstance(self.period, str):
+            if self.period not in ("yearly", "monthly", "weekly"):
+                raise ValueError("period must be 'yearly', 'monthly', 'weekly', or a positive numeric cycle length")
+        else:
+            if isinstance(self.period, (bool, np.bool_)) or not isinstance(
+                self.period, (int, float, np.integer, np.floating)
+            ):
+                raise TypeError("period must be a named cycle or a real scalar cycle length")
+            if not np.isfinite(self.period) or self.period <= 0:
+                raise ValueError(f"period must be finite and positive, got {self.period!r}")
+            object.__setattr__(self, "period", float(self.period))
+        if isinstance(self.order, bool) or not isinstance(self.order, int):
+            raise TypeError("order must be a positive Python integer")
+        if self.order <= 0:
+            raise ValueError(f"order must be at least 1, got {self.order}")
+        if self.prior is not None and not callable(self.prior):
+            raise TypeError("prior must be a callable accepting the coefficient array")
+        if not isinstance(self.name, str):
+            raise TypeError("name must be a string naming the component's coefficients")
+        if not self.name.isidentifier() or iskeyword(self.name):
+            raise ValueError(f"name must be a valid non-keyword Python identifier, got {self.name!r}")
+        if not isinstance(self.group_specific, bool):
+            raise TypeError("group_specific must be True or False")
+
+    def _prepare(self, data: PreparedData, *, reference: "_PreparedFourier | None" = None) -> "_PreparedFourier":
+        """Prepare numeric state for composition outside JAX transformations."""
+        if not isinstance(data, PreparedData):
+            raise TypeError("seasonality requires PreparedData. Use prepare_data with the observation dataframe")
+        if self.group_specific and not data.group_columns:
+            raise ValueError("group_specific=True requires grouped data. Select groups in prepare_data")
+        if reference is not None and (
+            data.time_column != reference.time_column or data.group_columns != reference.group_columns
+        ):
+            raise ValueError("Prediction time and group columns must match those used for training")
+
+        positions, origin = _seasonality_time(data.time_values, origin=None if reference is None else reference.origin)
+        if isinstance(self.period, str):
+            if not isinstance(origin, datetime):
+                raise ValueError(
+                    "Named seasonal periods require calendar dates. "
+                    "Use a numeric period in the units of the time column"
+                )
+            period = {"yearly": 365.25, "monthly": 365.25 / 12, "weekly": 7.0}[self.period]
+        else:
+            period = self.period
+
+        group_values = data.group_values
+        group_indices = list(range(len(group_values)))
+        if reference is not None and self.group_specific:
+            training_groups = reference.group_values
+            if set(group_values) != set(training_groups):
+                raise ValueError("Group-specific seasonality requires the same groups in training and prediction")
+            # Keep coefficients in training order while matching the new
+            # observations' order, without rearranging any other model input.
+            group_indices = [training_groups.index(group) for group in group_values]
+            group_values = training_groups
+
+        return _PreparedFourier(
+            features=fourier_features(positions, period=period, order=self.order),
+            group_indices=jnp.asarray(group_indices, dtype=jnp.int32),
+            specification=self,
+            origin=origin,
+            time_column=data.time_column,
+            group_columns=data.group_columns,
+            group_values=group_values,
+        )
+
+
+@partial(
+    jax.tree_util.register_dataclass,
+    data_fields=("features", "group_indices"),
+    meta_fields=("specification", "origin", "time_column", "group_columns", "group_values"),
+)
+@dataclass(frozen=True, slots=True, eq=False)
+class _PreparedFourier:
+    """Carry numerical features and a fixed time reference into model callbacks."""
+
+    features: jax.Array
+    group_indices: jax.Array
+    specification: FourierSeasonality
+    origin: float | datetime
+    time_column: str
+    group_columns: tuple[str, ...]
+    group_values: tuple[tuple[object, ...], ...]
+
+    @property
+    def parameters(self) -> dict[str, Real]:
+        """Declare the named coefficient block without assigning a prior twice."""
+        return {self.specification.name: Real(shape=self._coefficient_shape, dtype=self.features.dtype)}
+
+    @property
+    def _coefficient_shape(self) -> tuple[int, ...]:
+        shape = (self.features.shape[1],)
+        return (*shape, len(self.group_values)) if self.specification.group_specific else shape
+
+    def apply(self, coefficients: ArrayLike) -> jax.Array:
+        """Return the seasonal contribution in the prepared observation order."""
+        values = self._coefficients(coefficients)
+        if self.specification.group_specific:
+            return self.features @ values[:, self.group_indices]
+        contribution = self.features @ values
+        if self.group_columns:
+            return jnp.broadcast_to(contribution[:, None], (self.features.shape[0], len(self.group_values)))
+        return contribution
+
+    def log_prior(self, coefficients: ArrayLike) -> jax.Array:
+        """Evaluate one coefficient prior term, independently of observation count."""
+        values = self._coefficients(coefficients)
+        if self.specification.prior is None:
+            return normal(values, location=0.0, scale=1.0)
+        result = self.specification.prior(values)
+        try:
+            density = jnp.asarray(result)
+        except (TypeError, ValueError) as error:
+            raise TypeError("The seasonality prior must return real numeric log densities") from error
+        if not (jnp.issubdtype(density.dtype, jnp.floating) or jnp.issubdtype(density.dtype, jnp.integer)):
+            raise TypeError("The seasonality prior must return real numeric log densities")
+        if density.shape not in ((), values.shape):
+            raise ValueError(
+                f"The seasonality prior must return a scalar or shape {values.shape}, got shape {density.shape}"
+            )
+        return jnp.sum(density)
+
+    def for_data(self, data: PreparedData) -> "_PreparedFourier":
+        """Prepare predictions without changing the training time reference or coefficients."""
+        return self.specification._prepare(data, reference=self)
+
+    def _coefficients(self, coefficients: ArrayLike) -> jax.Array:
+        """Validate one coefficient block for its prior or contribution."""
+        try:
+            values = jnp.asarray(coefficients)
+        except (TypeError, ValueError) as error:
+            raise TypeError("Seasonality coefficients must be real numeric and array-like") from error
+        if not (jnp.issubdtype(values.dtype, jnp.floating) or jnp.issubdtype(values.dtype, jnp.integer)):
+            raise TypeError("Seasonality coefficients must have a real numeric dtype")
+        if values.shape != self._coefficient_shape:
+            raise ValueError(
+                f"Seasonality coefficients must have shape {self._coefficient_shape}, got shape {values.shape}"
+            )
+        return jnp.asarray(values, dtype=jnp.result_type(values, self.features))
+
+
+def _seasonality_time(
+    labels: tuple[object, ...], *, origin: float | datetime | None
+) -> tuple[NDArray[np.float64], float | datetime]:
+    """Convert observation labels while preserving their units and training phase."""
+    if not labels:
+        raise ValueError("Seasonality requires at least one observation time")
+    numeric = all(
+        isinstance(label, (int, float, np.integer, np.floating)) and not isinstance(label, (bool, np.bool_))
+        for label in labels
+    )
+    if numeric:
+        if isinstance(origin, datetime):
+            raise TypeError("Prediction times must remain calendar dates as in training")
+        times = np.asarray(labels, dtype=np.float64)
+        if not np.all(np.isfinite(times)):
+            raise ValueError("Seasonality time positions must be finite")
+        numeric_origin = float(times.min()) if origin is None else origin
+        return times - numeric_origin, numeric_origin
+
+    if origin is not None and not isinstance(origin, datetime):
+        raise TypeError("Prediction times must remain numeric and use the training time units")
+    dates = []
+    for label in labels:
+        if isinstance(label, str):
+            try:
+                parsed = date.fromisoformat(label)
+                if parsed.isoformat() != label:
+                    raise ValueError
+            except ValueError as error:
+                raise ValueError(
+                    f"Invalid seasonality date {label!r}. Use YYYY-MM-DD strings or date columns"
+                ) from error
+            timestamp = datetime.combine(parsed, datetime.min.time())
+        elif isinstance(label, datetime):
+            timestamp = label
+        elif isinstance(label, date):
+            timestamp = datetime.combine(label, datetime.min.time())
+        else:
+            raise TypeError(
+                "Seasonality times must be numeric positions, dates, naive datetimes, or YYYY-MM-DD strings"
+            )
+        if timestamp.utcoffset() is not None:
+            raise ValueError("Convert timezone-aware timestamps to observation dates in the intended timezone")
+        dates.append(timestamp)
+    date_origin = min(dates) if origin is None else origin
+    positions = np.asarray([(value - date_origin).total_seconds() / 86400 for value in dates], dtype=np.float64)
+    return positions, date_origin
+
+
+def fourier_features(time: ArrayLike, *, period: ArrayLike, order: int) -> jax.Array:
+    r"""Build sine and cosine features for a repeating seasonal pattern.
+
+    For time positions :math:`t`, cycle length :math:`P > 0`, and harmonics
+    :math:`k = 1, \ldots, K`, the features are
+
+    .. math::
+
+        \sin\left(\frac{2\pi kt}{P}\right), \qquad
+        \cos\left(\frac{2\pi kt}{P}\right).
+
+    Multiply the features by model coefficients to obtain a seasonal
+    contribution. Coefficients and their priors are specified separately.
+
+    Parameters
+    ----------
+    time : array_like
+        One-dimensional, finite numeric positions for the modeling periods.
+        For dated observations, use elapsed time from a fixed reference date.
+        Keep that reference date and the time units unchanged for prediction.
+        Negative and fractional positions are accepted.
+    period : array_like
+        Positive, finite scalar giving the cycle length in the same units as
+        ``time``. For example, use 7 for weekly seasonality when time is in
+        days, or 365.25 for an annual cycle measured in days.
+    order : int
+        Positive number of harmonics. Each adds a sine and a cosine term.
+        Higher orders allow more detailed patterns within a cycle. Keep
+        this argument static when using ``jax.jit``.
+
+    Returns
+    -------
+    jax.Array
+        Features with shape ``(len(time), 2 * order)``. Sine terms come first
+        in increasing harmonic order, followed by cosine terms in the same
+        order. No intercept column is included. Values use a common floating
+        dtype of at least float32. Invalid numeric inputs produce ``nan`` in
+        the affected rows.
+
+        A coefficient vector of shape ``(2 * order,)`` gives one shared
+        seasonal curve through ``features @ coefficients``. Coefficients
+        shaped ``(2 * order, group)`` give separate group curves without
+        duplicating the features.
+
+    Examples
+    --------
+    Build annual features from weekly dates and combine them with illustrative
+    coefficients. Reuse ``origin`` when preparing later dates for prediction.
+
+    .. ipython::
+
+        In [1]: from datetime import date
+           ...: import jax.numpy as jnp
+           ...: import numpy as np
+           ...: import polars as pl
+           ...: from mmmjax import fourier_features
+           ...: frame = pl.DataFrame({
+           ...:     "week": [date(2026, 1, 1), date(2026, 1, 8),
+           ...:              date(2026, 1, 15)],
+           ...:     "sales": [100.0, 120.0, 110.0],
+           ...: })
+           ...: origin = date(2026, 1, 1)
+           ...: days = (frame["week"] - origin).dt.total_days().to_numpy()
+           ...: features = fourier_features(days, period=365.25, order=2)
+           ...: coefficients = jnp.array([0.2, -0.1, 0.3, 0.1])
+           ...: seasonal = features @ coefficients
+           ...: frame.with_columns(
+           ...:     pl.Series("seasonality", np.asarray(seasonal)),
+           ...: )
+    """
+    if isinstance(order, bool) or not isinstance(order, int):
+        raise TypeError("order must be a positive Python integer and stay fixed during JIT compilation")
+    if order <= 0:
+        raise ValueError(f"order must be at least 1, got {order}")
+
+    leaves = []
+    for name, value in (("time", time), ("period", period)):
+        value_leaves = jax.tree_util.tree_leaves(value)
+        try:
+            argument_dtype = jnp.result_type(*value_leaves)
+        except (TypeError, ValueError) as error:
+            raise TypeError(f"{name} must be real numeric and array-like") from error
+        if value is None or not (
+            jnp.issubdtype(argument_dtype, jnp.floating) or jnp.issubdtype(argument_dtype, jnp.integer)
+        ):
+            raise TypeError(f"{name} must have a real numeric dtype, got {argument_dtype}")
+        leaves.extend(value_leaves)
+
+    dtype = jnp.result_type(*leaves)
+    if not jnp.issubdtype(dtype, jnp.floating):
+        dtype = jnp.float64 if jax.dtypes.itemsize_bits(dtype) == 64 else jnp.float32
+    dtype = jax.dtypes.canonicalize_dtype(jnp.promote_types(dtype, jnp.float32))
+    time_array = jnp.asarray(time, dtype=dtype)
+    period_array = jnp.asarray(period, dtype=dtype)
+    if time_array.ndim != 1:
+        raise ValueError(f"time must be one-dimensional, got shape {time_array.shape}")
+    if period_array.ndim != 0:
+        raise ValueError(f"period must be a scalar cycle length, got shape {period_array.shape}")
+
+    valid = jnp.isfinite(time_array) & jnp.isfinite(period_array) & (period_array > 0)
+    safe_time = jnp.where(valid, time_array, 0.0)
+    safe_period = jnp.where(jnp.isfinite(period_array) & (period_array > 0), period_array, 1.0)
+    harmonics = jnp.arange(1, order + 1, dtype=dtype)
+    angles = (2 * jnp.pi * (safe_time / safe_period))[:, None] * harmonics
+    features = jnp.concatenate((jnp.sin(angles), jnp.cos(angles)), axis=-1)
+    return jnp.where(valid[:, None], features, jnp.nan)

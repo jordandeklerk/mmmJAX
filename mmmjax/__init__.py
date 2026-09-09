@@ -115,16 +115,20 @@ from mmmjax.distributions import (
     uniform_logsf,
     uniform_rng,
 )
+from mmmjax.hsgp import HSGPConfig, hsgp_basis, hsgp_weights, prepare_hsgp
 from mmmjax.media import media_response, reach_frequency_response
 from mmmjax.model import Model
 from mmmjax.parameters import Interval, LowerBound, Parameterization, Positive, Real, Simplex, UpperBound
 from mmmjax.saturation import hill_saturation, log_saturation, logistic_saturation, root_saturation
 from mmmjax.scaling import DataScaling, Scaling, fit_data_scaling, fit_media_scaling, fit_scaling
+from mmmjax.seasonality import FourierSeasonality, fourier_features
 
 __version__ = "0.0.1"
 
 __all__ = [
     "DataScaling",
+    "FourierSeasonality",
+    "HSGPConfig",
     "Interval",
     "LowerBound",
     "Model",
@@ -181,6 +185,7 @@ __all__ = [
     "fit_data_scaling",
     "fit_media_scaling",
     "fit_scaling",
+    "fourier_features",
     "gamma",
     "gamma_logcdf",
     "gamma_logpdf",
@@ -193,6 +198,8 @@ __all__ = [
     "half_normal_logsf",
     "half_normal_rng",
     "hill_saturation",
+    "hsgp_basis",
+    "hsgp_weights",
     "inverse_gamma",
     "inverse_gamma_logcdf",
     "inverse_gamma_logpdf",
@@ -243,6 +250,7 @@ __all__ = [
     "poisson_logsf",
     "poisson_rng",
     "prepare_data",
+    "prepare_hsgp",
     "reach_frequency_response",
     "root_saturation",
     "student_t",
