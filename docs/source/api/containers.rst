@@ -14,3 +14,4 @@ Data, fitted transformations, and model configuration objects.
    Scaling
    HSGPConfig
    FourierSeasonality
+   MediaEffect

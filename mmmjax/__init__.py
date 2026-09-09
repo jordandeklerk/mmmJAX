@@ -116,7 +116,7 @@ from mmmjax.distributions import (
     uniform_rng,
 )
 from mmmjax.hsgp import HSGPConfig, hsgp_basis, hsgp_weights, prepare_hsgp
-from mmmjax.media import media_response, reach_frequency_response
+from mmmjax.media import MediaEffect, media_response, reach_frequency_response
 from mmmjax.model import Model
 from mmmjax.parameters import Interval, LowerBound, Parameterization, Positive, Real, Simplex, UpperBound
 from mmmjax.saturation import hill_saturation, log_saturation, logistic_saturation, root_saturation
@@ -131,6 +131,7 @@ __all__ = [
     "HSGPConfig",
     "Interval",
     "LowerBound",
+    "MediaEffect",
     "Model",
     "Parameterization",
     "Positive",

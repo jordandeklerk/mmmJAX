@@ -38,6 +38,90 @@ def frame_factory(request):
     return pa.table
 
 
+@pytest.mark.parametrize("selection", [{}, {"media": None}])
+@pytest.mark.parametrize("representation", [str, date.fromisoformat, datetime.fromisoformat])
+@pytest.mark.parametrize("grouped", [False, True])
+def test_prepare_data_accepts_prediction_dates_without_input_arrays(frame_factory, selection, representation, grouped):
+    dates = tuple(map(representation, ["2026-01-05", "2026-01-12", "2026-01-19"]))
+    if grouped:
+        columns = {
+            "week": [dates[2], dates[0], dates[1], dates[1], dates[0], dates[2]],
+            "region": ["west", "east", "east", "west", "west", "east"],
+            "store": [1, 2, 2, 1, 1, 2],
+        }
+    else:
+        columns = {"week": [dates[2], dates[0], dates[1]]}
+    source = frame_factory(columns)
+    before = nw.from_native(source).to_dict(as_series=False)
+
+    data = prepare_data(
+        source,
+        time="week",
+        groups=["region", "store"] if grouped else (),
+        frequency="weekly",
+        **selection,
+    )
+
+    assert data.arrays == {}
+    assert data.columns == {}
+    assert data.time_column == "week"
+    assert data.time_values == dates
+    assert data.group_columns == (("region", "store") if grouped else ())
+    assert data.group_values == ((("west", 1), ("east", 2)) if grouped else ())
+    assert data.media_time_values == ()
+    assert data.channels == ()
+    assert data.organic_channels == ()
+    assert data.rf_channels == ()
+    assert data.organic_rf_channels == ()
+    assert data._to_jax() == {}
+    assert nw.from_native(source).to_dict(as_series=False) == before
+
+
+@pytest.mark.parametrize(
+    "columns,groups,frequency,message",
+    [
+        ({"week": []}, (), None, "at least one observation"),
+        ({"week": ["2026-01-05", None]}, (), None, "week.*missing values"),
+        (
+            {"week": ["2026-01-05", "2026-01-05"], "region": ["west", None]},
+            ("region",),
+            None,
+            "region.*missing values",
+        ),
+        ({"week": ["2026-01-05", "2026-01-05"]}, (), None, "duplicate observations"),
+        (
+            {"week": ["2026-01-05", "2026-01-05", "2026-01-12"], "region": ["west", "west", "east"]},
+            ("region",),
+            None,
+            "duplicate observations",
+        ),
+        (
+            {"week": ["2026-01-05", "2026-01-05", "2026-01-12"], "region": ["west", "east", "west"]},
+            ("region",),
+            None,
+            "missing 1 combinations.*same time values",
+        ),
+        (
+            {"week": ["2026-01-05", "2026-01-19"]},
+            (),
+            "weekly",
+            "expected 2026-01-12.*missing periods",
+        ),
+        (
+            {"week": ["2026-01-05", "2026-01-19"] * 2, "region": ["west", "west", "east", "east"]},
+            ("region",),
+            "weekly",
+            "expected 2026-01-12.*missing periods",
+        ),
+    ],
+)
+def test_prepare_data_validates_prediction_dates_without_input_arrays(
+    frame_factory, columns, groups, frequency, message
+):
+    with pytest.raises(ValueError, match=message):
+        prepare_data(frame_factory(columns), time="week", groups=groups, frequency=frequency)
+
+
 def test_prepare_data_keeps_revenue_per_outcome_aligned_with_observations(frame_factory):
     source = frame_factory(
         {
@@ -1989,13 +2073,6 @@ def test_prepare_data_allows_signed_outcomes_and_controls(frame_factory):
 @pytest.mark.parametrize(
     "selection,error,message",
     [
-        (
-            {},
-            ValueError,
-            "select at least one of outcome, revenue_per_outcome, population, media, organic_media, "
-            "reach, organic_reach, controls or treatments",
-        ),
-        ({"media": None}, ValueError, "select at least one"),
         ({"outcome": ["sales"]}, TypeError, "outcome must be a column name"),
         ({"outcome": ""}, ValueError, "outcome must select at least one nonempty"),
         ({"media": "sales"}, TypeError, "media must be a sequence"),

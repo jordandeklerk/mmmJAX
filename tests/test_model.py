@@ -159,6 +159,19 @@ def test_generate_random_key_name_is_not_restricted() -> None:
     assert result["a"] == 1.0
 
 
+def test_generate_mapping_callback_preserves_supplied_parameter_order() -> None:
+    def density(data, **parameters):
+        return jnp.asarray(0.0)
+
+    def generate(key, data, **parameters):
+        return {"values": jnp.stack(list(parameters.values()))}
+
+    model = Model({"a": Real(), "b": Real()}, density, generate)
+    quantities = model.generate(jax.random.key(0), {"b": 2.0, "a": 1.0}, {})
+
+    assert jnp.array_equal(quantities["values"], jnp.array([2.0, 1.0]))
+
+
 def test_generate_parameters_must_belong_to_model() -> None:
     def generate(key, data, b):
         return {"b": b}

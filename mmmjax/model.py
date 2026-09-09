@@ -1,6 +1,6 @@
 """Model composition for transparent JAX probability models."""
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from inspect import Parameter as SignatureParameter
 from inspect import signature
@@ -9,15 +9,28 @@ from typing import TypeAlias
 
 import jax
 import jax.numpy as jnp
-from jax.typing import ArrayLike
+from jax.typing import ArrayLike, DTypeLike
 
+from mmmjax.data import PreparedData, _DataLayout
+from mmmjax.media import MediaEffect, _PreparedMedia
 from mmmjax.parameters import Parameterization
+from mmmjax.seasonality import FourierSeasonality, _PreparedFourier
 
 __all__ = ["Model"]
 
 LogDensity: TypeAlias = Callable[..., ArrayLike]
 Generate: TypeAlias = Callable[..., Mapping[str, ArrayLike]]
 ParameterValues: TypeAlias = Mapping[str, ArrayLike]
+_InputBindings: TypeAlias = tuple[tuple[str, str], ...]
+
+
+@jax.tree_util.register_dataclass
+@dataclass(frozen=True, slots=True, eq=False)
+class _ModelData:
+    """Keep observation arrays and prepared components in one dynamic PyTree."""
+
+    values: dict[str, jax.Array]
+    components: tuple[_PreparedFourier | _PreparedMedia, ...]
 
 
 @dataclass(frozen=True, slots=True, eq=False, init=False)
@@ -27,44 +40,207 @@ class Model:
     Parameters
     ----------
     parameters : mapping of str to Parameterization
-        Named declarations for every model parameter.
+        Named declarations for the parameters used by the callbacks.
+        Component parameters are declared automatically and must not
+        also appear in this mapping.
     log_density : callable
-        Scalar log density in the constrained model space. It receives data
-        followed by either every named model parameter or ``**parameters``.
+        Scalar log density in the constrained model space. For prepared
+        models, use keyword-only arguments for the data roles, component
+        contributions, and declared parameters needed by the function.
+        For example, ``log_density(*, outcome, annual, intercept, sigma)``.
+        Every user-declared parameter must be requested. Component priors
+        are added automatically and should not be included in this callback.
+        Existing ``log_density(data, effects, ...)`` callbacks are also
+        supported. For models without prepared data, the signature remains
+        ``log_density(data, ...)``. These positional forms accept either
+        named model parameters or ``**parameters`` after their inputs.
     generate : callable, optional
-        Generated-quantities function. It receives a JAX random key, data, and
-        either the named model parameters it needs or ``**parameters``.
-        If omitted, generated quantities are unavailable.
+        Generated-quantities function. For named inputs, it receives a JAX
+        random key followed by keyword-only arguments for the quantities it
+        needs, such as ``generate(key, *, annual, intercept, sigma)``.
+        Request only inputs used by the function, so predictions can omit
+        observed outcomes. Existing ``generate(key, data, effects, ...)``
+        callbacks remain supported, or ``generate(key, data, ...)`` for models
+        without prepared data. If omitted, generated quantities are unavailable.
+    data : PreparedData, optional
+        Training observations from ``prepare_data``. Required when
+        ``components`` is supplied. Named inputs use the selected data roles,
+        such as ``outcome`` or ``media``, not the original column names.
+        Each requested input must be available at evaluation, even if the
+        callback declares a default value for that argument.
+    components : sequence of FourierSeasonality or MediaEffect, optional
+        Contributions to prepare against the training observations. Each
+        component declares its parameters and supplies its evaluated
+        contribution under its name. Media contributions retain their final
+        channel axis. Sum that axis when combining them with an intercept
+        or seasonal curve. In positional callbacks, contributions are entries
+        in ``effects``. Names requested by a named callback must identify
+        only one data role, component, or user parameter. Component parameter
+        names must not overlap other declarations or component names.
+        Use an empty sequence for a prepared model without components.
+        Omit this argument for callbacks using their own data.
     """
 
     _parameterizations: tuple[tuple[str, Parameterization], ...]
     _log_density: LogDensity
     _generate: Generate | None
     _generate_parameter_names: tuple[str, ...] | None
+    _callback_parameter_names: tuple[str, ...]
+    _density_inputs: _InputBindings | None
+    _generation_inputs: _InputBindings | None
+    _data: _ModelData | None
+    _layout: _DataLayout | None
+    _time_column: str | None
+    _dtype: DTypeLike
 
     def __init__(
         self,
         parameters: Mapping[str, Parameterization],
         log_density: LogDensity,
         generate: Generate | None = None,
+        *,
+        data: PreparedData | None = None,
+        components: Sequence[FourierSeasonality | MediaEffect] | None = None,
     ) -> None:
         """Create a model from named parameter declarations and plain functions."""
         parameterizations = _prepare_parameterizations(parameters)
         parameter_names = tuple(name for name, _ in parameterizations)
-        _validate_log_density_signature(log_density, parameter_names)
+        prepared_data = None
+        if components is None:
+            if data is not None:
+                raise ValueError("Constructor data requires components. Use an empty sequence for no effects")
+        else:
+            if not isinstance(data, PreparedData):
+                raise TypeError("Components require PreparedData. Use prepare_data with the observation dataframe")
+            if not isinstance(components, Sequence) or isinstance(components, (str, bytes)):
+                raise TypeError("components must be a sequence of FourierSeasonality or MediaEffect configurations")
+            declarations = dict(parameterizations)
+            specifications = tuple(components)
+            names = set(parameter_names)
+            for specification in specifications:
+                if not isinstance(specification, (FourierSeasonality, MediaEffect)):
+                    raise TypeError("Each component must be a FourierSeasonality or MediaEffect configuration")
+                if specification.name in names:
+                    raise ValueError(
+                        f"Component name {specification.name!r} conflicts with another component or parameter"
+                    )
+                names.add(specification.name)
+
+            prepared_components = tuple(specification._prepare(data) for specification in specifications)
+            component_names = {specification.name for specification in specifications}
+            for component in prepared_components:
+                component_parameters = component.parameters
+                conflicts = set(component_parameters) & set(declarations)
+                conflicts |= set(component_parameters) & (component_names - {component.specification.name})
+                if conflicts:
+                    raise ValueError(
+                        f"Component parameter names {sorted(conflicts)} conflict with other parameters or components"
+                    )
+                declarations.update(component_parameters)
+            parameterizations = _prepare_parameterizations(declarations)
+            prepared_data = _ModelData(data._to_jax(), prepared_components)
+
+        density_inputs = (
+            None
+            if prepared_data is None
+            else _bind_inputs(log_density, parameter_names, prepared_data, name="log_density")
+        )
+        if density_inputs is None:
+            _validate_log_density_signature(log_density, parameter_names, has_components=components is not None)
         generate_parameter_names = None
+        generation_inputs = None
         if generate is not None:
-            generate_parameter_names = _validate_generate_signature(generate, parameter_names)
+            generation_inputs = (
+                None
+                if prepared_data is None
+                else _bind_inputs(generate, parameter_names, prepared_data, name="generate")
+            )
+            if generation_inputs is None:
+                generate_parameter_names = _validate_generate_signature(
+                    generate, parameter_names, has_components=components is not None
+                )
 
         object.__setattr__(self, "_parameterizations", parameterizations)
         object.__setattr__(self, "_log_density", log_density)
         object.__setattr__(self, "_generate", generate)
         object.__setattr__(self, "_generate_parameter_names", generate_parameter_names)
+        object.__setattr__(self, "_callback_parameter_names", parameter_names)
+        object.__setattr__(self, "_density_inputs", density_inputs)
+        object.__setattr__(self, "_generation_inputs", generation_inputs)
+        object.__setattr__(self, "_data", prepared_data)
+        object.__setattr__(self, "_layout", None if data is None else data._layout())
+        object.__setattr__(self, "_time_column", None if data is None else data.time_column)
+        object.__setattr__(self, "_dtype", jax.dtypes.canonicalize_dtype(float))
 
     @property
     def parameters(self) -> dict[str, Parameterization]:
         """Return a copy of the named parameter declarations."""
         return dict(self._parameterizations)
+
+    @property
+    def data(self) -> object:
+        """Return prepared training inputs for density and generation calls.
+
+        Pass this object as the ``data`` argument to ``log_density`` or
+        ``generate``, including inside JAX transformations. Observation
+        arrays are copied during construction, so later edits to the
+        original dataframe or prepared data do not change the model inputs.
+
+        Returns
+        -------
+        object
+            JAX-compatible input bundle containing observation arrays and
+            prepared component features. Callbacks receive only the arrays
+            and evaluated effects, without needing to unpack this bundle.
+            Available when ``components`` was supplied at construction.
+        """
+        if self._data is None:
+            raise RuntimeError("This model has no prepared data. Pass your data directly when evaluating it")
+        return _ModelData(dict(self._data.values), self._data.components)
+
+    def prepare_data(self, data: PreparedData) -> object:
+        """Prepare new observations using the model's training configuration.
+
+        Use this before evaluating a model with new observations or making
+        predictions. It retains the training seasonal phase, parameter
+        declarations, and priors without changing the model's stored data.
+        Preparation does not apply scaling. Reuse any fitted scaling before
+        passing the data here, just as for the training observations.
+
+        Parameters
+        ----------
+        data : PreparedData
+            New observations returned by ``prepare_data``. Use the training
+            time and group column names and the same set of groups. Supplied
+            inputs must use the same source columns and channel assignments
+            as training, but their order may differ. Inputs may be omitted
+            when neither the callback being evaluated nor a configured
+            component requires them. This allows prediction without outcomes.
+            Models with MediaEffect require media exposures, with any needed
+            carryover history supplied through ``media_history``. Training
+            exposures are not prepended automatically. A seasonal-only
+            prediction needs just dates and any group labels.
+
+        Returns
+        -------
+        object
+            JAX-compatible inputs for ``log_density`` or ``generate`` with
+            arrays and component features in training group and channel
+            order. The time axis follows the new observations. This bundle
+            is independent of the model's training inputs and later edits
+            to the supplied data. Create it outside JAX transformations.
+        """
+        if self._data is None or self._layout is None:
+            raise RuntimeError("This model has no prepared training data. Pass your data directly when evaluating it")
+        if not isinstance(data, PreparedData):
+            raise TypeError("Model data must be PreparedData. Use prepare_data with the observation dataframe")
+        if data.time_column != self._time_column:
+            raise ValueError(f"The time column must match the training column {self._time_column!r}")
+
+        aligned = data._align_to(self._layout)
+        values = aligned._to_jax(dtype=self._dtype)
+        components = tuple(component.for_data(aligned) for component in self._data.components)
+        return _ModelData(values, components)
 
     def constrain(self, position: ParameterValues) -> dict[str, jax.Array]:
         """Map a complete unconstrained position into model space.
@@ -137,11 +313,14 @@ class Model:
             + \sum_k A_k(z_k),
 
         where :math:`A_k` is the log-density adjustment supplied by each
-        parameterization.
+        parameterization. With components, :math:`p_\theta` includes their
+        parameter priors as well as the callback's density.
 
-        ``data`` may be any JAX-compatible PyTree. Passing it explicitly keeps
-        the same compiled model reusable across datasets with matching shapes
-        and dtypes.
+        For models without prepared data, ``data`` may be any JAX-compatible PyTree.
+        Passing it explicitly keeps the same compiled model reusable across
+        datasets with matching shapes and dtypes. Prepared models
+        use ``model.data`` for training inputs or ``model.prepare_data``
+        for new observations.
 
         Parameters
         ----------
@@ -149,16 +328,38 @@ class Model:
             Unconstrained values for every declared parameter, with each
             value matching its declaration's ``position_shape``.
         data : object
-            Data passed as the first argument to the log-density callback.
+            For a prepared model, pass ``model.data`` or the result of
+            ``model.prepare_data``. Named callbacks receive the requested
+            observation arrays, contributions, and parameters directly.
+            Otherwise, this is passed as the first argument to the callback.
             Use a JAX-compatible PyTree when applying JAX transformations.
 
         Returns
         -------
         jax.Array
-            Scalar model log density plus parameterization adjustments.
+            Scalar model log density including component priors and
+            parameterization adjustments.
         """
         parameters = self.constrain(position)
-        density = _as_scalar(self._log_density(data, **parameters), name="log_density")
+        if self._data is None:
+            density = _as_scalar(self._log_density(data, **parameters), name="log_density")
+        else:
+            inputs = self._component_data(data)
+            effects = _component_effects(inputs, parameters)
+            if self._density_inputs is None:
+                callback_parameters = {name: parameters[name] for name in self._callback_parameter_names}
+                result = self._log_density(inputs.values, effects, **callback_parameters)
+            else:
+                arguments = _callback_inputs(self._density_inputs, inputs, effects, parameters, name="log_density")
+                result = self._log_density(**arguments)
+            density = _as_scalar(result, name="log_density")
+            for component in inputs.components:
+                prior = (
+                    component.log_prior(parameters)
+                    if isinstance(component, _PreparedMedia)
+                    else component.log_prior(parameters[component.specification.name])
+                )
+                density = density + prior
 
         for name, parameterization in self._parameterizations:
             adjustment = _as_scalar(
@@ -186,8 +387,11 @@ class Model:
             Constrained values for every declared parameter. Only the names
             requested by the generation callback are passed to it.
         data : object
-            Data passed as the second argument to the generation callback.
-            Use a JAX-compatible PyTree when applying JAX transformations.
+            For a prepared model, pass ``model.data`` or the result of
+            ``model.prepare_data``. Named callbacks receive only the inputs
+            they request. Otherwise, this is passed as the second argument
+            to the callback. Use a JAX-compatible PyTree when applying JAX
+            transformations.
 
         Returns
         -------
@@ -200,10 +404,23 @@ class Model:
 
         _validate_value_names(parameters, self._parameterizations, name="parameters")
         if self._generate_parameter_names is None:
-            callback_parameters = dict(parameters)
+            callback_parameters = (
+                dict(parameters)
+                if self._data is None
+                else {name: parameters[name] for name in self._callback_parameter_names}
+            )
         else:
             callback_parameters = {name: parameters[name] for name in self._generate_parameter_names}
-        generated = self._generate(key, data, **callback_parameters)
+        if self._data is None:
+            generated = self._generate(key, data, **callback_parameters)
+        else:
+            inputs = self._component_data(data)
+            effects = _component_effects(inputs, parameters)
+            if self._generation_inputs is None:
+                generated = self._generate(key, inputs.values, effects, **callback_parameters)
+            else:
+                arguments = _callback_inputs(self._generation_inputs, inputs, effects, parameters, name="generate")
+                generated = self._generate(key, **arguments)
         if not isinstance(generated, Mapping):
             raise TypeError(
                 f"generate must return a mapping from quantity names to values, got {type(generated).__name__}"
@@ -219,6 +436,131 @@ class Model:
             except (TypeError, ValueError) as exc:
                 raise TypeError(f"generated quantity {name!r} must be array-like, got {type(value).__name__}") from exc
         return quantities
+
+    def _component_data(self, data: object) -> _ModelData:
+        """Keep component inputs tied to the model's parameter and prior definitions."""
+        if not isinstance(data, _ModelData):
+            raise TypeError(
+                "Models with components require prepared model inputs. "
+                "Pass model.data or the result of model.prepare_data"
+            )
+        if self._data is None or len(data.components) != len(self._data.components):
+            raise ValueError("The prepared inputs must use this model's component configurations and training labels")
+        for component, reference in zip(data.components, self._data.components, strict=True):
+            matches = (
+                component.specification is reference.specification
+                and component.time_column == reference.time_column
+                and component.group_columns == reference.group_columns
+                and component.group_values == reference.group_values
+            )
+            if isinstance(component, _PreparedMedia):
+                matches = (
+                    matches
+                    and isinstance(reference, _PreparedMedia)
+                    and component.media_columns == reference.media_columns
+                    and component.channels == reference.channels
+                    and component.dtype == reference.dtype
+                )
+            else:
+                matches = matches and isinstance(reference, _PreparedFourier) and component.origin == reference.origin
+            if not matches:
+                raise ValueError(
+                    "The prepared inputs must use this model's component configurations and training labels"
+                )
+        return data
+
+
+def _component_effects(inputs: _ModelData, parameters: ParameterValues) -> dict[str, jax.Array]:
+    """Evaluate component contributions with the current observations and constrained parameters."""
+    effects = {}
+    for component in inputs.components:
+        name = component.specification.name
+        if isinstance(component, _PreparedMedia):
+            if "media" not in inputs.values:
+                raise ValueError("Media effects require media exposures in the prepared model inputs")
+            effects[name] = component.apply(inputs.values["media"], parameters)
+        else:
+            effects[name] = component.apply(parameters[name])
+    return effects
+
+
+def _bind_inputs(
+    function: Callable[..., object],
+    parameter_names: tuple[str, ...],
+    data: _ModelData,
+    *,
+    name: str,
+) -> _InputBindings | None:
+    """Resolve keyword-only inputs once while leaving positional callbacks unchanged."""
+    if not callable(function):
+        return None
+    try:
+        arguments = list(signature(function).parameters.values())
+    except (TypeError, ValueError):
+        return None
+
+    key_argument = None
+    if name == "generate":
+        if not arguments or arguments[0].kind not in (
+            SignatureParameter.POSITIONAL_ONLY,
+            SignatureParameter.POSITIONAL_OR_KEYWORD,
+        ):
+            return None
+        key_argument = arguments.pop(0)
+    if any(
+        argument.kind in (SignatureParameter.POSITIONAL_ONLY, SignatureParameter.POSITIONAL_OR_KEYWORD)
+        for argument in arguments
+    ):
+        return None
+    if any(argument.kind is not SignatureParameter.KEYWORD_ONLY for argument in arguments):
+        raise TypeError(f"Named inputs for {name} must be explicit keyword-only arguments without *args or **kwargs")
+
+    sources = {
+        "data": set(data.values),
+        "effect": {component.specification.name for component in data.components},
+        "parameter": set(parameter_names),
+    }
+    if key_argument is not None and any(key_argument.name in names for names in sources.values()):
+        raise TypeError(f"generate places input {key_argument.name!r} where the random key is required")
+
+    bindings = []
+    for argument in arguments:
+        matches = [source for source, names in sources.items() if argument.name in names]
+        if not matches:
+            raise ValueError(
+                f"{name} requests unknown input {argument.name!r}. "
+                "Use a selected data role, component name, or declared parameter"
+            )
+        if len(matches) > 1:
+            raise ValueError(
+                f"{name} input {argument.name!r} is ambiguous across {matches}. "
+                "Use distinct names for data roles, components, and parameters"
+            )
+        bindings.append((argument.name, matches[0]))
+
+    if name == "log_density":
+        missing = sorted(set(parameter_names) - {argument.name for argument in arguments})
+        if missing:
+            raise ValueError(f"log_density must request every declared parameter. Missing parameters {missing}")
+    return tuple(bindings)
+
+
+def _callback_inputs(
+    bindings: _InputBindings,
+    data: _ModelData,
+    effects: Mapping[str, jax.Array],
+    parameters: ParameterValues,
+    *,
+    name: str,
+) -> dict[str, ArrayLike]:
+    """Supply the requested numerical inputs from the current model evaluation."""
+    sources: dict[str, ParameterValues] = {"data": data.values, "effect": effects, "parameter": parameters}
+    arguments = {}
+    for argument, source in bindings:
+        if argument not in sources[source]:
+            raise ValueError(f"{name} requires input {argument!r}. Include it when preparing data for this evaluation")
+        arguments[argument] = sources[source][argument]
+    return arguments
 
 
 def _prepare_parameterizations(
@@ -248,12 +590,14 @@ def _validate_name(name: object, *, label: str) -> None:
 def _validate_log_density_signature(
     function: Callable[..., object],
     expected_names: tuple[str, ...],
+    *,
+    has_components: bool = False,
 ) -> None:
     actual_names = _model_parameter_names(
         function,
         expected_names,
         name="log_density",
-        leading_arguments=("data",),
+        leading_arguments=("data", "effects") if has_components else ("data",),
     )
     if actual_names is None:
         return
@@ -268,12 +612,14 @@ def _validate_log_density_signature(
 def _validate_generate_signature(
     function: Callable[..., object],
     expected_names: tuple[str, ...],
+    *,
+    has_components: bool = False,
 ) -> tuple[str, ...] | None:
     actual_names = _model_parameter_names(
         function,
         expected_names,
         name="generate",
-        leading_arguments=("key", "data"),
+        leading_arguments=("key", "data", "effects") if has_components else ("key", "data"),
     )
     if actual_names is None:
         return None
@@ -302,11 +648,11 @@ def _model_parameter_names(
     except (TypeError, ValueError) as exc:
         raise TypeError(f"{name} must expose an inspectable Python signature, got {type(function).__name__}") from exc
 
-    callback_example = "log_density(data, ...)" if name == "log_density" else "generate(key, data, ...)"
+    callback_example = f"{name}({', '.join(leading_arguments)}, ...)"
     for index, argument in enumerate(leading_arguments):
         position_error = (
-            f"{name} must accept {argument} as positional argument {index + 1}; "
-            f"expected a signature like {callback_example}"
+            f"{name} must accept {argument} as positional argument {index + 1}. "
+            f"Expected a signature like {callback_example}"
         )
         if not callable_parameters:
             raise TypeError(position_error)
@@ -319,7 +665,7 @@ def _model_parameter_names(
         if leading_parameter.name in expected_names:
             raise TypeError(
                 f"{name} places declared model parameter {leading_parameter.name!r} "
-                f"where {argument} is required; expected a signature like "
+                f"where {argument} is required. Expected a signature like "
                 f"{callback_example}"
             )
 
