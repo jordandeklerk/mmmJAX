@@ -29,8 +29,10 @@ class MediaEffect:
     the current parameter values, not fixed during data preparation.
 
     Include this configuration in ``Model`` components. Its named callback
-    input contains weighted contributions with the channel axis intact.
-    The model declares its parameters and adds their priors automatically.
+    input contains weighted contributions for each channel. Request
+    ``paid_media_total`` for their sum at each period and group, or
+    ``paid_media`` to retain individual channels. Both are JAX arrays.
+    The model declares parameters and adds their priors automatically.
 
     This configuration does not scale exposures. Set coefficient priors on
     the scale where contributions enter the model, and half-saturation priors
@@ -49,7 +51,8 @@ class MediaEffect:
         regularly spaced media observations and include earlier exposures
         through ``media_history`` when preparing data.
     name : str, default "paid_media"
-        Name of the channel contribution. Parameter names use this prefix
+        Name of the per-channel contribution. Named callbacks can also
+        request ``<name>_total``. Parameter names use this prefix
         followed by ``_coefficient``, ``_retention``, ``_half_saturation``,
         and ``_slope``. Use a name distinct from selected data roles and
         other model components.

@@ -61,8 +61,9 @@ class Model:
         not source column names.
     components : sequence of FourierSeasonality or MediaEffect, optional
         Named effects with automatic parameters and priors. Media effects
-        retain per-channel contributions. Component names must be unique and
-        distinct from user parameters. Use ``components=[]`` without effects.
+        provide per-channel arrays by name and channel totals through
+        ``<name>_total`` in named callbacks. Keep component and total names
+        distinct from other inputs. Use ``components=[]`` without effects.
     transformed_parameters : callable, optional
         Pure JAX-compatible function returning a mapping of names to derived
         array-like quantities shared by both callbacks. Requires prepared data
@@ -131,6 +132,14 @@ class Model:
                         f"Component parameter names {sorted(conflicts)} conflict with other parameters or components"
                     )
                 declarations.update(component_parameters)
+            conflicts = _media_total_names(prepared_components) & (
+                set(declarations) | component_names | set(data.arrays)
+            )
+            if conflicts:
+                raise ValueError(
+                    f"Media total names {sorted(conflicts)} conflict with a data role, component, or parameter. "
+                    "Rename the component or conflicting declaration"
+                )
             parameterizations = _prepare_parameterizations(declarations)
             prepared_data = _ModelData(data._to_jax(), prepared_components)
 
@@ -478,7 +487,7 @@ class Model:
 
         # Retain training names even when prediction omits their observation arrays.
         assert self._data is not None
-        reserved = set(self._data.values) | set(effects) | set(parameters)
+        reserved = set(self._data.values) | set(effects) | set(parameters) | _media_total_names(inputs.components)
         for name in transformed:
             _validate_name(name, label="transformed quantity")
             if name in reserved:
@@ -539,6 +548,13 @@ def _component_effects(inputs: _ModelData, parameters: ParameterValues) -> dict[
     return effects
 
 
+def _media_total_names(components: Sequence[_PreparedFourier | _PreparedMedia]) -> set[str]:
+    """Name channel totals separately from the existing per-channel contributions."""
+    return {
+        f"{component.specification.name}_total" for component in components if isinstance(component, _PreparedMedia)
+    }
+
+
 def _bind_inputs(
     function: Callable[..., object],
     parameter_names: tuple[str, ...],
@@ -575,6 +591,7 @@ def _bind_inputs(
     sources = {
         "data": set(data.values),
         "effect": {component.specification.name for component in data.components},
+        "media_total": _media_total_names(data.components),
         "parameter": set(parameter_names),
     }
     if key_argument is not None and any(key_argument.name in names for names in sources.values()):
@@ -589,7 +606,7 @@ def _bind_inputs(
                 continue
             raise ValueError(
                 f"{name} requests unknown input {argument.name!r}. "
-                "Use a selected data role, component name, or declared parameter"
+                "Use a selected data role, component name, media total, or declared parameter"
             )
         if len(matches) > 1:
             raise ValueError(
@@ -621,8 +638,11 @@ def _callback_inputs(
         "parameter": parameters,
         "transformed": effects,
     }
-    arguments = {}
+    arguments: dict[str, ArrayLike] = {}
     for argument, source in bindings:
+        if source == "media_total":
+            arguments[argument] = effects[argument.removesuffix("_total")].sum(axis=-1)
+            continue
         if argument not in sources[source]:
             if source == "transformed":
                 raise ValueError(

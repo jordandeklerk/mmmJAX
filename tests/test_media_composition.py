@@ -249,3 +249,173 @@ def test_generated_parameter_and_effect_names_cannot_be_shadowed():
         components = [MediaEffect(max_lag=2), FourierSeasonality(period=8, name="paid_media_coefficient")]
         with pytest.raises(ValueError, match="paid_media_coefficient"):
             Model({}, callback, data=data, components=components[::-1] if reverse else components)
+
+
+def _total_model(data, *, transformed=False, grouped=False):
+    def density(*, outcome, paid_media_total, annual, intercept, sigma):
+        return normal(outcome, intercept + paid_media_total + annual, sigma) + normal(intercept, 0.0, 2.0)
+
+    def transform(*, paid_media_total, annual, intercept):
+        return {"mean": intercept + paid_media_total + annual}
+
+    def transformed_density(*, outcome, mean, intercept, sigma):
+        return normal(outcome, mean, sigma) + normal(intercept, 0.0, 2.0)
+
+    def quantities(key, *, paid_media, paid_media_total):
+        return {"channels": paid_media, "total": paid_media_total}
+
+    def transformed_quantities(key, *, paid_media, paid_media_total, mean):
+        return {"channels": paid_media, "total": paid_media_total, "mean": mean}
+
+    return Model(
+        {"intercept": Real(), "sigma": Positive()},
+        transformed_density if transformed else density,
+        transformed_quantities if transformed else quantities,
+        data=data,
+        components=[
+            MediaEffect(max_lag=2, group_specific=grouped),
+            FourierSeasonality(period=8, order=1, name="annual", group_specific=grouped),
+        ],
+        transformed_parameters=transform if transformed else None,
+    )
+
+
+@pytest.mark.parametrize("transformed", [False, True])
+def test_named_media_totals_preserve_density_and_all_parameter_gradients(transformed):
+    data = _data(_MEDIA)
+    model = _total_model(data, transformed=transformed)
+    original, position = _model(data), _position()
+    evaluate = jax.jit(jax.value_and_grad(model.log_density))
+    actual, gradient = evaluate(position, model.data)
+    expected, expected_gradient = jax.jit(jax.value_and_grad(original.log_density))(position, original.data)
+    mean, paid, _, prior, sigma = _reference(position, _MEDIA, [2, 3, 4])
+
+    assert set(model.parameters) == set(original.parameters) == set(position)
+    np.testing.assert_allclose(actual, _normal(data.arrays["outcome"] - mean, sigma) + prior, rtol=4e-6, atol=3e-6)
+    np.testing.assert_allclose(actual, expected, rtol=4e-6, atol=3e-6)
+    for name in position:
+        np.testing.assert_allclose(gradient[name], expected_gradient[name], rtol=5e-6, atol=3e-6)
+
+    generated = jax.jit(model.generate)(jax.random.key(0), model.constrain(position), model.data)
+    assert isinstance(generated["channels"], jax.Array)
+    assert generated["channels"].shape == (3, 2)
+    assert generated["total"].shape == (3,)
+    np.testing.assert_allclose(generated["channels"], paid, rtol=4e-6, atol=3e-6)
+    np.testing.assert_allclose(generated["total"], paid.sum(axis=-1), rtol=4e-6, atol=3e-6)
+    if transformed:
+        np.testing.assert_allclose(generated["mean"], mean, rtol=4e-6, atol=3e-6)
+
+
+@pytest.mark.parametrize("transformed", [False, True])
+def test_media_totals_preserve_group_and_prediction_axes_under_jit_vmap(transformed):
+    media = np.stack((_MEDIA, _MEDIA * 1.5 + 0.2), axis=1)
+    model = _total_model(_data(media), transformed=transformed, grouped=True)
+    draws = jax.tree.map(lambda value: jnp.stack((value, value + 0.1)), _position(grouped=True))
+    constrained = jax.vmap(model.constrain)(draws)
+    generate = jax.jit(jax.vmap(model.generate, in_axes=(0, 0, None)))
+    keys = jax.random.split(jax.random.key(2), 2)
+
+    for multiplier in (0.6, 1.4):
+        future_media = media[:4] * multiplier
+        future = _data(future_media, periods=2, start=6, reverse=True, observed=False)
+        generated = generate(keys, constrained, model.prepare_data(future))
+        assert "outcome" not in future.arrays
+        assert generated["channels"].shape == (2, 2, 2, 2)
+        assert generated["total"].shape == (2, 2, 2)
+        for index in range(2):
+            position = {name: value[index] for name, value in draws.items()}
+            mean, paid, _, _, _ = _reference(position, future_media, [8, 9])
+            np.testing.assert_allclose(generated["channels"][index], paid, rtol=5e-6, atol=3e-6)
+            np.testing.assert_allclose(generated["total"][index], paid.sum(axis=-1), rtol=5e-6, atol=3e-6)
+            if transformed:
+                np.testing.assert_allclose(generated["mean"][index], mean, rtol=5e-6, atol=3e-6)
+
+
+def test_custom_media_names_have_independent_totals_and_keep_single_channel_axes():
+    data = prepare_data(pl.DataFrame({"time": [0, 1, 2], "video": [1.0, 2.0, 3.0]}), time="time", media=["video"])
+
+    def density(*, first_total, campaign_total_total):
+        return normal(first_total + campaign_total_total, 0.0, 1.0)
+
+    def quantities(key, *, first, first_total, campaign_total, campaign_total_total):
+        return {
+            "first": first,
+            "first_total": first_total,
+            "campaign_total": campaign_total,
+            "campaign_total_total": campaign_total_total,
+        }
+
+    model = Model(
+        {},
+        density,
+        quantities,
+        data=data,
+        components=[MediaEffect(name="first", max_lag=0), MediaEffect(name="campaign_total", max_lag=0)],
+    )
+    position = {name: jnp.zeros(parameter.shape) for name, parameter in model.parameters.items()}
+    position["campaign_total_coefficient"] = jnp.log(jnp.array([2.0]))
+    generated = jax.jit(model.generate)(jax.random.key(0), model.constrain(position), model.data)
+    for name, coefficient in (("first", 1.0), ("campaign_total", 2.0)):
+        expected = coefficient * np.array([1 / 2, 2 / 3, 3 / 4])
+        assert generated[name].shape == (3, 1)
+        assert generated[name + "_total"].shape == (3,)
+        np.testing.assert_allclose(generated[name][:, 0], expected, rtol=3e-6)
+        np.testing.assert_allclose(generated[name + "_total"], expected, rtol=3e-6)
+
+
+def test_media_total_names_are_reserved_even_when_callbacks_do_not_request_them():
+    data = _data(_MEDIA)
+
+    def callback(data, effects, **parameters):
+        return jnp.array(0.0)
+
+    media = MediaEffect(max_lag=2)
+    with pytest.raises(ValueError, match="paid_media_total"):
+        Model({"paid_media_total": Real()}, callback, data=data, components=[media])
+
+    for other in (
+        FourierSeasonality(period=8, name="paid_media_total"),
+        MediaEffect(max_lag=2, name="paid_media_total"),
+    ):
+        for components in ([media, other], [other, media]):
+            with pytest.raises(ValueError, match="paid_media_total"):
+                Model({}, callback, data=data, components=components)
+
+    data.arrays["paid_media_total"] = np.ones(3)
+    with pytest.raises(ValueError, match="paid_media_total"):
+        Model({}, callback, data=data, components=[media])
+
+
+def test_transformed_outputs_cannot_replace_unrequested_media_totals():
+    model = Model(
+        {},
+        lambda *, mean: jnp.sum(mean),
+        lambda key, *, mean: {"mean": mean},
+        data=_data(_MEDIA),
+        components=[MediaEffect(max_lag=2)],
+        transformed_parameters=lambda: {"mean": jnp.zeros(3), "paid_media_total": jnp.zeros(3)},
+    )
+    position = {name: value for name, value in _position().items() if name.startswith("paid_media_")}
+    with pytest.raises(ValueError, match="paid_media_total"):
+        model.log_density(position, model.data)
+    with pytest.raises(ValueError, match="paid_media_total"):
+        model.generate(jax.random.key(0), model.constrain(position), model.data)
+
+
+def test_media_total_names_do_not_replace_random_keys_or_create_fourier_totals():
+    data = _data(_MEDIA)
+    with pytest.raises(TypeError, match=r"paid_media_total.*random key"):
+        Model(
+            {},
+            lambda *, paid_media_total: jnp.sum(paid_media_total),
+            lambda paid_media_total, *, paid_media: {"channels": paid_media},
+            data=data,
+            components=[MediaEffect(max_lag=2)],
+        )
+    with pytest.raises(ValueError, match="unknown input 'annual_total'"):
+        Model(
+            {},
+            lambda *, annual_total: jnp.sum(annual_total),
+            data=data,
+            components=[FourierSeasonality(period=8, name="annual")],
+        )
