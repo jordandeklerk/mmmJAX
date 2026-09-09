@@ -115,7 +115,7 @@ from mmmjax.distributions import (
     uniform_logsf,
     uniform_rng,
 )
-from mmmjax.media import media_response
+from mmmjax.media import media_response, reach_frequency_response
 from mmmjax.model import Model
 from mmmjax.parameters import Interval, LowerBound, Parameterization, Positive, Real, Simplex, UpperBound
 from mmmjax.saturation import hill_saturation, log_saturation, logistic_saturation, root_saturation
@@ -243,6 +243,7 @@ __all__ = [
     "poisson_logsf",
     "poisson_rng",
     "prepare_data",
+    "reach_frequency_response",
     "root_saturation",
     "student_t",
     "student_t_logpdf",

@@ -10,3 +10,4 @@ Compose carryover and saturation over the required exposure history.
    :nosignatures:
 
    media_response
+   reach_frequency_response
