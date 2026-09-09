@@ -11,6 +11,7 @@ data
 scaling
 parameters
 adstock
+saturation
 continuous
 discrete
 multivariate

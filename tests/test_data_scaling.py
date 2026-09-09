@@ -210,8 +210,11 @@ def test_fitted_statistics_and_labels_survive_mutation_of_training_data(training
         np.testing.assert_array_equal(actual.arrays[role], expected.arrays[role])
     assert actual.columns == expected.columns
     assert "media" in fitted.transformations
-    with pytest.raises(AttributeError):
+    transformations = fitted.transformations
+    # CPython gh-105936 can raise TypeError instead of AttributeError for frozen slotted properties
+    with pytest.raises((AttributeError, TypeError)):
         fitted.transformations = {}
+    assert fitted.transformations == transformations
 
 
 def test_fitted_data_scaling_does_not_retain_training_observation_buffers():

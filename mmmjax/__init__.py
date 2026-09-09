@@ -117,6 +117,7 @@ from mmmjax.distributions import (
 )
 from mmmjax.model import Model
 from mmmjax.parameters import Interval, LowerBound, Parameterization, Positive, Real, Simplex, UpperBound
+from mmmjax.saturation import hill_saturation
 from mmmjax.scaling import DataScaling, Scaling, fit_data_scaling, fit_media_scaling, fit_scaling
 
 __version__ = "0.0.1"
@@ -190,6 +191,7 @@ __all__ = [
     "half_normal_logpdf",
     "half_normal_logsf",
     "half_normal_rng",
+    "hill_saturation",
     "inverse_gamma",
     "inverse_gamma_logcdf",
     "inverse_gamma_logpdf",
