@@ -28,6 +28,9 @@ class MediaEffect:
     from the media columns. Transformations use the current parameter values
     at each model evaluation.
 
+    For custom transformations or parameterizations, declare parameters on
+    ``Model`` and call :func:`media_response` from ``transformed_parameters``.
+
     Include this configuration in ``Model`` components. Its named callback
     input contains weighted contributions for each channel. Request
     ``paid_media_total`` for their sum at each period and group, or
@@ -421,8 +424,9 @@ def media_response(
         Function accepting exposure values and applying a response curve
         without changing the input shape. Channel or group-channel
         parameters can be supplied in the same way as for ``adstock``.
-        For learned parameters, define the callbacks inside the model's
-        log-density function using its current parameter values.
+        For learned parameters, define the callbacks inside
+        ``transformed_parameters`` or the log-density function using the
+        current parameter values.
     n_periods : int, optional
         Number of final periods to return. Use ``len(data.time_values)``
         for data returned by :func:`prepare_data`, including prediction

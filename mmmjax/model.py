@@ -43,6 +43,10 @@ class Model:
     ``data, effects`` for prepared models or ``data`` otherwise, followed
     by declared parameters.
 
+    Built-in components are optional. Declare custom parameters and compute
+    their effects in ``transformed_parameters`` while reusing prepared data,
+    constraint handling, and generated quantities.
+
     Parameters
     ----------
     parameters : mapping of str to Parameterization
@@ -67,7 +71,8 @@ class Model:
         ``<name>_coefficient``. Seasonal effects provide a curve by name and
         ``<name>_coefficients`` separately. These inputs are available to all
         named callbacks. Priors are automatic unless disabled on the component.
-        Keep input names distinct. Use ``components=[]`` without effects.
+        Keep input names distinct. Use ``components=[]`` for fully custom
+        calculations without built-in components.
     transformed_parameters : callable, optional
         Pure JAX-compatible function returning a mapping of names to derived
         array-like quantities shared by both callbacks. Requires prepared data
