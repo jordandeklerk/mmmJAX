@@ -1,7 +1,7 @@
 Data containers
 ===============
 
-Objects returned by data preparation and scaling functions.
+Objects returned by preparation and scaling functions.
 
 .. currentmodule:: mmmjax
 
@@ -12,3 +12,4 @@ Objects returned by data preparation and scaling functions.
    PreparedData
    DataScaling
    Scaling
+   HSGPConfig

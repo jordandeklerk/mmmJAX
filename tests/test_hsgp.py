@@ -1,5 +1,6 @@
 """Tests for finite-domain Hilbert-space Gaussian process features."""
 
+from dataclasses import FrozenInstanceError
 from functools import partial
 
 import jax
@@ -9,7 +10,7 @@ import pytest
 from scipy.integrate import quad
 
 import mmmjax
-from mmmjax.hsgp import hsgp_basis, hsgp_weights
+from mmmjax.hsgp import HSGPConfig, hsgp_basis, hsgp_weights, prepare_hsgp
 
 _COVARIANCES = ("expquad", "matern32", "matern52")
 
@@ -54,9 +55,224 @@ def _weights_from_covariance(frequencies, length_scale, amplitude, covariance):
 
 
 def test_hsgp_helpers_are_exported():
+    assert mmmjax.HSGPConfig is HSGPConfig
     assert mmmjax.hsgp_basis is hsgp_basis
     assert mmmjax.hsgp_weights is hsgp_weights
-    assert {"hsgp_basis", "hsgp_weights"} <= set(mmmjax.__all__)
+    assert mmmjax.prepare_hsgp is prepare_hsgp
+    assert {"HSGPConfig", "hsgp_basis", "hsgp_weights", "prepare_hsgp"} <= set(mmmjax.__all__)
+
+
+@pytest.mark.parametrize(
+    "covariance,padded_boundary,padded_count,span_count",
+    [("expquad", 6.4, 22, 84), ("matern32", 9.0, 61, 164), ("matern52", 8.2, 43, 127)],
+)
+def test_prepare_matches_hand_calculated_padding_and_resolution(covariance, padded_boundary, padded_count, span_count):
+    padded = prepare_hsgp((2, 10), length_scale_range=(0.5, 2), covariance=covariance)
+    span_dominated = prepare_hsgp((-20, 20), length_scale_range=(0.5, 1), covariance=covariance)
+
+    assert isinstance(padded, HSGPConfig)
+    assert padded.center == 6.0
+    assert padded.boundary == pytest.approx(padded_boundary)
+    assert padded.n_basis == padded_count
+    assert padded.covariance == covariance
+    assert span_dominated.center == 0.0
+    assert span_dominated.boundary == 24.0
+    assert span_dominated.n_basis == span_count
+
+
+def test_prepare_preserves_overrides_and_recalculates_resolution_for_manual_domain():
+    automatic = prepare_hsgp((2, 10), length_scale_range=(0.5, 2))
+    wider = prepare_hsgp((2, 10), length_scale_range=(0.5, 2), boundary=np.float64(12))
+    fixed_count = prepare_hsgp((2, 10), length_scale_range=(0.5, 2), n_basis=17)
+    both = prepare_hsgp((2, 10), length_scale_range=(0.5, 2), boundary=12, n_basis=17)
+
+    assert automatic.covariance == "matern52"
+    assert wider.boundary == both.boundary == 12.0
+    assert wider.n_basis == 63
+    assert fixed_count.boundary == automatic.boundary
+    assert fixed_count.n_basis == both.n_basis == 17
+
+
+def test_prepare_keeps_at_least_one_basis_function_for_a_small_manual_domain():
+    config = prepare_hsgp((0, 2), length_scale_range=(3, 4), boundary=1.1)
+
+    assert config.boundary == 1.1
+    assert config.n_basis == 1
+    assert config.basis([0.0, 2.0])[0].shape == (2, 1)
+
+
+def test_prepared_configuration_is_immutable():
+    config = prepare_hsgp((0, 8), length_scale_range=(0.5, 2))
+
+    for attribute, value in (("center", 1.0), ("boundary", 20.0), ("n_basis", 99), ("covariance", "expquad")):
+        with pytest.raises(FrozenInstanceError):
+            setattr(config, attribute, value)
+
+
+def test_preparation_and_weighted_curves_preserve_time_reference_and_units():
+    time = np.array([-3.0, -1.5, 0.0, 2.75, 5.0], dtype=np.float32)
+    for covariance in _COVARIANCES:
+        config = prepare_hsgp((-3, 5), length_scale_range=(0.4, 1.1), covariance=covariance)
+        shifted = prepare_hsgp((3.25, 11.25), length_scale_range=(0.4, 1.1), covariance=covariance)
+        daily = prepare_hsgp((-21, 35), length_scale_range=(2.8, 7.7), covariance=covariance)
+        basis, frequencies = config.basis(time)
+        shifted_basis, shifted_frequencies = shifted.basis(time + 6.25)
+        daily_basis, daily_frequencies = daily.basis(time * 7)
+        coefficients = jnp.linspace(-0.3, 0.7, config.n_basis)
+        weekly_weights = config.weights(frequencies, length_scale=0.7, amplitude=1.3)
+        daily_weights = daily.weights(daily_frequencies, length_scale=4.9, amplitude=1.3)
+
+        assert config.center == 1.0
+        assert shifted.center == 7.25
+        assert daily.center == 7.0
+        assert config.boundary == shifted.boundary
+        assert daily.boundary == pytest.approx(7 * config.boundary)
+        assert config.n_basis == shifted.n_basis == daily.n_basis
+        np.testing.assert_allclose(shifted_basis, basis, rtol=0, atol=2e-6)
+        np.testing.assert_array_equal(shifted_frequencies, frequencies)
+        np.testing.assert_allclose(
+            daily_basis @ (daily_weights * coefficients),
+            basis @ (weekly_weights * coefficients),
+            rtol=5e-6,
+            atol=3e-6,
+        )
+
+
+def test_prepared_methods_reuse_training_and_forecast_basis_under_jit():
+    config = prepare_hsgp((-2, 4), length_scale_range=(0.5, 1.5), covariance="matern32", boundary=6, n_basis=13)
+    time = jnp.array([-2.0, -1.25, 0.0, 1.5, 2.5, 4.0])
+    basis_function = jax.jit(config.basis)
+    complete, frequencies = basis_function(time)
+    training, training_frequencies = basis_function(time[:4])
+    forecast, forecast_frequencies = basis_function(time[4:])
+    expected_basis, expected_frequencies = _basis_reference(time, 1.0, 6.0, 13)
+    weights_function = jax.jit(config.weights)
+
+    np.testing.assert_array_equal(training, complete[:4])
+    np.testing.assert_array_equal(forecast, complete[4:])
+    np.testing.assert_array_equal(training_frequencies, frequencies)
+    np.testing.assert_array_equal(forecast_frequencies, frequencies)
+    np.testing.assert_allclose(complete, expected_basis, rtol=8e-6, atol=3e-6)
+    np.testing.assert_allclose(frequencies, expected_frequencies, rtol=2e-6)
+    for length_scale, amplitude in ((0.7, 1.3), (2.0, 0.5)):
+        weights = weights_function(frequencies, length_scale=length_scale, amplitude=amplitude)
+        expected_weights = _weights_from_covariance(frequencies, length_scale, amplitude, "matern32")
+        np.testing.assert_allclose(weights, expected_weights, rtol=5e-6, atol=2e-6)
+
+
+def test_prepared_methods_keep_time_and_covariance_parameter_gradients():
+    config = prepare_hsgp((-2, 4), length_scale_range=(0.5, 1.5), covariance="expquad", boundary=6, n_basis=7)
+    arguments = jnp.array([0.37, 0.75, 1.3], dtype=jnp.float32)
+    coefficients = jnp.linspace(-0.5, 0.7, config.n_basis)
+
+    def response(values):
+        basis, frequencies = config.basis(values[:1])
+        weights = config.weights(frequencies, length_scale=values[1], amplitude=values[2])
+        return basis[0] @ (weights * coefficients)
+
+    def reference(values):
+        basis, frequencies = _basis_reference(values[:1], config.center, config.boundary, config.n_basis)
+        weights = _weights_from_covariance(frequencies, values[1], values[2], config.covariance)
+        return basis[0] @ (weights * np.asarray(coefficients, dtype=np.float64))
+
+    arguments64 = np.asarray(arguments, dtype=np.float64)
+    perturbations = np.eye(3) * 1e-4
+    expected_gradient = np.array(
+        [(reference(arguments64 + delta) - reference(arguments64 - delta)) / 2e-4 for delta in perturbations]
+    )
+    value, gradient = jax.jit(jax.value_and_grad(response))(arguments)
+
+    np.testing.assert_allclose(value, reference(arguments64), rtol=5e-6, atol=2e-6)
+    np.testing.assert_allclose(gradient, expected_gradient, rtol=8e-6, atol=3e-6)
+
+
+@pytest.mark.parametrize("covariance", _COVARIANCES)
+def test_prepared_resolution_approximates_covariance_across_length_scale_range(covariance):
+    time = np.linspace(-1, 1, 13, dtype=np.float32)
+    config = prepare_hsgp((-1, 1), length_scale_range=(0.3, 1.3), covariance=covariance, boundary=9)
+    basis, frequencies = config.basis(time)
+    distances = time.astype(np.float64)[:, None] - time.astype(np.float64)[None, :]
+
+    # The sizing heuristic leaves its largest spectral truncation error at
+    # the shortest scale. The generous domain isolates that source of error.
+    for length_scale, tolerance in ((0.3, 0.025), (0.7, 0.0025), (1.3, 0.0005)):
+        weights = config.weights(frequencies, length_scale=length_scale, amplitude=1.3)
+        weighted_basis = np.asarray(basis, dtype=np.float64) * np.asarray(weights, dtype=np.float64)
+        expected = 1.3**2 * _unit_covariance(distances, length_scale, covariance)
+
+        np.testing.assert_allclose(weighted_basis @ weighted_basis.T, expected, rtol=0, atol=tolerance)
+
+
+def test_more_basis_functions_cannot_correct_insufficient_domain_padding():
+    time = np.linspace(-1, 1, 13, dtype=np.float32)
+    config = prepare_hsgp((-1, 1), length_scale_range=(0.1, 0.2))
+    more_modes = prepare_hsgp((-1, 1), length_scale_range=(0.1, 0.2), n_basis=4 * config.n_basis)
+    wider = prepare_hsgp((-1, 1), length_scale_range=(0.1, 0.2), boundary=3, n_basis=more_modes.n_basis)
+    distances = time.astype(np.float64)[:, None] - time.astype(np.float64)[None, :]
+    expected = _unit_covariance(distances, 0.2, "matern52")
+    errors = []
+
+    for settings in (config, more_modes, wider):
+        basis, frequencies = settings.basis(time)
+        weights = settings.weights(frequencies, length_scale=0.2)
+        weighted_basis = np.asarray(basis, dtype=np.float64) * np.asarray(weights, dtype=np.float64)
+        errors.append(np.max(np.abs(weighted_basis @ weighted_basis.T - expected)))
+
+    assert config.boundary == more_modes.boundary == 1.2
+    assert errors[0] > 0.13
+    assert errors[1] > 0.13
+    assert abs(errors[0] - errors[1]) < 0.001
+    assert errors[2] < 1e-4
+
+
+@pytest.mark.parametrize("argument", ["time_range", "length_scale_range"])
+def test_prepare_names_nonreal_ranges_in_errors(argument):
+    for value in ([True, False], [1j, 2j], ["1", "2"], None, np.array([1, 2], dtype=object)):
+        arguments = {"time_range": (0, 4), "length_scale_range": (0.5, 2)}
+        arguments[argument] = value
+        with pytest.raises(TypeError, match=argument):
+            prepare_hsgp(**arguments)
+
+
+@pytest.mark.parametrize("argument", ["time_range", "length_scale_range"])
+def test_prepare_requires_two_finite_increasing_endpoints(argument):
+    invalid = [1, [], [1], [[1, 2]], [1, 2, 3], [1, 1], [2, 1], [np.nan, 2], [1, np.inf], [-np.inf, 2]]
+    if argument == "length_scale_range":
+        invalid.extend(([0, 2], [-1, 2]))
+    for value in invalid:
+        arguments = {"time_range": (0, 4), "length_scale_range": (0.5, 2)}
+        arguments[argument] = value
+        with pytest.raises(ValueError, match=argument):
+            prepare_hsgp(**arguments)
+
+
+def test_prepare_validates_manual_domain_and_basis_count():
+    arguments = {"time_range": (0, 4), "length_scale_range": (0.5, 2)}
+    for boundary in (True, [3], 3j, "3"):
+        with pytest.raises(TypeError, match="boundary"):
+            prepare_hsgp(**arguments, boundary=boundary)
+    for boundary in (0, 1, 2, np.nan, np.inf, -np.inf):
+        with pytest.raises(ValueError, match="boundary"):
+            prepare_hsgp(**arguments, boundary=boundary)
+    for n_basis in (True, 1.5, np.int64(2)):
+        with pytest.raises(TypeError, match="n_basis"):
+            prepare_hsgp(**arguments, n_basis=n_basis)
+    for n_basis in (0, -1):
+        with pytest.raises(ValueError, match="n_basis"):
+            prepare_hsgp(**arguments, n_basis=n_basis)
+
+
+def test_prepare_rejects_unknown_covariance_names():
+    for covariance in ("matern", "Matern52", "", None):
+        with pytest.raises(ValueError, match="covariance"):
+            prepare_hsgp((0, 4), length_scale_range=(0.5, 2), covariance=covariance)
+
+
+def test_preparation_explains_that_dynamic_ranges_are_not_supported_under_jit():
+    function = jax.jit(lambda time_range: prepare_hsgp(time_range, length_scale_range=(0.5, 2)).boundary)
+
+    with pytest.raises(TypeError, match=r"time_range.*outside jax.jit"):
+        function(jnp.array([0.0, 4.0]))
 
 
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])

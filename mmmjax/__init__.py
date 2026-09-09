@@ -115,7 +115,7 @@ from mmmjax.distributions import (
     uniform_logsf,
     uniform_rng,
 )
-from mmmjax.hsgp import hsgp_basis, hsgp_weights
+from mmmjax.hsgp import HSGPConfig, hsgp_basis, hsgp_weights, prepare_hsgp
 from mmmjax.media import media_response, reach_frequency_response
 from mmmjax.model import Model
 from mmmjax.parameters import Interval, LowerBound, Parameterization, Positive, Real, Simplex, UpperBound
@@ -127,6 +127,7 @@ __version__ = "0.0.1"
 
 __all__ = [
     "DataScaling",
+    "HSGPConfig",
     "Interval",
     "LowerBound",
     "Model",
@@ -248,6 +249,7 @@ __all__ = [
     "poisson_logsf",
     "poisson_rng",
     "prepare_data",
+    "prepare_hsgp",
     "reach_frequency_response",
     "root_saturation",
     "student_t",

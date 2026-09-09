@@ -9,5 +9,6 @@ Build reduced-rank Gaussian process components over time.
    :toctree: generated
    :nosignatures:
 
+   prepare_hsgp
    hsgp_basis
    hsgp_weights

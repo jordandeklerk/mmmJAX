@@ -1,12 +1,250 @@
 """Hilbert-space Gaussian process primitives for smooth time-varying effects."""
 
+from dataclasses import dataclass
 from typing import Literal
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax.typing import ArrayLike
 
-__all__ = ["hsgp_basis", "hsgp_weights"]
+__all__ = ["HSGPConfig", "hsgp_basis", "hsgp_weights", "prepare_hsgp"]
+
+
+@dataclass(frozen=True, slots=True)
+class HSGPConfig:
+    """Retain one HSGP approximation for training and prediction.
+
+    Use :func:`prepare_hsgp` to choose these settings before defining a
+    model. Calling :meth:`basis` for new time positions reuses the same
+    domain and basis count. Calling :meth:`weights` reuses the covariance
+    family while allowing length scales and amplitudes to vary.
+    Direct construction does not validate the supplied settings.
+
+    Attributes
+    ----------
+    center : float
+        Midpoint of the time range used to prepare the approximation.
+    boundary : float
+        Domain half-width in the same units as the time positions.
+    n_basis : int
+        Number of basis functions retained in the approximation.
+    covariance : str
+        Covariance family used to choose the settings and compute weights.
+    """
+
+    center: float
+    boundary: float
+    n_basis: int
+    covariance: Literal["expquad", "matern32", "matern52"]
+
+    def basis(self, time: ArrayLike) -> tuple[jax.Array, jax.Array]:
+        """Evaluate the stored basis without changing its time reference.
+
+        Parameters
+        ----------
+        time : array_like
+            One-dimensional numeric time positions in the same units and
+            from the same reference date used during preparation.
+
+        Returns
+        -------
+        basis : jax.Array
+            Matrix with shape ``(len(time), n_basis)``. Nonfinite positions
+            or positions outside the domain give ``nan`` rows.
+        frequencies : jax.Array
+            Angular frequencies with shape ``(n_basis,)``. Pass these to
+            :meth:`weights` to compute coefficient standard deviations.
+
+        Examples
+        --------
+        .. ipython::
+
+            In [1]: from mmmjax import prepare_hsgp
+               ...: config = prepare_hsgp((0, 16), length_scale_range=(2, 8))
+               ...: basis, frequencies = config.basis([0.0, 1.0, 2.0])
+               ...: basis.shape
+        """
+        return hsgp_basis(time, center=self.center, boundary=self.boundary, n_basis=self.n_basis)
+
+    def weights(
+        self,
+        frequencies: ArrayLike,
+        *,
+        length_scale: ArrayLike,
+        amplitude: ArrayLike = 1.0,
+    ) -> jax.Array:
+        """Compute coefficient weights using the stored covariance family.
+
+        Parameters
+        ----------
+        frequencies : array_like
+            One-dimensional angular frequencies returned by :meth:`basis`.
+        length_scale : array_like
+            Positive, finite length scales in the same units as the time
+            positions. The preparation range guides approximation sizing
+            and does not constrain these values or specify a prior.
+        amplitude : array_like, default 1.0
+            Nonnegative, finite process standard deviations. Their shape
+            must broadcast with ``length_scale``.
+
+        Returns
+        -------
+        jax.Array
+            Coefficient standard deviations with shape
+            ``batch_shape + (len(frequencies),)``. Invalid numeric inputs
+            give ``nan`` in affected positions, as in :func:`hsgp_weights`.
+
+        Examples
+        --------
+        .. ipython::
+
+            In [1]: from mmmjax import prepare_hsgp
+               ...: config = prepare_hsgp((0, 16), length_scale_range=(2, 8))
+               ...: basis, frequencies = config.basis([0.0, 1.0, 2.0])
+               ...: weights = config.weights(frequencies, length_scale=4.0)
+               ...: weights.shape
+        """
+        return hsgp_weights(frequencies, length_scale=length_scale, amplitude=amplitude, covariance=self.covariance)
+
+
+def prepare_hsgp(
+    time_range: ArrayLike,
+    *,
+    length_scale_range: ArrayLike,
+    covariance: Literal["expquad", "matern32", "matern52"] = "matern52",
+    boundary: float | None = None,
+    n_basis: int | None = None,
+) -> HSGPConfig:
+    """Choose a fixed domain and basis count for a time-varying process.
+
+    Prepare the approximation once before defining the model, outside
+    ``jax.jit``. The longest expected length scale determines how far the
+    domain extends beyond the observations. The shortest determines how
+    many basis functions are needed to represent faster changes.
+
+    These heuristic recommendations can understate variation near the
+    ends of the time range. Check that model results remain stable with a
+    wider domain and more basis functions. More functions alone cannot
+    correct insufficient domain padding. Preparation does not fit a curve
+    or define any priors.
+
+    Parameters
+    ----------
+    time_range : array_like
+        Two finite numeric endpoints in increasing order, covering both
+        training observations and planned forecasts. For example, use
+        ``(0, 116)`` for observations in weeks 0 through 104 and predictions
+        through week 116. Keep the same time origin for later predictions.
+    length_scale_range : array_like
+        Two positive, finite endpoints in increasing order, in the same
+        units as ``time_range``. Choose a range covering the length scales
+        you expect the model to use, such as most of the prior probability.
+        This range guides sizing and does not constrain model parameters.
+    covariance : {"expquad", "matern32", "matern52"}, default "matern52"
+        Covariance family. The returned settings retain this choice for
+        subsequent weight calculations.
+    boundary : float, optional
+        Domain half-width in time units. When omitted, use the recommended
+        padding. Supply a larger value to check boundary sensitivity. It
+        must be finite and greater than half the supplied time span.
+        The recommended basis count is recalculated for this domain.
+    n_basis : int, optional
+        Positive number of basis functions. When omitted, choose a count
+        using the domain half-width and shortest expected length scale.
+        Supply a larger value to check sensitivity to the approximation.
+
+    Returns
+    -------
+    HSGPConfig
+        Reusable settings containing
+
+        - **center** — Midpoint of the supplied time range.
+        - **boundary** — Half-width of the padded approximation domain.
+        - **n_basis** — Number of basis functions.
+        - **covariance** — Covariance family for coefficient weights.
+
+        Use the object's ``basis`` and ``weights`` methods in the model.
+        Reuse it for predictions instead of preparing new settings.
+
+    Examples
+    --------
+    Prepare a weekly time basis with room for four forecast weeks.
+    Training and future observations share the same basis definition.
+
+    .. ipython::
+
+        In [1]: import polars as pl
+           ...: from mmmjax import prepare_hsgp
+           ...: frame = pl.DataFrame({
+           ...:     "week": [0, 4, 8, 12],
+           ...:     "sales": [100.0, 120.0, 110.0, 130.0],
+           ...: })
+           ...: config = prepare_hsgp((0, 16), length_scale_range=(2, 8))
+           ...: basis, frequencies = config.basis(frame["week"].to_numpy())
+           ...: weights = config.weights(frequencies, length_scale=4.0)
+           ...: future_basis, _ = config.basis([13.0, 14.0, 15.0, 16.0])
+           ...: basis.shape, future_basis.shape
+    """
+    if covariance not in ("expquad", "matern32", "matern52"):
+        raise ValueError(f"covariance must be 'expquad', 'matern32', or 'matern52', got {covariance!r}")
+
+    ranges = []
+    for name, value in (("time_range", time_range), ("length_scale_range", length_scale_range)):
+        try:
+            array = np.asarray(value)
+        except (TypeError, ValueError) as error:
+            raise TypeError(
+                f"{name} must contain two real numeric endpoints. Run preparation outside jax.jit"
+            ) from error
+        if array.dtype.kind not in "iuf":
+            raise TypeError(f"{name} must contain real numeric endpoints, got dtype {array.dtype}")
+        if array.shape != (2,):
+            raise ValueError(f"{name} must contain two endpoints, got shape {array.shape}")
+        if not np.all(np.isfinite(array)):
+            raise ValueError(f"{name} must contain finite endpoints, got {value!r}")
+        lower, upper = float(array[0]), float(array[1])
+        if name == "length_scale_range" and lower <= 0:
+            raise ValueError(f"length_scale_range must contain positive endpoints, got {value!r}")
+        if lower >= upper:
+            raise ValueError(f"{name} must have its lower endpoint less than its upper endpoint, got {value!r}")
+        ranges.append((lower, upper))
+
+    (start, end), (shortest, longest) = ranges
+    center = (start + end) / 2
+    half_span = (end - start) / 2
+
+    # One-dimensional sizing recommendations from Ruitort-Mayol et al.
+    # Domain padding controls boundary effects and the basis count controls
+    # how much of the high-frequency spectrum is retained.
+    if covariance == "expquad":
+        padding, resolution = 3.2, 1.75
+    elif covariance == "matern32":
+        padding, resolution = 4.5, 3.42
+    else:
+        padding, resolution = 4.1, 2.65
+    if boundary is None:
+        domain_width = max(padding * longest, 1.2 * half_span)
+    else:
+        if isinstance(boundary, (bool, np.bool_)) or not isinstance(boundary, (int, float, np.integer, np.floating)):
+            raise TypeError("boundary must be a real scalar domain half-width")
+        domain_width = float(boundary)
+        if not np.isfinite(domain_width) or domain_width <= half_span:
+            raise ValueError(f"boundary must be finite and greater than the time range half-span of {half_span}")
+
+    basis_count = resolution * domain_width / shortest
+    if not np.all(np.isfinite([center, domain_width, basis_count])):
+        raise ValueError(
+            "The HSGP settings exceed numeric limits. Check the time range, domain width, and length scales"
+        )
+    if n_basis is None:
+        n_basis = max(1, int(basis_count))
+    elif isinstance(n_basis, bool) or not isinstance(n_basis, int):
+        raise TypeError("n_basis must be a positive Python integer")
+    if n_basis <= 0:
+        raise ValueError(f"n_basis must be at least 1, got {n_basis}")
+
+    return HSGPConfig(center=center, boundary=domain_width, n_basis=n_basis, covariance=covariance)
 
 
 def hsgp_basis(
