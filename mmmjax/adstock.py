@@ -503,19 +503,33 @@ def _prepare_adstock(
     if not isinstance(normalize, bool):
         raise TypeError("normalize must be a static boolean")
 
-    arrays = {}
-    for name, value in {"media": media, **parameters}.items():
+    inputs = {"media": media, **parameters}
+    leaves = []
+    for name, value in inputs.items():
+        value_leaves = jax.tree_util.tree_leaves(value)
         try:
-            array = jnp.asarray(value)
+            argument_dtype = jnp.result_type(*value_leaves)
         except (TypeError, ValueError) as exc:
             raise TypeError(f"{name} must be real numeric and array-like, got {type(value).__name__}") from exc
         if not (
-            jnp.issubdtype(array.dtype, jnp.floating)
-            or jnp.issubdtype(array.dtype, jnp.integer)
-            or array.dtype == jnp.bool_
+            jnp.issubdtype(argument_dtype, jnp.floating)
+            or jnp.issubdtype(argument_dtype, jnp.integer)
+            or argument_dtype == jnp.bool_
         ):
-            raise TypeError(f"{name} must have a real numeric dtype, got {array.dtype}")
-        arrays[name] = array
+            raise TypeError(f"{name} must have a real numeric dtype, got {argument_dtype}")
+        leaves.extend(value_leaves)
+
+    # Choose floating-point precision before converting integer exposure counts
+    dtype = jnp.result_type(*leaves)
+    if not jnp.issubdtype(dtype, jnp.floating):
+        dtype = jnp.float64 if jax.dtypes.itemsize_bits(dtype) == 64 else jnp.float32
+    dtype = jax.dtypes.canonicalize_dtype(jnp.promote_types(dtype, jnp.float32))
+    arrays = {}
+    for name, value in inputs.items():
+        try:
+            arrays[name] = jnp.asarray(value, dtype=dtype)
+        except (TypeError, ValueError) as exc:
+            raise TypeError(f"{name} must be real numeric and array-like, got {type(value).__name__}") from exc
 
     media_array = arrays["media"]
     if media_array.ndim == 0:
@@ -524,16 +538,10 @@ def _prepare_adstock(
         raise ValueError(f"axis {axis} is out of range for media with {media_array.ndim} dimensions")
     axis %= media_array.ndim
 
-    dtype = jnp.result_type(*arrays.values())
-    if not jnp.issubdtype(dtype, jnp.floating):
-        dtype = jnp.float64 if jax.dtypes.itemsize_bits(dtype) == 64 else jnp.float32
-    dtype = jax.dtypes.canonicalize_dtype(jnp.promote_types(dtype, jnp.float32))
-    media_array = jnp.asarray(media_array, dtype=dtype)
-
     batch_shape = media_array.shape[:axis] + media_array.shape[axis + 1 :]
     broadcast_parameters = {}
     for name in parameters:
-        array = jnp.asarray(arrays[name], dtype=dtype)
+        array = arrays[name]
         try:
             broadcast_parameters[name] = jnp.broadcast_to(array, batch_shape)
         except ValueError as exc:

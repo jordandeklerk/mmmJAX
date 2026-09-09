@@ -12,6 +12,7 @@ scaling
 parameters
 adstock
 saturation
+media
 continuous
 discrete
 multivariate
