@@ -28,6 +28,10 @@ class MediaEffect:
     the selected media columns. Adstock and saturation are evaluated using
     the current parameter values, not fixed during data preparation.
 
+    Include this configuration in ``Model`` components. Its named callback
+    input contains weighted contributions with the channel axis intact.
+    The model declares its parameters and adds their priors automatically.
+
     This configuration does not scale exposures. Set coefficient priors on
     the scale where contributions enter the model, and half-saturation priors
     in the prepared exposure units. Their defaults are intended for scaled

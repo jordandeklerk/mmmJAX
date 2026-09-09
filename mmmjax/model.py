@@ -12,6 +12,7 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike, DTypeLike
 
 from mmmjax.data import PreparedData, _DataLayout
+from mmmjax.media import MediaEffect, _PreparedMedia
 from mmmjax.parameters import Parameterization
 from mmmjax.seasonality import FourierSeasonality, _PreparedFourier
 
@@ -29,7 +30,7 @@ class _ModelData:
     """Keep observation arrays and prepared components in one dynamic PyTree."""
 
     values: dict[str, jax.Array]
-    components: tuple[_PreparedFourier, ...]
+    components: tuple[_PreparedFourier | _PreparedMedia, ...]
 
 
 @dataclass(frozen=True, slots=True, eq=False, init=False)
@@ -40,7 +41,7 @@ class Model:
     ----------
     parameters : mapping of str to Parameterization
         Named declarations for the parameters used by the callbacks.
-        Component coefficients are declared automatically and must not
+        Component parameters are declared automatically and must not
         also appear in this mapping.
     log_density : callable
         Scalar log density in the constrained model space. For prepared
@@ -67,16 +68,17 @@ class Model:
         such as ``outcome`` or ``media``, not the original column names.
         Each requested input must be available at evaluation, even if the
         callback declares a default value for that argument.
-    components : sequence of FourierSeasonality, optional
-        Seasonal contributions to prepare against the training observations.
-        Each component adds a coefficient parameter. Its name supplies the
-        evaluated contribution to named callbacks, not the coefficient
-        array. In positional callbacks it is an entry in ``effects``.
-        The callback decides how to combine these effects. Names requested
-        by a named callback must identify only one data role, component, or
-        user parameter. Use an empty sequence for a prepared model without
-        components. Omit this argument for callbacks using their own data.
-
+    components : sequence of FourierSeasonality or MediaEffect, optional
+        Contributions to prepare against the training observations. Each
+        component declares its parameters and supplies its evaluated
+        contribution under its name. Media contributions retain their final
+        channel axis. Sum that axis when combining them with an intercept
+        or seasonal curve. In positional callbacks, contributions are entries
+        in ``effects``. Names requested by a named callback must identify
+        only one data role, component, or user parameter. Component parameter
+        names must not overlap other declarations or component names.
+        Use an empty sequence for a prepared model without components.
+        Omit this argument for callbacks using their own data.
     """
 
     _parameterizations: tuple[tuple[str, Parameterization], ...]
@@ -98,7 +100,7 @@ class Model:
         generate: Generate | None = None,
         *,
         data: PreparedData | None = None,
-        components: Sequence[FourierSeasonality] | None = None,
+        components: Sequence[FourierSeasonality | MediaEffect] | None = None,
     ) -> None:
         """Create a model from named parameter declarations and plain functions."""
         parameterizations = _prepare_parameterizations(parameters)
@@ -111,13 +113,13 @@ class Model:
             if not isinstance(data, PreparedData):
                 raise TypeError("Components require PreparedData. Use prepare_data with the observation dataframe")
             if not isinstance(components, Sequence) or isinstance(components, (str, bytes)):
-                raise TypeError("components must be a sequence of FourierSeasonality configurations")
+                raise TypeError("components must be a sequence of FourierSeasonality or MediaEffect configurations")
             declarations = dict(parameterizations)
             specifications = tuple(components)
             names = set(parameter_names)
             for specification in specifications:
-                if not isinstance(specification, FourierSeasonality):
-                    raise TypeError("Each component must be a FourierSeasonality configuration")
+                if not isinstance(specification, (FourierSeasonality, MediaEffect)):
+                    raise TypeError("Each component must be a FourierSeasonality or MediaEffect configuration")
                 if specification.name in names:
                     raise ValueError(
                         f"Component name {specification.name!r} conflicts with another component or parameter"
@@ -125,8 +127,16 @@ class Model:
                 names.add(specification.name)
 
             prepared_components = tuple(specification._prepare(data) for specification in specifications)
+            component_names = {specification.name for specification in specifications}
             for component in prepared_components:
-                declarations.update(component.parameters)
+                component_parameters = component.parameters
+                conflicts = set(component_parameters) & set(declarations)
+                conflicts |= set(component_parameters) & (component_names - {component.specification.name})
+                if conflicts:
+                    raise ValueError(
+                        f"Component parameter names {sorted(conflicts)} conflict with other parameters or components"
+                    )
+                declarations.update(component_parameters)
             parameterizations = _prepare_parameterizations(declarations)
             prepared_data = _ModelData(data._to_jax(), prepared_components)
 
@@ -192,7 +202,7 @@ class Model:
         """Prepare new observations using the model's training configuration.
 
         Use this before evaluating a model with new observations or making
-        predictions. It retains the training seasonal phase, coefficient
+        predictions. It retains the training seasonal phase, parameter
         declarations, and priors without changing the model's stored data.
         Preparation does not apply scaling. Reuse any fitted scaling before
         passing the data here, just as for the training observations.
@@ -203,8 +213,12 @@ class Model:
             New observations returned by ``prepare_data``. Use the training
             time and group column names and the same set of groups. Supplied
             inputs must use the same source columns and channel assignments
-            as training, but their order may differ. Outcomes and other
-            inputs unused by the callback may be omitted. A seasonal-only
+            as training, but their order may differ. Inputs may be omitted
+            when neither the callback being evaluated nor a configured
+            component requires them. This allows prediction without outcomes.
+            Models with MediaEffect require media exposures, with any needed
+            carryover history supplied through ``media_history``. Training
+            exposures are not prepended automatically. A seasonal-only
             prediction needs just dates and any group labels.
 
         Returns
@@ -300,7 +314,7 @@ class Model:
 
         where :math:`A_k` is the log-density adjustment supplied by each
         parameterization. With components, :math:`p_\theta` includes their
-        coefficient priors as well as the callback's density.
+        parameter priors as well as the callback's density.
 
         For models without prepared data, ``data`` may be any JAX-compatible PyTree.
         Passing it explicitly keeps the same compiled model reusable across
@@ -331,10 +345,7 @@ class Model:
             density = _as_scalar(self._log_density(data, **parameters), name="log_density")
         else:
             inputs = self._component_data(data)
-            effects = {
-                component.specification.name: component.apply(parameters[component.specification.name])
-                for component in inputs.components
-            }
+            effects = _component_effects(inputs, parameters)
             if self._density_inputs is None:
                 callback_parameters = {name: parameters[name] for name in self._callback_parameter_names}
                 result = self._log_density(inputs.values, effects, **callback_parameters)
@@ -343,7 +354,12 @@ class Model:
                 result = self._log_density(**arguments)
             density = _as_scalar(result, name="log_density")
             for component in inputs.components:
-                density = density + component.log_prior(parameters[component.specification.name])
+                prior = (
+                    component.log_prior(parameters)
+                    if isinstance(component, _PreparedMedia)
+                    else component.log_prior(parameters[component.specification.name])
+                )
+                density = density + prior
 
         for name, parameterization in self._parameterizations:
             adjustment = _as_scalar(
@@ -399,10 +415,7 @@ class Model:
             generated = self._generate(key, data, **callback_parameters)
         else:
             inputs = self._component_data(data)
-            effects = {
-                component.specification.name: component.apply(parameters[component.specification.name])
-                for component in inputs.components
-            }
+            effects = _component_effects(inputs, parameters)
             if self._generation_inputs is None:
                 generated = self._generate(key, inputs.values, effects, **callback_parameters)
             else:
@@ -425,34 +438,50 @@ class Model:
         return quantities
 
     def _component_data(self, data: object) -> _ModelData:
-        """Keep component inputs tied to the model's coefficient and prior definitions."""
+        """Keep component inputs tied to the model's parameter and prior definitions."""
         if not isinstance(data, _ModelData):
             raise TypeError(
                 "Models with components require prepared model inputs. "
                 "Pass model.data or the result of model.prepare_data"
             )
-        if (
-            self._data is None
-            or len(data.components) != len(self._data.components)
-            or any(
-                component.specification is not reference.specification
-                or (
-                    component.origin,
-                    component.time_column,
-                    component.group_columns,
-                    component.group_values,
-                )
-                != (
-                    reference.origin,
-                    reference.time_column,
-                    reference.group_columns,
-                    reference.group_values,
-                )
-                for component, reference in zip(data.components, self._data.components, strict=True)
-            )
-        ):
+        if self._data is None or len(data.components) != len(self._data.components):
             raise ValueError("The prepared inputs must use this model's component configurations and training labels")
+        for component, reference in zip(data.components, self._data.components, strict=True):
+            matches = (
+                component.specification is reference.specification
+                and component.time_column == reference.time_column
+                and component.group_columns == reference.group_columns
+                and component.group_values == reference.group_values
+            )
+            if isinstance(component, _PreparedMedia):
+                matches = (
+                    matches
+                    and isinstance(reference, _PreparedMedia)
+                    and component.media_columns == reference.media_columns
+                    and component.channels == reference.channels
+                    and component.dtype == reference.dtype
+                )
+            else:
+                matches = matches and isinstance(reference, _PreparedFourier) and component.origin == reference.origin
+            if not matches:
+                raise ValueError(
+                    "The prepared inputs must use this model's component configurations and training labels"
+                )
         return data
+
+
+def _component_effects(inputs: _ModelData, parameters: ParameterValues) -> dict[str, jax.Array]:
+    """Evaluate component contributions with the current observations and constrained parameters."""
+    effects = {}
+    for component in inputs.components:
+        name = component.specification.name
+        if isinstance(component, _PreparedMedia):
+            if "media" not in inputs.values:
+                raise ValueError("Media effects require media exposures in the prepared model inputs")
+            effects[name] = component.apply(inputs.values["media"], parameters)
+        else:
+            effects[name] = component.apply(parameters[name])
+    return effects
 
 
 def _bind_inputs(
