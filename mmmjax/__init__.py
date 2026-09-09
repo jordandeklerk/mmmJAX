@@ -117,7 +117,7 @@ from mmmjax.distributions import (
 )
 from mmmjax.model import Model
 from mmmjax.parameters import Interval, LowerBound, Parameterization, Positive, Real, Simplex, UpperBound
-from mmmjax.saturation import hill_saturation
+from mmmjax.saturation import hill_saturation, log_saturation, logistic_saturation, root_saturation
 from mmmjax.scaling import DataScaling, Scaling, fit_data_scaling, fit_media_scaling, fit_scaling
 
 __version__ = "0.0.1"
@@ -202,6 +202,8 @@ __all__ = [
     "laplace_logpdf",
     "laplace_logsf",
     "laplace_rng",
+    "log_saturation",
+    "logistic_saturation",
     "lognormal",
     "lognormal_logcdf",
     "lognormal_logpdf",
@@ -239,6 +241,7 @@ __all__ = [
     "poisson_logsf",
     "poisson_rng",
     "prepare_data",
+    "root_saturation",
     "student_t",
     "student_t_logpdf",
     "student_t_rng",

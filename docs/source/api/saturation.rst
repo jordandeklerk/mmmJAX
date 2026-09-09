@@ -10,3 +10,6 @@ Transform marketing inputs with nonlinear response curves.
    :nosignatures:
 
    hill_saturation
+   logistic_saturation
+   root_saturation
+   log_saturation
