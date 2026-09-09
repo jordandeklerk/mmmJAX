@@ -20,6 +20,7 @@ __all__ = ["Model"]
 
 LogDensity: TypeAlias = Callable[..., ArrayLike]
 Generate: TypeAlias = Callable[..., Mapping[str, ArrayLike]]
+TransformedParameters: TypeAlias = Callable[..., Mapping[str, ArrayLike]]
 ParameterValues: TypeAlias = Mapping[str, ArrayLike]
 _InputBindings: TypeAlias = tuple[tuple[str, str], ...]
 
@@ -37,53 +38,45 @@ class _ModelData:
 class Model:
     """Compose parameter declarations with density and generation functions.
 
+    Prepared models support keyword-only inputs named for data roles, parameters,
+    components, or transformed quantities. Positional callbacks receive
+    ``data, effects`` for prepared models or ``data`` otherwise, followed
+    by declared parameters.
+
     Parameters
     ----------
     parameters : mapping of str to Parameterization
-        Named declarations for the parameters used by the callbacks.
-        Component parameters are declared automatically and must not
-        also appear in this mapping.
+        Named parameter declarations and constraints. Do not include
+        parameters declared automatically by components.
     log_density : callable
-        Scalar log density in the constrained model space. For prepared
-        models, use keyword-only arguments for the data roles, component
-        contributions, and declared parameters needed by the function.
-        For example, ``log_density(*, outcome, annual, intercept, sigma)``.
-        Every user-declared parameter must be requested. Component priors
-        are added automatically and should not be included in this callback.
-        Existing ``log_density(data, effects, ...)`` callbacks are also
-        supported. For models without prepared data, the signature remains
-        ``log_density(data, ...)``. These positional forms accept either
-        named model parameters or ``**parameters`` after their inputs.
+        Scalar log density for constrained parameters. Every user-declared
+        parameter must be requested here or by ``transformed_parameters``.
+        Component priors and constraint adjustments are added automatically.
     generate : callable, optional
-        Generated-quantities function. For named inputs, it receives a JAX
-        random key followed by keyword-only arguments for the quantities it
-        needs, such as ``generate(key, *, annual, intercept, sigma)``.
-        Request only inputs used by the function, so predictions can omit
-        observed outcomes. Existing ``generate(key, data, effects, ...)``
-        callbacks remain supported, or ``generate(key, data, ...)`` for models
-        without prepared data. If omitted, generated quantities are unavailable.
+        Function returning a mapping of names to array-like generated quantities.
+        Receives a JAX random key first, followed by the model inputs it needs.
     data : PreparedData, optional
-        Training observations from ``prepare_data``. Required when
-        ``components`` is supplied. Named inputs use the selected data roles,
-        such as ``outcome`` or ``media``, not the original column names.
-        Each requested input must be available at evaluation, even if the
-        callback declares a default value for that argument.
+        Training observations from ``prepare_data``, required with
+        ``components``. Callback inputs use data roles such as ``outcome``,
+        not source column names.
     components : sequence of FourierSeasonality or MediaEffect, optional
-        Contributions to prepare against the training observations. Each
-        component declares its parameters and supplies its evaluated
-        contribution under its name. Media contributions retain their final
-        channel axis. Sum that axis when combining them with an intercept
-        or seasonal curve. In positional callbacks, contributions are entries
-        in ``effects``. Names requested by a named callback must identify
-        only one data role, component, or user parameter. Component parameter
-        names must not overlap other declarations or component names.
-        Use an empty sequence for a prepared model without components.
-        Omit this argument for callbacks using their own data.
+        Named effects with automatic parameters and priors. Media effects
+        retain per-channel contributions. Component names must be unique and
+        distinct from user parameters. Use ``components=[]`` without effects.
+    transformed_parameters : callable, optional
+        Pure JAX-compatible function returning a mapping of names to derived
+        array-like quantities shared by both callbacks. Requires prepared data
+        and keyword-only named inputs. Output names must not shadow data roles,
+        parameters, or components. Outputs are not sampled parameters.
+        The whole function runs for generation, so all its requested inputs
+        are needed for prediction.
     """
 
     _parameterizations: tuple[tuple[str, Parameterization], ...]
     _log_density: LogDensity
     _generate: Generate | None
+    _transformed_parameters: TransformedParameters | None
+    _transform_inputs: _InputBindings
     _generate_parameter_names: tuple[str, ...] | None
     _callback_parameter_names: tuple[str, ...]
     _density_inputs: _InputBindings | None
@@ -101,6 +94,7 @@ class Model:
         *,
         data: PreparedData | None = None,
         components: Sequence[FourierSeasonality | MediaEffect] | None = None,
+        transformed_parameters: TransformedParameters | None = None,
     ) -> None:
         """Create a model from named parameter declarations and plain functions."""
         parameterizations = _prepare_parameterizations(parameters)
@@ -140,12 +134,33 @@ class Model:
             parameterizations = _prepare_parameterizations(declarations)
             prepared_data = _ModelData(data._to_jax(), prepared_components)
 
+        transform_inputs: _InputBindings = ()
+        if transformed_parameters is not None:
+            if prepared_data is None:
+                raise ValueError("transformed_parameters requires prepared data and components, which may be empty")
+            bindings = _bind_inputs(
+                transformed_parameters, parameter_names, prepared_data, name="transformed_parameters"
+            )
+            if bindings is None:
+                raise TypeError("transformed_parameters must be callable with explicit keyword-only inputs")
+            transform_inputs = bindings
+
+        upstream_parameters = tuple(name for name, source in transform_inputs if source == "parameter")
         density_inputs = (
             None
             if prepared_data is None
-            else _bind_inputs(log_density, parameter_names, prepared_data, name="log_density")
+            else _bind_inputs(
+                log_density,
+                parameter_names,
+                prepared_data,
+                name="log_density",
+                upstream_parameters=upstream_parameters,
+                has_transformed=transformed_parameters is not None,
+            )
         )
         if density_inputs is None:
+            if transformed_parameters is not None:
+                raise TypeError("log_density must use explicit keyword-only inputs with transformed_parameters")
             _validate_log_density_signature(log_density, parameter_names, has_components=components is not None)
         generate_parameter_names = None
         generation_inputs = None
@@ -153,9 +168,19 @@ class Model:
             generation_inputs = (
                 None
                 if prepared_data is None
-                else _bind_inputs(generate, parameter_names, prepared_data, name="generate")
+                else _bind_inputs(
+                    generate,
+                    parameter_names,
+                    prepared_data,
+                    name="generate",
+                    has_transformed=transformed_parameters is not None,
+                )
             )
             if generation_inputs is None:
+                if transformed_parameters is not None:
+                    raise TypeError(
+                        "generate must use a positional random key and keyword-only inputs with transformed_parameters"
+                    )
                 generate_parameter_names = _validate_generate_signature(
                     generate, parameter_names, has_components=components is not None
                 )
@@ -163,6 +188,8 @@ class Model:
         object.__setattr__(self, "_parameterizations", parameterizations)
         object.__setattr__(self, "_log_density", log_density)
         object.__setattr__(self, "_generate", generate)
+        object.__setattr__(self, "_transformed_parameters", transformed_parameters)
+        object.__setattr__(self, "_transform_inputs", transform_inputs)
         object.__setattr__(self, "_generate_parameter_names", generate_parameter_names)
         object.__setattr__(self, "_callback_parameter_names", parameter_names)
         object.__setattr__(self, "_density_inputs", density_inputs)
@@ -214,8 +241,9 @@ class Model:
             time and group column names and the same set of groups. Supplied
             inputs must use the same source columns and channel assignments
             as training, but their order may differ. Inputs may be omitted
-            when neither the callback being evaluated nor a configured
-            component requires them. This allows prediction without outcomes.
+            when neither the callback being evaluated, a configured
+            component, nor ``transformed_parameters`` requires them.
+            This allows prediction without outcomes.
             Models with MediaEffect require media exposures, with any needed
             carryover history supplied through ``media_history``. Training
             exposures are not prepended automatically. A seasonal-only
@@ -345,7 +373,7 @@ class Model:
             density = _as_scalar(self._log_density(data, **parameters), name="log_density")
         else:
             inputs = self._component_data(data)
-            effects = _component_effects(inputs, parameters)
+            effects = self._evaluate_quantities(inputs, parameters)
             if self._density_inputs is None:
                 callback_parameters = {name: parameters[name] for name in self._callback_parameter_names}
                 result = self._log_density(inputs.values, effects, **callback_parameters)
@@ -415,7 +443,7 @@ class Model:
             generated = self._generate(key, data, **callback_parameters)
         else:
             inputs = self._component_data(data)
-            effects = _component_effects(inputs, parameters)
+            effects = self._evaluate_quantities(inputs, parameters)
             if self._generation_inputs is None:
                 generated = self._generate(key, inputs.values, effects, **callback_parameters)
             else:
@@ -436,6 +464,33 @@ class Model:
             except (TypeError, ValueError) as exc:
                 raise TypeError(f"generated quantity {name!r} must be array-like, got {type(value).__name__}") from exc
         return quantities
+
+    def _evaluate_quantities(self, inputs: _ModelData, parameters: ParameterValues) -> dict[str, jax.Array]:
+        """Evaluate components and one shared transformation using the current inputs."""
+        effects = _component_effects(inputs, parameters)
+        if self._transformed_parameters is None:
+            return effects
+
+        arguments = _callback_inputs(self._transform_inputs, inputs, effects, parameters, name="transformed_parameters")
+        transformed = self._transformed_parameters(**arguments)
+        if not isinstance(transformed, Mapping):
+            raise TypeError("transformed_parameters must return a mapping from quantity names to array-like values")
+
+        # Retain training names even when prediction omits their observation arrays.
+        assert self._data is not None
+        reserved = set(self._data.values) | set(effects) | set(parameters)
+        for name in transformed:
+            _validate_name(name, label="transformed quantity")
+            if name in reserved:
+                raise ValueError(f"Transformed quantity {name!r} conflicts with a data role, component, or parameter")
+        for name, value in transformed.items():
+            try:
+                effects[name] = jnp.asarray(value)
+            except (TypeError, ValueError) as error:
+                raise TypeError(
+                    f"Transformed quantity {name!r} must be array-like, got {type(value).__name__}"
+                ) from error
+        return effects
 
     def _component_data(self, data: object) -> _ModelData:
         """Keep component inputs tied to the model's parameter and prior definitions."""
@@ -490,6 +545,8 @@ def _bind_inputs(
     data: _ModelData,
     *,
     name: str,
+    upstream_parameters: tuple[str, ...] = (),
+    has_transformed: bool = False,
 ) -> _InputBindings | None:
     """Resolve keyword-only inputs once while leaving positional callbacks unchanged."""
     if not callable(function):
@@ -527,6 +584,9 @@ def _bind_inputs(
     for argument in arguments:
         matches = [source for source, names in sources.items() if argument.name in names]
         if not matches:
+            if has_transformed:
+                bindings.append((argument.name, "transformed"))
+                continue
             raise ValueError(
                 f"{name} requests unknown input {argument.name!r}. "
                 "Use a selected data role, component name, or declared parameter"
@@ -539,9 +599,10 @@ def _bind_inputs(
         bindings.append((argument.name, matches[0]))
 
     if name == "log_density":
-        missing = sorted(set(parameter_names) - {argument.name for argument in arguments})
+        missing = sorted(set(parameter_names) - set(upstream_parameters) - {argument.name for argument in arguments})
         if missing:
-            raise ValueError(f"log_density must request every declared parameter. Missing parameters {missing}")
+            callbacks = "log_density or transformed_parameters" if has_transformed else "log_density"
+            raise ValueError(f"{callbacks} must request every declared parameter. Missing parameters {missing}")
     return tuple(bindings)
 
 
@@ -554,10 +615,19 @@ def _callback_inputs(
     name: str,
 ) -> dict[str, ArrayLike]:
     """Supply the requested numerical inputs from the current model evaluation."""
-    sources: dict[str, ParameterValues] = {"data": data.values, "effect": effects, "parameter": parameters}
+    sources: dict[str, ParameterValues] = {
+        "data": data.values,
+        "effect": effects,
+        "parameter": parameters,
+        "transformed": effects,
+    }
     arguments = {}
     for argument, source in bindings:
         if argument not in sources[source]:
+            if source == "transformed":
+                raise ValueError(
+                    f"{name} requires transformed quantity {argument!r}. Return it from transformed_parameters"
+                )
             raise ValueError(f"{name} requires input {argument!r}. Include it when preparing data for this evaluation")
         arguments[argument] = sources[source][argument]
     return arguments
