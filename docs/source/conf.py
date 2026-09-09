@@ -1,5 +1,7 @@
 """Sphinx configuration for the mmmJAX documentation."""
 
+import re
+
 project = "mmmJAX"
 copyright = "2026, Jordan DeKlerk"
 author = "Jordan DeKlerk"
@@ -100,13 +102,14 @@ myst_heading_anchors = 3
 nb_execution_mode = "off"
 
 
-def _format_dtype_default(app, what, name, obj, options, signature, return_annotation):
-    """Render the float dtype default as valid Python in API signatures."""
+def _format_signature_defaults(app, what, name, obj, options, signature, return_annotation):
+    """Render type and function defaults as valid Python in API signatures."""
     if signature is not None:
         signature = signature.replace("<class 'float'>", "float")
+        signature = re.sub(r"<function ([\w.]+)(?: at 0x[0-9a-fA-F]+)?>", r"\1", signature)
     return signature, return_annotation
 
 
 def setup(app):
     """Register API signature formatting."""
-    app.connect("autodoc-process-signature", _format_dtype_default)
+    app.connect("autodoc-process-signature", _format_signature_defaults)

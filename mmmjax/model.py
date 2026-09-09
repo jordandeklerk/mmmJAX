@@ -51,7 +51,9 @@ class Model:
     log_density : callable
         Scalar log density for constrained parameters. Every user-declared
         parameter must be requested here or by ``transformed_parameters``.
-        Component priors and constraint adjustments are added automatically.
+        Write component priors here using their parameter names and set
+        ``automatic_priors=False`` on those components. Constraint
+        adjustments are always added automatically.
     generate : callable, optional
         Function returning a mapping of names to array-like generated quantities.
         Receives a JAX random key first, followed by the model inputs it needs.
@@ -60,10 +62,12 @@ class Model:
         ``components``. Callback inputs use data roles such as ``outcome``,
         not source column names.
     components : sequence of FourierSeasonality or MediaEffect, optional
-        Named effects with automatic parameters and priors. Media effects
-        provide per-channel arrays by name and channel totals through
-        ``<name>_total`` in named callbacks. Keep component and total names
-        distinct from other inputs. Use ``components=[]`` without effects.
+        Named effects with inferred parameter shapes. Media effects provide
+        per-channel arrays and ``<name>_total``, alongside parameters such as
+        ``<name>_coefficient``. Seasonal effects provide a curve by name and
+        ``<name>_coefficients`` separately. These inputs are available to all
+        named callbacks. Priors are automatic unless disabled on the component.
+        Keep input names distinct. Use ``components=[]`` without effects.
     transformed_parameters : callable, optional
         Pure JAX-compatible function returning a mapping of names to derived
         array-like quantities shared by both callbacks. Requires prepared data
@@ -350,8 +354,8 @@ class Model:
             + \sum_k A_k(z_k),
 
         where :math:`A_k` is the log-density adjustment supplied by each
-        parameterization. With components, :math:`p_\theta` includes their
-        parameter priors as well as the callback's density.
+        parameterization. With automatic component priors enabled,
+        :math:`p_\theta` includes them in addition to the callback's density.
 
         For models without prepared data, ``data`` may be any JAX-compatible PyTree.
         Passing it explicitly keeps the same compiled model reusable across
@@ -374,8 +378,8 @@ class Model:
         Returns
         -------
         jax.Array
-            Scalar model log density including component priors and
-            parameterization adjustments.
+            Scalar model log density including enabled component priors
+            and parameterization adjustments.
         """
         parameters = self.constrain(position)
         if self._data is None:
@@ -487,7 +491,13 @@ class Model:
 
         # Retain training names even when prediction omits their observation arrays.
         assert self._data is not None
-        reserved = set(self._data.values) | set(effects) | set(parameters) | _media_total_names(inputs.components)
+        reserved = (
+            set(self._data.values)
+            | set(effects)
+            | set(parameters)
+            | _media_total_names(inputs.components)
+            | set(_component_parameter_inputs(inputs.components))
+        )
         for name in transformed:
             _validate_name(name, label="transformed quantity")
             if name in reserved:
@@ -555,6 +565,21 @@ def _media_total_names(components: Sequence[_PreparedFourier | _PreparedMedia]) 
     }
 
 
+def _component_parameter_inputs(components: Sequence[_PreparedFourier | _PreparedMedia]) -> dict[str, str]:
+    """Map callback inputs to constrained parameters without shadowing seasonal curves."""
+    names: dict[str, str] = {}
+    for component in components:
+        if isinstance(component, _PreparedMedia):
+            names.update(
+                (f"{component.specification.name}_{role}", f"{component.specification.name}_{role}")
+                for role in component.specification._parameter_roles
+            )
+        else:
+            name = component.specification.name
+            names[f"{name}_coefficients"] = name
+    return names
+
+
 def _bind_inputs(
     function: Callable[..., object],
     parameter_names: tuple[str, ...],
@@ -593,6 +618,7 @@ def _bind_inputs(
         "effect": {component.specification.name for component in data.components},
         "media_total": _media_total_names(data.components),
         "parameter": set(parameter_names),
+        "component_parameter": set(_component_parameter_inputs(data.components)),
     }
     if key_argument is not None and any(key_argument.name in names for names in sources.values()):
         raise TypeError(f"generate places input {key_argument.name!r} where the random key is required")
@@ -636,6 +662,9 @@ def _callback_inputs(
         "data": data.values,
         "effect": effects,
         "parameter": parameters,
+        "component_parameter": {
+            alias: parameters[parameter] for alias, parameter in _component_parameter_inputs(data.components).items()
+        },
         "transformed": effects,
     }
     arguments: dict[str, ArrayLike] = {}

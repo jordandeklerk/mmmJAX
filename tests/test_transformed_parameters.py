@@ -271,8 +271,8 @@ def test_parameter_usage_is_checked_across_transform_and_density_not_generation(
             components=[],
             transformed_parameters=lambda: {},
         )
-    with pytest.raises(ValueError, match="paid_media_retention"):
-        _media_model(lambda *, paid_media_retention, intercept: {"mu": paid_media_retention + intercept})
+    with pytest.raises(ValueError, match="paid_media_exponent"):
+        _media_model(lambda *, paid_media_exponent, intercept: {"mu": paid_media_exponent + intercept})
     with pytest.raises(ValueError, match="second_stage"):
         Model(
             {},

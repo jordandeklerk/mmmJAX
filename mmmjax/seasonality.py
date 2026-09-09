@@ -28,6 +28,10 @@ class FourierSeasonality:
     and declares the coefficients. The same time reference is retained for
     prediction. This configuration does not fit a model.
 
+    Set ``automatic_priors=False`` to write coefficient priors directly in
+    the named ``Model.log_density`` callback. Request ``<name>_coefficients``
+    for the coefficient array. ``<name>`` supplies the seasonal effect.
+
     Parameters
     ----------
     period : {"yearly", "monthly", "weekly"} or float, default "yearly"
@@ -46,26 +50,31 @@ class FourierSeasonality:
         for the units of the model's outcome or linear predictor. Use a
         mmmJAX density function or another JAX-compatible callable.
     name : str, default "seasonality"
-        Parameter name used during model composition. Use distinct names
-        when combining multiple seasonal components.
+        Coefficient parameter name and seasonal effect name during model
+        composition. Named callbacks request raw coefficients through
+        ``<name>_coefficients``. Use distinct names for seasonal components.
     group_specific : bool, default False
         Whether each prepared group has its own coefficients. The default
         shares one curve across all groups. Separate coefficients receive
         independent priors by default, without hierarchical pooling.
+    automatic_priors : bool, default True
+        Add the coefficient prior to the model log density. Set to ``False``
+        when the model callback supplies the prior. A custom ``prior``
+        callback cannot be combined with ``False``. Coefficient constraints
+        and seasonal contributions remain the same.
 
     Examples
     --------
-    Configure an annual pattern with stronger shrinkage on its coefficients.
-    No dates, feature matrices, or coefficient shapes need to be supplied
-    when specifying the component.
+    Configure an annual pattern whose coefficient prior will be written in
+    the model callback using ``annual_coefficients``. No dates, feature
+    matrices, or coefficient shapes need to be supplied here.
 
     .. ipython::
 
-        In [1]: from functools import partial
-           ...: from mmmjax import FourierSeasonality, normal
+        In [1]: from mmmjax import FourierSeasonality
            ...: annual = FourierSeasonality(
            ...:     period="yearly", order=3, name="annual",
-           ...:     prior=partial(normal, location=0.0, scale=0.2),
+           ...:     automatic_priors=False,
            ...: )
            ...: annual.period, annual.order
     """
@@ -75,6 +84,7 @@ class FourierSeasonality:
     prior: Callable[[jax.Array], ArrayLike] | None = None
     name: str = "seasonality"
     group_specific: bool = False
+    automatic_priors: bool = True
 
     def __post_init__(self) -> None:
         """Validate the static choices before preparing a component."""
@@ -101,6 +111,10 @@ class FourierSeasonality:
             raise ValueError(f"name must be a valid non-keyword Python identifier, got {self.name!r}")
         if not isinstance(self.group_specific, bool):
             raise TypeError("group_specific must be True or False")
+        if not isinstance(self.automatic_priors, bool):
+            raise TypeError("automatic_priors must be True or False")
+        if self.prior is not None and not self.automatic_priors:
+            raise ValueError("prior cannot be supplied when automatic_priors=False")
 
     def _prepare(self, data: PreparedData, *, reference: "_PreparedFourier | None" = None) -> "_PreparedFourier":
         """Prepare numeric state for composition outside JAX transformations."""
@@ -190,6 +204,8 @@ class _PreparedFourier:
     def log_prior(self, coefficients: ArrayLike) -> jax.Array:
         """Evaluate one coefficient prior term, independently of observation count."""
         values = self._coefficients(coefficients)
+        if not self.specification.automatic_priors:
+            return jnp.zeros((), dtype=values.dtype)
         if self.specification.prior is None:
             return normal(values, location=0.0, scale=1.0)
         result = self.specification.prior(values)

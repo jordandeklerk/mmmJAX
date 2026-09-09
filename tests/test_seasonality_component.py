@@ -56,6 +56,7 @@ def test_fourier_seasonality_is_exported_and_has_immutable_defaults():
     assert spec.prior is None
     assert spec.name == "seasonality"
     assert spec.group_specific is False
+    assert spec.automatic_priors is True
     for attribute, value in (("period", 7.0), ("order", 3), ("name", "weekly"), ("group_specific", True)):
         with pytest.raises(FrozenInstanceError):
             setattr(spec, attribute, value)
@@ -220,6 +221,38 @@ def test_default_prior_matches_standard_normal_value_and_gradient():
     assert value.shape == ()
     np.testing.assert_allclose(value, _normal_reference(coefficients), rtol=2e-6)
     np.testing.assert_allclose(gradient, -np.asarray(coefficients), rtol=2e-6, atol=2e-6)
+
+
+@pytest.mark.parametrize("enable_x64", [False, True])
+def test_disabled_automatic_priors_preserve_seasonal_coefficients_and_effect(enable_x64):
+    data = _data([0, 1], groups=("west", "east"))
+    spec = FourierSeasonality(period=7, order=1, name="weekly", group_specific=True)
+    with jax.enable_x64(enable_x64):
+        default = spec._prepare(data)
+        manual = replace(spec, automatic_priors=False)._prepare(data)
+        coefficients = jnp.array([[0.3, -0.7], [0.0, 1.2]])
+        value, gradient = jax.jit(jax.value_and_grad(manual.log_prior))(coefficients)
+
+        assert value.shape == () and value.dtype == coefficients.dtype
+        np.testing.assert_array_equal(value, 0.0)
+        assert isinstance(manual.parameters["weekly"], Real)
+        assert manual.parameters["weekly"].shape == default.parameters["weekly"].shape
+        assert manual.parameters["weekly"].dtype == default.parameters["weekly"].dtype
+        np.testing.assert_array_equal(gradient, np.zeros_like(coefficients))
+        np.testing.assert_array_equal(manual.apply(coefficients), default.apply(coefficients))
+        future = manual.for_data(_data([2, 3], groups=("west", "east"), outcome=False))
+        np.testing.assert_array_equal(future.log_prior(coefficients), value)
+
+
+def test_disabled_automatic_priors_reject_a_seasonal_prior_callback():
+    with pytest.raises(ValueError, match=r"prior.*automatic_priors=False"):
+        FourierSeasonality(prior=lambda value: -(value**2), automatic_priors=False)
+
+
+@pytest.mark.parametrize("invalid", [None, 0, 1, "false", np.bool_(False)])
+def test_seasonal_automatic_priors_requires_a_python_boolean(invalid):
+    with pytest.raises(TypeError, match="automatic_priors"):
+        FourierSeasonality(automatic_priors=invalid)
 
 
 @pytest.mark.parametrize("scalar_prior", [False, True])
@@ -395,9 +428,10 @@ def test_group_specific_forecasts_reject_unknown_missing_or_different_group_colu
         prepared.for_data(future)
 
 
-def test_apply_and_log_prior_require_exact_coefficient_shapes():
-    shared = FourierSeasonality(period=7, order=2)._prepare(_data([0, 1]))
-    grouped = FourierSeasonality(period=7, order=2, group_specific=True)._prepare(
+@pytest.mark.parametrize("automatic_priors", [False, True])
+def test_apply_and_log_prior_require_exact_coefficient_shapes(automatic_priors):
+    shared = FourierSeasonality(period=7, order=2, automatic_priors=automatic_priors)._prepare(_data([0, 1]))
+    grouped = FourierSeasonality(period=7, order=2, group_specific=True, automatic_priors=automatic_priors)._prepare(
         _data([0, 1], groups=("west", "east"))
     )
     for prepared, shapes in ((shared, [(), (3,), (4, 1)]), (grouped, [(4,), (2, 4), (4, 1)])):
@@ -405,3 +439,5 @@ def test_apply_and_log_prior_require_exact_coefficient_shapes():
             for method in (prepared.apply, prepared.log_prior):
                 with pytest.raises(ValueError, match=r"coefficient|shape"):
                     method(jnp.ones(shape))
+        with pytest.raises(TypeError, match="real numeric"):
+            prepared.log_prior(jnp.ones(prepared.parameters["seasonality"].shape, dtype=jnp.complex64))
