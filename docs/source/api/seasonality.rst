@@ -1,7 +1,7 @@
 Seasonality
 ===========
 
-Build features for recurring patterns over time.
+Build numerical features for recurring seasonal patterns.
 
 .. currentmodule:: mmmjax
 
