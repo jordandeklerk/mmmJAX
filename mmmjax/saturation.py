@@ -1,10 +1,12 @@
 """Saturation transformations for marketing inputs."""
 
+from math import log
+
 import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 
-__all__ = ["hill_saturation"]
+__all__ = ["hill_saturation", "logistic_saturation"]
 
 
 def hill_saturation(
@@ -83,7 +85,111 @@ def hill_saturation(
            ...:     pl.Series("video_response", np.asarray(response[:, 1])),
            ...: )
     """
-    arguments = (("media", media), ("half_saturation", half_saturation), ("slope", slope))
+    media_array, half_array, slope_array = _broadcast_saturation_inputs(
+        ("media", media), ("half_saturation", half_saturation), ("slope", slope)
+    )
+    valid = (
+        jnp.isfinite(media_array)
+        & (media_array >= 0)
+        & jnp.isfinite(half_array)
+        & (half_array > 0)
+        & jnp.isfinite(slope_array)
+        & (slope_array > 0)
+    )
+    safe_media = jnp.where(valid, media_array, 1.0)
+    safe_half = jnp.where(valid, half_array, 1.0)
+    safe_slope = jnp.where(valid, slope_array, 1.0)
+
+    # A common factor cancels from the ratio and keeps both power bases at most one
+    # Freeze this numerical factor, as JAX does for the stabilizing shift in logsumexp
+    common = jax.lax.stop_gradient(jnp.maximum(safe_media, safe_half))
+    media_power = (safe_media / common) ** safe_slope
+    half_power = (safe_half / common) ** safe_slope
+    response = media_power / (media_power + half_power)
+    return jnp.where(valid, response, jnp.nan)
+
+
+def logistic_saturation(media: ArrayLike, half_saturation: ArrayLike) -> jax.Array:
+    r"""Apply a logistic response curve to nonnegative media inputs.
+
+    For exposure :math:`x \geq 0` and half-saturation point :math:`k > 0`,
+    the response is
+
+    .. math::
+
+        f(x; k) = \frac{1 - \exp(-\log(3)x/k)}{1 + \exp(-\log(3)x/k)}
+                = \tanh\left(\frac{\log(3)x}{2k}\right).
+
+    Zero exposure gives zero response, exposure equal to ``half_saturation``
+    gives one half, and the curve approaches one as exposure increases.
+    Marginal response decreases with increasing exposure. The
+    half-saturation point has the same meaning as in :func:`hill_saturation`.
+
+    Parameters
+    ----------
+    media : array_like
+        Finite, nonnegative exposures, either raw or transformed. Scalars
+        and arrays are accepted. For grouped data, use the prepared layout
+        ``(time, group, channel)``. The function acts elementwise without
+        mixing periods, groups, or channels.
+    half_saturation : array_like
+        Positive, finite exposure at which the response is one half.
+        Use the same units as ``media``, including any scaling applied
+        beforehand. Supply a scalar to share a curve or an array such as
+        ``(channel,)`` or ``(group, channel)`` for separate curves.
+        Larger values require more exposure to reach the same response.
+
+    Returns
+    -------
+    jax.Array
+        Responses between zero and one with the broadcast shape of the
+        inputs. Values use a common floating-point dtype of at least
+        float32. Invalid numeric inputs produce ``nan`` at the affected
+        positions. Multiply the response by a separate model coefficient
+        to express its contribution in outcome units.
+
+    Notes
+    -----
+    The function supports JIT, differentiation, and ``jax.vmap`` over
+    additional parameter draws. Adstock and scaling can be applied before
+    saturation without changing the interface.
+
+    Examples
+    --------
+    Apply separate response curves to two impression columns.
+
+    .. ipython::
+
+        In [1]: import numpy as np
+           ...: import polars as pl
+           ...: from mmmjax import logistic_saturation
+           ...: frame = pl.DataFrame({
+           ...:     "week": [1, 2, 3],
+           ...:     "search": [0.0, 1_000.0, 3_000.0],
+           ...:     "video": [1_000.0, 2_000.0, 4_000.0],
+           ...: })
+           ...: response = logistic_saturation(
+           ...:     frame.select("search", "video").to_numpy(),
+           ...:     half_saturation=np.array([1_000.0, 2_000.0]),
+           ...: )
+           ...: frame.with_columns(
+           ...:     pl.Series("search_response", np.asarray(response[:, 0])),
+           ...:     pl.Series("video_response", np.asarray(response[:, 1])),
+           ...: )
+    """
+    media_array, half_array = _broadcast_saturation_inputs(("media", media), ("half_saturation", half_saturation))
+    valid = jnp.isfinite(media_array) & (media_array >= 0) & jnp.isfinite(half_array) & (half_array > 0)
+    safe_media = jnp.where(valid, media_array, 1.0)
+    safe_half = jnp.where(valid, half_array, 1.0)
+
+    # tanh(z / 2) is the logistic quotient without subtracting nearly equal values near zero
+    # log(3) sets the response at media == half_saturation to one half
+    response = jnp.tanh((log(3) / 2) * (safe_media / safe_half))
+    return jnp.where(valid, response, jnp.nan)
+
+
+def _broadcast_saturation_inputs(*arguments: tuple[str, ArrayLike]) -> list[jax.Array]:
+    """Promote real inputs before conversion and check their broadcast shapes."""
     leaves = []
     for name, value in arguments:
         value_leaves = jax.tree_util.tree_leaves(value)
@@ -112,29 +218,7 @@ def hill_saturation(
             raise TypeError(f"{name} must be real numeric and array-like") from error
 
     try:
-        media_array, half_array, slope_array = jnp.broadcast_arrays(*arrays)
+        return jnp.broadcast_arrays(*arrays)
     except ValueError as error:
-        raise ValueError(
-            f"media shape {arrays[0].shape}, half_saturation shape {arrays[1].shape}, "
-            f"and slope shape {arrays[2].shape} must broadcast together"
-        ) from error
-
-    valid = (
-        jnp.isfinite(media_array)
-        & (media_array >= 0)
-        & jnp.isfinite(half_array)
-        & (half_array > 0)
-        & jnp.isfinite(slope_array)
-        & (slope_array > 0)
-    )
-    safe_media = jnp.where(valid, media_array, 1.0)
-    safe_half = jnp.where(valid, half_array, 1.0)
-    safe_slope = jnp.where(valid, slope_array, 1.0)
-
-    # A common factor cancels from the ratio and keeps both power bases at most one
-    # Freeze this numerical factor, as JAX does for the stabilizing shift in logsumexp
-    common = jax.lax.stop_gradient(jnp.maximum(safe_media, safe_half))
-    media_power = (safe_media / common) ** safe_slope
-    half_power = (safe_half / common) ** safe_slope
-    response = media_power / (media_power + half_power)
-    return jnp.where(valid, response, jnp.nan)
+        shapes = ", ".join(f"{name} shape {array.shape}" for (name, _), array in zip(arguments, arrays, strict=True))
+        raise ValueError(f"{shapes} must broadcast together") from error
