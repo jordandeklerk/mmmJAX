@@ -1,13 +1,281 @@
 """Composition of carryover and saturation for media exposures."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from functools import partial
+from keyword import iskeyword
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.typing import ArrayLike
 
-__all__ = ["media_response", "reach_frequency_response"]
+from mmmjax.adstock import geometric_adstock
+from mmmjax.data import PreparedData
+from mmmjax.distributions import beta, half_normal
+from mmmjax.parameters import Interval, Parameterization, Positive
+from mmmjax.saturation import hill_saturation
+
+__all__ = ["MediaEffect", "media_response", "reach_frequency_response"]
+
+
+@dataclass(frozen=True, slots=True, eq=False, kw_only=True)
+class MediaEffect:
+    """Configure channel contributions using geometric adstock and Hill saturation.
+
+    Each channel has a retention rate, half-saturation point, slope, and
+    positive contribution coefficient. Preparation infers their shapes from
+    the selected media columns. Adstock and saturation are evaluated using
+    the current parameter values, not fixed during data preparation.
+
+    This configuration does not scale exposures. Set coefficient priors on
+    the scale where contributions enter the model, and half-saturation priors
+    in the prepared exposure units. Their defaults are intended for scaled
+    data and are not suitable for every dataset.
+
+    Exposure gradients at zero use a zero-gradient convention for Hill
+    slopes below one. Evaluate marginal responses at positive exposures
+    for these curves.
+
+    Parameters
+    ----------
+    max_lag : int
+        Number of previous observation periods to include in carryover.
+        The current period is also included. Must be nonnegative. Supply
+        regularly spaced media observations and include earlier exposures
+        through ``media_history`` when preparing data.
+    name : str, default "paid_media"
+        Name of the channel contribution. Parameter names use this prefix
+        followed by ``_coefficient``, ``_retention``, ``_half_saturation``,
+        and ``_slope``. Use a name distinct from selected data roles and
+        other model components.
+    normalize : bool, default True
+        Divide the adstock weights by their sum over the full lag window.
+    adstock_first : bool, default True
+        Apply carryover before saturation. Set to ``False`` to reverse
+        their order. Earlier history is retained through both operations.
+    group_specific : bool, default False
+        Give each group its own channel contribution coefficients. Retention
+        and saturation parameters remain shared across groups. Coefficients
+        receive independent priors by default, without hierarchical pooling.
+    coefficient_prior : callable, optional
+        Prior for positive channel contribution coefficients. The
+        default is HalfNormal with scale 1.5. A supplied function receives
+        the coefficient array and returns a scalar log density or matching
+        elementwise log densities. The same convention applies to all priors.
+    retention_prior : callable, optional
+        Prior for each channel's retention rate between zero and one.
+        The default is Beta with shape parameters 1 and 3.
+    half_saturation_prior : callable, optional
+        Prior for positive half-saturation points in the prepared exposure
+        units. The default is HalfNormal with scale 1.5. Override it when
+        the exposure scale calls for different thresholds.
+    slope_prior : callable, optional
+        Prior for positive Hill slopes. The default is HalfNormal with
+        scale 1.5.
+    """
+
+    max_lag: int
+    name: str = "paid_media"
+    normalize: bool = True
+    adstock_first: bool = True
+    group_specific: bool = False
+    coefficient_prior: Callable[[jax.Array], ArrayLike] | None = None
+    retention_prior: Callable[[jax.Array], ArrayLike] | None = None
+    half_saturation_prior: Callable[[jax.Array], ArrayLike] | None = None
+    slope_prior: Callable[[jax.Array], ArrayLike] | None = None
+
+    def __post_init__(self) -> None:
+        """Validate configuration before preparing channel parameters."""
+        if isinstance(self.max_lag, bool) or not isinstance(self.max_lag, int):
+            raise TypeError("max_lag must be a nonnegative Python integer")
+        if self.max_lag < 0:
+            raise ValueError("max_lag must be nonnegative")
+        if not isinstance(self.name, str):
+            raise TypeError("name must be a string naming the media contribution")
+        if not self.name.isidentifier() or iskeyword(self.name):
+            raise ValueError("name must be a valid non-keyword Python identifier")
+        for field in ("normalize", "adstock_first", "group_specific"):
+            if not isinstance(getattr(self, field), bool):
+                raise TypeError(f"{field} must be True or False")
+        for field in ("coefficient_prior", "retention_prior", "half_saturation_prior", "slope_prior"):
+            prior = getattr(self, field)
+            if prior is not None and not callable(prior):
+                raise TypeError(f"{field} must be a callable accepting the parameter array")
+
+    def _prepare(self, data: PreparedData, *, reference: "_PreparedMedia | None" = None) -> "_PreparedMedia":
+        """Retain channel identities and shapes without capturing exposure arrays."""
+        if not isinstance(data, PreparedData):
+            raise TypeError("Media effects require PreparedData. Use prepare_data with the exposure dataframe")
+        if "media" not in data.arrays or not data.channels:
+            raise ValueError("Media effects require exposure columns selected with media in prepare_data")
+        if self.group_specific and not data.group_columns:
+            raise ValueError("group_specific=True requires grouped data. Select groups in prepare_data")
+        if reference is not None and (
+            self is not reference.specification
+            or data.time_column != reference.time_column
+            or data.columns["media"] != reference.media_columns
+            or data.channels != reference.channels
+            or data.group_columns != reference.group_columns
+            or data.group_values != reference.group_values
+        ):
+            raise ValueError("Media prediction inputs must retain the training time column, channel and group ordering")
+
+        n_periods = len(data.time_values)
+        n_media_periods = len(data.media_time_values)
+        if n_periods == 0 or n_media_periods < n_periods or data.media_time_values[-n_periods:] != data.time_values:
+            raise ValueError("Media periods must include the modeling periods after any earlier exposure history")
+        group_shape = (len(data.group_values),) if data.group_columns else ()
+        media_shape = (n_media_periods, *group_shape, len(data.channels))
+        if data.arrays["media"].shape != media_shape:
+            raise ValueError(
+                f"Prepared media must have shape {media_shape} to match its time, group and channel labels"
+            )
+
+        return _PreparedMedia(
+            specification=self,
+            n_periods=n_periods,
+            media_shape=media_shape,
+            time_column=data.time_column,
+            media_columns=data.columns["media"],
+            channels=data.channels,
+            group_columns=data.group_columns,
+            group_values=data.group_values,
+            dtype=np.dtype(jax.dtypes.canonicalize_dtype(float)) if reference is None else reference.dtype,
+        )
+
+
+@partial(
+    jax.tree_util.register_dataclass,
+    data_fields=(),
+    meta_fields=(
+        "specification",
+        "n_periods",
+        "media_shape",
+        "time_column",
+        "media_columns",
+        "channels",
+        "group_columns",
+        "group_values",
+        "dtype",
+    ),
+)
+@dataclass(frozen=True, slots=True, eq=False)
+class _PreparedMedia:
+    """Keep static media layout separate from dynamic exposures and parameters."""
+
+    specification: MediaEffect
+    n_periods: int
+    media_shape: tuple[int, ...]
+    time_column: str
+    media_columns: tuple[str, ...]
+    channels: tuple[str, ...]
+    group_columns: tuple[str, ...]
+    group_values: tuple[tuple[object, ...], ...]
+    dtype: np.dtype[np.floating]
+
+    @property
+    def _parameter_shapes(self) -> dict[str, tuple[int, ...]]:
+        channel_shape = (len(self.channels),)
+        coefficient_shape = (
+            (len(self.group_values), *channel_shape) if self.specification.group_specific else channel_shape
+        )
+        return {
+            "coefficient": coefficient_shape,
+            "retention": channel_shape,
+            "half_saturation": channel_shape,
+            "slope": channel_shape,
+        }
+
+    @property
+    def parameters(self) -> dict[str, Parameterization]:
+        """Declare constraints for each channel parameter block without assigning priors."""
+        return {
+            f"{self.specification.name}_{role}": (
+                Interval(0.0, 1.0, shape=shape, dtype=self.dtype)
+                if role == "retention"
+                else Positive(shape=shape, dtype=self.dtype)
+            )
+            for role, shape in self._parameter_shapes.items()
+        }
+
+    def apply(self, media: ArrayLike, parameters: Mapping[str, ArrayLike]) -> jax.Array:
+        """Return weighted channel responses over the modeling periods."""
+        if np.shape(media) != self.media_shape:
+            raise ValueError(f"Media inputs must have the prepared shape {self.media_shape}, got {np.shape(media)}")
+        values = self._parameter_values(parameters)
+
+        def saturate(exposures: ArrayLike) -> jax.Array:
+            exposures = jnp.asarray(exposures)
+            zero_origin = (exposures == 0) & (values["slope"] < 1)
+            # Sublinear curves have no finite exposure derivative at the origin.
+            # Use zero there so fixed-zero histories do not contaminate parameter gradients.
+            response = hill_saturation(
+                jnp.where(zero_origin, 1.0, exposures), values["half_saturation"], values["slope"]
+            )
+            # Multiplication retains NaNs from invalid parameters instead of hiding them.
+            return jnp.where(zero_origin, response * 0.0, response)
+
+        response = media_response(
+            media,
+            adstock=partial(
+                geometric_adstock,
+                alpha=values["retention"],
+                max_lag=self.specification.max_lag,
+                normalize=self.specification.normalize,
+            ),
+            saturation=saturate,
+            n_periods=self.n_periods,
+            adstock_first=self.specification.adstock_first,
+        )
+        return response * values["coefficient"]
+
+    def log_prior(self, parameters: Mapping[str, ArrayLike]) -> jax.Array:
+        """Add one prior per parameter block, independent of observation count."""
+        values = self._parameter_values(parameters)
+        total = jnp.zeros((), dtype=self.dtype)
+        for role, value in values.items():
+            prior = getattr(self.specification, f"{role}_prior")
+            if prior is None:
+                result = beta(value, alpha=1.0, beta=3.0) if role == "retention" else half_normal(value, scale=1.5)
+            else:
+                result = prior(value)
+            try:
+                density = jnp.asarray(result)
+            except (TypeError, ValueError) as error:
+                raise TypeError(f"The {role} prior must return real numeric log densities") from error
+            if not (jnp.issubdtype(density.dtype, jnp.floating) or jnp.issubdtype(density.dtype, jnp.integer)):
+                raise TypeError(f"The {role} prior must return real numeric log densities")
+            if density.shape not in ((), value.shape):
+                raise ValueError(
+                    f"The {role} prior must return a scalar or shape {value.shape}, got shape {density.shape}"
+                )
+            total = total + jnp.sum(density)
+        return total
+
+    def for_data(self, data: PreparedData) -> "_PreparedMedia":
+        """Prepare aligned observations with the training parameter identities and precision."""
+        return self.specification._prepare(data, reference=self)
+
+    def _parameter_values(self, parameters: Mapping[str, ArrayLike]) -> dict[str, jax.Array]:
+        """Validate parameter block shapes without imposing extra numerical support checks."""
+        if not isinstance(parameters, Mapping):
+            raise TypeError("Media parameters must be a mapping of declared names to arrays")
+        values = {}
+        for role, shape in self._parameter_shapes.items():
+            name = f"{self.specification.name}_{role}"
+            if name not in parameters:
+                raise ValueError(f"Missing media parameter {name!r}")
+            try:
+                value = jnp.asarray(parameters[name])
+            except (TypeError, ValueError) as error:
+                raise TypeError(f"Media parameter {name!r} must be real numeric and array-like") from error
+            if not (jnp.issubdtype(value.dtype, jnp.floating) or jnp.issubdtype(value.dtype, jnp.integer)):
+                raise TypeError(f"Media parameter {name!r} must have a real numeric dtype")
+            if value.shape != shape:
+                raise ValueError(f"Media parameter {name!r} must have shape {shape}, got shape {value.shape}")
+            values[role] = jnp.asarray(value, dtype=jnp.result_type(value, self.dtype))
+        return values
 
 
 def media_response(
