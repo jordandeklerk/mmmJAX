@@ -211,6 +211,24 @@ def test_adstock_respects_default_precision_and_typed_float32(adstock) -> None:
     assert typed.dtype == jnp.float32
 
 
+@pytest.mark.parametrize(
+    "function,parameters",
+    [
+        (geometric_adstock, {"alpha": 0.5}),
+        (delayed_adstock, {"alpha": 0.5, "theta": 0.0}),
+        (weibull_pdf_adstock, {"shape": 2.0, "scale": 3.0}),
+        (weibull_cdf_adstock, {"shape": 2.0, "scale": 3.0}),
+    ],
+)
+def test_adstock_converts_large_counts_before_narrowing_integers(function, parameters) -> None:
+    media = np.array([3_000_000_000, 6_000_000_000], dtype=np.int64)
+    result = function(media, **parameters, max_lag=0)
+
+    # A normalized lag-zero window is the identity regardless of the decay parameters
+    assert jnp.issubdtype(result.dtype, jnp.floating)
+    np.testing.assert_allclose(result, media.astype(np.float64), rtol=2e-7)
+
+
 @pytest.mark.parametrize("shape,axis", [((0,), 0), ((0, 3), 0), ((3, 0), 0), ((2, 0, 3), 1)])
 def test_adstock_preserves_empty_shapes(adstock, shape, axis) -> None:
     result = jax.jit(partial(adstock, max_lag=2, axis=axis))(jnp.zeros(shape), 0.5)

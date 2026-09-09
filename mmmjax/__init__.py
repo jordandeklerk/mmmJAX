@@ -115,6 +115,7 @@ from mmmjax.distributions import (
     uniform_logsf,
     uniform_rng,
 )
+from mmmjax.media import media_response
 from mmmjax.model import Model
 from mmmjax.parameters import Interval, LowerBound, Parameterization, Positive, Real, Simplex, UpperBound
 from mmmjax.saturation import hill_saturation, log_saturation, logistic_saturation, root_saturation
@@ -209,6 +210,7 @@ __all__ = [
     "lognormal_logpdf",
     "lognormal_logsf",
     "lognormal_rng",
+    "media_response",
     "multinomial",
     "multinomial_logit",
     "multinomial_logit_logpmf",
