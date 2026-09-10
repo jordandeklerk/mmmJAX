@@ -11,6 +11,8 @@ python = ">=3.11,<3.15"
 jax = ">=0.10.0,<0.11"
 narwhals = ">=2.0"
 numpy = ">=2.0"
+pandas = ">=2.2"
+xarray = ">=2025.1.2"
 
 [feature.dev.dependencies]
 pytest = ">=7.0.0"
@@ -19,7 +21,6 @@ pytest-split = ">=0.11,<0.12"
 pytest-timeout = ">=2.0.0"
 pytest-xdist = ">=3.8"
 scipy = ">=1.14"
-pandas = ">=2.2"
 polars = ">=1.0"
 pyarrow = ">=16.0"
 
@@ -64,6 +65,7 @@ docs-clean = "rm -rf docs/_build docs/_doctree"
 
 [feature.lint.dependencies]
 mypy = ">=1.0.0"
+pandas-stubs = ">=2.2"
 # NumPy 2.5 stubs require Python 3.12 syntax, while mypy checks our Python 3.11 floor.
 numpy = ">=2.0,<2.5"
 
@@ -92,6 +94,8 @@ platforms = ["linux-64"]
 [feature.gpu.dependencies]
 python = ">=3.11,<3.15"
 pip = "*"
+pandas = ">=2.2"
+xarray = ">=2025.1.2"
 
 [feature.gpu.pypi-dependencies]
 jax = { version = ">=0.10.0,<0.11", extras = ["cuda12"] }

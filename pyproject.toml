@@ -30,6 +30,8 @@ dependencies = [
     "jaxtyping>=0.2.36",
     "narwhals>=2.0",
     "numpy>=2.0",
+    "pandas>=2.2",
+    "xarray>=2025.1.2",
 ]
 
 [tool.flit.module]
@@ -48,7 +50,6 @@ test = [
     "pytest-timeout",
     "pytest-xdist>=3.8",
     "scipy>=1.14",
-    "pandas>=2.2",
     "polars>=1.0",
     "pyarrow>=16.0",
 ]
@@ -72,6 +73,7 @@ dev = [
     "ruff>=0.16.4",
     "mypy",
     "ty",
+    "pandas-stubs>=2.2",
     # NumPy 2.5 stubs require Python 3.12 syntax, while mypy checks our Python 3.11 floor.
     "numpy>=2.0,<2.5",
 ]
