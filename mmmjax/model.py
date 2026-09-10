@@ -1,11 +1,11 @@
 """Model composition for transparent JAX probability models."""
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from inspect import Parameter as SignatureParameter
 from inspect import signature
 from keyword import iskeyword
-from typing import TypeAlias
+from typing import Literal, TypeAlias
 
 import jax
 import jax.numpy as jnp
@@ -14,6 +14,7 @@ from jax.typing import ArrayLike, DTypeLike
 from mmmjax.data import PreparedData, _DataLayout
 from mmmjax.media import MediaEffect, _PreparedMedia
 from mmmjax.parameters import Parameterization
+from mmmjax.scaling import DataScaling, fit_data_scaling
 from mmmjax.seasonality import FourierSeasonality, _PreparedFourier
 
 __all__ = ["Model"]
@@ -32,6 +33,7 @@ class _ModelData:
 
     values: dict[str, jax.Array]
     components: tuple[_PreparedFourier | _PreparedMedia, ...]
+    owner: object = field(default_factory=object, metadata={"static": True})
 
 
 @dataclass(frozen=True, slots=True, eq=False, init=False)
@@ -65,14 +67,17 @@ class Model:
         Training observations from ``prepare_data``, required with
         ``components``. Callback inputs use data roles such as ``outcome``,
         not source column names.
+    scaling : DataScaling, "auto", or None, default None
+        Apply supplied transformations or fit :func:`fit_data_scaling` defaults
+        with ``"auto"``. Automatic scaling leaves outcomes unchanged.
+        ``None`` preserves supplied inputs. Fitted scales remain available
+        through ``model.scaling`` and are reused on new data.
     components : sequence of FourierSeasonality or MediaEffect, optional
-        Named effects with inferred parameter shapes. Media effects provide
-        per-channel arrays and ``<name>_total``, alongside parameters such as
-        ``<name>_coefficient``. Seasonal effects provide a curve by name and
-        ``<name>_coefficients`` separately. These inputs are available to all
-        named callbacks. Priors are automatic unless disabled on the component.
-        Keep input names distinct. Use ``components=[]`` for fully custom
-        calculations without built-in components.
+        Named effects with inferred parameter shapes and optional automatic
+        priors. Media supplies per-channel effects and ``<name>_total``.
+        Parameter inputs include ``<name>_coefficient`` for media and
+        ``<name>_coefficients`` for seasonality. Keep names distinct.
+        Use ``components=[]`` for fully custom calculations.
     transformed_parameters : callable, optional
         Pure JAX-compatible function returning a mapping of names to derived
         array-like quantities shared by both callbacks. Requires prepared data
@@ -94,6 +99,8 @@ class Model:
     _data: _ModelData | None
     _layout: _DataLayout | None
     _time_column: str | None
+    _frequency: str | None
+    _scaling: DataScaling | None
     _dtype: DTypeLike
 
     def __init__(
@@ -105,19 +112,39 @@ class Model:
         data: PreparedData | None = None,
         components: Sequence[FourierSeasonality | MediaEffect] | None = None,
         transformed_parameters: TransformedParameters | None = None,
+        scaling: DataScaling | Literal["auto"] | None = None,
     ) -> None:
         """Create a model from named parameter declarations and plain functions."""
         parameterizations = _prepare_parameterizations(parameters)
         parameter_names = tuple(name for name, _ in parameterizations)
         prepared_data = None
+        fitted_scaling = None
+        if isinstance(scaling, str):
+            if scaling != "auto":
+                raise ValueError("scaling must be 'auto', a fitted DataScaling, or None")
+        elif scaling is not None and not isinstance(scaling, DataScaling):
+            raise TypeError("scaling must be 'auto', a fitted DataScaling, or None")
         if components is None:
             if data is not None:
                 raise ValueError("Constructor data requires components. Use an empty sequence for no effects")
+            if scaling is not None:
+                raise ValueError("Model scaling requires prepared data and components, which may be empty")
         else:
             if not isinstance(data, PreparedData):
                 raise TypeError("Components require PreparedData. Use prepare_data with the observation dataframe")
             if not isinstance(components, Sequence) or isinstance(components, (str, bytes)):
                 raise TypeError("components must be a sequence of FourierSeasonality or MediaEffect configurations")
+            if scaling == "auto":
+                fitted_scaling = fit_data_scaling(data)
+            elif isinstance(scaling, DataScaling):
+                fitted_scaling = scaling
+            else:
+                fitted_scaling = data._scaling
+            if fitted_scaling is not None:
+                if data._scaling is fitted_scaling:
+                    data = data._align_to(fitted_scaling._layout)
+                else:
+                    data = fitted_scaling.transform(data)
             declarations = dict(parameterizations)
             specifications = tuple(components)
             names = set(parameter_names)
@@ -215,6 +242,8 @@ class Model:
         object.__setattr__(self, "_data", prepared_data)
         object.__setattr__(self, "_layout", None if data is None else data._layout())
         object.__setattr__(self, "_time_column", None if data is None else data.time_column)
+        object.__setattr__(self, "_frequency", None if data is None else data.frequency)
+        object.__setattr__(self, "_scaling", fitted_scaling)
         object.__setattr__(self, "_dtype", jax.dtypes.canonicalize_dtype(float))
 
     @property
@@ -223,58 +252,59 @@ class Model:
         return dict(self._parameterizations)
 
     @property
+    def scaling(self) -> DataScaling | None:
+        """Return the fitted input transformations or None for unscaled inputs.
+
+        Returns
+        -------
+        DataScaling or None
+            Fitted transformations available by role through
+            ``transformations``. Use the outcome transformation to restore
+            predicted levels to their original units. Multiply contributions
+            by its scale only, without adding the outcome offset.
+        """
+        return self._scaling
+
+    @property
     def data(self) -> object:
         """Return prepared training inputs for density and generation calls.
 
-        Pass this object as the ``data`` argument to ``log_density`` or
-        ``generate``, including inside JAX transformations. Observation
-        arrays are copied during construction, so later edits to the
-        original dataframe or prepared data do not change the model inputs.
+        Pass to ``log_density`` or ``generate``, including under JIT.
+        Arrays are copied at construction, independent of later source edits.
 
         Returns
         -------
         object
-            JAX-compatible input bundle containing observation arrays and
-            prepared component features. Callbacks receive only the arrays
-            and evaluated effects, without needing to unpack this bundle.
-            Available when ``components`` was supplied at construction.
+            JAX-compatible observations and component features. Callbacks
+            receive their requested inputs without unpacking this bundle.
+            Requires ``components`` at construction.
         """
         if self._data is None:
             raise RuntimeError("This model has no prepared data. Pass your data directly when evaluating it")
-        return _ModelData(dict(self._data.values), self._data.components)
+        return _ModelData(dict(self._data.values), self._data.components, self._data.owner)
 
     def prepare_data(self, data: PreparedData) -> object:
         """Prepare new observations using the model's training configuration.
 
-        Use this before evaluating a model with new observations or making
-        predictions. It retains the training seasonal phase, parameter
-        declarations, and priors without changing the model's stored data.
-        Preparation does not apply scaling. Reuse any fitted scaling before
-        passing the data here, just as for the training observations.
+        Reuse fitted scaling, seasonal phase, and parameter declarations
+        without changing the model's stored data. Call outside JAX transformations.
 
         Parameters
         ----------
         data : PreparedData
-            New observations returned by ``prepare_data``. Use the training
-            time and group column names and the same set of groups. Supplied
-            inputs must use the same source columns and channel assignments
-            as training, but their order may differ. Inputs may be omitted
-            when neither the callback being evaluated, a configured
-            component, nor ``transformed_parameters`` requires them.
-            This allows prediction without outcomes.
-            Models with MediaEffect require media exposures, with any needed
-            carryover history supplied through ``media_history``. Training
-            exposures are not prepended automatically. A seasonal-only
-            prediction needs just dates and any group labels.
+            Inputs from ``prepare_data``, raw or transformed by this model's
+            fitted scaling. Retain the original time column, groups, source
+            columns, and channel assignments. Ordering may differ.
+            Omit inputs only if no evaluated callback or component needs them.
+            For media effects, retain the observation spacing and supply any
+            needed ``media_history``. Earlier exposures are not added automatically.
 
         Returns
         -------
         object
-            JAX-compatible inputs for ``log_density`` or ``generate`` with
-            arrays and component features in training group and channel
-            order. The time axis follows the new observations. This bundle
-            is independent of the model's training inputs and later edits
-            to the supplied data. Create it outside JAX transformations.
+            JAX-compatible inputs for ``log_density`` or ``generate`` in the
+            fitted group and channel order, covering the supplied periods.
+            Independent of stored model data and later source edits.
         """
         if self._data is None or self._layout is None:
             raise RuntimeError("This model has no prepared training data. Pass your data directly when evaluating it")
@@ -282,11 +312,26 @@ class Model:
             raise TypeError("Model data must be PreparedData. Use prepare_data with the observation dataframe")
         if data.time_column != self._time_column:
             raise ValueError(f"The time column must match the training column {self._time_column!r}")
+        if (
+            self._frequency is not None
+            and data.frequency is not None
+            and self._frequency != data.frequency
+            and any(isinstance(component, _PreparedMedia) for component in self._data.components)
+        ):
+            raise ValueError(
+                f"Media inputs must retain the model's {self._frequency} observation spacing. "
+                "Changing frequency changes the meaning of the lag parameters"
+            )
 
         aligned = data._align_to(self._layout)
+        if self._scaling is not None:
+            if aligned._scaling is not self._scaling:
+                aligned = self._scaling.transform(aligned)
+        elif aligned._scaling is not None:
+            raise ValueError("This model uses unscaled inputs. Supply data in the original units")
         values = aligned._to_jax(dtype=self._dtype)
         components = tuple(component.for_data(aligned) for component in self._data.components)
-        return _ModelData(values, components)
+        return _ModelData(values, components, self._data.owner)
 
     def constrain(self, position: ParameterValues) -> dict[str, jax.Array]:
         """Map a complete unconstrained position into model space.
@@ -362,12 +407,6 @@ class Model:
         parameterization. With automatic component priors enabled,
         :math:`p_\theta` includes them in addition to the callback's density.
 
-        For models without prepared data, ``data`` may be any JAX-compatible PyTree.
-        Passing it explicitly keeps the same compiled model reusable across
-        datasets with matching shapes and dtypes. Prepared models
-        use ``model.data`` for training inputs or ``model.prepare_data``
-        for new observations.
-
         Parameters
         ----------
         position : mapping of str to array_like
@@ -375,10 +414,8 @@ class Model:
             value matching its declaration's ``position_shape``.
         data : object
             For a prepared model, pass ``model.data`` or the result of
-            ``model.prepare_data``. Named callbacks receive the requested
-            observation arrays, contributions, and parameters directly.
-            Otherwise, this is passed as the first argument to the callback.
-            Use a JAX-compatible PyTree when applying JAX transformations.
+            ``model.prepare_data``. Otherwise, pass a JAX-compatible PyTree
+            received as the callback's first argument.
 
         Returns
         -------
@@ -434,10 +471,8 @@ class Model:
             requested by the generation callback are passed to it.
         data : object
             For a prepared model, pass ``model.data`` or the result of
-            ``model.prepare_data``. Named callbacks receive only the inputs
-            they request. Otherwise, this is passed as the second argument
-            to the callback. Use a JAX-compatible PyTree when applying JAX
-            transformations.
+            ``model.prepare_data``. Otherwise, pass a JAX-compatible PyTree
+            received as the callback's second argument.
 
         Returns
         -------
@@ -523,7 +558,11 @@ class Model:
                 "Models with components require prepared model inputs. "
                 "Pass model.data or the result of model.prepare_data"
             )
-        if self._data is None or len(data.components) != len(self._data.components):
+        if (
+            self._data is None
+            or data.owner is not self._data.owner
+            or len(data.components) != len(self._data.components)
+        ):
             raise ValueError("The prepared inputs must use this model's component configurations and training labels")
         for component, reference in zip(data.components, self._data.components, strict=True):
             matches = (

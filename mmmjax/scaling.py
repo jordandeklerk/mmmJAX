@@ -1,6 +1,6 @@
 """Reusable centering and scaling for model inputs."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 import jax
@@ -26,9 +26,9 @@ class Scaling:
 
         z = \frac{x - c}{s}, \qquad x = z s + c.
 
-    Use :func:`fit_scaling` or :func:`fit_media_scaling` to estimate these
-    values from training data. Applying them to new data does not update
-    them. Direct construction does not validate the supplied values.
+    Estimate fixed statistics with :func:`fit_scaling` or
+    :func:`fit_media_scaling`. Direct construction skips validation.
+    This object supports JAX transformations.
 
     Attributes
     ----------
@@ -36,13 +36,7 @@ class Scaling:
         Values subtracted before scaling. Reduced axes have length one
         so the offsets broadcast across new observations.
     scale : jax.Array
-        Positive divisors with the same shape as ``offset``. Their values
-        depend on the fitting function used.
-
-    Notes
-    -----
-    This object can be passed to JAX transformations with its arrays as
-    dynamic inputs. Its fields cannot be reassigned.
+        Positive divisors with the same shape as ``offset``.
     """
 
     offset: jax.Array
@@ -54,15 +48,13 @@ class Scaling:
         Parameters
         ----------
         values : array_like
-            Real-valued inputs. Stored statistics must broadcast to their
-            shape without adding axes or enlarging any dimension. Use
-            the same feature and group ordering as the training data.
+            Real-valued inputs in the fitted feature and group order.
+            Stored statistics must broadcast without expanding the input shape.
 
         Returns
         -------
         jax.Array
-            Transformed values with the same shape as ``values``. Inputs
-            and statistics are promoted to a common floating-point dtype.
+            Transformed values with the input shape and a floating-point dtype.
 
         Examples
         --------
@@ -83,15 +75,13 @@ class Scaling:
         Parameters
         ----------
         values : array_like
-            Real-valued scaled inputs or predictions. Stored statistics
-            must broadcast to their shape without adding axes or enlarging
-            any dimension. Keep the training feature and group ordering.
+            Scaled inputs or predictions in the fitted feature and group order.
+            Stored statistics must broadcast without expanding the input shape.
 
         Returns
         -------
         jax.Array
-            Values in the original units, with the same shape as ``values``.
-            Inputs and statistics use a common floating-point dtype.
+            Values in original units with the input shape and a floating-point dtype.
 
         Examples
         --------
@@ -139,13 +129,10 @@ class Scaling:
 class DataScaling:
     """Store training transformations together with their input labels.
 
-    Use :func:`fit_data_scaling` to create this object. Transformations are
-    fitted once and reused for later observations. Groups and columns are
-    matched internally, so their order in a new dataframe may differ.
-    New groups or changed channel-to-column assignments are not accepted.
-
-    Use :attr:`transformations` to access individual fitted transformations
-    for JAX computations in the training group and feature order.
+    Create with :func:`fit_data_scaling`. Reuse fitted statistics while
+    matching group and column order internally. New groups or changed
+    channel-to-column assignments are not accepted. Access individual
+    :class:`Scaling` objects through :attr:`transformations`.
     """
 
     _fitted: tuple[tuple[str, Scaling], ...]
@@ -159,9 +146,8 @@ class DataScaling:
         Returns
         -------
         dict of str to Scaling
-            Transformations keyed by input name, such as ``media`` or
-            ``controls``. Inputs left in their original units have no entry.
-            Returns a new dictionary without changing the fitted state.
+            A new dictionary keyed by input role, such as ``media`` or
+            ``controls``. Unscaled inputs have no entry.
         """
         return dict(self._fitted)
 
@@ -171,10 +157,9 @@ class DataScaling:
         Parameters
         ----------
         data : PreparedData
-            Data returned by :func:`prepare_data`. New periods and media
-            history are allowed. Inputs may be omitted, such as outcomes
-            not yet observed. Supplied inputs must retain their training
-            columns, channel assignments, and groups.
+            Unscaled inputs from :func:`prepare_data`, retaining the fitted
+            columns, channel assignments, and groups. New periods, different
+            ordering, and omitted inputs are allowed.
 
         Returns
         -------
@@ -187,9 +172,7 @@ class DataScaling:
             - **time_values** : Supplied modeling periods
             - **media_time_values** : Supplied exposure periods, including history
 
-            Channel labels retain their training assignments. Original data
-            is unchanged. Alignment and scaling run before model evaluation,
-            outside JAX transformations.
+            The original data is unchanged. Call outside JAX transformations.
         """
         return self._apply(data, inverse=False)
 
@@ -205,10 +188,8 @@ class DataScaling:
         Returns
         -------
         PreparedData
-            New prepared inputs with selected arrays restored to their
-            original units and copies of untouched arrays. Labels follow
-            the same rules as :meth:`transform`. Restored arrays remain
-            floating-point, including inputs originally stored as integers.
+            New inputs in original units, aligned as in :meth:`transform`.
+            Restored arrays remain floating-point, including original integers.
         """
         return self._apply(data, inverse=True)
 
@@ -216,6 +197,11 @@ class DataScaling:
         """Align once and apply fitted factors at the data preparation boundary."""
         if not isinstance(data, PreparedData):
             raise TypeError("data must be PreparedData returned by prepare_data")
+        if data._scaling is not None:
+            if not inverse:
+                raise ValueError("These inputs have already been scaled. Supply raw prepared data to transform")
+            if data._scaling is not self:
+                raise ValueError("These inputs use different fitted scales. Invert them with their original scaling")
         aligned = data._align_to(self._layout)
         if (
             self._population is not None
@@ -245,7 +231,7 @@ class DataScaling:
                 )
             aligned.arrays[name] = result
 
-        return aligned
+        return replace(aligned, _scaling=None if inverse else self)
 
 
 def fit_scaling(
@@ -257,28 +243,24 @@ def fit_scaling(
 ) -> Scaling:
     """Estimate reusable centering and scaling from training observations.
 
-    By default, subtract the training mean and divide by the training
-    standard deviation. Statistics use all observations along the selected
-    axes, with no degrees-of-freedom correction. Constant training series
-    use a scale of one, preserving differences in future observations.
+    Subtract the mean and divide by the standard deviation with ``ddof=0``.
+    Constant series use a scale of one. Fit outside JAX transformations,
+    then use the stored transformation with JIT, gradients, or vectorization.
 
     Parameters
     ----------
     values : array_like
-        Finite real-valued training observations with at least one dimension
-        and no empty axes. Boolean inputs are treated as zeros and ones.
-        The original values are not modified.
+        Finite real observations with at least one dimension and no empty axes.
+        Boolean values are treated as zeros and ones. Inputs are not modified.
     axis : int or tuple of int or None, default 0
         Axes over which to estimate statistics. For values shaped
         ``(time, group, feature)``, use ``0`` for separate group-feature
         statistics or ``(0, 1)`` to pool observations across groups.
         ``None`` uses all axes. Negative axes are accepted.
     center : bool, default True
-        Whether to subtract the training mean. Set to ``False`` to use
-        an offset of zero.
+        Subtract the mean. When disabled, the offset is zero.
     scale : bool, default True
-        Whether to divide by the training standard deviation. Set to
-        ``False`` to use a divisor of one.
+        Divide by the standard deviation. When disabled, the divisor is one.
 
     Returns
     -------
@@ -289,10 +271,8 @@ def fit_scaling(
         - **scale** : Training standard deviation, with ones for constant
           series or when scaling is disabled
 
-        Reduced axes have length one. Arrays use at least float32 precision,
-        with float64 available when JAX 64-bit mode is enabled. Fitting runs
-        outside JAX transformations. The returned object's ``transform`` and
-        ``inverse_transform`` methods support JIT, gradients, and vectorization.
+        Reduced axes have length one for broadcasting. Statistics use at
+        least float32 precision. Float64 requires JAX 64-bit mode.
 
     Examples
     --------
@@ -378,10 +358,9 @@ def fit_media_scaling(
 ) -> Scaling:
     r"""Estimate reusable channel scales from media exposures.
 
-    Each channel is divided by a training statistic, pooled across periods
-    and groups. By default, use the median of positive exposures. Mean and
-    maximum scaling are also available. Media is not centered, so periods
-    with no exposure remain zero after transformation.
+    Divide each channel by a statistic pooled across periods and groups.
+    Media is not centered, so zero exposure stays zero. Scaling sets the
+    units for response-curve parameters and their priors.
 
     With population estimates :math:`p_g`, first calculate exposure per
     person. For training exposures :math:`x_{t,g,c}` and the selected
@@ -392,30 +371,25 @@ def fit_media_scaling(
         a_c = T_{t,g}\!\left(\frac{x_{t,g,c}}{p_g}\right),
         \qquad s_{g,c} = p_g a_c.
 
-    The median excludes zero exposures, while the mean includes them.
-    Transformed exposures are :math:`x_{t,g,c}/s_{g,c}`. Without population,
-    use :math:`p_g = 1`. A single series uses one statistic per channel
-    without a group axis.
+    Transformed exposures are :math:`x_{t,g,c}/s_{g,c}`.
+    Without population, use :math:`p_g = 1`.
 
     Parameters
     ----------
     media : array_like
-        Finite, nonnegative training exposures shaped ``(time, channel)``
-        or ``(time, group, channel)``. Keep the channel axis even for a
-        single channel. Each channel needs at least one positive observation
-        across the training periods and groups. Suitable for paid or organic
-        impressions and reach. Apply frequency transformations separately.
+        Nonnegative, finite impressions or reach shaped ``(time, channel)``
+        or ``(time, group, channel)``. Keep the channel axis for one channel.
+        Each channel needs at least one positive exposure. Not intended
+        for advertising frequency inputs.
     method : {"median", "mean", "max"}, default "median"
-        Statistic used to scale each channel. ``"median"`` uses only positive
-        exposures, reducing the influence of unusually large observations.
-        ``"mean"`` includes periods with no exposure. ``"max"`` divides by
-        the largest training exposure. Future values can exceed one.
+        Channel statistic. The median excludes zeros, the mean includes
+        them, and the maximum uses the largest exposure. New values can
+        exceed one after scaling.
     population : array_like, optional
-        Positive, finite population estimates, not boolean. Supply a scalar
-        for ``(time, channel)`` inputs, or one value per group with shape
-        ``(n_groups,)`` for grouped inputs. Omit to skip population adjustment.
-        A scalar population cancels from the normalized result for a single
-        series.
+        Positive, finite population, supplied as a scalar for one series or
+        a vector shaped ``(n_groups,)``. Boolean values are not accepted.
+        Omit to skip adjustment. For one series, population cancels from
+        the normalized result.
 
     Returns
     -------
@@ -428,11 +402,8 @@ def fit_media_scaling(
 
         Statistics retain a length-one time axis. Grouped inputs have a
         length-one group axis unless population-specific factors are used.
-        Both channel statistics and population factors stay fixed for future calls.
-        Keep the training group and channel order. The original inputs are
-        unchanged. Fitting runs outside JAX transformations, while applying
-        the stored transformation supports JIT, gradients, and vectorization.
-        Statistics use a common floating-point dtype of at least float32.
+        Factors remain fixed when reused. Fit outside JAX transformations,
+        then apply in the fitted group and channel order using JAX.
 
     Examples
     --------
@@ -546,34 +517,26 @@ def fit_data_scaling(
     Parameters
     ----------
     data : PreparedData
-        Training data returned by :func:`prepare_data`. Statistics pool
-        periods and groups, retaining one statistic per feature. Exposure
-        statistics include all supplied training media history. Other
-        statistics use only the modeling periods. Inputs are not modified.
+        Unscaled inputs from :func:`prepare_data`. Statistics pool periods
+        and groups per feature. Exposure statistics include history, while
+        other statistics use only modeling periods. Inputs are not modified.
     media_method : {"median", "mean", "max"} or None, default "median"
-        Scaling method for paid and organic media and reach. ``"median"``
-        excludes zeros, ``"mean"`` includes them, and ``"max"`` uses the
-        largest exposure. Each channel needs positive training exposure.
-        Use ``None`` to leave these inputs in their original units.
+        Statistic for paid and organic impressions and reach. The median
+        excludes zeros and the mean includes them. Each channel needs positive
+        exposure. Use ``None`` to preserve original units.
     scale_outcome : bool, default False
-        Center the outcome and divide by its training standard deviation.
-        Enable for a model defined on a standardized continuous response.
-        Leave disabled for count likelihoods that need the original counts.
-        Requires an outcome in the training data.
+        Standardize the outcome using its mean and standard deviation.
+        Requires an outcome. Leave disabled for count likelihoods.
     scale_controls : bool, default True
-        Standardize each control using its training mean and standard
-        deviation. Omitted controls do not create a transformation.
+        Standardize each supplied control using its mean and standard deviation.
     scale_treatments : bool, default True
-        Standardize each non-media treatment, such as product price, using
-        its training mean and standard deviation. Omitted treatments do
-        not create a transformation.
+        Standardize each supplied non-media treatment using its mean and
+        standard deviation.
     adjust_population : bool, default False
-        Adjust exposures by population before estimating channel scales.
-        Requires population in the training data. Does not adjust controls,
-        treatments, or outcomes. Population factors remain fixed when
-        applying the fitted scales. Prediction data may omit population
-        to reuse those factors, but supplied estimates must match the
-        training values when exposure inputs are transformed.
+        Divide exposures by population before fitting channel statistics.
+        Requires population and affects exposures only. Stored population
+        factors are reused. New data may omit population, but supplied
+        estimates must match when transforming exposures.
 
     Returns
     -------
@@ -583,10 +546,9 @@ def fit_data_scaling(
         - **transformations** : Per-input offsets and divisors, available
           as individual :class:`Scaling` objects
 
-        The object also retains the input labels needed to align future
-        data, without storing training observations. Its ``transform`` and
-        ``inverse_transform`` methods return new :class:`PreparedData`
-        objects. No statistics are refitted when transforming new data.
+        Retains labels for alignment, not observations. Its ``transform`` and
+        ``inverse_transform`` methods return new :class:`PreparedData` objects
+        without refitting statistics.
 
     Examples
     --------
@@ -619,6 +581,8 @@ def fit_data_scaling(
     """
     if not isinstance(data, PreparedData):
         raise TypeError("data must be PreparedData returned by prepare_data")
+    if data._scaling is not None:
+        raise ValueError("These inputs have already been scaled. Fit transformations using raw prepared data")
     for name, value in (
         ("scale_outcome", scale_outcome),
         ("scale_controls", scale_controls),

@@ -134,6 +134,7 @@ def test_grouped_composition_preserves_effect_shapes_and_counts_shared_priors_on
         time="date",
         groups=["region"],
         outcome="sales",
+        frequency=None,
     )
 
     def log_density(data, effects):

@@ -23,27 +23,15 @@ __all__ = ["MediaEffect", "media_response", "reach_frequency_response"]
 class MediaEffect:
     """Configure channel contributions with a choice of carryover and response curve.
 
-    Each channel has a positive contribution coefficient and the parameters
-    required by the selected transformations. Preparation infers their shapes
-    from the media columns. Transformations use the current parameter values
-    at each model evaluation.
-
+    Add this configuration to ``Model`` components. Each channel has a
+    positive contribution coefficient and the selected curve parameters,
+    with shapes inferred from the prepared media columns.
     For custom transformations or parameterizations, declare parameters on
     ``Model`` and call :func:`media_response` from ``transformed_parameters``.
 
-    Include this configuration in ``Model`` components. Its named callback
-    input contains weighted contributions for each channel. Request
-    ``paid_media_total`` for their sum at each period and group, or
-    ``paid_media`` to retain individual channels. Both are JAX arrays.
-    The model declares parameters and adds their priors automatically.
-    Set ``automatic_priors=False`` to write priors directly in the named
-    ``Model.log_density`` callback, requesting constrained parameter arrays such as
-    ``paid_media_coefficient`` and ``paid_media_retention``.
-
-    This configuration does not scale exposures. Set coefficient priors on
-    the scale where contributions enter the model, and half-saturation priors
-    in the prepared exposure units. Their defaults are intended for scaled
-    data and are not suitable for every dataset.
+    Exposures are not scaled here. Default priors assume scaled data.
+    Choose coefficient priors in contribution units and half-saturation
+    priors in the prepared exposure units.
 
     Exposure gradients at zero use a zero-gradient convention for Hill
     slopes and root exponents below one. Evaluate marginal responses at
@@ -52,21 +40,20 @@ class MediaEffect:
     Parameters
     ----------
     max_lag : int
-        Number of previous observation periods to include in carryover.
-        The current period is also included. Must be nonnegative. Supply
-        regularly spaced media observations and include earlier exposures
-        through ``media_history`` when preparing data.
+        Nonnegative number of previous periods to include alongside the
+        current period. Observations must be regularly spaced. Supply earlier
+        exposures through ``media_history`` when preparing data.
     name : str, default "paid_media"
-        Name of the per-channel contribution. Named callbacks can also
-        request ``<name>_total``. Parameter names use this prefix, such as
-        ``paid_media_retention``. Use a name distinct from data roles and
-        other components.
+        Name of the weighted per-channel array. Named callbacks request
+        ``<name>_total`` for its channel sum or parameter names such as
+        ``paid_media_retention`` for their values. Keep the name distinct
+        from data roles and other components.
     adstock : callable, default geometric_adstock
         Choose :func:`geometric_adstock`, :func:`delayed_adstock`,
         :func:`weibull_pdf_adstock`, or :func:`weibull_cdf_adstock` directly.
         Geometric uses ``retention``, delayed adds ``delay``, and Weibull
-        uses ``adstock_shape`` and ``adstock_scale``. With ``max_lag=0``,
-        delayed adstock fixes the delay at zero rather than sampling it.
+        uses ``adstock_shape`` and ``adstock_scale``. Delayed adstock fixes
+        delay at zero when ``max_lag=0``.
     saturation : callable, default hill_saturation
         Choose :func:`hill_saturation`, :func:`logistic_saturation`,
         :func:`root_saturation`, or :func:`log_saturation` directly.
@@ -79,41 +66,36 @@ class MediaEffect:
         Apply carryover before saturation. Set to ``False`` to reverse
         their order. Earlier history is retained through both operations.
     group_specific : bool, default False
-        Give each group its own channel contribution coefficients. Adstock
-        and saturation parameters remain shared across groups. Coefficients
-        receive independent priors by default, without hierarchical pooling.
+        Give each group its own channel coefficients while sharing curve
+        parameters across groups. Default priors are independent, without
+        hierarchical pooling.
     coefficient_prior : callable, optional
-        Prior for positive channel contribution coefficients. The
-        default is HalfNormal with scale 1.5. A supplied function receives
-        the coefficient array and returns a scalar log density or matching
-        elementwise log densities. The same convention applies to all priors.
+        Prior for positive channel coefficients, defaulting to HalfNormal
+        with scale 1.5. All prior callbacks receive a parameter array and
+        return a scalar log density or matching elementwise log densities.
     retention_prior : callable, optional
-        Prior for each channel's retention rate between zero and one.
-        The default is Beta with shape parameters 1 and 3.
+        Prior for retention rates between zero and one, defaulting to Beta
+        with shape parameters 1 and 3.
     delay_prior : callable, optional
-        Prior for delayed adstock's peak in observation periods. The
-        default is Uniform between zero and ``max_lag``.
+        Prior for the peak delay in observation periods, defaulting to
+        Uniform between zero and ``max_lag``.
     adstock_shape_prior : callable, optional
-        Prior for positive Weibull shapes. The default is HalfNormal
-        with scale 1.5.
+        Prior for positive Weibull shapes, defaulting to HalfNormal with scale 1.5.
     adstock_scale_prior : callable, optional
-        Prior for positive Weibull scales in observation periods. The
-        default is HalfNormal with scale 1.5.
+        Prior for positive Weibull scales in observation periods, defaulting
+        to HalfNormal with scale 1.5.
     half_saturation_prior : callable, optional
-        Prior for positive half-saturation points in the prepared exposure
-        units. The default is HalfNormal with scale 1.5. Override it when
-        the exposure scale calls for different thresholds.
+        Prior for positive half-saturation points in prepared exposure units,
+        defaulting to HalfNormal with scale 1.5.
     slope_prior : callable, optional
-        Prior for positive Hill slopes. The default is HalfNormal with
-        scale 1.5.
+        Prior for positive Hill slopes, defaulting to HalfNormal with scale 1.5.
     exponent_prior : callable, optional
-        Prior for root exponents between zero and one. The default is
-        Uniform over this interval.
+        Prior for root exponents, defaulting to Uniform between zero and one.
     automatic_priors : bool, default True
-        Add the component's prior terms to the model log density. Set to
-        ``False`` when the model callback supplies these priors. Custom
-        ``*_prior`` callbacks cannot be combined with ``False``. Parameter
-        constraints and media contributions remain the same.
+        Add component priors automatically. Set to ``False`` to write them
+        in the model's ``log_density`` callback using the declared parameter
+        names. Custom ``*_prior`` callbacks require ``True``. Constraints
+        and media contributions are unchanged.
     """
 
     max_lag: int
@@ -405,10 +387,8 @@ def media_response(
 ) -> jax.Array:
     """Apply carryover and saturation, retaining the requested modeling periods.
 
-    Both transformations receive the full exposure window, including any
-    earlier history. Historical periods are removed from the response only
-    after both transformations have been applied. Scaling and multiplication
-    by model coefficients remain separate steps.
+    Apply both transformations to the full exposure history before selecting
+    modeling periods. Scaling and coefficient multiplication remain separate.
 
     Parameters
     ----------
@@ -417,26 +397,19 @@ def media_response(
         ``(time, channel)`` or ``(time, group, channel)``. Include any earlier
         exposure history needed by the carryover transformation.
     adstock : callable
-        Function accepting exposure values and applying carryover along
-        axis zero. It must preserve the input shape. Supply its parameters
-        with a function or ``functools.partial``.
+        Function applying carryover along axis zero while preserving shape.
+        Supply parameters with a function or ``functools.partial``.
     saturation : callable
-        Function accepting exposure values and applying a response curve
-        without changing the input shape. Channel or group-channel
-        parameters can be supplied in the same way as for ``adstock``.
-        For learned parameters, define the callbacks inside
-        ``transformed_parameters`` or the log-density function using the
-        current parameter values.
+        Shape-preserving response curve with parameters supplied as for
+        ``adstock``. For learned parameters, define both callbacks inside
+        ``transformed_parameters`` or the log density using current values.
     n_periods : int, optional
-        Number of final periods to return. Use ``len(data.time_values)``
-        for data returned by :func:`prepare_data`, including prediction
-        data without outcomes. Must be positive and cannot exceed the
-        supplied number of exposure periods. If omitted, all periods are
-        returned, including history.
+        Number of final periods to return, such as ``len(data.time_values)``.
+        Must be positive and not exceed the exposure window. If omitted,
+        return all periods, including history.
     adstock_first : bool, default True
-        Apply carryover before saturation. Set to ``False`` to apply
-        saturation before carryover. Callbacks, transformation order, and
-        ``n_periods`` must be fixed when compiling a model function.
+        Apply carryover before saturation, or reverse the order with ``False``.
+        Callbacks, this flag, and ``n_periods`` must stay fixed when compiling.
 
     Returns
     -------
@@ -541,31 +514,25 @@ def reach_frequency_response(
     Parameters
     ----------
     reach : array_like
-        Finite, nonnegative audience reached, with time on the first axis.
-        Prepared inputs use ``(time, channel)`` or ``(time, group, channel)``.
-        Supply either raw reach or reach transformed using training scales,
-        including any earlier history.
+        Finite, nonnegative audience reached, including earlier history.
+        Prepared shapes are ``(time, channel)`` or ``(time, group, channel)``.
+        Supply raw reach or reach transformed using fitted scales.
     frequency : array_like
-        Finite, nonnegative average exposures per person reached. Must
-        match the shape and ordering of ``reach``, including history.
-        Keep frequency in its original units when using fitted data scaling.
-        Use :func:`prepare_data` to validate and order both inputs.
+        Finite, nonnegative average exposures per person, matching the shape
+        and order of ``reach``. Keep its original units when scaling inputs.
+        Use :func:`prepare_data` to validate and order reach and frequency.
     adstock : callable
         Function applying carryover along axis zero without changing the
         input shape. It receives reach multiplied by saturated frequency.
     saturation : callable
-        Function applying a response curve to frequency without changing
-        its shape. Express thresholds such as ``half_saturation`` in
-        frequency units, not reach or impression units. Supply parameters
-        with a function or ``functools.partial``. For learned parameters,
-        define the callbacks inside the model's log-density function using
-        its current values.
+        Shape-preserving response curve with thresholds in frequency units.
+        Supply parameters with a function or ``functools.partial``. For
+        learned parameters, define callbacks inside ``transformed_parameters``
+        or the log density using current values.
     n_periods : int, optional
-        Number of final modeling periods to return. Use
-        ``len(data.time_values)`` for prepared data. Must be positive and
-        cannot exceed the supplied exposure periods. If omitted, all
-        periods are returned, including history. Callbacks and ``n_periods``
-        must be fixed when compiling a model function.
+        Number of final modeling periods to return, such as ``len(data.time_values)``.
+        Must be positive and not exceed the exposure window. If omitted,
+        return all periods. Callbacks and ``n_periods`` must stay fixed when compiling.
 
     Returns
     -------

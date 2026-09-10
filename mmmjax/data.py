@@ -3,9 +3,9 @@
 from calendar import monthrange
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import jax
 import narwhals as nw
@@ -14,6 +14,9 @@ from jax.typing import DTypeLike
 from narwhals.typing import IntoDataFrameT
 from numpy.typing import NDArray
 
+if TYPE_CHECKING:
+    from mmmjax.scaling import DataScaling
+
 __all__ = ["PreparedData", "prepare_data"]
 
 
@@ -21,55 +24,43 @@ __all__ = ["PreparedData", "prepare_data"]
 class PreparedData:
     """Store prepared model inputs together with their observation labels.
 
-    Use :func:`prepare_data` to create this object from a dataframe with
-    validation and labeled arrays. Constructing it directly does not validate data.
+    Create validated inputs with :func:`prepare_data`. Direct construction
+    skips validation. If editing arrays, preserve their shapes and label order.
 
     Attributes
     ----------
     arrays : dict of str to numpy.ndarray
-        Time-varying inputs are ordered by time, group if supplied, then
-        feature. Outcome and revenue per outcome have no final feature axis.
-        Population is stored once per group, or as a scalar without groups.
-        Each array is independent of the source dataframe and other inputs.
-        All paid and organic exposure inputs, including reach and frequency,
-        include any earlier history. Other time-varying inputs cover only
-        the modeling periods.
+        Independent arrays ordered by time, optional group, then feature.
+        Outcome and revenue per outcome have no feature axis. Population
+        is a group vector or a scalar. Exposure inputs include history,
+        while other time-varying inputs cover only the modeling periods.
     time_column : str
         Source column identifying observation periods.
     time_values : tuple
-        Sorted modeling periods for outcome, revenue per outcome, both spend
-        inputs, controls, and treatments.
+        Sorted modeling periods.
     media_time_values : tuple
-        Shared time labels for all paid and organic exposure inputs, including
-        any earlier history. Without history these match ``time_values``.
-        Empty when no exposure inputs were supplied.
+        Shared exposure periods, including history. Matches ``time_values``
+        without history and is empty without exposure inputs.
     group_columns : tuple of str
         Source columns identifying each series. Empty for a single series.
     group_values : tuple of tuple
-        Observed group combinations matching the group axis. Preparation
-        uses first-appearance order. Empty when no group columns were supplied.
+        Observed group combinations in first-appearance order.
+        Empty when no group columns were supplied.
     columns : dict of str to tuple of str
-        Source columns for each input, in the selected order. Outcome,
-        revenue per outcome, and population each use a one-element tuple.
+        Source columns for each input, in the selected order.
     channels : tuple of str
-        Shared channel labels for the final axis of media and spend.
-        Empty when media was not supplied.
+        Channel labels shared by media and spend. Empty without media.
     organic_channels : tuple of str
-        Channel labels for the final axis of organic media, independent of
-        paid channel labels. Empty when organic media was not supplied.
+        Labels for the separate organic media axis. Empty without organic media.
     rf_channels : tuple of str
-        Shared channel labels for reach, media frequency, and their spend.
-        These use a separate axis from media and organic media channels.
-        Empty when reach and frequency inputs were not supplied.
+        Labels for the separate paid reach, frequency, and spend axis.
+        Empty without these inputs.
     organic_rf_channels : tuple of str
-        Shared channel labels for organic reach and frequency. These use a
-        separate axis from the other media inputs. Empty when organic reach
-        and frequency inputs were not supplied.
-
-    Notes
-    -----
-    The arrays and dictionaries remain editable. Keep their shapes and
-    ordering consistent with the labels.
+        Labels for the separate organic reach and frequency axis.
+        Empty without these inputs.
+    frequency : str or None
+        Inferred or declared observation spacing. None for numeric labels,
+        fewer than three dates without a declared spacing, or disabled checks.
     """
 
     arrays: dict[str, NDArray[np.generic]]
@@ -83,6 +74,9 @@ class PreparedData:
     organic_channels: tuple[str, ...] = ()
     rf_channels: tuple[str, ...] = ()
     organic_rf_channels: tuple[str, ...] = ()
+    frequency: str | None = None
+    # Record applied transformations to prevent scaling these arrays twice
+    _scaling: "DataScaling | None" = field(default=None, repr=False)
 
     def _to_jax(
         self,
@@ -90,41 +84,12 @@ class PreparedData:
         dtype: DTypeLike = float,
         device: jax.Device | jax.sharding.Sharding | None = None,
     ) -> dict[str, jax.Array]:
-        """Convert numerical inputs for internal model evaluation.
+        """Copy input arrays to JAX before model evaluation.
 
-        Parameters
-        ----------
-        dtype : data-type, default float
-            Precision for floating-point blocks, either float32 or float64.
-            The default ``float`` follows JAX's precision setting. Explicit
-            float64 requires JAX 64-bit mode to be enabled. Integer and
-            boolean blocks stay integer and boolean. Integers that cannot
-            fit JAX's available dtype raise an error rather than wrapping.
-        device : jax.Device or jax.sharding.Sharding, optional
-            Destination for the arrays. If omitted, JAX chooses the device.
-
-        Returns
-        -------
-        dict of str to jax.Array
-            Dictionary containing the supplied inputs:
-
-            - **outcome** : Observed response values without a feature axis
-            - **revenue_per_outcome** : Revenue per response unit for each modeling period and group
-            - **population** : One population estimate per group, or a scalar without groups
-            - **media** : Media values, including any earlier history
-            - **organic_media** : Organic exposure values over the same media periods
-            - **reach** : Audience reached, including any earlier history
-            - **media_frequency** : Average exposures per person over the same media periods
-            - **organic_reach** : Audience reached by organic channels over the media periods
-            - **organic_frequency** : Average organic exposures per person over the media periods
-            - **spend** : Spending for the modeling periods, ordered by channel
-            - **rf_spend** : Spending for reach and frequency channels over modeling periods
-            - **controls** : Additional predictors in the selected column order
-            - **treatments** : Non-media inputs in the selected column order
-
-            Omitted inputs have no entry. Shapes and axis order are unchanged.
-            The host arrays and labels are retained on this object. Call this
-            once before using JAX transformations on a model.
+        Preserve keys and shapes, keeping integer and boolean inputs non-floating.
+        Floating-point inputs use ``dtype``, with ``float`` following JAX's precision setting.
+        Reject unavailable precision or overflowing casts. ``device`` selects
+        the destination device or sharding, with None using JAX's default.
         """
         try:
             requested_dtype = np.dtype(dtype)
@@ -281,6 +246,8 @@ class PreparedData:
             organic_channels=reference.organic_channels if "organic_media" in arrays else (),
             rf_channels=reference.rf_channels if "reach" in arrays else (),
             organic_rf_channels=reference.organic_rf_channels if "organic_reach" in arrays else (),
+            frequency=self.frequency,
+            _scaling=self._scaling,
         )
 
 
@@ -321,7 +288,7 @@ def prepare_data(
     rf_channels: Sequence[str] | None = None,
     organic_rf_channels: Sequence[str] | None = None,
     groups: Sequence[str] = (),
-    frequency: str | None = None,
+    frequency: str | None = "auto",
 ) -> PreparedData:
     """Prepare a dataframe for modeling while keeping its observation labels.
 
@@ -329,162 +296,118 @@ def prepare_data(
     ----------
     frame : dataframe-like
         Eager dataframe supported by Narwhals, including pandas and Polars
-        DataFrames and PyArrow Tables. Selected values must be numeric or
-        boolean, finite, and nonmissing. The input is not modified.
-        For predictions that need only dates and group labels, omit all
-        value selections. The result retains the observation labels without
-        adding placeholder outcomes or other inputs.
+        DataFrames and PyArrow Tables. Selected values must be finite,
+        nonmissing, and numeric or boolean. The input is not modified.
+        Omit value selections to prepare only time and group labels.
     time : str
-        Column identifying observation periods, with values that sort
-        chronologically. Each combination of time and group must be unique.
+        Observation periods that sort chronologically. Each time-group
+        combination must be unique.
         Calendar checks accept dates, timezone-naive datetimes, or strings
         written as ``YYYY-MM-DD``. Original labels are retained.
     outcome : str, optional
         Column containing the response, such as sales or conversions.
         Omit it when preparing prediction data without observed outcomes.
     revenue_per_outcome : str, optional
-        Column containing the average revenue per response unit, such as
-        revenue per sale or conversion. Values can vary by period and group
-        and must be numeric, finite, and nonnegative, not boolean.
-        Stored separately without converting the outcome to revenue.
-        Can also be supplied for prediction data without observed outcomes.
+        Nonnegative revenue per sale or conversion, varying by period and
+        group. Stored separately without converting the outcome to revenue.
+        Boolean values are not accepted. Does not require an outcome.
     population : str, optional
-        Column containing a positive population estimate for each group.
-        Repeat the same value across that group's modeling periods. Without
-        groups, supply one value repeated across all periods. Integer and
-        floating-point estimates are accepted, but boolean values are not.
-        Population is stored once per group, or as a scalar without groups.
-        Preparation does not scale other inputs or average changing values.
+        Positive population, constant across periods within each group.
+        Without groups, repeat one value across all periods. Boolean values
+        are not accepted. Supplying population does not apply scaling.
     media : sequence of str, optional
         Columns containing nonnegative paid media inputs, such as impressions
         or spending. Their order defines the channel axis. Use a list
         even for one channel.
     organic_media : sequence of str, optional
-        Columns containing nonnegative exposure from unpaid media, such
-        as email clicks or impressions from organic social posts. Their
-        order defines a separate organic channel axis. Use a list even
-        for one channel. Paid media and spend are not required.
+        Nonnegative unpaid exposures, such as email clicks or organic social
+        impressions. Their order defines a separate channel axis. Use a list
+        even for one channel. Paid media and spend are not required.
     reach : sequence of str, optional
-        Columns containing the nonnegative audience reached by each paid
-        channel in each period. Supply these together with ``media_frequency``
-        in matching channel order. These channels have their own axis and
-        do not require a separate ``media`` selection.
+        Nonnegative audience reached per paid channel and period. Pair with
+        ``media_frequency`` in matching order. Uses a separate channel axis
+        and does not require ``media``.
     media_frequency : sequence of str, optional
-        Columns containing the nonnegative average number of exposures per
-        person reached. Supply one column per ``reach`` channel in the same
-        order. This describes advertising exposure, not the observation
-        calendar controlled by ``frequency``.
+        Nonnegative average exposures per person reached, ordered to match
+        ``reach``. This is advertising frequency, not calendar spacing.
     organic_reach : sequence of str, optional
-        Columns containing the nonnegative audience reached by unpaid channels,
-        such as readers of an email newsletter. Supply these together with
-        ``organic_frequency`` in matching channel order. They have their own
-        channel axis and do not require paid media, spend, or ``organic_media``.
+        Nonnegative audience reached by unpaid channels. Pair with
+        ``organic_frequency`` in matching order. Uses a separate channel axis
+        and does not require other media inputs.
     organic_frequency : sequence of str, optional
-        Columns containing the nonnegative average number of organic exposures
-        per person reached. Supply one column per ``organic_reach`` channel
-        in the same order. This is separate from the observation calendar
-        controlled by ``frequency``.
+        Nonnegative average organic exposures per person reached, ordered to
+        match ``organic_reach``. This is separate from calendar spacing.
     media_history : dataframe-like, optional
-        Earlier exposure observations used to calculate carryover into the
-        first modeling periods. Include every selected paid and organic
-        exposure column, including both reach and frequency where supplied,
-        with the same time and group columns as ``frame``. All exposure
-        inputs share this history window.
-        Include only periods before ``frame`` and all its groups. Outcomes,
-        revenue per outcome, population, controls, treatments, and separate
-        spend columns are not required.
-        Supply ``frequency`` to check for missing periods across both
-        dataframes. Requires ``media``, ``organic_media``, ``reach``, or
-        ``organic_reach``.
+        Earlier exposures for carryover into the first modeling periods.
+        Include all selected exposure columns and all groups, using the same
+        time and group columns as ``frame``. All periods must precede ``frame``.
+        Other inputs are not required. Requires at least one exposure selection.
+        Calendar checks cover both frames. Preparation does not apply adstock.
     spend : sequence of str, optional
-        Columns containing nonnegative spending for the selected media.
-        Supply one column per media channel in the same order. If media
-        already contains spending, the same columns can be selected here.
-        Omit this argument when separate spending inputs are not needed.
+        Nonnegative spending, with one column per ``media`` channel in matching
+        order. The same columns may be selected for media and spend.
     rf_spend : sequence of str, optional
-        Columns containing nonnegative spending for reach and frequency
-        channels. Supply one column per ``reach`` channel in the same order.
-        These values cover only the modeling periods. Omit this argument
-        when spending inputs are not needed.
+        Nonnegative spending, with one column per ``reach`` channel in matching
+        order. Covers only the modeling periods.
     controls : sequence of str, optional
         Columns containing adjustment variables, such as temperature or
         economic indicators. Their order defines the control axis.
         Negative values are allowed for controls and the outcome.
     treatments : sequence of str, optional
-        Columns containing non-media inputs whose effects the model will
-        estimate, such as product prices or promotions. Their order defines
-        the treatment axis. Numeric and boolean values are accepted,
-        including negative values. Use a list even for one treatment.
-        These inputs cover only the modeling periods and do not require
-        media or spend. The model determines how their effects are represented.
+        Non-media inputs whose effects the model estimates, such as product
+        prices or promotions. Negative and boolean values are accepted.
+        Their order defines the treatment axis. Use a list even for one
+        treatment. Media and spend are not required.
     channels : sequence of str, optional
-        Unique channel names shared by media and spend, such as
-        ``["video", "search"]``. These match the selected columns by
-        position. Defaults to the media column names. Requires ``media``.
+        Unique labels shared by media and spend, in column order.
+        Defaults to the ``media`` column names. Requires ``media``.
     organic_channels : sequence of str, optional
-        Unique names for the organic media channels, such as
-        ``["email", "social"]``. These match ``organic_media`` columns by
-        position and default to their column names. Requires ``organic_media``.
+        Unique labels in ``organic_media`` column order. Defaults to those
+        column names. Requires ``organic_media``.
     rf_channels : sequence of str, optional
-        Unique names shared by reach, media frequency, and their spend.
-        These match the selected columns by position and default to the
-        ``reach`` column names. Requires ``reach`` and ``media_frequency``.
+        Unique labels shared by reach, media frequency, and their spend, in
+        column order. Defaults to the ``reach`` column names. Requires ``reach``.
     organic_rf_channels : sequence of str, optional
-        Unique names shared by organic reach and frequency. These match the
-        selected columns by position and default to the ``organic_reach``
-        column names. Requires ``organic_reach`` and ``organic_frequency``.
+        Unique labels shared by organic reach and frequency, in column order.
+        Defaults to the ``organic_reach`` column names. Requires ``organic_reach``.
     groups : sequence of str, optional
-        Columns identifying each observed series, such as ``["region"]``.
-        Every observed group must have the same time periods. Group
-        combinations retain their first-appearance order and share one
-        array axis. Omit this argument for a single series with no group axis.
-    frequency : str, optional
-        Expected spacing given as ``"daily"``, ``"weekly"``, ``"monthly"``,
-        ``"quarterly"``, or ``"yearly"``. Calendar periods follow the first
-        observation's day, including history if supplied, or month-end if
-        it starts at month-end. Supply this to detect periods missing from
-        every group. Without it, only coverage of the observed times is
-        checked.
+        Columns identifying each series, such as ``["region"]``. All groups
+        must have the same periods. Observed combinations share one array
+        axis in first-appearance order. Omit for a single series.
+    frequency : str or None, default "auto"
+        Infer ``"daily"``, ``"weekly"``, ``"monthly"``, ``"quarterly"``,
+        or ``"yearly"`` from at least three dates, including history.
+        Calendar periods follow the first date's day or month-end.
+        Specify the expected spacing to check for missing periods, including
+        short series. Numeric labels are not assigned calendar units.
+        Set to ``None`` to skip calendar checks.
 
     Returns
     -------
     PreparedData
-        Prepared inputs containing:
+        Prepared inputs containing
 
-        - **arrays** : Dictionary of NumPy arrays for the supplied ``outcome``,
-          ``revenue_per_outcome``, ``population``, ``media``, ``organic_media``, ``reach``,
-          ``media_frequency``, ``organic_reach``, ``organic_frequency``,
-          ``spend``, ``rf_spend``, ``controls``, and ``treatments``.
-          Omitted inputs have no entry
+        - **arrays** : NumPy arrays keyed by input role. Omitted inputs have no entry
         - **time_column** : Name of the source column identifying time periods
-        - **time_values** : Sorted modeling periods for outcome, revenue per
-          outcome, both spend inputs, controls, and treatments
+        - **time_values** : Sorted modeling periods
         - **media_time_values** : Shared periods for all paid and organic
-          exposure inputs, including any earlier history. Matches
-          ``time_values`` without history. Empty without exposure inputs
-        - **group_columns** : Selected group-column names. Empty for a single
-          series without groups
-        - **group_values** : Observed group-label tuples in array order,
-          preserving first appearance in ``frame``. Empty without groups
-        - **columns** : Dictionary mapping each supplied input to its source
-          column names in the selected order
-        - **channels** : Channel names shared by media and spend in array
-          order. Empty without media
-        - **organic_channels** : Organic channel names in array order.
-          Empty without organic media
-        - **rf_channels** : Shared reach, media frequency, and spend channel
-          names in array order. Empty without reach and frequency inputs
-        - **organic_rf_channels** : Shared organic reach and frequency channel
-          names in array order. Empty without organic reach and frequency inputs
+          exposure inputs, including history. Empty without exposure inputs
+        - **group_columns** : Selected group-column names
+        - **group_values** : Observed group-label tuples in array order
+        - **columns** : Source column names by input role, in selected order
+        - **channels** : Labels shared by media and spend
+        - **organic_channels** : Organic media labels
+        - **rf_channels** : Labels shared by paid reach, frequency, and spend
+        - **organic_rf_channels** : Labels shared by organic reach and frequency
+        - **frequency** : Inferred or declared calendar spacing, or None
 
         Time-varying arrays are ordered by time, group (if supplied), then
         feature. Outcome and revenue per outcome have no final feature axis.
-        Population has shape ``(n_groups,)``, or ``()`` without groups, and
-        follows ``group_values``.
+        Population has shape ``(n_groups,)``, or ``()`` without groups.
         All other inputs keep a feature axis even for a single column.
         Integer outcomes and population estimates retain their dtype
-        separately from continuous inputs. Columns within an input use NumPy
-        type promotion. Arrays do not share memory with either dataframe.
+        separately from continuous inputs. Arrays do not share memory with
+        either dataframe. Unused group and channel labels are empty tuples.
 
     Examples
     --------
@@ -647,7 +570,7 @@ def prepare_data(
         groups=groups,
         values=list(dict.fromkeys(column for names in columns.values() for column in names)),
         # History and modeling periods need one calendar anchor, especially across February
-        frequency=frequency if media_history is None else None,
+        frequency=frequency if media_history is None and frequency != "auto" else None,
     )
     time_values = tuple(selected.get_column(time).unique(maintain_order=True).to_list())
     group_values = tuple(selected.select(groups).unique(maintain_order=True).rows()) if groups else ()
@@ -712,6 +635,7 @@ def prepare_data(
         organic_channels=channel_names["organic_media"],
         rf_channels=channel_names["reach"],
         organic_rf_channels=channel_names["organic_reach"],
+        frequency=_resolve_frequency(time_values, time=time, frequency=frequency) if media_history is None else None,
     )
     if media_history is None:
         return data
@@ -730,6 +654,7 @@ def prepare_data(
         organic_channels=channel_names["organic_media"] if "organic_media" in columns else None,
         rf_channels=channel_names["reach"] if "reach" in columns else None,
         organic_rf_channels=channel_names["organic_reach"] if "organic_reach" in columns else None,
+        frequency=None,
     )._align_to(data)
     try:
         overlaps = history.time_values[-1] >= time_values[0]
@@ -745,8 +670,6 @@ def prepare_data(
         )
 
     media_times = (*history.time_values, *time_values)
-    if frequency is not None:
-        _validate_calendar(media_times, time=time, frequency=frequency)
     return replace(
         data,
         arrays={
@@ -754,6 +677,7 @@ def prepare_data(
             **{name: np.concatenate((history.arrays[name], arrays[name]), axis=0) for name in media_inputs},
         },
         media_time_values=media_times,
+        frequency=_resolve_frequency(media_times, time=time, frequency=frequency),
     )
 
 
@@ -765,40 +689,11 @@ def _prepare_panel(
     values: Sequence[str],
     frequency: str | None = None,
 ) -> nw.DataFrame[IntoDataFrameT]:
-    """Arrange a complete observation panel in time-major order.
+    """Validate and sort selected columns into a complete time-major panel.
 
-    Parameters
-    ----------
-    frame : dataframe-like
-        Eager dataframe supported by Narwhals. The input is not modified.
-    time : str
-        Time column, represented in a form that sorts chronologically.
-        Calendar checks accept dates, timezone-naive datetimes, or date
-        strings written as ``YYYY-MM-DD``. The original labels are retained.
-    groups : sequence of str, optional
-        Columns identifying each observed series. Combinations retain their
-        first-appearance order across time. With no groups, the input is a
-        single series.
-    values : sequence of str
-        Numeric or boolean columns to retain in the supplied order.
-    frequency : str, optional
-        Expected spacing given as ``"daily"``, ``"weekly"``, ``"monthly"``,
-        ``"quarterly"``, or ``"yearly"``. Calendar periods follow the first
-        observation's day, or month-end if it starts at month-end. Without
-        this argument, only coverage of the observed times is checked.
-
-    Returns
-    -------
-    narwhals.DataFrame
-        Rows sorted by time, with the same observed groups in the same order
-        at every time. Nested group labels stay together rather than forming
-        every possible combination. No missing observations are filled.
-
-    Notes
-    -----
-    Supply ``frequency`` to detect periods missing from every group. Missing
-    observations are reported, not filled or treated as zero. Only the span
-    between the first and last supplied times can be checked.
+    Retain observed group combinations in first-appearance order. Reject
+    missing time-group pairs without filling them. When supplied, ``frequency``
+    also checks for missing periods between the first and last observations.
     """
     if isinstance(groups, str) or not isinstance(groups, Sequence):
         raise TypeError("groups must be a sequence of column names, such as ['region'], or () for a single series")
@@ -902,12 +797,8 @@ def _prepare_frame(
     return selected
 
 
-def _validate_calendar(labels: Sequence[object], *, time: str, frequency: str) -> None:
-    """Check the distinct observation times against a declared calendar spacing."""
-    frequencies = ("daily", "weekly", "monthly", "quarterly", "yearly")
-    if frequency not in frequencies:
-        raise ValueError(f"frequency must be one of {frequencies}, got {frequency!r}")
-
+def _calendar_dates(labels: Sequence[object], *, time: str, frequency: str) -> list[datetime]:
+    """Parse calendar labels without changing their date or time of day."""
     # Calendar metadata is small even when the panel has many groups and channels
     times = []
     representations = set()
@@ -947,7 +838,43 @@ def _validate_calendar(labels: Sequence[object], *, time: str, frequency: str) -
             "Convert the entire column to a single date/datetime dtype before preparing the panel"
         )
 
-    times.sort()
+    return sorted(times)
+
+
+def _resolve_frequency(labels: Sequence[object], *, time: str, frequency: str | None) -> str | None:
+    """Infer only complete supported calendars, leaving numeric periods unassigned."""
+    if frequency != "auto":
+        if frequency is not None:
+            _validate_calendar(labels, time=time, frequency=frequency)
+        return frequency
+    if not any(isinstance(label, (str, date)) for label in labels):
+        return None
+    times = _calendar_dates(labels, time=time, frequency=frequency)
+    if len(times) < 3:
+        return None
+    for candidate in ("daily", "weekly", "monthly", "quarterly", "yearly"):
+        try:
+            _validate_calendar_spacing(times, time=time, frequency=candidate)
+        except ValueError:
+            continue
+        return candidate
+    raise ValueError(
+        f"Cannot infer a supported calendar frequency from time column {time!r}. "
+        "Check for missing or irregular periods, specify the expected frequency, "
+        "or set frequency=None to skip calendar checks"
+    )
+
+
+def _validate_calendar(labels: Sequence[object], *, time: str, frequency: str) -> None:
+    """Check the distinct observation times against a declared calendar spacing."""
+    frequencies = ("daily", "weekly", "monthly", "quarterly", "yearly")
+    if frequency not in frequencies:
+        raise ValueError(f"frequency must be one of {frequencies}, got {frequency!r}")
+    _validate_calendar_spacing(_calendar_dates(labels, time=time, frequency=frequency), time=time, frequency=frequency)
+
+
+def _validate_calendar_spacing(times: Sequence[datetime], *, time: str, frequency: str) -> None:
+    """Check every period against the same calendar anchor."""
     first = times[0]
     months = {"monthly": 1, "quarterly": 3, "yearly": 12}.get(frequency)
     at_month_end = first.day == monthrange(first.year, first.month)[1]

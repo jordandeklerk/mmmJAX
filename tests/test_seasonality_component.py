@@ -16,7 +16,7 @@ from mmmjax import Model, Real, normal, normal_rng, prepare_data
 from mmmjax.seasonality import FourierSeasonality
 
 
-def _data(times, *, groups=(), outcome=True):
+def _data(times, *, groups=(), outcome=True, frequency="auto"):
     labels = tuple(times)
     group_count = len(groups) if groups else 1
     values = {"time": [label for label in labels for _ in range(group_count)]}
@@ -32,6 +32,7 @@ def _data(times, *, groups=(), outcome=True):
         groups=["region"] if groups else [],
         outcome="sales" if outcome else None,
         controls=None if outcome else ["temperature"],
+        frequency=frequency,
     )
 
 
@@ -83,7 +84,7 @@ def test_numeric_seasonality_uses_original_time_units_and_earliest_training_orig
 
 @pytest.mark.parametrize("period,days", [("yearly", 365.25), ("monthly", 365.25 / 12), ("weekly", 7.0)])
 def test_named_calendar_periods_match_independent_features_across_leap_day(period, days):
-    data = _data(["2024-03-04", "2024-02-28", "2024-03-01"])
+    data = _data(["2024-03-04", "2024-02-28", "2024-03-01"], frequency=None)
     prepared = FourierSeasonality(period=period, order=2)._prepare(data)
     coefficients = jnp.array([0.7, -0.2, 0.4, 1.1])
     expected = _fourier_reference([0, 2, 5], days, 2) @ np.asarray(coefficients, dtype=np.float64)
@@ -98,7 +99,7 @@ def test_date_and_naive_datetime_labels_preserve_elapsed_fractional_days():
     )
     coefficients = jnp.array([0.7, -0.3])
     for labels, elapsed in examples:
-        prepared = FourierSeasonality(period="weekly", order=1)._prepare(_data(labels))
+        prepared = FourierSeasonality(period="weekly", order=1)._prepare(_data(labels, frequency=None))
         expected = _fourier_reference(elapsed, 7, 1) @ np.asarray(coefficients, dtype=np.float64)
         np.testing.assert_allclose(prepared.apply(coefficients), expected, rtol=3e-6, atol=2e-6)
 
@@ -122,7 +123,7 @@ def test_dated_grouped_seasonality_matches_across_dataframe_backends():
     results = []
 
     for frame in frames:
-        data = prepare_data(frame, time="time", groups=["region"], outcome="sales")
+        data = prepare_data(frame, time="time", groups=["region"], outcome="sales", frequency=None)
         prepared = spec._prepare(data)
         effect = prepared.apply(coefficients)
         assert data.group_values == (("west",), ("east",))
@@ -180,7 +181,7 @@ def test_group_specific_forecasts_preserve_coefficient_identity_and_future_group
         return -0.5 * jnp.square(beta - group_locations) - 0.5 * jnp.log(2 * jnp.pi)
 
     spec = FourierSeasonality(period="weekly", order=2, name="weekly", group_specific=True, prior=prior)
-    training = _data(["2026-01-01", "2026-01-03", "2026-01-04"], groups=("west", "east"))
+    training = _data(["2026-01-01", "2026-01-03", "2026-01-04"], groups=("west", "east"), frequency=None)
     future_data = _data(["2026-01-05", "2026-01-07"], groups=("east", "west"), outcome=False)
     prepared = spec._prepare(training)
     forecast = prepared.for_data(future_data)

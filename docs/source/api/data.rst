@@ -10,3 +10,4 @@ Functions for preparing dataframe inputs for modeling.
    :nosignatures:
 
    prepare_data
+   select_channels
