@@ -1,7 +1,7 @@
-Data preparation
-================
+Data
+====
 
-Functions for preparing dataframe inputs for modeling.
+Functions for preparing and generating modeling data.
 
 .. currentmodule:: mmmjax
 
@@ -11,3 +11,4 @@ Functions for preparing dataframe inputs for modeling.
 
    prepare_data
    select_channels
+   simulate_data
