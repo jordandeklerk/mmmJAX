@@ -9,8 +9,11 @@ from typing import Literal, TypeAlias
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax.typing import ArrayLike, DTypeLike
+from numpy.typing import NDArray
 
+from mmmjax._results import _coordinates, _dimensions
 from mmmjax.data import PreparedData, _DataLayout
 from mmmjax.media import MediaEffect, _PreparedMedia
 from mmmjax.parameters import Parameterization
@@ -84,6 +87,23 @@ class Model:
         parameters, or components. Outputs are not sampled parameters.
         The whole function runs for generation, so all its requested inputs
         are needed for prediction.
+    dims : mapping of str to sequence of str, optional
+        Named axes for constrained parameter arrays, excluding chain and draw.
+        Use for custom parameters whose axes cannot be inferred from components.
+    coords : mapping of str to array_like, optional
+        One-dimensional labels for named axes. Labels are copied at construction.
+    generated_dims : mapping of str to sequence of str, optional
+        Axis labels for custom generated arrays, excluding chain and draw.
+        Overrides labels inherited from unchanged data, parameters, or component
+        inputs and from observation-shaped predictive and likelihood outputs.
+    predictive : sequence of str, default ()
+        Generated output names to store as posterior predictive observations.
+        Outputs matching the outcome shape use its observation order and labels
+        unless ``generated_dims`` specifies otherwise.
+    log_likelihood : sequence of str, default ()
+        Generated output names containing pointwise log likelihoods. Do not use
+        the scalar model density, which also contains priors and adjustments.
+        Observation-shaped outputs inherit outcome labels as for ``predictive``.
     """
 
     _parameterizations: tuple[tuple[str, Parameterization], ...]
@@ -98,8 +118,15 @@ class Model:
     _layout: _DataLayout | None
     _time_column: str | None
     _frequency: str | None
+    _time_values: tuple[object, ...]
+    _media_time_values: tuple[object, ...]
     _scaling: DataScaling | None
     _dtype: DTypeLike
+    _result_dims: dict[str, tuple[str, ...]]
+    _result_coords: dict[str, NDArray[np.generic]]
+    _generated_dims: dict[str, tuple[str, ...]]
+    _predictive_names: tuple[str, ...]
+    _likelihood_names: tuple[str, ...]
 
     def __init__(
         self,
@@ -111,6 +138,11 @@ class Model:
         components: Sequence[FourierSeasonality | MediaEffect] | None = None,
         transformed_parameters: TransformedParameters | None = None,
         scaling: DataScaling | Literal["auto"] | None = None,
+        dims: Mapping[str, Sequence[str]] | None = None,
+        coords: Mapping[str, object] | None = None,
+        generated_dims: Mapping[str, Sequence[str]] | None = None,
+        predictive: Sequence[str] = (),
+        log_likelihood: Sequence[str] = (),
     ) -> None:
         """Create a model from named parameter declarations and plain functions."""
         parameterizations = _prepare_parameterizations(parameters)
@@ -212,6 +244,28 @@ class Model:
                     has_transformed=transformed_parameters is not None,
                 )
 
+        result_dims = _dimensions(dims)
+        result_coords = _coordinates(coords)
+        output_dims = _dimensions(generated_dims)
+        predictive_names = _result_names(predictive, name="predictive")
+        likelihood_names = _result_names(log_likelihood, name="log_likelihood")
+        if set(predictive_names) & set(likelihood_names):
+            raise ValueError("predictive and log_likelihood must identify different generated outputs")
+        if generate is None and (output_dims or predictive_names or likelihood_names):
+            raise ValueError("Generated result metadata requires a generate callback")
+        declarations = dict(parameterizations)
+        dimension_sizes = {axis: len(labels) for axis, labels in result_coords.items()}
+        for name, axes in result_dims.items():
+            if name not in declarations:
+                raise ValueError(f"dims refers to undeclared parameter {name!r}")
+            shape = declarations[name].shape
+            if len(axes) != len(shape):
+                raise ValueError(f"Dimensions for parameter {name!r} must match its constrained shape {shape}")
+            for axis, size in zip(axes, shape, strict=True):
+                if axis in dimension_sizes and dimension_sizes[axis] != size:
+                    raise ValueError(f"Dimension {axis!r} must have length {size} for parameter {name!r}")
+                dimension_sizes[axis] = size
+
         object.__setattr__(self, "_parameterizations", parameterizations)
         object.__setattr__(self, "_log_density", log_density)
         object.__setattr__(self, "_generate", generate)
@@ -224,8 +278,15 @@ class Model:
         object.__setattr__(self, "_layout", None if data is None else data._layout())
         object.__setattr__(self, "_time_column", None if data is None else data.time_column)
         object.__setattr__(self, "_frequency", None if data is None else data.frequency)
+        object.__setattr__(self, "_time_values", () if data is None else tuple(data.time_values))
+        object.__setattr__(self, "_media_time_values", () if data is None else tuple(data.media_time_values))
         object.__setattr__(self, "_scaling", fitted_scaling)
         object.__setattr__(self, "_dtype", jax.dtypes.canonicalize_dtype(float))
+        object.__setattr__(self, "_result_dims", result_dims)
+        object.__setattr__(self, "_result_coords", result_coords)
+        object.__setattr__(self, "_generated_dims", output_dims)
+        object.__setattr__(self, "_predictive_names", predictive_names)
+        object.__setattr__(self, "_likelihood_names", likelihood_names)
 
     @property
     def parameters(self) -> dict[str, Parameterization]:
@@ -448,17 +509,26 @@ class Model:
             Dictionary mapping the names returned by the generation callback
             to JAX arrays. The callback determines the keys and array shapes.
         """
+        return self._generate_with_inputs(key, parameters, data)[0]
+
+    def _generate_with_inputs(
+        self,
+        key: jax.Array,
+        parameters: ParameterValues,
+        data: object,
+    ) -> tuple[dict[str, jax.Array], dict[str, ArrayLike]]:
+        """Retain callback inputs so sampling can label unchanged generated arrays."""
         if self._generate is None:
             raise RuntimeError("generated quantities are unavailable because this model has no generate callback")
 
         _validate_value_names(parameters, self._parameterizations, name="parameters")
         if self._data is None:
-            callback_parameters = (
+            arguments = (
                 dict(parameters)
                 if self._generate_parameter_names is None
                 else {name: parameters[name] for name in self._generate_parameter_names}
             )
-            generated = self._generate(key, data, **callback_parameters)
+            generated = self._generate(key, data, **arguments)
         else:
             inputs = self._component_data(data)
             effects = self._evaluate_quantities(inputs, parameters)
@@ -478,7 +548,7 @@ class Model:
                 quantities[name] = jnp.asarray(value)
             except (TypeError, ValueError) as exc:
                 raise TypeError(f"generated quantity {name!r} must be array-like, got {type(value).__name__}") from exc
-        return quantities
+        return quantities, arguments
 
     def _evaluate_quantities(self, inputs: _ModelData, parameters: ParameterValues) -> dict[str, jax.Array]:
         """Evaluate components and one shared transformation using the current inputs."""
@@ -548,6 +618,17 @@ class Model:
                     "The prepared inputs must use this model's component configurations and training labels"
                 )
         return data
+
+
+def _result_names(values: Sequence[str], *, name: str) -> tuple[str, ...]:
+    """Copy distinct generated output names without evaluating their callback."""
+    if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
+        raise TypeError(f"{name} must be a sequence of generated output names")
+    if any(not isinstance(value, str) or not value for value in values):
+        raise ValueError(f"{name} must contain nonempty string names")
+    if len(set(values)) != len(values):
+        raise ValueError(f"{name} must not contain duplicate output names")
+    return tuple(values)
 
 
 def _component_effects(inputs: _ModelData, parameters: ParameterValues) -> dict[str, jax.Array]:

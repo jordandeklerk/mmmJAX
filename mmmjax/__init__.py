@@ -123,6 +123,7 @@ from mmmjax.parameters import Interval, LowerBound, Parameterization, Positive, 
 from mmmjax.saturation import hill_saturation, log_saturation, logistic_saturation, root_saturation
 from mmmjax.scaling import DataScaling, Scaling, fit_data_scaling, fit_media_scaling, fit_scaling
 from mmmjax.seasonality import FourierSeasonality, fourier_features
+from mmmjax.sampling import sample
 from mmmjax.synthetic import SyntheticData, simulate_data
 
 __version__ = "0.0.1"
@@ -257,6 +258,7 @@ __all__ = [
     "prepare_hsgp",
     "reach_frequency_response",
     "root_saturation",
+    "sample",
     "select_channels",
     "simulate_data",
     "student_t",
