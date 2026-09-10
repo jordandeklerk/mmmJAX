@@ -244,6 +244,46 @@ def test_same_name_in_posterior_and_generated_quantities_has_separate_dimensions
     np.testing.assert_array_equal(results["generated_quantities"]["annual"], effect)
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "lp",
+        "diverging",
+        "acceptance_rate",
+        "energy",
+        "tree_depth",
+        "n_steps",
+        "reached_max_treedepth",
+        "step_size",
+        "warmup_steps",
+    ],
+)
+def test_diagnostics_do_not_inherit_parameter_or_generated_dimensions(name):
+    parameter = np.arange(12).reshape(2, 3, 2)
+    generated = np.arange(18).reshape(2, 3, 3)
+    diagnostic = np.asarray(100) if name == "warmup_steps" else np.arange(6).reshape(2, 3)
+    results = _collect_results(
+        {name: parameter},
+        generated_quantities={name: generated},
+        sample_stats={name: diagnostic},
+        dims={name: ("feature",)},
+        generated_dims={name: ("time",)},
+        coords={"feature": ["first", "second"], "chain": ["a", "b"], "draw": [10, 20, 30]},
+    )
+    assert results["posterior"][name].dims == ("chain", "draw", "feature")
+    assert results["generated_quantities"][name].dims == ("chain", "draw", "time")
+    expected_axes = () if name == "warmup_steps" else ("chain", "draw")
+    assert results["sample_stats"][name].dims == expected_axes
+    assert "feature" not in results["sample_stats"].coords
+    assert "time" not in results["sample_stats"].coords
+    np.testing.assert_array_equal(results["posterior"][name], parameter)
+    np.testing.assert_array_equal(results["generated_quantities"][name], generated)
+    np.testing.assert_array_equal(results["sample_stats"][name], diagnostic)
+    if expected_axes:
+        np.testing.assert_array_equal(results["sample_stats"]["chain"], ["a", "b"])
+        np.testing.assert_array_equal(results["sample_stats"]["draw"], [10, 20, 30])
+
+
 def test_collection_takes_snapshots_without_mutating_inputs_or_metadata(posterior):
     data = _prepared_data("national")
     dims = {"coefficient": ["channel"]}

@@ -66,11 +66,8 @@ def _collect_results(
     ):
         if values is None:
             continue
-        axes = (
-            output_dimensions
-            if name in ("posterior_predictive", "log_likelihood", "generated_quantities")
-            else dimensions
-        )
+        # Diagnostics do not inherit model parameter axes. Prepared datasets already have labels.
+        axes = output_dimensions if name in ("posterior_predictive", "log_likelihood", "generated_quantities") else {}
         dataset = _dataset(values, name, axes, coordinates)
         if not dataset.data_vars:
             continue

@@ -121,6 +121,27 @@ def test_normal_nuts_produces_reproducible_independent_chains(normal_model):
             assert isinstance(variable.data, np.ndarray)
 
 
+@pytest.mark.parametrize("named_axes", [False, True])
+def test_nuts_allows_parameters_named_after_sampler_diagnostics(named_axes):
+    model = Model(
+        {"energy": Real(shape=(2,))},
+        lambda data, energy: normal(energy, 0.0, 1.0),
+        dims={"energy": ("feature",)} if named_axes else None,
+        coords={"feature": ["first", "second"]} if named_axes else None,
+    )
+    results = sample(model, draws=10, warmup=50, chains=1, seed=19, generate=False)
+    parameter_axis = "feature" if named_axes else "energy_dim_0"
+    assert results["posterior"]["energy"].dims == ("chain", "draw", parameter_axis)
+    assert results["posterior"]["energy"].shape == (1, 10, 2)
+    assert results["sample_stats"]["energy"].dims == ("chain", "draw")
+    assert results["sample_stats"]["energy"].shape == (1, 10)
+    assert parameter_axis not in results["sample_stats"].coords
+    assert np.isfinite(results["posterior"]["energy"]).all()
+    assert np.isfinite(results["sample_stats"]["energy"]).all()
+    if named_axes:
+        np.testing.assert_array_equal(results["posterior"]["feature"], ["first", "second"])
+
+
 def test_nuts_returns_positive_parameters_and_full_simplex_events():
     model = Model(
         {"scale": Positive(), "weights": Simplex((3,))},
