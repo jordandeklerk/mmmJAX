@@ -1,4 +1,4 @@
-"""Tests for prepared geometric carryover and Hill media contributions."""
+"""Tests for prepared carryover and saturation media contributions."""
 
 from dataclasses import FrozenInstanceError, fields, replace
 
@@ -10,12 +10,37 @@ import pytest
 
 import mmmjax
 from mmmjax import Interval, Positive, prepare_data
+from mmmjax.adstock import delayed_adstock, geometric_adstock, weibull_cdf_adstock, weibull_pdf_adstock
 from mmmjax.media import MediaEffect
+from mmmjax.saturation import hill_saturation, log_saturation, logistic_saturation, root_saturation
 
 _MEDIA = np.array(
     [[[8, 1], [2, 4]], [[4, 2], [8, 1]], [[1, 4], [2, 2]], [[16, 8], [4, 1]], [[8, 2], [4, 4]]], dtype=float
 )
 _SUFFIXES = ("coefficient", "retention", "half_saturation", "slope")
+_ADSTOCK_ROLES = {
+    geometric_adstock: ("retention",),
+    delayed_adstock: ("retention", "delay"),
+    weibull_pdf_adstock: ("adstock_shape", "adstock_scale"),
+    weibull_cdf_adstock: ("adstock_shape", "adstock_scale"),
+}
+_SATURATION_ROLES = {
+    hill_saturation: ("half_saturation", "slope"),
+    logistic_saturation: ("half_saturation",),
+    root_saturation: ("exponent",),
+    log_saturation: (),
+}
+_ALL_SUFFIXES = (*_SUFFIXES, "delay", "adstock_shape", "adstock_scale", "exponent")
+_SELECTION_CASES = [
+    pytest.param(geometric_adstock, hill_saturation, True, id="geometric-hill"),
+    pytest.param(delayed_adstock, logistic_saturation, False, id="delayed-logistic"),
+    pytest.param(weibull_pdf_adstock, root_saturation, True, id="weibull-pdf-root"),
+    pytest.param(weibull_cdf_adstock, log_saturation, False, id="weibull-cdf-log"),
+    pytest.param(geometric_adstock, log_saturation, False, id="geometric-log"),
+    pytest.param(delayed_adstock, root_saturation, True, id="delayed-root"),
+    pytest.param(weibull_pdf_adstock, hill_saturation, False, id="weibull-pdf-hill"),
+    pytest.param(weibull_cdf_adstock, logistic_saturation, True, id="weibull-cdf-logistic"),
+]
 
 
 def _data(media, *, n_periods=3, start=0, reverse=False, observed=True):
@@ -77,6 +102,41 @@ def _reference(media, parameters, *, n_periods, max_lag=3, normalize=True, adsto
     return response[-n_periods:] * coefficient
 
 
+def _selected_parameters(adstock, saturation, *, grouped=False, max_lag=3):
+    values = {
+        "coefficient": [[0.7, 1.3], [1.1, 0.5]] if grouped else [0.7, 1.3],
+        "retention": [0.25, 0.6],
+        "delay": [0.7, 1.4],
+        "adstock_shape": [1.4, 2.3],
+        "adstock_scale": [2.4, 3.1],
+        "half_saturation": [2.5, 4.0],
+        "slope": [1.2, 0.8],
+        "exponent": [0.4, 0.7],
+    }
+    roles = ("coefficient", *_ADSTOCK_ROLES[adstock], *_SATURATION_ROLES[saturation])
+    return {"paid_" + role: jnp.asarray(values[role]) for role in roles if role != "delay" or max_lag > 0}
+
+
+def _selected_reference(
+    media, parameters, *, adstock, saturation, n_periods, max_lag=3, normalize=True, adstock_first=True
+):
+    def carry(exposures):
+        if adstock is geometric_adstock:
+            values = {"alpha": parameters["paid_retention"]}
+        elif adstock is delayed_adstock:
+            values = {"alpha": parameters["paid_retention"], "theta": parameters.get("paid_delay", 0.0)}
+        else:
+            values = {"shape": parameters["paid_adstock_shape"], "scale": parameters["paid_adstock_scale"]}
+        return adstock(exposures, **values, max_lag=max_lag, normalize=normalize)
+
+    def saturate(exposures):
+        values = [parameters["paid_" + role] for role in _SATURATION_ROLES[saturation]]
+        return saturation(exposures, *values)
+
+    response = saturate(carry(media)) if adstock_first else carry(saturate(media))
+    return response[-n_periods:] * parameters["paid_coefficient"]
+
+
 def test_media_effect_export_defaults_and_frozen_preparation_metadata():
     spec = MediaEffect(max_lag=0)
     prepared = spec._prepare(_data(_MEDIA[:, 0]))
@@ -84,8 +144,11 @@ def test_media_effect_export_defaults_and_frozen_preparation_metadata():
     assert mmmjax.MediaEffect is MediaEffect
     assert "MediaEffect" in mmmjax.__all__
     assert spec.name == "paid_media"
-    assert spec.normalize is True and spec.adstock_first is True and spec.group_specific is False
-    assert all(getattr(spec, suffix + "_prior") is None for suffix in _SUFFIXES)
+    assert spec.adstock is geometric_adstock and spec.saturation is hill_saturation
+    assert spec.normalize is True and spec.adstock_first is True and spec.group_specific_coefficients is False
+    assert not hasattr(spec, "automatic_priors")
+    assert all(not hasattr(spec, suffix + "_prior") for suffix in _ALL_SUFFIXES)
+    assert not hasattr(prepared, "log_prior")
     assert set(prepared.parameters) == {"paid_media_" + suffix for suffix in _SUFFIXES}
     assert jax.tree_util.tree_leaves(prepared) == []
     with pytest.raises(FrozenInstanceError):
@@ -112,13 +175,15 @@ def test_component_matches_finite_lag_hill_reference_with_full_history(adstock_f
     assert not np.allclose(expected[0], without_history[0])
 
 
-@pytest.mark.parametrize("group_specific", [False, True])
-def test_only_coefficients_become_group_specific(group_specific):
-    prepared = MediaEffect(max_lag=3, name="paid", group_specific=group_specific)._prepare(_data(_MEDIA))
-    parameters = _parameters(grouped=group_specific)
+@pytest.mark.parametrize("group_specific_coefficients", [False, True])
+def test_only_coefficient_shapes_change_across_groups(group_specific_coefficients):
+    prepared = MediaEffect(max_lag=3, name="paid", group_specific_coefficients=group_specific_coefficients)._prepare(
+        _data(_MEDIA)
+    )
+    parameters = _parameters(grouped=group_specific_coefficients)
     for suffix in _SUFFIXES:
         declaration = prepared.parameters["paid_" + suffix]
-        assert declaration.shape == ((2, 2) if suffix == "coefficient" and group_specific else (2,))
+        assert declaration.shape == ((2, 2) if suffix == "coefficient" and group_specific_coefficients else (2,))
         assert isinstance(declaration, Interval if suffix == "retention" else Positive)
     retention = prepared.parameters["paid_retention"]
     assert retention.lower == 0 and retention.upper == 1
@@ -235,56 +300,37 @@ def test_zero_exposures_keep_invalid_saturation_parameters_nan():
             np.testing.assert_array_equal(response[0, 1], 0.0)
 
 
-def test_default_priors_have_correct_normalization_and_do_not_scale_with_observations():
-    prepared = MediaEffect(max_lag=3, name="paid", group_specific=True)._prepare(_data(_MEDIA))
-    parameters = _parameters(grouped=True)
-    expected = 0.0
-    for suffix in _SUFFIXES:
-        value = np.asarray(parameters["paid_" + suffix], dtype=np.float64)
-        expected += (
-            (np.log(3) + 2 * np.log1p(-value)).sum()
-            if suffix == "retention"
-            else (np.log(2) - np.log(1.5) - 0.5 * np.log(2 * np.pi) - 0.5 * (value / 1.5) ** 2).sum()
-        )
-    value, gradient = jax.jit(jax.value_and_grad(lambda values, component: component.log_prior(values)))(
-        parameters, prepared
-    )
-    assert value.shape == ()
-    np.testing.assert_allclose(value, expected, rtol=3e-6, atol=2e-6)
-    for suffix in _SUFFIXES:
-        parameter = np.asarray(parameters["paid_" + suffix], dtype=np.float64)
-        expected_gradient = -2 / (1 - parameter) if suffix == "retention" else -parameter / 1.5**2
-        np.testing.assert_allclose(gradient["paid_" + suffix], expected_gradient, rtol=4e-6, atol=2e-6)
-    future = prepared.for_data(_data(_MEDIA[:4], n_periods=1, start=6, observed=False))
-    np.testing.assert_array_equal(future.log_prior(parameters), prepared.log_prior(parameters))
+@pytest.mark.parametrize("enable_x64", [False, True])
+def test_media_declarations_and_response_follow_prepared_precision(enable_x64):
+    data = _data(_MEDIA)
+    spec = MediaEffect(max_lag=3, name="paid", group_specific_coefficients=True)
+    with jax.enable_x64(enable_x64):
+        prepared = spec._prepare(data)
+        parameters = _parameters(grouped=True)
+        dtype = np.dtype("float64" if enable_x64 else "float32")
+        response = jax.jit(prepared.apply)(jnp.asarray(_MEDIA), parameters)
+        assert response.dtype == prepared.dtype == dtype
+        for name, declaration in prepared.parameters.items():
+            assert declaration.dtype == dtype
+            assert declaration.shape == parameters[name].shape
+        np.testing.assert_allclose(response, _reference(_MEDIA, parameters, n_periods=3), rtol=4e-6, atol=2e-6)
 
 
-def test_custom_prior_overrides_accept_scalar_or_elementwise_results():
-    def scalar_prior(value):
-        return (-0.5 * value**2).sum()
+@pytest.mark.parametrize("option", ["automatic_priors", *(suffix + "_prior" for suffix in _ALL_SUFFIXES)])
+def test_media_rejects_removed_prior_options(option):
+    with pytest.raises(TypeError, match=option):
+        MediaEffect(max_lag=3, **{option: False if option == "automatic_priors" else lambda value: -value})
 
-    def elementwise_prior(value):
-        return -0.5 * value**2
 
-    spec = MediaEffect(
-        max_lag=2,
-        name="paid",
-        coefficient_prior=scalar_prior,
-        retention_prior=elementwise_prior,
-        half_saturation_prior=scalar_prior,
-        slope_prior=elementwise_prior,
-    )
-    prepared, parameters = spec._prepare(_data(_MEDIA)), _parameters()
-    expected = sum(-0.5 * np.sum(np.asarray(value, dtype=np.float64) ** 2) for value in parameters.values())
-    np.testing.assert_allclose(
-        jax.jit(lambda component, values: component.log_prior(values))(prepared, parameters), expected, rtol=3e-6
-    )
+def test_media_rejects_old_group_specific_keyword():
+    with pytest.raises(TypeError, match="group_specific"):
+        MediaEffect(max_lag=3, group_specific=True)
 
 
 def test_forecasts_require_alignment_and_reuse_coefficients_with_changed_history_and_periods():
     training = _data(_MEDIA)
     with jax.enable_x64(False):
-        prepared = MediaEffect(max_lag=3, name="paid", group_specific=True)._prepare(training)
+        prepared = MediaEffect(max_lag=3, name="paid", group_specific_coefficients=True)._prepare(training)
         parameters = _parameters(grouped=True)
     for media, periods in ((_MEDIA[:4] * 0.7, 1), (_MEDIA[:2] * 1.2, 2)):
         future_data = _data(media, n_periods=periods, start=6, reverse=True, observed=False)
@@ -304,7 +350,7 @@ def test_forecasts_require_alignment_and_reuse_coefficients_with_changed_history
         assert "outcome" not in aligned.arrays and "spend" not in aligned.arrays
 
 
-def test_configuration_validates_required_lag_names_booleans_and_priors():
+def test_configuration_validates_required_lag_names_and_booleans():
     with pytest.raises(TypeError, match="max_lag"):
         MediaEffect()
     for lag in (True, 1.5, np.int64(2)):
@@ -312,15 +358,12 @@ def test_configuration_validates_required_lag_names_booleans_and_priors():
             MediaEffect(max_lag=lag)
     with pytest.raises(ValueError, match="max_lag"):
         MediaEffect(max_lag=-1)
-    for option in ("normalize", "adstock_first", "group_specific"):
+    for option in ("normalize", "adstock_first", "group_specific_coefficients"):
         with pytest.raises(TypeError, match=option):
             MediaEffect(max_lag=2, **{option: 1})
     for name in ("", "not-valid", "class"):
         with pytest.raises(ValueError, match="name"):
             MediaEffect(max_lag=2, name=name)
-    for suffix in _SUFFIXES:
-        with pytest.raises(TypeError, match="prior"):
-            MediaEffect(max_lag=2, **{suffix + "_prior": 0.5})
 
 
 def test_preparation_requires_media_and_consistent_forecast_identities():
@@ -330,8 +373,8 @@ def test_preparation_requires_media_and_consistent_forecast_identities():
     missing = prepare_data(pl.DataFrame({"time": [0, 1], "sales": [0.3, 0.7]}), time="time", outcome="sales")
     with pytest.raises(ValueError, match="media"):
         MediaEffect(max_lag=2)._prepare(missing)
-    with pytest.raises(ValueError, match=r"group_specific|group"):
-        MediaEffect(max_lag=2, group_specific=True)._prepare(_data(_MEDIA[:, 0]))
+    with pytest.raises(ValueError, match=r"group_specific_coefficients|group"):
+        MediaEffect(max_lag=2, group_specific_coefficients=True)._prepare(_data(_MEDIA[:, 0]))
     future = _data(_MEDIA, start=6, observed=False)
     for invalid in (
         replace(future, time_column="new_time"),
@@ -344,7 +387,7 @@ def test_preparation_requires_media_and_consistent_forecast_identities():
             prepared.for_data(invalid)
 
 
-def test_apply_and_prior_validate_media_and_parameter_shapes():
+def test_apply_validates_media_and_parameter_shapes():
     prepared = MediaEffect(max_lag=2, name="paid")._prepare(_data(_MEDIA))
     parameters = _parameters()
     for shape in ((), (5, 2), (5, 3, 2), (5, 2, 3), (2, 2, 2), (6, 2, 2)):
@@ -354,11 +397,142 @@ def test_apply_and_prior_validate_media_and_parameter_shapes():
         malformed = {**parameters, "paid_" + suffix: jnp.ones((2, 1))}
         missing = {name: value for name, value in parameters.items() if name != "paid_" + suffix}
         for values in (malformed, missing):
-            for operation in (prepared.log_prior, lambda values: prepared.apply(_MEDIA, values)):
-                with pytest.raises(ValueError, match=r"paid_|parameter|shape|missing"):
-                    operation(values)
-    invalid_prior = MediaEffect(max_lag=2, name="paid", coefficient_prior=lambda value: jnp.zeros(3))._prepare(
-        _data(_MEDIA)
+            with pytest.raises(ValueError, match=r"paid_|parameter|shape|missing"):
+                prepared.apply(_MEDIA, values)
+    with pytest.raises(TypeError, match="mapping"):
+        prepared.apply(_MEDIA, jnp.ones(2))
+    with pytest.raises(TypeError, match="real numeric"):
+        prepared.apply(_MEDIA, {**parameters, "paid_coefficient": jnp.ones(2, dtype=jnp.complex64)})
+
+
+@pytest.mark.parametrize("adstock", _ADSTOCK_ROLES, ids=lambda function: function.__name__)
+@pytest.mark.parametrize("saturation", _SATURATION_ROLES, ids=lambda function: function.__name__)
+def test_selectors_declare_only_active_parameter_constraints(adstock, saturation):
+    prepared = MediaEffect(
+        max_lag=3, name="paid", adstock=adstock, saturation=saturation, group_specific_coefficients=True
+    )._prepare(_data(_MEDIA))
+    parameters = _selected_parameters(adstock, saturation, grouped=True)
+    assert set(prepared.parameters) == set(parameters)
+    for name, declaration in prepared.parameters.items():
+        role = name.removeprefix("paid_")
+        assert declaration.shape == ((2, 2) if role == "coefficient" else (2,))
+        if role in ("retention", "delay", "exponent"):
+            assert isinstance(declaration, Interval)
+            assert declaration.lower == 0.0
+            assert declaration.upper == (3.0 if role == "delay" else 1.0)
+        else:
+            assert isinstance(declaration, Positive)
+
+
+@pytest.mark.parametrize("adstock,saturation,adstock_first", _SELECTION_CASES)
+def test_selected_transforms_compose_with_history_groups_and_finite_jit_gradients(adstock, saturation, adstock_first):
+    prepared = MediaEffect(
+        max_lag=3,
+        name="paid",
+        adstock=adstock,
+        saturation=saturation,
+        adstock_first=adstock_first,
+        normalize=adstock_first,
+        group_specific_coefficients=adstock_first,
+    )._prepare(_data(_MEDIA))
+    parameters = _selected_parameters(adstock, saturation, grouped=adstock_first)
+
+    def objective(media, values):
+        response = prepared.apply(media, values)
+        return response.sum(), response
+
+    (_, actual), (media_gradient, parameter_gradients) = jax.jit(
+        jax.value_and_grad(objective, argnums=(0, 1), has_aux=True)
+    )(jnp.asarray(_MEDIA), parameters)
+    options = {"adstock": adstock, "saturation": saturation, "normalize": adstock_first, "adstock_first": adstock_first}
+    expected = _selected_reference(_MEDIA, parameters, n_periods=3, **options)
+    without_history = _selected_reference(_MEDIA[-3:], parameters, n_periods=3, **options)
+    assert actual.shape == (3, 2, 2)
+    np.testing.assert_allclose(actual, expected, rtol=4e-6, atol=2e-6)
+    assert not np.allclose(actual[0], without_history[0])
+    assert np.any(np.abs(media_gradient[:2]) > 1e-6)
+    for gradient in jax.tree.leaves((media_gradient, parameter_gradients)):
+        assert np.all(np.isfinite(gradient))
+    inactive_values = {
+        "paid_" + role: jnp.full((2,), jnp.nan) for role in _ALL_SUFFIXES if "paid_" + role not in parameters
+    }
+    np.testing.assert_allclose(prepared.apply(_MEDIA, parameters | inactive_values), actual, rtol=4e-6, atol=2e-6)
+
+
+@pytest.mark.parametrize(
+    "adstock,saturation", [(delayed_adstock, root_saturation), (weibull_cdf_adstock, log_saturation)]
+)
+def test_selected_parameter_gradients_match_finite_differences_and_vmap_draws(adstock, saturation):
+    media = _MEDIA[:, 0]
+    with jax.enable_x64(True):
+        prepared = MediaEffect(max_lag=3, name="paid", adstock=adstock, saturation=saturation)._prepare(_data(media))
+        parameters = _selected_parameters(adstock, saturation)
+        gradients = jax.jit(jax.grad(lambda values: prepared.apply(media, values).sum()))(parameters)
+        for name, values in parameters.items():
+            expected = []
+            for delta in np.eye(2) * 1e-5:
+                plus = _selected_reference(
+                    media, parameters | {name: values + delta}, adstock=adstock, saturation=saturation, n_periods=3
+                ).sum()
+                minus = _selected_reference(
+                    media, parameters | {name: values - delta}, adstock=adstock, saturation=saturation, n_periods=3
+                ).sum()
+                expected.append((plus - minus) / 2e-5)
+            np.testing.assert_allclose(gradients[name], expected, rtol=2e-5, atol=2e-6)
+        draws = jax.tree.map(lambda value: jnp.stack((value, value * 1.1)), parameters)
+        exposures = jnp.stack((media, media * 1.7))
+        responses = jax.jit(jax.vmap(prepared.apply))(exposures, draws)
+        assert responses.shape == (2, 3, 2)
+        for index in range(2):
+            expected = _selected_reference(
+                exposures[index],
+                {name: value[index] for name, value in draws.items()},
+                adstock=adstock,
+                saturation=saturation,
+                n_periods=3,
+            )
+            np.testing.assert_allclose(responses[index], expected, rtol=4e-6, atol=2e-6)
+
+
+@pytest.mark.parametrize("normalize", [True, False])
+def test_delayed_zero_lag_uses_fixed_zero_delay_without_declaring_a_delay_parameter(normalize):
+    media = _MEDIA[:, 0]
+    prepared = MediaEffect(
+        max_lag=0, name="paid", adstock=delayed_adstock, saturation=log_saturation, normalize=normalize
+    )._prepare(_data(media))
+    parameters = _selected_parameters(delayed_adstock, log_saturation, max_lag=0)
+    assert set(prepared.parameters) == {"paid_coefficient", "paid_retention"}
+    np.testing.assert_allclose(
+        prepared.apply(media, parameters), np.log1p(media[-3:]) * parameters["paid_coefficient"], rtol=3e-6
     )
-    with pytest.raises(ValueError, match=r"prior|shape"):
-        invalid_prior.log_prior(parameters)
+    gradient = jax.jit(jax.grad(lambda values: prepared.apply(media, values).sum()))(parameters)
+    np.testing.assert_array_equal(gradient["paid_retention"], np.zeros(2))
+
+
+@pytest.mark.parametrize("adstock_first", [True, False])
+def test_root_selection_has_finite_gradients_with_zero_exposures(adstock_first):
+    media = np.array([[0.0, 0.0], [0.0, 0.0], [1.0, 0.0]])
+    prepared = MediaEffect(
+        max_lag=2, name="paid", adstock=delayed_adstock, saturation=root_saturation, adstock_first=adstock_first
+    )._prepare(_data(media))
+    parameters = _selected_parameters(delayed_adstock, root_saturation)
+    value, gradients = jax.jit(jax.value_and_grad(lambda values: prepared.apply(media, values).sum()))(parameters)
+    assert np.isfinite(value)
+    for gradient in gradients.values():
+        assert np.all(np.isfinite(gradient))
+        np.testing.assert_array_equal(gradient[1], 0.0)
+    np.testing.assert_array_equal(prepared.apply(media, parameters)[:, 1], np.zeros(3))
+
+
+@pytest.mark.parametrize("selector", ["adstock", "saturation"])
+@pytest.mark.parametrize("invalid", [None, "geometric", 0.5, lambda value: value])
+def test_selectors_reject_nonfunctions_and_unsupported_callables(selector, invalid):
+    with pytest.raises((TypeError, ValueError), match=selector):
+        MediaEffect(max_lag=3, **{selector: invalid})
+
+
+def test_selectors_reject_functions_from_the_wrong_transform_family():
+    with pytest.raises((TypeError, ValueError), match="adstock"):
+        MediaEffect(max_lag=3, adstock=hill_saturation)
+    with pytest.raises((TypeError, ValueError), match="saturation"):
+        MediaEffect(max_lag=3, saturation=geometric_adstock)

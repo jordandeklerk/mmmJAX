@@ -54,6 +54,7 @@ ENV/
 /benchmarks/.asv/
 
 # Jupyter
+*.ipynb
 .ipynb_checkpoints/
 
 # Sphinx documentation

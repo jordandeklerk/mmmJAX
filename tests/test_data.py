@@ -2547,6 +2547,130 @@ def test_prepare_panel_does_not_fill_calendar_gaps_shared_by_all_groups(frame_fa
         ("yearly", ["2024-02-29", "2025-02-28", "2026-02-28"]),
     ],
 )
+def test_prepare_data_infers_complete_calendar_spacing(frame_factory, frequency, dates):
+    source = frame_factory({"date": dates[::-1], "sales": [30, 20, 10]})
+    before = nw.from_native(source).to_dict(as_series=False)
+
+    data = prepare_data(source, time="date", outcome="sales")
+
+    assert data.frequency == frequency
+    assert data.time_values == tuple(dates)
+    np.testing.assert_array_equal(data.arrays["outcome"], [10, 20, 30])
+    assert nw.from_native(source).to_dict(as_series=False) == before
+
+
+@pytest.mark.parametrize("representation", [date.fromisoformat, datetime.fromisoformat])
+def test_prepare_data_infers_calendar_from_native_dates(frame_factory, representation):
+    dates = list(map(representation, ["2026-01-05", "2026-01-12", "2026-01-19"]))
+
+    data = prepare_data(frame_factory({"week": dates}), time="week")
+
+    assert data.frequency == "weekly"
+    assert data.time_values == tuple(dates)
+
+
+@pytest.mark.parametrize("periods", [[1, 2, 3], [1, 3, 5], [1.0, 1.5, 2.0]])
+def test_prepare_data_does_not_infer_calendar_units_from_numeric_labels(frame_factory, periods):
+    data = prepare_data(frame_factory({"time": periods}), time="time")
+
+    assert data.frequency is None
+    assert data.time_values == tuple(periods)
+
+
+@pytest.mark.parametrize("dates", [["2026-01-05"], ["2026-01-05", "2026-01-19"]])
+def test_prepare_data_leaves_short_date_calendars_undetermined(frame_factory, dates):
+    data = prepare_data(frame_factory({"week": dates}), time="week")
+
+    assert data.frequency is None
+    assert data.time_values == tuple(dates)
+
+
+@pytest.mark.parametrize(
+    "dates",
+    [
+        ["2026-01-05", "2026-01-06", "2026-01-08"],
+        ["2026-01-05", "2026-01-12", "2026-01-26"],
+        ["2026-01-05", "2026-01-19", "2026-02-02"],
+        ["2026-01-31", "2026-02-28", "2026-03-28"],
+        ["2026-01-01", "2026-03-01", "2026-04-01"],
+    ],
+)
+def test_prepare_data_rejects_incomplete_or_unsupported_calendar_spacing(dates):
+    source = pl.DataFrame({"week": dates})
+
+    with pytest.raises(ValueError, match=r"Cannot infer.*week.*missing or irregular.*frequency=None"):
+        prepare_data(source, time="week")
+
+    unchecked = prepare_data(source, time="week", frequency=None)
+    assert unchecked.frequency is None
+    assert unchecked.time_values == tuple(dates)
+
+
+def test_prepare_data_explicit_frequency_validates_short_calendars():
+    source = pl.DataFrame({"week": ["2026-01-05", "2026-01-12"]})
+
+    assert prepare_data(source, time="week", frequency="weekly").frequency == "weekly"
+    with pytest.raises(ValueError, match="does not follow frequency='daily'"):
+        prepare_data(source, time="week", frequency="daily")
+
+
+def test_prepare_data_infers_distinct_panel_dates_and_preserves_frequency_when_aligned():
+    dates = ["2026-01-19", "2026-01-05", "2026-01-12"]
+    source = pl.DataFrame({"week": dates * 2, "region": ["west"] * 3 + ["east"] * 3})
+
+    data = prepare_data(source, time="week", groups=["region"])
+    aligned = data._align_to(data)
+
+    assert data.frequency == aligned.frequency == "weekly"
+    assert data.time_values == tuple(sorted(dates))
+    assert data.group_values == aligned.group_values == (("west",), ("east",))
+
+
+def test_prepare_data_detects_calendar_gaps_shared_by_every_group():
+    dates = ["2026-01-05", "2026-01-12", "2026-01-26"]
+    source = pl.DataFrame({"week": dates * 2, "region": ["west"] * 3 + ["east"] * 3})
+
+    with pytest.raises(ValueError, match="Cannot infer a supported calendar frequency"):
+        prepare_data(source, time="week", groups=["region"])
+
+
+def test_prepare_data_infers_one_calendar_across_history_and_modeling_periods():
+    data = prepare_data(
+        pl.DataFrame({"date": ["2024-02-29", "2024-03-30"], "video": [2, 3]}),
+        time="date",
+        media=["video"],
+        media_history=pl.DataFrame({"date": ["2024-01-30"], "video": [1]}),
+    )
+
+    assert data.frequency == "monthly"
+    assert data.time_values == ("2024-02-29", "2024-03-30")
+    assert data.media_time_values == ("2024-01-30", "2024-02-29", "2024-03-30")
+    np.testing.assert_array_equal(data.arrays["media"], [[1], [2], [3]])
+
+
+@pytest.mark.parametrize("history_dates", [["2025-12-15", "2025-12-22"], ["2025-12-15", "2025-12-29"]])
+def test_prepare_data_automatic_frequency_detects_history_and_boundary_gaps(history_dates):
+    with pytest.raises(ValueError, match="Cannot infer a supported calendar frequency"):
+        prepare_data(
+            pl.DataFrame({"date": ["2026-01-05", "2026-01-12"], "video": [2, 3]}),
+            time="date",
+            media=["video"],
+            media_history=pl.DataFrame({"date": history_dates, "video": [0, 1]}),
+        )
+
+
+@pytest.mark.parametrize(
+    "frequency,dates",
+    [
+        ("daily", ["2024-02-28", "2024-02-29", "2024-03-01"]),
+        ("weekly", ["2025-12-31", "2026-01-07", "2026-01-14"]),
+        ("monthly", ["2024-01-01", "2024-02-01", "2024-03-01"]),
+        ("monthly", ["2024-01-31", "2024-02-29", "2024-03-31"]),
+        ("monthly", ["2024-01-30", "2024-02-29", "2024-03-30"]),
+        ("quarterly", ["2023-11-30", "2024-02-29", "2024-05-31"]),
+        ("yearly", ["2024-02-29", "2025-02-28", "2026-02-28"]),
+    ],
+)
 def test_prepare_panel_checks_calendar_without_changing_labels_or_values(frame_factory, frequency, dates):
     source = frame_factory({"date": dates[::-1], "sales": [30, 20, 10]})
     original = nw.from_native(source)

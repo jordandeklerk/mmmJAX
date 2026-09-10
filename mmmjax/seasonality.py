@@ -1,6 +1,5 @@
 """Seasonal components and features for recurring patterns over time."""
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
 from functools import partial
@@ -13,7 +12,6 @@ from jax.typing import ArrayLike
 from numpy.typing import NDArray
 
 from mmmjax.data import PreparedData
-from mmmjax.distributions import normal
 from mmmjax.parameters import Real
 
 __all__ = ["FourierSeasonality", "fourier_features"]
@@ -23,10 +21,13 @@ __all__ = ["FourierSeasonality", "fourier_features"]
 class FourierSeasonality:
     """Specify a repeating seasonal contribution for model composition.
 
-    Choose the cycle, its flexibility, and the coefficient prior. Internal
-    model preparation converts observation dates, builds Fourier features,
-    and declares the coefficients. The same time reference is retained for
-    prediction. This configuration does not fit a model.
+    Choose the cycle and its flexibility. Model preparation converts dates,
+    builds Fourier features, and declares coefficients. The time reference
+    is retained for prediction. This configuration does not fit a model.
+
+    Write coefficient priors in the model's ``log_density`` callback.
+    Request ``<name>_coefficients`` for the coefficient array and ``<name>``
+    for the seasonal effect.
 
     Parameters
     ----------
@@ -39,42 +40,34 @@ class FourierSeasonality:
         Positive number of harmonics. Higher orders allow more detailed
         seasonal patterns. Each harmonic adds a sine and a cosine
         coefficient. No intercept is included.
-    prior : callable, optional
-        Function taking the coefficient array and returning its scalar log
-        density or elementwise log densities. The default assigns
-        independent standard Normal priors. Choose a prior appropriate
-        for the units of the model's outcome or linear predictor. Use a
-        mmmJAX density function or another JAX-compatible callable.
     name : str, default "seasonality"
-        Parameter name used during model composition. Use distinct names
-        when combining multiple seasonal components.
-    group_specific : bool, default False
+        Coefficient parameter name and seasonal effect name during model
+        composition. Named callbacks request raw coefficients through
+        ``<name>_coefficients``. Use distinct names for seasonal components.
+    group_specific_coefficients : bool, default False
         Whether each prepared group has its own coefficients. The default
-        shares one curve across all groups. Separate coefficients receive
-        independent priors by default, without hierarchical pooling.
+        shares one curve across all groups. This does not add hierarchical
+        pooling.
 
     Examples
     --------
-    Configure an annual pattern with stronger shrinkage on its coefficients.
-    No dates, feature matrices, or coefficient shapes need to be supplied
-    when specifying the component.
+    Configure an annual pattern whose coefficient prior will be written in
+    the model callback using ``annual_coefficients``. No dates, feature
+    matrices, or coefficient shapes need to be supplied here.
 
     .. ipython::
 
-        In [1]: from functools import partial
-           ...: from mmmjax import FourierSeasonality, normal
+        In [1]: from mmmjax import FourierSeasonality
            ...: annual = FourierSeasonality(
            ...:     period="yearly", order=3, name="annual",
-           ...:     prior=partial(normal, location=0.0, scale=0.2),
            ...: )
            ...: annual.period, annual.order
     """
 
     period: str | float = "yearly"
     order: int = 2
-    prior: Callable[[jax.Array], ArrayLike] | None = None
     name: str = "seasonality"
-    group_specific: bool = False
+    group_specific_coefficients: bool = False
 
     def __post_init__(self) -> None:
         """Validate the static choices before preparing a component."""
@@ -93,21 +86,19 @@ class FourierSeasonality:
             raise TypeError("order must be a positive Python integer")
         if self.order <= 0:
             raise ValueError(f"order must be at least 1, got {self.order}")
-        if self.prior is not None and not callable(self.prior):
-            raise TypeError("prior must be a callable accepting the coefficient array")
         if not isinstance(self.name, str):
             raise TypeError("name must be a string naming the component's coefficients")
         if not self.name.isidentifier() or iskeyword(self.name):
             raise ValueError(f"name must be a valid non-keyword Python identifier, got {self.name!r}")
-        if not isinstance(self.group_specific, bool):
-            raise TypeError("group_specific must be True or False")
+        if not isinstance(self.group_specific_coefficients, bool):
+            raise TypeError("group_specific_coefficients must be True or False")
 
     def _prepare(self, data: PreparedData, *, reference: "_PreparedFourier | None" = None) -> "_PreparedFourier":
         """Prepare numeric state for composition outside JAX transformations."""
         if not isinstance(data, PreparedData):
             raise TypeError("seasonality requires PreparedData. Use prepare_data with the observation dataframe")
-        if self.group_specific and not data.group_columns:
-            raise ValueError("group_specific=True requires grouped data. Select groups in prepare_data")
+        if self.group_specific_coefficients and not data.group_columns:
+            raise ValueError("group_specific_coefficients=True requires grouped data. Select groups in prepare_data")
         if reference is not None and (
             data.time_column != reference.time_column or data.group_columns != reference.group_columns
         ):
@@ -126,7 +117,7 @@ class FourierSeasonality:
 
         group_values = data.group_values
         group_indices = list(range(len(group_values)))
-        if reference is not None and self.group_specific:
+        if reference is not None and self.group_specific_coefficients:
             training_groups = reference.group_values
             if set(group_values) != set(training_groups):
                 raise ValueError("Group-specific seasonality requires the same groups in training and prediction")
@@ -169,48 +160,30 @@ class _PreparedFourier:
 
     @property
     def parameters(self) -> dict[str, Real]:
-        """Declare the named coefficient block without assigning a prior twice."""
+        """Declare the named coefficient block without assigning a prior."""
         return {self.specification.name: Real(shape=self._coefficient_shape, dtype=self.features.dtype)}
 
     @property
     def _coefficient_shape(self) -> tuple[int, ...]:
         shape = (self.features.shape[1],)
-        return (*shape, len(self.group_values)) if self.specification.group_specific else shape
+        return (*shape, len(self.group_values)) if self.specification.group_specific_coefficients else shape
 
     def apply(self, coefficients: ArrayLike) -> jax.Array:
         """Return the seasonal contribution in the prepared observation order."""
         values = self._coefficients(coefficients)
-        if self.specification.group_specific:
+        if self.specification.group_specific_coefficients:
             return self.features @ values[:, self.group_indices]
         contribution = self.features @ values
         if self.group_columns:
             return jnp.broadcast_to(contribution[:, None], (self.features.shape[0], len(self.group_values)))
         return contribution
 
-    def log_prior(self, coefficients: ArrayLike) -> jax.Array:
-        """Evaluate one coefficient prior term, independently of observation count."""
-        values = self._coefficients(coefficients)
-        if self.specification.prior is None:
-            return normal(values, location=0.0, scale=1.0)
-        result = self.specification.prior(values)
-        try:
-            density = jnp.asarray(result)
-        except (TypeError, ValueError) as error:
-            raise TypeError("The seasonality prior must return real numeric log densities") from error
-        if not (jnp.issubdtype(density.dtype, jnp.floating) or jnp.issubdtype(density.dtype, jnp.integer)):
-            raise TypeError("The seasonality prior must return real numeric log densities")
-        if density.shape not in ((), values.shape):
-            raise ValueError(
-                f"The seasonality prior must return a scalar or shape {values.shape}, got shape {density.shape}"
-            )
-        return jnp.sum(density)
-
     def for_data(self, data: PreparedData) -> "_PreparedFourier":
         """Prepare predictions without changing the training time reference or coefficients."""
         return self.specification._prepare(data, reference=self)
 
     def _coefficients(self, coefficients: ArrayLike) -> jax.Array:
-        """Validate one coefficient block for its prior or contribution."""
+        """Validate the coefficient block for the seasonal contribution."""
         try:
             values = jnp.asarray(coefficients)
         except (TypeError, ValueError) as error:
