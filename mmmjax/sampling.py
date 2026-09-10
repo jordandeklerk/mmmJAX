@@ -12,8 +12,8 @@ import xarray as xr
 from jax.typing import ArrayLike
 from numpy.typing import NDArray
 
+from mmmjax._nuts import _sample_nuts
 from mmmjax._results import _collect_results, _data_dimensions
-from mmmjax._sampling import _sample_nuts
 from mmmjax.data import PreparedData
 from mmmjax.media import _PreparedMedia
 from mmmjax.model import Model, _component_parameter_inputs

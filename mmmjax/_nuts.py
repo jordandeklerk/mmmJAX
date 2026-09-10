@@ -1,4 +1,4 @@
-"""Numerical sampling routines for unconstrained model positions."""
+"""NUTS sampling for unconstrained model positions."""
 
 from collections.abc import Callable
 from typing import TypeAlias, cast
