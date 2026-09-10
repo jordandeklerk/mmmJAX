@@ -1,6 +1,6 @@
 """Tests for prepared Fourier seasonality in labeled JAX models."""
 
-from dataclasses import FrozenInstanceError, dataclass, replace
+from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, date, datetime
 
 import jax
@@ -54,11 +54,11 @@ def test_fourier_seasonality_is_exported_and_has_immutable_defaults():
     assert "FourierSeasonality" in mmmjax.__all__
     assert spec.period == "yearly"
     assert spec.order == 2
-    assert spec.prior is None
+    assert not hasattr(spec, "prior")
     assert spec.name == "seasonality"
-    assert spec.group_specific is False
-    assert spec.automatic_priors is True
-    for attribute, value in (("period", 7.0), ("order", 3), ("name", "weekly"), ("group_specific", True)):
+    assert spec.group_specific_coefficients is False
+    assert not hasattr(spec, "automatic_priors")
+    for attribute, value in (("period", 7.0), ("order", 3), ("name", "weekly"), ("group_specific_coefficients", True)):
         with pytest.raises(FrozenInstanceError):
             setattr(spec, attribute, value)
 
@@ -116,7 +116,7 @@ def test_dated_grouped_seasonality_matches_across_dataframe_backends():
         pl.DataFrame(columns),
         pa.table(columns),
     )
-    spec = FourierSeasonality(period="weekly", order=1, group_specific=True)
+    spec = FourierSeasonality(period="weekly", order=1, group_specific_coefficients=True)
     coefficients = jnp.array([[0.3, -0.2], [0.7, 1.1]])
     expected_features = _fourier_reference([0.0, 0.75, 1.5], 7, 1)
     expected_effect = expected_features @ np.asarray(coefficients, dtype=np.float64)
@@ -174,13 +174,8 @@ def test_shared_seasonality_accepts_new_forecast_groups_and_reuses_training_orig
     np.testing.assert_allclose(forecast.apply(coefficients)[:, 0], expected, rtol=3e-6, atol=2e-6)
 
 
-def test_group_specific_forecasts_preserve_coefficient_identity_and_future_group_order():
-    group_locations = jnp.array([[0.3, 1.1]])
-
-    def prior(beta):
-        return -0.5 * jnp.square(beta - group_locations) - 0.5 * jnp.log(2 * jnp.pi)
-
-    spec = FourierSeasonality(period="weekly", order=2, name="weekly", group_specific=True, prior=prior)
+def test_grouped_forecasts_preserve_coefficient_identity_and_future_group_order():
+    spec = FourierSeasonality(period="weekly", order=2, name="weekly", group_specific_coefficients=True)
     training = _data(["2026-01-01", "2026-01-03", "2026-01-04"], groups=("west", "east"), frequency=None)
     future_data = _data(["2026-01-05", "2026-01-07"], groups=("east", "west"), outcome=False)
     prepared = spec._prepare(training)
@@ -199,9 +194,6 @@ def test_group_specific_forecasts_preserve_coefficient_identity_and_future_group
         rtol=4e-6,
         atol=2e-6,
     )
-    expected_prior = _normal_reference(coefficient_values, location=np.asarray(group_locations, dtype=np.float64))
-    np.testing.assert_allclose(forecast.log_prior(coefficients), expected_prior, rtol=2e-6)
-    np.testing.assert_array_equal(forecast.log_prior(coefficients), prepared.log_prior(coefficients))
     # A forecast prepared from another forecast still refers to the original
     # coefficient groups and origin, even when its group order changes again.
     returned = forecast.for_data(_data(["2026-01-08"], groups=("west", "east"), outcome=False))
@@ -210,119 +202,82 @@ def test_group_specific_forecasts_preserve_coefficient_identity_and_future_group
     )
 
 
-def test_default_prior_matches_standard_normal_value_and_gradient():
-    prepared = FourierSeasonality(period=7, order=2, group_specific=True)._prepare(
-        _data([0, 1], groups=("west", "east"))
-    )
-    coefficients = jnp.array([[0.3, -0.7], [0.0, 1.2], [-0.5, 0.2], [0.9, -1.1]])
-    value, gradient = jax.jit(jax.value_and_grad(lambda beta, component: component.log_prior(beta)))(
-        coefficients, prepared
-    )
-
-    assert value.shape == ()
-    np.testing.assert_allclose(value, _normal_reference(coefficients), rtol=2e-6)
-    np.testing.assert_allclose(gradient, -np.asarray(coefficients), rtol=2e-6, atol=2e-6)
-
-
 @pytest.mark.parametrize("enable_x64", [False, True])
-def test_disabled_automatic_priors_preserve_seasonal_coefficients_and_effect(enable_x64):
+def test_seasonal_declarations_and_effect_follow_prepared_precision(enable_x64):
     data = _data([0, 1], groups=("west", "east"))
-    spec = FourierSeasonality(period=7, order=1, name="weekly", group_specific=True)
+    spec = FourierSeasonality(period=7, order=1, name="weekly", group_specific_coefficients=True)
     with jax.enable_x64(enable_x64):
-        default = spec._prepare(data)
-        manual = replace(spec, automatic_priors=False)._prepare(data)
+        prepared = spec._prepare(data)
         coefficients = jnp.array([[0.3, -0.7], [0.0, 1.2]])
-        value, gradient = jax.jit(jax.value_and_grad(manual.log_prior))(coefficients)
-
-        assert value.shape == () and value.dtype == coefficients.dtype
-        np.testing.assert_array_equal(value, 0.0)
-        assert isinstance(manual.parameters["weekly"], Real)
-        assert manual.parameters["weekly"].shape == default.parameters["weekly"].shape
-        assert manual.parameters["weekly"].dtype == default.parameters["weekly"].dtype
-        np.testing.assert_array_equal(gradient, np.zeros_like(coefficients))
-        np.testing.assert_array_equal(manual.apply(coefficients), default.apply(coefficients))
-        future = manual.for_data(_data([2, 3], groups=("west", "east"), outcome=False))
-        np.testing.assert_array_equal(future.log_prior(coefficients), value)
-
-
-def test_disabled_automatic_priors_reject_a_seasonal_prior_callback():
-    with pytest.raises(ValueError, match=r"prior.*automatic_priors=False"):
-        FourierSeasonality(prior=lambda value: -(value**2), automatic_priors=False)
+        dtype = np.dtype("float64" if enable_x64 else "float32")
+        effect = jax.jit(prepared.apply)(coefficients)
+        assert effect.dtype == prepared.features.dtype == dtype
+        declaration = prepared.parameters["weekly"]
+        assert isinstance(declaration, Real)
+        assert declaration.shape == coefficients.shape
+        assert declaration.dtype == dtype
+        assert not hasattr(prepared, "log_prior")
+        expected = _fourier_reference([0, 1], 7, 1) @ np.asarray(coefficients, dtype=np.float64)
+        np.testing.assert_allclose(effect, expected, rtol=4e-6, atol=2e-6)
 
 
-@pytest.mark.parametrize("invalid", [None, 0, 1, "false", np.bool_(False)])
-def test_seasonal_automatic_priors_requires_a_python_boolean(invalid):
-    with pytest.raises(TypeError, match="automatic_priors"):
-        FourierSeasonality(automatic_priors=invalid)
+@pytest.mark.parametrize("option,value", [("automatic_priors", False), ("prior", lambda values: -(values**2))])
+def test_seasonality_rejects_removed_prior_options(option, value):
+    with pytest.raises(TypeError, match=option):
+        FourierSeasonality(**{option: value})
 
 
-@pytest.mark.parametrize("scalar_prior", [False, True])
-def test_custom_prior_accepts_elementwise_or_scalar_log_density(scalar_prior):
-    def prior(coefficients):
-        values = -jnp.abs(coefficients - 0.5) / 2 - jnp.log(4.0)
-        return values.sum() if scalar_prior else values
-
-    prepared = FourierSeasonality(period=8, order=1, prior=prior)._prepare(_data([0, 1]))
-    coefficients = jnp.array([-0.3, 1.1])
-    value, gradient = jax.jit(jax.value_and_grad(lambda beta, component: component.log_prior(beta)))(
-        coefficients, prepared
-    )
-    expected = (-np.abs(np.asarray(coefficients, dtype=np.float64) - 0.5) / 2 - np.log(4)).sum()
-
-    np.testing.assert_allclose(value, expected, rtol=2e-6)
-    np.testing.assert_allclose(gradient, [0.5, -0.5], rtol=2e-6)
+def test_seasonality_rejects_old_group_specific_keyword():
+    with pytest.raises(TypeError, match="group_specific"):
+        FourierSeasonality(group_specific=True)
 
 
-def test_fresh_components_with_array_valued_callable_priors_work_in_one_jitted_function():
-    @dataclass
-    class Prior:
-        scale: np.ndarray
-
-        def __call__(self, coefficients):
-            return -0.5 * jnp.square(coefficients / self.scale) - jnp.log(self.scale) - 0.5 * jnp.log(2 * jnp.pi)
-
+def test_fresh_components_work_in_one_jitted_function():
     data = _data([0, 1])
-    scales = (np.array([0.5, 1.5]), np.array([1.0, 2.0]))
-    components = [FourierSeasonality(period=7, order=1, prior=Prior(scale))._prepare(data) for scale in scales]
+    periods = (7, 12)
+    components = [FourierSeasonality(period=period, order=1)._prepare(data) for period in periods]
     coefficients = jnp.array([0.3, -0.7])
-    evaluate = jax.jit(lambda component, beta: component.log_prior(beta))
+    evaluate = jax.jit(lambda component, beta: component.apply(beta))
     results = []
 
-    for component, scale in zip(components, scales, strict=True):
+    for component, period in zip(components, periods, strict=True):
         result = evaluate(component, coefficients)
-        np.testing.assert_allclose(result, _normal_reference(coefficients, scale=scale), rtol=2e-6)
+        expected = _fourier_reference([0, 1], period, 1) @ np.asarray(coefficients, dtype=np.float64)
+        np.testing.assert_allclose(result, expected, rtol=4e-6, atol=2e-6)
         results.append(result)
-    assert not np.isclose(results[0], results[1])
+    assert not np.allclose(results[0], results[1])
     np.testing.assert_array_equal(evaluate(components[0], coefficients), results[0])
 
 
-@pytest.mark.parametrize("group_specific", [False, True])
-def test_prepared_component_composes_with_jitted_model_density_gradient_and_generation(group_specific):
+@pytest.mark.parametrize("group_specific_coefficients", [False, True])
+def test_prepared_component_composes_with_jitted_model_density_gradient_and_generation(group_specific_coefficients):
     data = _data([10.0, 11.5, 13.0], groups=("west", "east"))
-    prepared = FourierSeasonality(period=9, order=1, name="cycle", group_specific=group_specific)._prepare(data)
+    prepared = FourierSeasonality(
+        period=9, order=1, name="cycle", group_specific_coefficients=group_specific_coefficients
+    )._prepare(data)
 
     def log_density(inputs, cycle):
         component = inputs["seasonal"]
-        return component.log_prior(cycle) + normal(inputs["outcome"], component.apply(cycle), 0.7)
+        return normal(cycle, location=0.0, scale=1.0) + normal(inputs["outcome"], component.apply(cycle), 0.7)
 
     def generate(key, inputs, cycle):
         effect = inputs["seasonal"].apply(cycle)
         return {"seasonality": effect, "outcome": normal_rng(key, effect, 0.7)}
 
     model = Model(prepared.parameters, log_density, generate)
-    coefficients = jnp.array([[0.3, -0.5], [0.7, 1.1]]) if group_specific else jnp.array([0.3, 0.7])
+    coefficients = jnp.array([[0.3, -0.5], [0.7, 1.1]]) if group_specific_coefficients else jnp.array([0.3, 0.7])
     position = {"cycle": coefficients}
     inputs = {"outcome": data._to_jax()["outcome"], "seasonal": prepared}
     value, gradient = jax.jit(jax.value_and_grad(model.log_density))(position, inputs)
     features = _fourier_reference([0, 1.5, 3], 9, 1)
     coefficient_values = np.asarray(coefficients, dtype=np.float64)
     expected_effect = features @ coefficient_values
-    if not group_specific:
+    if not group_specific_coefficients:
         expected_effect = np.broadcast_to(expected_effect[:, None], (3, 2))
     residual = np.asarray(data.arrays["outcome"], dtype=np.float64) - expected_effect
     expected_value = _normal_reference(residual, scale=0.7) + _normal_reference(coefficient_values)
     expected_gradient = (
-        features.T @ (residual if group_specific else residual.sum(axis=1)) / 0.7**2 - coefficient_values
+        features.T @ (residual if group_specific_coefficients else residual.sum(axis=1)) / 0.7**2 - coefficient_values
     )
 
     np.testing.assert_allclose(value, expected_value, rtol=3e-6, atol=3e-6)
@@ -337,8 +292,10 @@ def test_prepared_component_composes_with_jitted_model_density_gradient_and_gene
     future_inputs = {"seasonal": prepared.for_data(future)}
     generated_future = jax.jit(model.generate)(key, model.constrain(position), future_inputs)
     future_features = _fourier_reference([3.5, 5], 9, 1)
-    expected_future = future_features @ (coefficient_values[:, [1, 0]] if group_specific else coefficient_values)
-    if not group_specific:
+    expected_future = future_features @ (
+        coefficient_values[:, [1, 0]] if group_specific_coefficients else coefficient_values
+    )
+    if not group_specific_coefficients:
         expected_future = np.broadcast_to(expected_future[:, None], (2, 2))
     assert generated_future["outcome"].shape == (2, 2)
     np.testing.assert_allclose(generated_future["seasonality"], expected_future, rtol=4e-6, atol=2e-6)
@@ -357,8 +314,8 @@ def test_seasonality_validates_configuration_names_order_and_group_option():
         with pytest.raises(ValueError, match="order"):
             FourierSeasonality(order=order)
     for grouped in (1, "yes"):
-        with pytest.raises(TypeError, match="group_specific"):
-            FourierSeasonality(group_specific=grouped)
+        with pytest.raises(TypeError, match="group_specific_coefficients"):
+            FourierSeasonality(group_specific_coefficients=grouped)
 
 
 def test_seasonality_validates_named_and_numeric_periods():
@@ -372,25 +329,11 @@ def test_seasonality_validates_named_and_numeric_periods():
         FourierSeasonality(period="yearly")._prepare(_data([0, 1]))
 
 
-def test_seasonality_requires_callable_prior_with_compatible_output_shape():
-    with pytest.raises(TypeError, match="prior"):
-        FourierSeasonality(prior=0.5)
-    prepared = FourierSeasonality(period=7, order=2, prior=lambda coefficients: jnp.zeros(2))._prepare(_data([0, 1]))
-
-    with pytest.raises(ValueError, match=r"prior|shape"):
-        prepared.log_prior(jnp.ones(4))
-
-    for result in (None, "invalid", True, 1j):
-        invalid = FourierSeasonality(period=7, prior=lambda coefficients, result=result: result)._prepare(_data([0, 1]))
-        with pytest.raises(TypeError, match="prior must return real numeric log densities"):
-            invalid.log_prior(jnp.ones(4))
-
-
-def test_seasonality_requires_prepared_data_and_groups_for_group_specific_effects():
+def test_seasonality_requires_prepared_data_and_groups_for_separate_coefficients():
     with pytest.raises(TypeError, match=r"data|PreparedData"):
         FourierSeasonality(period=7)._prepare({"time": [0, 1]})
-    with pytest.raises(ValueError, match=r"group_specific|groups"):
-        FourierSeasonality(period=7, group_specific=True)._prepare(_data([0, 1]))
+    with pytest.raises(ValueError, match=r"group_specific_coefficients|groups"):
+        FourierSeasonality(period=7, group_specific_coefficients=True)._prepare(_data([0, 1]))
 
 
 def test_seasonality_rejects_invalid_time_labels_and_timezone_aware_datetimes():
@@ -418,8 +361,10 @@ def test_forecasts_cannot_switch_between_calendar_and_numeric_time():
             prepared.for_data(future)
 
 
-def test_group_specific_forecasts_reject_unknown_missing_or_different_group_columns():
-    prepared = FourierSeasonality(period=7, group_specific=True)._prepare(_data([0, 1], groups=("west", "east")))
+def test_grouped_forecasts_reject_unknown_missing_or_different_group_columns():
+    prepared = FourierSeasonality(period=7, group_specific_coefficients=True)._prepare(
+        _data([0, 1], groups=("west", "east"))
+    )
     for groups in (("west",), ("west", "central"), ("west", "east", "central")):
         future = _data([2, 3], groups=groups, outcome=False)
         with pytest.raises(ValueError, match="group"):
@@ -429,16 +374,14 @@ def test_group_specific_forecasts_reject_unknown_missing_or_different_group_colu
         prepared.for_data(future)
 
 
-@pytest.mark.parametrize("automatic_priors", [False, True])
-def test_apply_and_log_prior_require_exact_coefficient_shapes(automatic_priors):
-    shared = FourierSeasonality(period=7, order=2, automatic_priors=automatic_priors)._prepare(_data([0, 1]))
-    grouped = FourierSeasonality(period=7, order=2, group_specific=True, automatic_priors=automatic_priors)._prepare(
+def test_apply_requires_exact_coefficient_shapes():
+    shared = FourierSeasonality(period=7, order=2)._prepare(_data([0, 1]))
+    grouped = FourierSeasonality(period=7, order=2, group_specific_coefficients=True)._prepare(
         _data([0, 1], groups=("west", "east"))
     )
     for prepared, shapes in ((shared, [(), (3,), (4, 1)]), (grouped, [(4,), (2, 4), (4, 1)])):
         for shape in shapes:
-            for method in (prepared.apply, prepared.log_prior):
-                with pytest.raises(ValueError, match=r"coefficient|shape"):
-                    method(jnp.ones(shape))
+            with pytest.raises(ValueError, match=r"coefficient|shape"):
+                prepared.apply(jnp.ones(shape))
         with pytest.raises(TypeError, match="real numeric"):
-            prepared.log_prior(jnp.ones(prepared.parameters["seasonality"].shape, dtype=jnp.complex64))
+            prepared.apply(jnp.ones(prepared.parameters["seasonality"].shape, dtype=jnp.complex64))

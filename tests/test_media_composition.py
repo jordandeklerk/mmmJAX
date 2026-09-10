@@ -63,9 +63,39 @@ def _data(media, *, periods=3, start=0, reverse=False, observed=True):
     )
 
 
-def _model(data, *, named=True, grouped=False, automatic_priors=True):
-    def density(*, outcome, paid_media, annual, intercept, sigma):
-        return normal(outcome, intercept + paid_media.sum(-1) + annual, sigma) + normal(intercept, 0.0, 2.0)
+def _component_prior(coefficient, retention, half_saturation, slope, annual_coefficients):
+    return (
+        half_normal(coefficient, 1.5)
+        + beta(retention, 1.0, 3.0)
+        + half_normal(half_saturation, 1.5)
+        + half_normal(slope, 1.5)
+        + normal(annual_coefficients, 0.0, 1.0)
+    )
+
+
+def _model(data, *, keyword_only_generation=True, grouped=False, include_component_priors=True):
+    def density(
+        outcome,
+        paid_media,
+        annual,
+        intercept,
+        sigma,
+        paid_media_coefficient,
+        paid_media_retention,
+        paid_media_half_saturation,
+        paid_media_slope,
+        annual_coefficients,
+    ):
+        target = normal(outcome, intercept + paid_media.sum(-1) + annual, sigma) + normal(intercept, 0.0, 2.0)
+        if include_component_priors:
+            target += _component_prior(
+                paid_media_coefficient,
+                paid_media_retention,
+                paid_media_half_saturation,
+                paid_media_slope,
+                annual_coefficients,
+            )
+        return target
 
     def quantities(key, *, paid_media, annual, controls, intercept, sigma):
         mean = intercept + paid_media.sum(-1) + annual
@@ -77,24 +107,19 @@ def _model(data, *, named=True, grouped=False, automatic_priors=True):
             "draw": normal_rng(key, mean, sigma),
         }
 
-    def positional_density(data, effects, **parameters):
-        assert set(parameters) == {"intercept", "sigma"}
-        return density(outcome=data["outcome"], **effects, **parameters)
-
-    def positional_quantities(key, data, effects, **parameters):
-        assert set(parameters) == {"intercept", "sigma"}
-        return quantities(key, controls=data["controls"], **effects, **parameters)
+    def ordinary_quantities(key, controls, sigma, paid_media, intercept, annual):
+        return quantities(
+            key, controls=controls, sigma=sigma, paid_media=paid_media, intercept=intercept, annual=annual
+        )
 
     return Model(
         {"intercept": Real(), "sigma": Positive()},
-        density if named else positional_density,
-        quantities if named else positional_quantities,
+        density,
+        quantities if keyword_only_generation else ordinary_quantities,
         data=data,
         components=[
-            MediaEffect(max_lag=2, group_specific=grouped, automatic_priors=automatic_priors),
-            FourierSeasonality(
-                period=8, order=1, name="annual", group_specific=grouped, automatic_priors=automatic_priors
-            ),
+            MediaEffect(max_lag=2, group_specific_coefficients=grouped),
+            FourierSeasonality(period=8, order=1, name="annual", group_specific_coefficients=grouped),
         ],
     )
 
@@ -145,10 +170,10 @@ def _reference(position, media, times):
     return mean, paid, annual, prior + adjustment, parameters["sigma"]
 
 
-@pytest.mark.parametrize("named", [False, True])
-def test_mixed_components_match_full_density_gradients_and_generated_breakdowns(named):
+@pytest.mark.parametrize("keyword_only_generation", [False, True])
+def test_mixed_components_match_full_density_gradients_and_generated_breakdowns(keyword_only_generation):
     data = _data(_MEDIA)
-    model, position = _model(data, named=named), _position()
+    model, position = _model(data, keyword_only_generation=keyword_only_generation), _position()
     mean, paid, annual, prior, sigma = _reference(position, _MEDIA, [2, 3, 4])
     outcome = np.asarray(data.arrays["outcome"], dtype=np.float64)
 
@@ -254,10 +279,20 @@ def test_media_models_require_exposures_and_reject_foreign_component_bundles():
         model.generate(jax.random.key(0), model.constrain(position), foreign.data)
 
 
+def test_media_components_reject_legacy_density_inputs_with_guidance():
+    with pytest.raises(TypeError, match=r"no longer receives data or effects.*Request individual inputs by name"):
+        Model(
+            {},
+            lambda data, effects: normal(data["outcome"], effects["paid_media"].sum(-1), 1.0),
+            data=_data(_MEDIA),
+            components=[MediaEffect(max_lag=2)],
+        )
+
+
 def test_generated_parameter_and_effect_names_cannot_be_shadowed():
     data = _data(_MEDIA)
 
-    def callback(data, effects, **parameters):
+    def callback():
         return jnp.array(0.0)
 
     for name in ("paid_media", "paid_media_coefficient"):
@@ -270,19 +305,60 @@ def test_generated_parameter_and_effect_names_cannot_be_shadowed():
 
 
 def _total_model(data, *, transformed=False, grouped=False):
-    def density(*, outcome, paid_media_total, annual, intercept, sigma):
-        return normal(outcome, intercept + paid_media_total + annual, sigma) + normal(intercept, 0.0, 2.0)
+    def density(
+        outcome,
+        paid_media_total,
+        annual,
+        intercept,
+        sigma,
+        paid_media_coefficient,
+        paid_media_retention,
+        paid_media_half_saturation,
+        paid_media_slope,
+        annual_coefficients,
+    ):
+        return (
+            normal(outcome, intercept + paid_media_total + annual, sigma)
+            + normal(intercept, 0.0, 2.0)
+            + _component_prior(
+                paid_media_coefficient,
+                paid_media_retention,
+                paid_media_half_saturation,
+                paid_media_slope,
+                annual_coefficients,
+            )
+        )
 
-    def transform(*, paid_media_total, annual, intercept):
+    def transform(paid_media_total, annual, intercept):
         return {"mean": intercept + paid_media_total + annual}
 
-    def transformed_density(*, outcome, mean, intercept, sigma):
-        return normal(outcome, mean, sigma) + normal(intercept, 0.0, 2.0)
+    def transformed_density(
+        outcome,
+        mean,
+        intercept,
+        sigma,
+        paid_media_coefficient,
+        paid_media_retention,
+        paid_media_half_saturation,
+        paid_media_slope,
+        annual_coefficients,
+    ):
+        return (
+            normal(outcome, mean, sigma)
+            + normal(intercept, 0.0, 2.0)
+            + _component_prior(
+                paid_media_coefficient,
+                paid_media_retention,
+                paid_media_half_saturation,
+                paid_media_slope,
+                annual_coefficients,
+            )
+        )
 
-    def quantities(key, *, paid_media, paid_media_total):
+    def quantities(key, paid_media, paid_media_total):
         return {"channels": paid_media, "total": paid_media_total}
 
-    def transformed_quantities(key, *, paid_media, paid_media_total, mean):
+    def transformed_quantities(key, paid_media, paid_media_total, mean):
         return {"channels": paid_media, "total": paid_media_total, "mean": mean}
 
     return Model(
@@ -291,8 +367,8 @@ def _total_model(data, *, transformed=False, grouped=False):
         transformed_quantities if transformed else quantities,
         data=data,
         components=[
-            MediaEffect(max_lag=2, group_specific=grouped),
-            FourierSeasonality(period=8, order=1, name="annual", group_specific=grouped),
+            MediaEffect(max_lag=2, group_specific_coefficients=grouped),
+            FourierSeasonality(period=8, order=1, name="annual", group_specific_coefficients=grouped),
         ],
         transformed_parameters=transform if transformed else None,
     )
@@ -347,13 +423,49 @@ def test_selected_media_functions_flow_through_model_transforms_priors_and_jit_g
 ):
     data = _data(_MEDIA)
 
-    def transform(*, paid_media_total, intercept):
+    def transform(paid_media_total, intercept):
         return {"mean": intercept + paid_media_total}
 
-    def density(*, outcome, mean, intercept):
-        return normal(outcome, mean, 0.7) + normal(intercept, 0.0, 2.0)
+    if adstock is weibull_cdf_adstock:
 
-    def quantities(key, *, paid_media, paid_media_total, mean):
+        def density(
+            outcome,
+            mean,
+            intercept,
+            paid_media_coefficient,
+            paid_media_adstock_shape,
+            paid_media_adstock_scale,
+            paid_media_exponent,
+        ):
+            return (
+                normal(outcome, mean, 0.7)
+                + normal(intercept, 0.0, 2.0)
+                + half_normal(paid_media_coefficient, 1.5)
+                + half_normal(paid_media_adstock_shape, 1.5)
+                + half_normal(paid_media_adstock_scale, 1.5)
+                + uniform(paid_media_exponent, 0.0, 1.0)
+            )
+    else:
+
+        def density(
+            outcome,
+            mean,
+            intercept,
+            paid_media_coefficient,
+            paid_media_retention,
+            paid_media_delay,
+            paid_media_half_saturation,
+        ):
+            return (
+                normal(outcome, mean, 0.7)
+                + normal(intercept, 0.0, 2.0)
+                + half_normal(paid_media_coefficient, 1.5)
+                + beta(paid_media_retention, 1.0, 3.0)
+                + uniform(paid_media_delay, 0.0, 2.0)
+                + half_normal(paid_media_half_saturation, 1.5)
+            )
+
+    def quantities(key, paid_media, paid_media_total, mean):
         return {"channels": paid_media, "total": paid_media_total, "mean": mean}
 
     model = Model(
@@ -397,7 +509,7 @@ def test_selected_media_functions_flow_through_model_transforms_priors_and_jit_g
         )
         channels = response[-len(data.time_values) :] * parameters["coefficient"]
         mean = unconstrained["intercept"] + channels.sum(axis=-1)
-        value = density(outcome=data.arrays["outcome"], mean=mean, intercept=unconstrained["intercept"]) + prior
+        value = normal(data.arrays["outcome"], mean, 0.7) + normal(unconstrained["intercept"], 0.0, 2.0) + prior
         return value, (parameters, channels, mean)
 
     actual, gradient = jax.jit(jax.value_and_grad(model.log_density))(position, model.data)
@@ -445,10 +557,10 @@ def test_media_totals_preserve_group_and_prediction_axes_under_jit_vmap(transfor
 def test_custom_media_names_have_independent_totals_and_keep_single_channel_axes():
     data = prepare_data(pl.DataFrame({"time": [0, 1, 2], "video": [1.0, 2.0, 3.0]}), time="time", media=["video"])
 
-    def density(*, first_total, campaign_total_total):
+    def density(first_total, campaign_total_total):
         return normal(first_total + campaign_total_total, 0.0, 1.0)
 
-    def quantities(key, *, first, first_total, campaign_total, campaign_total_total):
+    def quantities(key, first, first_total, campaign_total, campaign_total_total):
         return {
             "first": first,
             "first_total": first_total,
@@ -477,7 +589,7 @@ def test_custom_media_names_have_independent_totals_and_keep_single_channel_axes
 def test_media_total_names_are_reserved_even_when_callbacks_do_not_request_them():
     data = _data(_MEDIA)
 
-    def callback(data, effects, **parameters):
+    def callback():
         return jnp.array(0.0)
 
     media = MediaEffect(max_lag=2)
@@ -532,10 +644,9 @@ def test_media_total_names_do_not_replace_random_keys_or_create_fourier_totals()
         )
 
 
-@pytest.mark.parametrize("manual_annual", [False, True])
-def test_direct_component_priors_match_automatic_density_and_gradients(manual_annual):
+@pytest.mark.parametrize("annual_scale", [0.4, 1.7])
+def test_explicit_component_prior_choices_control_density_and_gradients(annual_scale):
     def density(
-        *,
         outcome,
         paid_media,
         annual,
@@ -549,11 +660,10 @@ def test_direct_component_priors_match_automatic_density_and_gradients(manual_an
     ):
         prior = half_normal(paid_media_coefficient, 1.5) + beta(paid_media_retention, 1.0, 3.0)
         prior += half_normal(paid_media_half_saturation, 1.5) + half_normal(paid_media_slope, 1.5)
-        if manual_annual:
-            prior += normal(annual_coefficients, 0.0, 1.0)
+        prior += normal(annual_coefficients, 0.0, annual_scale)
         return normal(outcome, intercept + paid_media.sum(-1) + annual, sigma) + normal(intercept, 0.0, 2.0) + prior
 
-    def quantities(key, *, paid_media_coefficient, paid_media_retention, annual_coefficients, annual):
+    def quantities(key, paid_media_coefficient, paid_media_retention, annual_coefficients, annual):
         return {
             "coefficient": paid_media_coefficient,
             "retention": paid_media_retention,
@@ -568,14 +678,19 @@ def test_direct_component_priors_match_automatic_density_and_gradients(manual_an
         quantities,
         data=data,
         components=[
-            MediaEffect(max_lag=2, automatic_priors=False),
-            FourierSeasonality(period=8, order=1, name="annual", automatic_priors=not manual_annual),
+            MediaEffect(max_lag=2),
+            FourierSeasonality(period=8, order=1, name="annual"),
         ],
     )
-    automatic = _model(data)
+    baseline = _model(data)
+
+    def reference(values):
+        target = baseline.log_density(values, baseline.data)
+        return target + normal(values["annual"], 0.0, annual_scale) - normal(values["annual"], 0.0, 1.0)
+
     actual = jax.jit(jax.value_and_grad(model.log_density))(position, model.data)
-    expected = jax.jit(jax.value_and_grad(automatic.log_density))(position, automatic.data)
-    assert set(model.parameters) == set(automatic.parameters) == set(position)
+    expected = jax.jit(jax.value_and_grad(reference))(position)
+    assert set(model.parameters) == set(baseline.parameters) == set(position)
     for value, reference in zip(jax.tree.leaves(actual), jax.tree.leaves(expected), strict=True):
         np.testing.assert_allclose(value, reference, rtol=5e-6, atol=3e-6)
 
@@ -590,9 +705,9 @@ def test_direct_component_priors_match_automatic_density_and_gradients(manual_an
     np.testing.assert_allclose(generated["annual"], _reference(position, _MEDIA, [2, 3, 4])[2], rtol=4e-6, atol=2e-6)
 
 
-def test_disabling_component_priors_retains_jacobians_and_legacy_callback_inputs():
+def test_density_without_component_priors_retains_only_explicit_terms_and_jacobians():
     data = _data(_MEDIA)
-    model = _model(data, named=False, automatic_priors=False)
+    model = _model(data, include_component_priors=False)
     position = _position()
 
     def reference(values):
@@ -613,11 +728,11 @@ def test_disabling_component_priors_retains_jacobians_and_legacy_callback_inputs
         np.testing.assert_allclose(value, reference, rtol=5e-6, atol=3e-6)
 
 
-def test_automatic_component_parameters_reach_transforms_and_forecast_generation_under_jit_vmap():
-    def transform(*, paid_media_coefficient, paid_media_retention, annual_coefficients):
+def test_declared_component_parameters_reach_transforms_and_forecast_generation_under_jit_vmap():
+    def transform(paid_media_coefficient, paid_media_retention, annual_coefficients):
         return {"parameter_summary": paid_media_coefficient * paid_media_retention + annual_coefficients}
 
-    def quantities(key, *, paid_media, annual, parameter_summary, paid_media_coefficient, annual_coefficients):
+    def quantities(key, paid_media, annual, parameter_summary, paid_media_coefficient, annual_coefficients):
         return {
             "media": paid_media,
             "annual": annual,
@@ -633,8 +748,8 @@ def test_automatic_component_parameters_reach_transforms_and_forecast_generation
         quantities,
         data=_data(media),
         components=[
-            MediaEffect(max_lag=2, group_specific=True),
-            FourierSeasonality(period=8, order=1, name="annual", group_specific=True),
+            MediaEffect(max_lag=2, group_specific_coefficients=True),
+            FourierSeasonality(period=8, order=1, name="annual", group_specific_coefficients=True),
         ],
         transformed_parameters=transform,
     )
@@ -656,7 +771,6 @@ def test_automatic_component_parameters_reach_transforms_and_forecast_generation
 
 def test_selected_media_parameters_support_direct_priors_and_reject_inactive_roles():
     def direct_density(
-        *,
         outcome,
         paid_media_total,
         paid_media_coefficient,
@@ -672,32 +786,39 @@ def test_selected_media_parameters_support_direct_priors_and_reject_inactive_rol
             + uniform(paid_media_exponent, 0.0, 1.0)
         )
 
-    def component(automatic_priors):
-        return MediaEffect(
-            max_lag=2, adstock=weibull_cdf_adstock, saturation=root_saturation, automatic_priors=automatic_priors
-        )
-
     data = _data(_MEDIA)
-    model = Model({}, direct_density, data=data, components=[component(False)])
-    automatic = Model(
-        {},
-        lambda *, outcome, paid_media_total: normal(outcome, paid_media_total, 0.7),
-        data=data,
-        components=[component(True)],
-    )
+    component = MediaEffect(max_lag=2, adstock=weibull_cdf_adstock, saturation=root_saturation)
+    model = Model({}, direct_density, data=data, components=[component])
     roles = ("coefficient", "adstock_shape", "adstock_scale", "exponent")
     position = {
         f"paid_media_{role}": jnp.array([-0.5 + index / 10, 0.2 + index / 5]) for index, role in enumerate(roles)
     }
     assert set(model.parameters) == set(position)
+
+    def reference(values):
+        coefficient = jnp.exp(values["paid_media_coefficient"])
+        shape = jnp.exp(values["paid_media_adstock_shape"])
+        scale = jnp.exp(values["paid_media_adstock_scale"])
+        exponent = jax.nn.sigmoid(values["paid_media_exponent"])
+        carried = weibull_cdf_adstock(jnp.asarray(_MEDIA), shape, scale, max_lag=2)
+        total = (root_saturation(carried, exponent)[-3:] * coefficient).sum(axis=-1)
+        jacobian = sum(values[f"paid_media_{role}"].sum() for role in roles[:-1])
+        jacobian += jnp.sum(jnp.log(exponent) + jnp.log1p(-exponent))
+        return (
+            normal(data.arrays["outcome"], total, 0.7)
+            + half_normal(coefficient, 1.5)
+            + half_normal(shape, 1.5)
+            + half_normal(scale, 1.5)
+            + uniform(exponent, 0.0, 1.0)
+            + jacobian
+        )
+
     actual = jax.jit(jax.value_and_grad(model.log_density))(position, model.data)
-    expected = jax.jit(jax.value_and_grad(automatic.log_density))(position, automatic.data)
+    expected = jax.jit(jax.value_and_grad(reference))(position)
     for value, reference in zip(jax.tree.leaves(actual), jax.tree.leaves(expected), strict=True):
         np.testing.assert_allclose(value, reference, rtol=5e-6, atol=3e-6)
     with pytest.raises(ValueError, match="paid_media_retention"):
-        Model(
-            {}, lambda *, paid_media_retention: jnp.sum(paid_media_retention), data=data, components=[component(False)]
-        )
+        Model({}, lambda *, paid_media_retention: jnp.sum(paid_media_retention), data=data, components=[component])
 
 
 def test_requested_media_parameter_names_cannot_collide_with_data():

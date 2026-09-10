@@ -1,4 +1,4 @@
-"""Tests for binding prepared model inputs to keyword-only callbacks."""
+"""Tests for binding prepared model inputs to named callbacks."""
 
 import jax
 import jax.numpy as jnp
@@ -25,8 +25,10 @@ def _normal(values, scale=1.0):
     return (-0.5 * (values / scale) ** 2 - np.log(scale) - 0.5 * np.log(2 * np.pi)).sum()
 
 
-def _density(*, outcome, annual, intercept, sigma):
-    return normal(outcome, annual + intercept, sigma) + normal(intercept, 0.0, 2.0)
+def _density(outcome, annual, annual_coefficients, intercept, sigma):
+    return (
+        normal(outcome, annual + intercept, sigma) + normal(intercept, 0.0, 2.0) + normal(annual_coefficients, 0.0, 1.0)
+    )
 
 
 def _model(density=_density, generate=None):
@@ -72,25 +74,33 @@ def test_named_inputs_provide_evaluated_curves_and_count_priors_and_jacobian_onc
     np.testing.assert_allclose(generated["draw"], mean + scale * noise, rtol=4e-6, atol=2e-6)
 
 
-@pytest.mark.parametrize("named_density", [False, True])
-def test_positional_and_named_callbacks_mix_and_generation_requests_a_parameter_subset(named_density):
-    def positional_density(data, effects, intercept, sigma):
-        return _density(outcome=data["outcome"], annual=effects["annual"], intercept=intercept, sigma=sigma)
-
-    def named_generation(random_key, *, annual, intercept):
+@pytest.mark.parametrize("keyword_only", [False, True])
+def test_named_density_supports_generation_modes_and_parameter_subsets(keyword_only):
+    def keyword_generation(random_key, *, annual, intercept):
         return {"mean": annual + intercept}
 
-    def positional_generation(key, data, effects, intercept):
-        return {"mean": effects["annual"] + intercept}
+    def ordinary_generation(key, intercept, annual):
+        return {"mean": annual + intercept}
 
-    model = _model(
-        _density if named_density else positional_density, positional_generation if named_density else named_generation
-    )
+    model = _model(generate=keyword_generation if keyword_only else ordinary_generation)
     position = {"annual": jnp.array([0.3, -0.2]), "intercept": jnp.array(0.25), "sigma": jnp.array(0.0)}
     generated = jax.jit(model.generate)(jax.random.key(0), model.constrain(position), model.data)
     expected = _features([0, 1, 3, 5]) @ np.array([0.3, -0.2]) + 0.25
     np.testing.assert_allclose(generated["mean"], expected, rtol=4e-6, atol=2e-6)
     assert np.isfinite(jax.jit(model.log_density)(position, model.data))
+
+
+def test_density_arguments_can_mix_ordinary_and_keyword_only_inputs_in_any_order():
+    def density(sigma, intercept, *, annual_coefficients, annual, outcome):
+        return _density(outcome, annual, annual_coefficients, intercept, sigma)
+
+    model = _model(density=density)
+    ordinary_model = _model()
+    position = {"annual": jnp.array([0.3, -0.2]), "intercept": jnp.array(0.25), "sigma": jnp.array(0.0)}
+    actual = jax.jit(jax.value_and_grad(model.log_density))(position, model.data)
+    expected = jax.jit(jax.value_and_grad(ordinary_model.log_density))(position, ordinary_model.data)
+    for result, reference in zip(jax.tree.leaves(actual), jax.tree.leaves(expected), strict=True):
+        np.testing.assert_array_equal(result, reference)
 
 
 def test_named_forecast_inputs_align_groups_channels_controls_and_retain_training_phase():
@@ -128,7 +138,7 @@ def test_named_forecast_inputs_align_groups_channels_controls_and_retain_trainin
         density,
         quantities,
         data=training,
-        components=[FourierSeasonality(period=8, order=1, name="annual", group_specific=True)],
+        components=[FourierSeasonality(period=8, order=1, name="annual", group_specific_coefficients=True)],
     )
     future = prepare_data(
         pl.DataFrame(
@@ -166,10 +176,10 @@ def test_named_forecast_inputs_align_groups_channels_controls_and_retain_trainin
 
 
 def test_named_callbacks_work_with_empty_components_and_require_requested_inputs_despite_defaults():
-    def density(*, outcome=0.0):
+    def density(outcome=0.0):
         return normal(outcome, 0.0, 1.0)
 
-    def quantities(key, *, outcome=0.0):
+    def quantities(key, outcome=0.0):
         return {"observed": outcome}
 
     model = Model({}, density, quantities, data=_data(), components=[])
@@ -204,13 +214,13 @@ def test_named_binding_rejects_collisions_between_data_components_and_parameters
         with pytest.raises(ValueError, match=r"ambig|colli|conflict"):
             Model(parameters, lambda *, outcome: jnp.array(0.0), data=_data(), components=components)
 
-    def positional_density(data, effects, outcome):
-        return normal(data["outcome"], outcome, 1.0)
+    def ordinary_density(outcome):
+        return normal(outcome, 0.0, 1.0)
 
     with pytest.raises(ValueError, match=r"ambig|colli|conflict"):
         Model(
             {"outcome": Real()},
-            positional_density,
+            ordinary_density,
             lambda key, *, outcome: {"value": outcome},
             data=_data(),
             components=[],
@@ -218,7 +228,11 @@ def test_named_binding_rejects_collisions_between_data_components_and_parameters
 
 
 def test_named_callbacks_reject_variadic_parameters_and_a_keyword_only_random_key():
-    densities = (lambda *, outcome, **values: jnp.array(0.0), lambda *values, outcome: jnp.array(0.0))
+    densities = (
+        lambda *, outcome, **values: jnp.array(0.0),
+        lambda *values, outcome: jnp.array(0.0),
+        lambda outcome, /: jnp.array(0.0),
+    )
     for density in densities:
         with pytest.raises(TypeError):
             Model({}, density, data=_data(), components=[])
@@ -227,6 +241,7 @@ def test_named_callbacks_reject_variadic_parameters_and_a_keyword_only_random_ke
         lambda key, *values, outcome: {},
         lambda *, key, outcome: {},
         lambda outcome: {},
+        lambda key, outcome, /: {},
     )
     for generate in generators:
         with pytest.raises(TypeError):
@@ -238,26 +253,21 @@ def test_keyword_only_input_resolution_is_not_enabled_for_legacy_models():
         Model({}, lambda *, outcome: normal(outcome, 0.0, 1.0))
 
 
-def test_unrequested_name_collisions_preserve_mixed_callback_modes():
+def test_positional_component_density_cannot_bypass_named_input_collisions():
     def density(data, effects, outcome):
         return normal(data["outcome"], outcome + effects["annual"], 1.0)
 
-    model = Model(
-        {"outcome": Real()},
-        density,
-        lambda key, *, annual: {"annual": annual},
-        data=_data(),
-        components=[FourierSeasonality(period=8, order=1, name="annual")],
-    )
-    parameters = {"outcome": jnp.array(0.2), "annual": jnp.array([0.3, -0.2])}
-    generated = jax.jit(model.generate)(jax.random.key(0), parameters, model.data)
-    np.testing.assert_allclose(
-        generated["annual"], _features([0, 1, 3, 5]) @ np.array([0.3, -0.2]), rtol=4e-6, atol=2e-6
-    )
-    assert np.isfinite(model.log_density(parameters, model.data))
+    with pytest.raises(TypeError, match="no longer receives data or effects"):
+        Model(
+            {"outcome": Real()},
+            density,
+            lambda key, *, annual: {"annual": annual},
+            data=_data(),
+            components=[FourierSeasonality(period=8, order=1, name="annual")],
+        )
 
 
-def test_prepared_callbacks_may_request_no_named_inputs():
+def test_prepared_callbacks_may_request_no_inputs_without_hidden_priors():
     model = Model(
         {},
         lambda: jnp.array(1.25),
@@ -267,9 +277,9 @@ def test_prepared_callbacks_may_request_no_named_inputs():
     )
     parameters = {"annual": jnp.array([0.3, -0.2])}
 
-    np.testing.assert_allclose(
-        jax.jit(model.log_density)(parameters, model.data), 1.25 + _normal(parameters["annual"]), rtol=3e-6
-    )
+    value, gradient = jax.jit(jax.value_and_grad(model.log_density))(parameters, model.data)
+    np.testing.assert_array_equal(value, 1.25)
+    np.testing.assert_array_equal(gradient["annual"], jnp.zeros(2))
     generated = jax.jit(model.generate)(jax.random.key(0), parameters, model.data)
     np.testing.assert_array_equal(generated["constant"], 3.0)
 
@@ -287,7 +297,7 @@ def test_fourier_coefficient_aliases_follow_custom_names_without_changing_parame
         density,
         quantities,
         data=data,
-        components=[FourierSeasonality(period=8, order=1, name="annual_coefficients", automatic_priors=False)],
+        components=[FourierSeasonality(period=8, order=1, name="annual_coefficients")],
     )
     position = {"annual_coefficients": jnp.array([0.3, -0.2])}
     features = _features([0, 1, 3, 5])
@@ -325,7 +335,7 @@ def test_requested_fourier_coefficient_aliases_reject_parameter_component_and_da
             )
 
 
-def test_unrequested_fourier_coefficient_aliases_preserve_legacy_parameter_bindings():
+def test_positional_component_density_cannot_bypass_coefficient_alias_collisions():
     def density(data, effects, annual_coefficients):
         assert set(effects) == {"annual"}
         return normal(data["outcome"], effects["annual"] + annual_coefficients, 1.0)
@@ -333,19 +343,14 @@ def test_unrequested_fourier_coefficient_aliases_preserve_legacy_parameter_bindi
     def quantities(key, *, annual):
         return {"annual": annual}
 
-    model = Model(
-        {"annual_coefficients": Real()},
-        density,
-        quantities,
-        data=_data(),
-        components=[FourierSeasonality(period=8, order=1, name="annual")],
-    )
-    position = {"annual": jnp.array([0.3, -0.2]), "annual_coefficients": jnp.array(0.25)}
-    curve = _features([0, 1, 3, 5]) @ np.asarray(position["annual"], dtype=np.float64)
-    expected = _normal(_data().arrays["outcome"] - curve - 0.25) + _normal(position["annual"])
-    np.testing.assert_allclose(jax.jit(model.log_density)(position, model.data), expected, rtol=4e-6, atol=3e-6)
-    generated = jax.jit(model.generate)(jax.random.key(0), position, model.data)
-    np.testing.assert_allclose(generated["annual"], curve, rtol=4e-6, atol=2e-6)
+    with pytest.raises(TypeError, match="no longer receives data or effects"):
+        Model(
+            {"annual_coefficients": Real()},
+            density,
+            quantities,
+            data=_data(),
+            components=[FourierSeasonality(period=8, order=1, name="annual")],
+        )
 
 
 def test_transformed_outputs_cannot_shadow_unrequested_fourier_coefficient_aliases():

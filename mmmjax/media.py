@@ -12,7 +12,6 @@ from jax.typing import ArrayLike
 
 from mmmjax.adstock import delayed_adstock, geometric_adstock, weibull_cdf_adstock, weibull_pdf_adstock
 from mmmjax.data import PreparedData
-from mmmjax.distributions import beta, half_normal, uniform
 from mmmjax.parameters import Interval, Parameterization, Positive
 from mmmjax.saturation import hill_saturation, log_saturation, logistic_saturation, root_saturation
 
@@ -29,9 +28,9 @@ class MediaEffect:
     For custom transformations or parameterizations, declare parameters on
     ``Model`` and call :func:`media_response` from ``transformed_parameters``.
 
-    Exposures are not scaled here. Default priors assume scaled data.
-    Choose coefficient priors in contribution units and half-saturation
-    priors in the prepared exposure units.
+    Write parameter priors in the model's ``log_density`` callback.
+    Exposures are not scaled here. Choose coefficient priors in contribution
+    units and half-saturation priors in the prepared exposure units.
 
     Exposure gradients at zero use a zero-gradient convention for Hill
     slopes and root exponents below one. Evaluate marginal responses at
@@ -59,43 +58,15 @@ class MediaEffect:
         :func:`root_saturation`, or :func:`log_saturation` directly.
         Hill uses ``half_saturation`` and ``slope``, logistic uses
         ``half_saturation``, root uses ``exponent``, and log has no curve
-        parameters. Only priors for selected parameters may be supplied.
+        parameters.
     normalize : bool, default True
         Divide the adstock weights by their sum over the full lag window.
     adstock_first : bool, default True
         Apply carryover before saturation. Set to ``False`` to reverse
         their order. Earlier history is retained through both operations.
-    group_specific : bool, default False
+    group_specific_coefficients : bool, default False
         Give each group its own channel coefficients while sharing curve
-        parameters across groups. Default priors are independent, without
-        hierarchical pooling.
-    coefficient_prior : callable, optional
-        Prior for positive channel coefficients, defaulting to HalfNormal
-        with scale 1.5. All prior callbacks receive a parameter array and
-        return a scalar log density or matching elementwise log densities.
-    retention_prior : callable, optional
-        Prior for retention rates between zero and one, defaulting to Beta
-        with shape parameters 1 and 3.
-    delay_prior : callable, optional
-        Prior for the peak delay in observation periods, defaulting to
-        Uniform between zero and ``max_lag``.
-    adstock_shape_prior : callable, optional
-        Prior for positive Weibull shapes, defaulting to HalfNormal with scale 1.5.
-    adstock_scale_prior : callable, optional
-        Prior for positive Weibull scales in observation periods, defaulting
-        to HalfNormal with scale 1.5.
-    half_saturation_prior : callable, optional
-        Prior for positive half-saturation points in prepared exposure units,
-        defaulting to HalfNormal with scale 1.5.
-    slope_prior : callable, optional
-        Prior for positive Hill slopes, defaulting to HalfNormal with scale 1.5.
-    exponent_prior : callable, optional
-        Prior for root exponents, defaulting to Uniform between zero and one.
-    automatic_priors : bool, default True
-        Add component priors automatically. Set to ``False`` to write them
-        in the model's ``log_density`` callback using the declared parameter
-        names. Custom ``*_prior`` callbacks require ``True``. Constraints
-        and media contributions are unchanged.
+        parameters across groups. This does not add hierarchical pooling.
     """
 
     max_lag: int
@@ -104,16 +75,7 @@ class MediaEffect:
     saturation: Callable[..., jax.Array] = hill_saturation
     normalize: bool = True
     adstock_first: bool = True
-    group_specific: bool = False
-    coefficient_prior: Callable[[jax.Array], ArrayLike] | None = None
-    retention_prior: Callable[[jax.Array], ArrayLike] | None = None
-    delay_prior: Callable[[jax.Array], ArrayLike] | None = None
-    adstock_shape_prior: Callable[[jax.Array], ArrayLike] | None = None
-    adstock_scale_prior: Callable[[jax.Array], ArrayLike] | None = None
-    half_saturation_prior: Callable[[jax.Array], ArrayLike] | None = None
-    slope_prior: Callable[[jax.Array], ArrayLike] | None = None
-    exponent_prior: Callable[[jax.Array], ArrayLike] | None = None
-    automatic_priors: bool = True
+    group_specific_coefficients: bool = False
 
     def __post_init__(self) -> None:
         """Validate configuration before preparing channel parameters."""
@@ -125,7 +87,7 @@ class MediaEffect:
             raise TypeError("name must be a string naming the media contribution")
         if not self.name.isidentifier() or iskeyword(self.name):
             raise ValueError("name must be a valid non-keyword Python identifier")
-        for field in ("normalize", "adstock_first", "group_specific", "automatic_priors"):
+        for field in ("normalize", "adstock_first", "group_specific_coefficients"):
             if not isinstance(getattr(self, field), bool):
                 raise TypeError(f"{field} must be True or False")
         for field, supported in (
@@ -138,24 +100,6 @@ class MediaEffect:
             if not any(selected is function for function in supported):
                 choices = ", ".join(function.__name__ for function in supported)
                 raise ValueError(f"Choose {field} directly from {choices}. Use media_response for custom functions")
-        for role in (
-            "coefficient",
-            "retention",
-            "delay",
-            "adstock_shape",
-            "adstock_scale",
-            "half_saturation",
-            "slope",
-            "exponent",
-        ):
-            field = f"{role}_prior"
-            prior = getattr(self, field)
-            if prior is not None and not callable(prior):
-                raise TypeError(f"{field} must be a callable accepting the parameter array")
-            if prior is not None and not self.automatic_priors:
-                raise ValueError(f"{field} cannot be supplied when automatic_priors=False")
-            if prior is not None and role not in self._parameter_roles:
-                raise ValueError(f"{field} is not used by the selected transformations and max_lag")
 
     @property
     def _parameter_roles(self) -> tuple[str, ...]:
@@ -181,8 +125,8 @@ class MediaEffect:
             raise TypeError("Media effects require PreparedData. Use prepare_data with the exposure dataframe")
         if "media" not in data.arrays or not data.channels:
             raise ValueError("Media effects require exposure columns selected with media in prepare_data")
-        if self.group_specific and not data.group_columns:
-            raise ValueError("group_specific=True requires grouped data. Select groups in prepare_data")
+        if self.group_specific_coefficients and not data.group_columns:
+            raise ValueError("group_specific_coefficients=True requires grouped data. Select groups in prepare_data")
         if reference is not None and (
             self is not reference.specification
             or data.time_column != reference.time_column
@@ -250,7 +194,9 @@ class _PreparedMedia:
     def _parameter_shapes(self) -> dict[str, tuple[int, ...]]:
         channel_shape = (len(self.channels),)
         coefficient_shape = (
-            (len(self.group_values), *channel_shape) if self.specification.group_specific else channel_shape
+            (len(self.group_values), *channel_shape)
+            if self.specification.group_specific_coefficients
+            else channel_shape
         )
         return {
             role: coefficient_shape if role == "coefficient" else channel_shape
@@ -319,38 +265,6 @@ class _PreparedMedia:
             adstock_first=self.specification.adstock_first,
         )
         return response * values["coefficient"]
-
-    def log_prior(self, parameters: Mapping[str, ArrayLike]) -> jax.Array:
-        """Add one prior per parameter block, independent of observation count."""
-        values = self._parameter_values(parameters)
-        total = jnp.zeros((), dtype=self.dtype)
-        if not self.specification.automatic_priors:
-            return total
-        for role, value in values.items():
-            prior = getattr(self.specification, f"{role}_prior")
-            if prior is None:
-                if role == "retention":
-                    result = beta(value, alpha=1.0, beta=3.0)
-                elif role == "delay":
-                    result = uniform(value, lower=0.0, upper=float(self.specification.max_lag))
-                elif role == "exponent":
-                    result = uniform(value, lower=0.0, upper=1.0)
-                else:
-                    result = half_normal(value, scale=1.5)
-            else:
-                result = prior(value)
-            try:
-                density = jnp.asarray(result)
-            except (TypeError, ValueError) as error:
-                raise TypeError(f"The {role} prior must return real numeric log densities") from error
-            if not (jnp.issubdtype(density.dtype, jnp.floating) or jnp.issubdtype(density.dtype, jnp.integer)):
-                raise TypeError(f"The {role} prior must return real numeric log densities")
-            if density.shape not in ((), value.shape):
-                raise ValueError(
-                    f"The {role} prior must return a scalar or shape {value.shape}, got shape {density.shape}"
-                )
-            total = total + jnp.sum(density)
-        return total
 
     def for_data(self, data: PreparedData) -> "_PreparedMedia":
         """Prepare aligned observations with the training parameter identities and precision."""

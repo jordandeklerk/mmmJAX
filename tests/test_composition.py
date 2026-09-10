@@ -28,12 +28,12 @@ def _national_model(generate=None):
         outcome="sales",
     )
 
-    def custom_prior(coefficients):
-        return -0.5 * jnp.square(coefficients / 0.6) - jnp.log(0.6) - 0.5 * jnp.log(2 * jnp.pi)
-
-    def log_density(data, effects, intercept, sigma):
-        mean = intercept + effects["annual"] + effects["promotion"]
-        return normal(data["outcome"], mean, sigma) + normal(intercept, 0.0, 2.0)
+    def log_density(outcome, annual, promotion, annual_coefficients, promotion_coefficients, intercept, sigma):
+        mean = intercept + annual + promotion
+        target = normal(outcome, mean, sigma) + normal(intercept, 0.0, 2.0)
+        target += normal(annual_coefficients, 0.0, 1.0)
+        target += normal(promotion_coefficients, 0.0, 0.6)
+        return target
 
     model = Model(
         {"intercept": Real(), "sigma": Positive()},
@@ -42,7 +42,7 @@ def _national_model(generate=None):
         data=data,
         components=[
             FourierSeasonality(period=8, order=1, name="annual"),
-            FourierSeasonality(period=12, order=2, name="promotion", prior=custom_prior),
+            FourierSeasonality(period=12, order=2, name="promotion"),
         ],
     )
     position = {
@@ -54,7 +54,7 @@ def _national_model(generate=None):
     return model, data, position
 
 
-def test_composition_adds_two_component_priors_and_positive_jacobian_exactly_once():
+def test_explicit_component_priors_and_positive_jacobian_are_counted_exactly_once():
     model, data, position = _national_model()
     annual, promotion = _features([0, 1, 3, 5], 8, 1), _features([0, 1, 3, 5], 12, 2)
     outcome = np.asarray(data.arrays["outcome"], dtype=np.float64)
@@ -92,18 +92,16 @@ def test_composition_adds_two_component_priors_and_positive_jacobian_exactly_onc
     np.testing.assert_allclose(actual, expected, rtol=4e-6, atol=3e-6)
 
 
-@pytest.mark.parametrize("mapping_callback", [False, True])
-def test_generation_receives_effects_and_only_requested_user_parameters(mapping_callback):
-    def subset(key, data, effects, intercept):
-        return {"mean": intercept + effects["annual"] + effects["promotion"], "observed": data["outcome"]}
+@pytest.mark.parametrize("with_draw", [False, True])
+def test_generation_receives_only_requested_effects_data_and_parameters(with_draw):
+    def subset(key, intercept, outcome, promotion, annual):
+        return {"mean": intercept + annual + promotion, "observed": outcome}
 
-    def mapping(key, data, effects, **parameters):
-        assert set(parameters) == {"intercept", "sigma"}
-        assert set(effects) == {"annual", "promotion"}
-        mean = parameters["intercept"] + effects["annual"] + effects["promotion"]
-        return {"mean": mean, "draw": normal_rng(key, mean, parameters["sigma"])}
+    def sampled(key, *, sigma, annual, intercept, promotion):
+        mean = intercept + annual + promotion
+        return {"mean": mean, "draw": normal_rng(key, mean, sigma)}
 
-    model, data, position = _national_model(mapping if mapping_callback else subset)
+    model, data, position = _national_model(sampled if with_draw else subset)
     constrained = model.constrain(position)
     key = jax.random.key(17)
     result = jax.jit(model.generate)(key, constrained, model.data)
@@ -114,15 +112,15 @@ def test_generation_receives_effects_and_only_requested_user_parameters(mapping_
     )
 
     np.testing.assert_allclose(result["mean"], expected, rtol=4e-6, atol=2e-6)
-    if mapping_callback:
+    if with_draw:
         noise = np.asarray(jax.random.normal(key, (4,), dtype=constrained["sigma"].dtype))
         np.testing.assert_allclose(result["draw"], expected + float(constrained["sigma"]) * noise, rtol=4e-6, atol=2e-6)
     else:
         np.testing.assert_array_equal(result["observed"], data.arrays["outcome"].astype(result["observed"].dtype))
 
 
-@pytest.mark.parametrize("group_specific", [False, True])
-def test_grouped_composition_preserves_effect_shapes_and_counts_shared_priors_once(group_specific):
+@pytest.mark.parametrize("group_specific_coefficients", [False, True])
+def test_grouped_composition_preserves_effect_shapes_and_counts_shared_priors_once(group_specific_coefficients):
     data = prepare_data(
         pl.DataFrame(
             {
@@ -137,29 +135,32 @@ def test_grouped_composition_preserves_effect_shapes_and_counts_shared_priors_on
         frequency=None,
     )
 
-    def log_density(data, effects):
-        return normal(data["outcome"], effects["seasonality"], 1.0)
+    def log_density(outcome, seasonality, seasonality_coefficients):
+        return normal(outcome, seasonality, 1.0) + normal(seasonality_coefficients, 0.0, 1.0)
 
-    def generate(key, data, effects):
-        return {"seasonality": effects["seasonality"]}
+    def generate(key, seasonality):
+        return {"seasonality": seasonality}
 
     model = Model(
         {},
         log_density,
         generate,
         data=data,
-        components=[FourierSeasonality(period="weekly", order=1, group_specific=group_specific)],
+        components=[
+            FourierSeasonality(period="weekly", order=1, group_specific_coefficients=group_specific_coefficients)
+        ],
     )
-    coefficients = jnp.array([[0.3, -0.2], [0.7, 1.1]]) if group_specific else jnp.array([0.3, 0.7])
+    coefficients = jnp.array([[0.3, -0.2], [0.7, 1.1]]) if group_specific_coefficients else jnp.array([0.3, 0.7])
     position = {"seasonality": coefficients}
     features = _features([0, 2, 5], 7, 1)
     expected = features @ np.asarray(coefficients, dtype=np.float64)
-    if not group_specific:
+    if not group_specific_coefficients:
         expected = np.broadcast_to(expected[:, None], (3, 2))
     residual = np.asarray(data.arrays["outcome"], dtype=np.float64) - expected
-    expected_gradient = features.T @ (residual if group_specific else residual.sum(axis=1)) - np.asarray(coefficients)
+    expected_gradient = features.T @ (residual if group_specific_coefficients else residual.sum(axis=1))
+    expected_gradient -= np.asarray(coefficients)
 
-    assert model.parameters["seasonality"].shape == ((2, 2) if group_specific else (2,))
+    assert model.parameters["seasonality"].shape == ((2, 2) if group_specific_coefficients else (2,))
     value, gradient = jax.jit(jax.value_and_grad(model.log_density))(position, model.data)
     generated = jax.jit(model.generate)(jax.random.key(0), model.constrain(position), model.data)
     assert generated["seasonality"].shape == (3, 2)
@@ -183,7 +184,7 @@ def test_all_component_parameters_participate_in_initialization_and_transforms()
 
 
 def test_complete_parameter_names_and_shapes_are_required_even_for_subset_generation():
-    model, _, position = _national_model(lambda key, data, effects: {"mean": effects["annual"]})
+    model, _, position = _national_model(lambda key, annual: {"mean": annual})
     missing = {name: value for name, value in position.items() if name != "promotion"}
     extra = {**position, "unexpected": jnp.array(0.0)}
     malformed = {**position, "annual": jnp.zeros(3)}
@@ -197,13 +198,11 @@ def test_complete_parameter_names_and_shapes_are_required_even_for_subset_genera
                 operation(values)
 
 
-def test_empty_components_use_effect_callback_and_omitted_components_keep_legacy_callbacks():
+def test_prepared_models_bind_empty_components_by_name_and_raw_models_keep_data_callbacks():
     data = prepare_data(pl.DataFrame({"time": [0, 1], "sales": [0.3, 0.7]}), time="time", outcome="sales")
 
-    def composed(data, effects, **parameters):
-        assert effects == {}
-        assert set(parameters) == {"location"}
-        return normal(data["outcome"], parameters["location"], 1.0)
+    def composed(location, outcome):
+        return normal(outcome, location, 1.0)
 
     def legacy(data, location):
         return normal(data["outcome"], location, 1.0)
@@ -221,9 +220,8 @@ def test_composed_model_snapshots_prepared_arrays_and_component_selection():
     components = [FourierSeasonality(period=7, order=1)]
     parameters = {"location": Real()}
 
-    def log_density(data, effects, **values):
-        assert set(values) == {"location"}
-        return normal(data["outcome"], values["location"] + effects["seasonality"], 1.0)
+    def log_density(outcome, location, seasonality, seasonality_coefficients):
+        return normal(outcome, location + seasonality, 1.0) + normal(seasonality_coefficients, 0.0, 1.0)
 
     model = Model(parameters, log_density, data=data, components=components)
     position = {"location": jnp.array(0.2), "seasonality": jnp.array([0.3, -0.7])}
@@ -246,7 +244,7 @@ def test_composition_rejects_duplicate_names_and_user_parameter_collisions():
         ({"seasonality": Real()}, [FourierSeasonality(period=7)]),
     ):
         with pytest.raises(ValueError):
-            Model(parameters, lambda data, effects, **values: jnp.array(0.0), data=data, components=components)
+            Model(parameters, lambda: jnp.array(0.0), data=data, components=components)
 
 
 def test_composition_requires_prepared_data_and_supported_component_instances():
@@ -265,39 +263,60 @@ def test_composition_requires_prepared_data_and_supported_component_instances():
             Model({}, callback, data=data, components=components)
 
 
-def test_component_callbacks_validate_user_parameters_and_required_effect_argument():
+@pytest.mark.parametrize("with_components", [False, True])
+def test_prepared_density_rejects_legacy_data_effects_callbacks_with_guidance(with_components):
     _, data, _ = _national_model()
     bad_densities = (
         lambda data, location: jnp.array(0.0),
         lambda data, *, effects, location: jnp.array(0.0),
         lambda data, effects: jnp.array(0.0),
         lambda data, effects, location, seasonality: jnp.array(0.0),
-        lambda data, effects, location, **parameters: jnp.array(0.0),
     )
     for callback in bad_densities:
-        with pytest.raises((TypeError, ValueError)):
-            Model({"location": Real()}, callback, data=data, components=[FourierSeasonality(period=7)])
-    for callback in (lambda key, data, location: {}, lambda key, data, effects, seasonality: {}):
-        with pytest.raises((TypeError, ValueError)):
+        with pytest.raises(TypeError, match=r"no longer receives data or effects.*Request individual inputs by name"):
             Model(
                 {"location": Real()},
-                lambda data, effects, location: jnp.array(0.0),
                 callback,
                 data=data,
-                components=[FourierSeasonality(period=7)],
+                components=[FourierSeasonality(period=7)] if with_components else [],
             )
 
 
-def test_component_priors_do_not_hide_an_invalid_integer_callback_density():
+@pytest.mark.parametrize("with_components", [False, True])
+def test_prepared_generation_rejects_legacy_data_effects_callbacks_with_guidance(with_components):
     _, data, _ = _national_model()
-    model = Model({}, lambda data, effects: jnp.array(1), data=data, components=[FourierSeasonality(period=7, order=1)])
+    for callback in (lambda key, data, location: {}, lambda key, data, effects, seasonality: {}):
+        with pytest.raises(TypeError, match=r"no longer receives data or effects.*Request individual inputs by name"):
+            Model(
+                {"location": Real()},
+                lambda location: normal(location, 0.0, 1.0),
+                callback,
+                data=data,
+                components=[FourierSeasonality(period=7)] if with_components else [],
+            )
+
+
+def test_component_callbacks_validate_requested_parameter_names():
+    _, data, _ = _national_model()
+    with pytest.raises(ValueError, match="location"):
+        Model(
+            {"location": Real()},
+            lambda *, seasonality: jnp.sum(seasonality),
+            data=data,
+            components=[FourierSeasonality(period=7)],
+        )
+
+
+def test_component_model_rejects_an_invalid_integer_callback_density():
+    _, data, _ = _national_model()
+    model = Model({}, lambda: jnp.array(1), data=data, components=[FourierSeasonality(period=7, order=1)])
 
     with pytest.raises(TypeError):
         model.log_density({"seasonality": jnp.array([0.3, -0.7])}, model.data)
 
 
 def test_runtime_inputs_must_preserve_component_training_origin_and_group_identity():
-    component = FourierSeasonality(period=7, order=1, group_specific=True)
+    component = FourierSeasonality(period=7, order=1, group_specific_coefficients=True)
 
     def build(times, groups, specification):
         data = prepare_data(
@@ -314,15 +333,17 @@ def test_runtime_inputs_must_preserve_component_training_origin_and_group_identi
         )
         model = Model(
             {},
-            lambda data, effects: normal(data["outcome"], effects["seasonality"], 1.0),
-            lambda key, data, effects: {"seasonality": effects["seasonality"]},
+            lambda outcome, seasonality: normal(outcome, seasonality, 1.0),
+            lambda key, seasonality: {"seasonality": seasonality},
             data=data,
             components=[specification],
         )
         return model, data
 
     model, data = build((0, 1), ("west", "east"), component)
-    foreign, _ = build((0, 1), ("west", "east"), FourierSeasonality(period=7, order=1, group_specific=True))
+    foreign, _ = build(
+        (0, 1), ("west", "east"), FourierSeasonality(period=7, order=1, group_specific_coefficients=True)
+    )
     reordered, _ = build((0, 1), ("east", "west"), component)
     shifted, _ = build((10, 11), ("west", "east"), component)
     position = {"seasonality": jnp.array([[0.3, -0.2], [0.7, 1.1]])}
@@ -341,19 +362,16 @@ def test_runtime_inputs_must_preserve_component_training_origin_and_group_identi
             model.generate(jax.random.key(0), constrained, supplied)
 
 
-def test_generation_skips_priors_and_accepts_renamed_positional_only_inputs():
+def test_generation_skips_density_and_accepts_a_positional_only_random_key():
     data = prepare_data(pl.DataFrame({"time": [10, 11], "sales": [0.3, 0.7]}), time="time", outcome="sales")
 
-    def prior(coefficients):
-        raise AssertionError("Generation must not evaluate coefficient priors")
+    def log_density(outcome, seasonality, seasonality_coefficients):
+        raise AssertionError("Generation must not evaluate the density or its priors")
 
-    def log_density(observations, contributions, /):
-        return normal(observations["outcome"], contributions["seasonality"], 1.0)
+    def generate(rng, /, seasonality):
+        return {"effect": seasonality}
 
-    def generate(rng, observations, contributions, /):
-        return {"effect": contributions["seasonality"]}
-
-    model = Model({}, log_density, generate, data=data, components=[FourierSeasonality(period=7, order=1, prior=prior)])
+    model = Model({}, log_density, generate, data=data, components=[FourierSeasonality(period=7, order=1)])
     coefficients = jnp.array([0.3, -0.7])
     constrained = model.constrain({"seasonality": coefficients})
     result = jax.jit(model.generate)(jax.random.key(0), constrained, model.data)
@@ -403,20 +421,40 @@ def _prediction_data(times, *, reverse=False, outcome=True):
 def prediction_model():
     training = _prediction_data((10, 11))
 
-    def mean(data, effects, parameters):
+    def mean(seasonality, media, spend, controls, population, media_beta, spend_beta, control_beta, population_beta):
         return (
-            effects["seasonality"]
-            + jnp.sum(data["media"] * parameters["media_beta"], axis=-1)
-            + jnp.sum(data["spend"] * parameters["spend_beta"], axis=-1)
-            + jnp.sum(data["controls"] * parameters["control_beta"], axis=-1)
-            + data["population"] * parameters["population_beta"]
+            seasonality
+            + jnp.sum(media * media_beta, axis=-1)
+            + jnp.sum(spend * spend_beta, axis=-1)
+            + jnp.sum(controls * control_beta, axis=-1)
+            + population * population_beta
         )
 
-    def density(data, effects, **parameters):
-        return normal(data["outcome"], mean(data, effects, parameters), 1.0)
+    def density(
+        outcome,
+        seasonality,
+        seasonality_coefficients,
+        media,
+        spend,
+        controls,
+        population,
+        media_beta,
+        spend_beta,
+        control_beta,
+        population_beta,
+    ):
+        expected = mean(
+            seasonality, media, spend, controls, population, media_beta, spend_beta, control_beta, population_beta
+        )
+        return normal(outcome, expected, 1.0) + normal(seasonality_coefficients, 0.0, 1.0)
 
-    def generate(key, data, effects, **parameters):
-        return {"mean": mean(data, effects, parameters), "seasonality": effects["seasonality"]}
+    def generate(
+        key, seasonality, media, spend, controls, population, media_beta, spend_beta, control_beta, population_beta
+    ):
+        expected = mean(
+            seasonality, media, spend, controls, population, media_beta, spend_beta, control_beta, population_beta
+        )
+        return {"mean": expected, "seasonality": seasonality}
 
     model = Model(
         {
@@ -428,7 +466,7 @@ def prediction_model():
         density,
         generate,
         data=training,
-        components=[FourierSeasonality(period=7, order=1, group_specific=True)],
+        components=[FourierSeasonality(period=7, order=1, group_specific_coefficients=True)],
     )
     coefficients = {
         "media_beta": [[0.02, -0.01], [0.03, 0.015]],
@@ -536,8 +574,8 @@ def test_empty_component_models_prepare_partial_prediction_roles_and_validate_da
     training = _prediction_data((10, 11))
     model = Model(
         {},
-        lambda data, effects: jnp.array(0.0),
-        lambda key, data, effects: {"population": data["population"]},
+        lambda: jnp.array(0.0),
+        lambda key, population: {"population": population},
         data=training,
         components=[],
     )
@@ -565,8 +603,8 @@ def test_outcome_only_seasonal_model_forecasts_from_calendar_labels_alone():
     )
     model = Model(
         {},
-        lambda data, effects: normal(data["outcome"], effects["seasonality"], 1.0),
-        lambda key, data, effects: {"effect": effects["seasonality"]},
+        lambda outcome, seasonality: normal(outcome, seasonality, 1.0),
+        lambda key, seasonality: {"effect": seasonality},
         data=training,
         components=[FourierSeasonality(period="weekly", order=1)],
     )
@@ -585,8 +623,8 @@ def test_prediction_retains_training_float_precision_when_global_precision_chang
     with jax.enable_x64(False):
         model = Model(
             {},
-            lambda data, effects: normal(data["outcome"], effects["seasonality"], 1.0),
-            lambda key, data, effects: {"effect": effects["seasonality"], "observed": data["outcome"]},
+            lambda outcome, seasonality: normal(outcome, seasonality, 1.0),
+            lambda key, seasonality, outcome: {"effect": seasonality, "observed": outcome},
             data=training,
             components=[FourierSeasonality(period=7, order=1)],
         )

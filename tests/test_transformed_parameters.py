@@ -6,7 +6,18 @@ import numpy as np
 import polars as pl
 import pytest
 
-from mmmjax import FourierSeasonality, MediaEffect, Model, Positive, Real, normal, normal_rng, prepare_data
+from mmmjax import (
+    FourierSeasonality,
+    MediaEffect,
+    Model,
+    Positive,
+    Real,
+    beta,
+    half_normal,
+    normal,
+    normal_rng,
+    prepare_data,
+)
 
 
 def _data(controls=None, *, observed=True):
@@ -27,13 +38,13 @@ def _normal(value, scale=1.0):
 
 
 def _regression():
-    def transformed(*, controls, beta, scale):
+    def transformed(scale, controls, beta):
         return {"signal": controls @ beta, "spread": jnp.sqrt(scale**2 + 0.4)}
 
-    def density(*, outcome, signal, spread, intercept, beta):
+    def density(intercept, signal, outcome, beta, spread):
         return normal(outcome, signal + intercept, spread) + normal(beta, 0.0, 1.0) + normal(intercept, 0.0, 2.0)
 
-    def quantities(key, *, signal, spread, intercept):
+    def quantities(key, spread, intercept, signal):
         return {
             "signal": signal,
             "spread": spread,
@@ -96,6 +107,25 @@ def test_transformed_outputs_change_with_positions_and_outcome_free_forecasts_un
 
 
 def _media_model(transformed):
+    def density(
+        *,
+        outcome,
+        mu,
+        sigma,
+        annual_coefficients,
+        paid_media_coefficient,
+        paid_media_retention,
+        paid_media_half_saturation,
+        paid_media_slope,
+    ):
+        target = normal(outcome, mu, sigma)
+        target += normal(annual_coefficients, 0.0, 1.0)
+        target += half_normal(paid_media_coefficient, scale=1.5)
+        target += beta(paid_media_retention, alpha=1.0, beta=3.0)
+        target += half_normal(paid_media_half_saturation, scale=1.5)
+        target += half_normal(paid_media_slope, scale=1.5)
+        return target
+
     data = prepare_data(
         pl.DataFrame(
             {"time": [10, 11, 12], "video": [1.0, 3.0, 2.0], "search": [2.0, 1.0, 4.0], "sales": [0.4, 0.7, 1.1]}
@@ -106,7 +136,7 @@ def _media_model(transformed):
     )
     model = Model(
         {"intercept": Real(), "sigma": Positive()},
-        lambda *, outcome, mu, sigma: normal(outcome, mu, sigma),
+        density,
         lambda key, *, mu: {"mu": mu},
         data=data,
         components=[MediaEffect(max_lag=1), FourierSeasonality(period=8, order=1, name="annual")],
@@ -289,17 +319,36 @@ def test_transformed_stage_requires_prepared_named_callbacks_and_one_callable():
             Model({}, lambda: jnp.array(0.0), data=_data(), components=[], transformed_parameters=transformed)
     with pytest.raises((TypeError, ValueError)):
         Model({}, lambda: jnp.array(0.0), transformed_parameters=lambda: {})
-    with pytest.raises(TypeError):
-        Model({}, lambda data, effects: jnp.array(0.0), data=_data(), components=[], transformed_parameters=lambda: {})
-    with pytest.raises(TypeError):
-        Model(
-            {},
-            lambda: jnp.array(0.0),
-            lambda key, data, effects: {},
-            data=_data(),
-            components=[],
-            transformed_parameters=lambda: {},
-        )
-    for transformed in (lambda controls: {}, lambda **values: {}, lambda *values: {}):
+    model = Model(
+        {}, lambda data, effects: jnp.array(0.0), data=_data(), components=[], transformed_parameters=lambda: {}
+    )
+    with pytest.raises(ValueError, match="not data or effects bundles"):
+        model.log_density({}, model.data)
+    model = Model(
+        {},
+        lambda: jnp.array(0.0),
+        lambda key, data, effects: {},
+        data=_data(),
+        components=[],
+        transformed_parameters=lambda: {},
+    )
+    with pytest.raises(ValueError, match="not data or effects bundles"):
+        model.generate(jax.random.key(0), {}, model.data)
+    for transformed in (lambda controls, /: {}, lambda **values: {}, lambda *values: {}):
         with pytest.raises(TypeError):
             Model({}, lambda: jnp.array(0.0), data=_data(), components=[], transformed_parameters=transformed)
+
+
+def test_transformed_quantities_named_data_or_effects_are_not_legacy_bundles():
+    model = Model(
+        {},
+        lambda data, effects: jnp.sum(data + effects),
+        lambda key, effects, data: {"sum": data + effects},
+        data=_data(),
+        components=[],
+        transformed_parameters=lambda controls: {"data": controls[:, 0], "effects": controls[:, 1]},
+    )
+    expected = _data().arrays["controls"].sum(axis=-1)
+    np.testing.assert_allclose(jax.jit(model.log_density)({}, model.data), expected.sum(), rtol=1e-6)
+    generated = jax.jit(model.generate)(jax.random.key(0), {}, model.data)
+    np.testing.assert_allclose(generated["sum"], expected, rtol=1e-6)
