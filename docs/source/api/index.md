@@ -7,6 +7,7 @@ available from `mmmjax.distributions`.
 :maxdepth: 1
 
 model
+sampling
 data
 scaling
 parameters

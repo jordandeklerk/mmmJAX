@@ -1,8 +1,7 @@
 """Bayesian marketing mix modeling expressed entirely in JAX."""
 
 from mmmjax.adstock import delayed_adstock, geometric_adstock, weibull_cdf_adstock, weibull_pdf_adstock
-from mmmjax.channels import select_channels
-from mmmjax.data import PreparedData, prepare_data
+from mmmjax.data import PreparedData, prepare_data, select_channels
 from mmmjax.distributions import (
     bernoulli,
     bernoulli_logcdf,
@@ -123,6 +122,7 @@ from mmmjax.parameters import Interval, LowerBound, Parameterization, Positive, 
 from mmmjax.saturation import hill_saturation, log_saturation, logistic_saturation, root_saturation
 from mmmjax.scaling import DataScaling, Scaling, fit_data_scaling, fit_media_scaling, fit_scaling
 from mmmjax.seasonality import FourierSeasonality, fourier_features
+from mmmjax.sampling import sample
 from mmmjax.synthetic import SyntheticData, simulate_data
 
 __version__ = "0.0.1"
@@ -257,6 +257,7 @@ __all__ = [
     "prepare_hsgp",
     "reach_frequency_response",
     "root_saturation",
+    "sample",
     "select_channels",
     "simulate_data",
     "student_t",

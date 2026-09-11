@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 import mmmjax
-from mmmjax.channels import select_channels
+from mmmjax.data import select_channels
 from mmmjax.distributions import half_normal, lognormal
 
 

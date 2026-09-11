@@ -17,7 +17,7 @@ from mmmjax.data import _prepare_frame, _prepare_panel
 
 
 def test_data_api_exports_public_entry_points():
-    assert mmmjax.data.__all__ == ["PreparedData", "prepare_data"]
+    assert mmmjax.data.__all__ == ["PreparedData", "prepare_data", "select_channels"]
     assert {"PreparedData", "prepare_data"}.issubset(mmmjax.__all__)
     assert PreparedData is mmmjax.data.PreparedData
     assert not hasattr(PreparedData, "align_to")
