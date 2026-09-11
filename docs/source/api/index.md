@@ -8,6 +8,7 @@ available from `mmmjax.distributions`.
 
 model
 sampling
+response
 data
 scaling
 parameters
