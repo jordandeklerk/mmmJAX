@@ -1,8 +1,8 @@
-"""Posterior response curves for explicit spending scenarios."""
+"""Posterior response curves and channel returns for explicit spending scenarios."""
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-from numbers import Integral
+from numbers import Integral, Real
 from typing import Literal, cast
 
 import jax
@@ -17,7 +17,7 @@ from mmmjax._results import _coordinates
 from mmmjax.model import Model, _ModelData
 from mmmjax.sampling import _parameter_metadata, _posterior_draws, _result_data
 
-__all__ = ["response_curves"]
+__all__ = ["media_metrics", "response_curves"]
 
 
 def response_curves(
@@ -130,13 +130,7 @@ def response_curves(
             "Candidate spending is too large for the model precision. Reduce the multipliers or change units"
         )
 
-    evaluate = jax.jit(lambda budgets: jax.lax.map(lambda pair: context.evaluator.paired_evaluation(*pair), budgets))
-    responses, increments = map(np.asarray, evaluate((jnp.asarray(allocation), jnp.asarray(comparison))))
-    if not np.isfinite(responses).all() or not np.isfinite(increments).all():
-        raise ValueError(
-            "A scenario produced invalid media or a nonfinite response. "
-            "Check the conversion, transformed quantity, and posterior draws"
-        )
+    responses, increments = _evaluate_response_pairs(context, allocation, comparison)
     reference = responses[0]
     response = responses[1:].reshape(selected_count, len(grid), *reference.shape).transpose(2, 3, 0, 1)
     incremental = increments[1:].reshape(selected_count, len(grid), *reference.shape).transpose(2, 3, 0, 1)
@@ -157,6 +151,139 @@ def response_curves(
     )
 
 
+def media_metrics(
+    model: Model,
+    results: xr.DataTree,
+    *,
+    quantity: str,
+    incremental_increase: float = 0.01,
+    spend_to_media: Literal["proportional"] | Callable[[jax.Array], ArrayLike] = "proportional",
+    channels: Sequence[str] | None = None,
+    new_data: object = None,
+    spend_periods: Sequence[object] | None = None,
+    response_periods: Sequence[object] | None = None,
+    batch_size: int = 64,
+) -> xr.Dataset:
+    """Calculate incremental response, ROI, and marginal ROI by paid-media channel.
+
+    Compare reference spending with removing or increasing one channel's
+    spending at a time. Evaluate the full model for each posterior draw,
+    keeping other spending and earlier history fixed. Channel effects need
+    not add up when channels interact.
+
+    Parameters
+    ----------
+    model : Model
+        Prepared model with paired media and spend inputs. Reach/frequency
+        inputs, if present, stay fixed.
+    results : xarray.DataTree
+        Results containing the model's constrained posterior draws.
+    quantity : str
+        Key returned by ``transformed_parameters`` with one expected response
+        per observation in reporting units, such as ``"expected_revenue"``.
+        Values are recomputed for each scenario without inverse scaling.
+        Revenue gives monetary returns. Other outcomes give outcome per unit spend.
+    incremental_increase : float, default 0.01
+        Positive fractional spend increase used for marginal ROI. The default
+        measures return on a 1% increase, not an exact derivative.
+    spend_to_media : {"proportional"} or callable, default "proportional"
+        Scale exposures with spending at their reference ratios. Alternatively,
+        supply a JAX-compatible function mapping raw spending in model channel
+        order to nonnegative exposures of the same shape.
+    channels : sequence of str, optional
+        Paid-media channels to report, in the desired order. Defaults to all.
+        Each needs positive reference spending during ``spend_periods``.
+    new_data : dataframe-like or PreparedData, optional
+        Reference observations. Omit to use stored observations. Fitted scales
+        are reused. Earlier exposures can be supplied through ``PreparedData``.
+    spend_periods : sequence, optional
+        Time labels whose spending changes and enters the return denominators.
+        Defaults to all supplied modeling periods.
+    response_periods : sequence, optional
+        Time labels whose responses count, summed across periods and groups.
+        Defaults to all supplied periods. Include later dates to count carryover.
+    batch_size : int, default 64
+        Maximum posterior draws evaluated together. Scenarios run sequentially.
+
+    Returns
+    -------
+    xarray.Dataset
+        Channel metrics retaining chain and draw coordinates.
+
+        - **incremental_response** is reference response minus response with
+          that channel's spending removed during ``spend_periods``.
+        - **roi** divides incremental response by **reference_spend**. It does
+          not subtract spending from the numerator to calculate profit.
+        - **marginal_response** is increased-spend response minus reference response.
+        - **marginal_roi** divides marginal response by **incremental_spend**,
+          the additional spending used for the comparison.
+        - **reference_response** contains the full response at reference spending.
+        - **spend_period** and **response_period** record the selected dates.
+
+        Zero spending can retain carryover from earlier exposures. Returns
+        reflect the model and intervention assumptions, not new causal evidence.
+    """
+    if (
+        isinstance(incremental_increase, bool)
+        or not isinstance(incremental_increase, Real)
+        or not np.isfinite(incremental_increase)
+        or incremental_increase <= 0
+    ):
+        raise ValueError("incremental_increase must be a finite positive number")
+
+    context = _prepare_response(
+        model,
+        results,
+        quantity=quantity,
+        spend_to_media=spend_to_media,
+        channels=channels,
+        new_data=new_data,
+        spend_periods=spend_periods,
+        response_periods=response_periods,
+        batch_size=batch_size,
+    )
+    totals = np.asarray(context.reference_spend)
+    indices = context.indices
+    count = len(indices)
+    allocation = np.broadcast_to(totals, (1 + 2 * count, len(totals))).copy()
+    comparison = allocation.copy()
+    rows = np.arange(count)
+    comparison[1 + rows, indices] = 0
+    with np.errstate(over="ignore", invalid="ignore"):
+        allocation[1 + count + rows, indices] *= 1 + float(incremental_increase)
+    if not np.isfinite(allocation).all():
+        raise ValueError("Candidate spending is too large for the model precision. Reduce incremental_increase")
+
+    reference_spend = totals[indices]
+    incremental_spend = allocation[1 + count + rows, indices] - reference_spend
+    if np.any(incremental_spend <= 0):
+        raise ValueError("incremental_increase is too small for the model precision. Use a larger increase")
+
+    responses, differences = _evaluate_response_pairs(context, allocation, comparison)
+    incremental = differences[1 : 1 + count].transpose(1, 2, 0)
+    marginal = differences[1 + count :].transpose(1, 2, 0)
+    with np.errstate(over="ignore", invalid="ignore"):
+        roi = incremental / reference_spend
+        marginal_roi = marginal / incremental_spend
+    if not np.isfinite(roi).all() or not np.isfinite(marginal_roi).all():
+        raise ValueError("Channel returns are nonfinite. Check the response and spending units")
+
+    axes = ("chain", "draw", "channel")
+    return xr.Dataset(
+        {
+            "incremental_response": (axes, incremental),
+            "roi": (axes, roi),
+            "marginal_response": (axes, marginal),
+            "marginal_roi": (axes, marginal_roi),
+            "reference_spend": ("channel", reference_spend),
+            "incremental_spend": ("channel", incremental_spend),
+            "reference_response": (("chain", "draw"), responses[0]),
+        },
+        coords=context.coords,
+        attrs={**context.attrs, "incremental_increase": float(incremental_increase)},
+    )
+
+
 @dataclass(frozen=True)
 class _ResponseContext:
     """Prepared posterior evaluation and labels shared by spending analyses."""
@@ -166,6 +293,20 @@ class _ResponseContext:
     indices: NDArray[np.intp]
     coords: dict[str, NDArray[np.generic]]
     attrs: dict[str, str]
+
+
+def _evaluate_response_pairs(
+    context: _ResponseContext, allocation: NDArray[np.generic], comparison: NDArray[np.generic]
+) -> tuple[NDArray[np.generic], NDArray[np.generic]]:
+    """Evaluate paired scenarios sequentially while batching posterior draws."""
+    evaluate = jax.jit(lambda budgets: jax.lax.map(lambda pair: context.evaluator.paired_evaluation(*pair), budgets))
+    responses, differences = map(np.asarray, evaluate((jnp.asarray(allocation), jnp.asarray(comparison))))
+    if not np.isfinite(responses).all() or not np.isfinite(differences).all():
+        raise ValueError(
+            "A scenario produced invalid media or a nonfinite response. "
+            "Check the conversion, transformed quantity, and posterior draws"
+        )
+    return responses, differences
 
 
 def _prepare_response(
@@ -293,7 +434,7 @@ def _period_indices(labels: NDArray[np.generic], selected: Sequence[object] | No
             requested = pd.DatetimeIndex(requested).to_numpy()
         except (TypeError, ValueError) as error:
             raise ValueError(f"{name} must contain valid observation dates") from error
-    positions = index.get_indexer(requested)
+    positions = index.get_indexer(pd.Index(requested))
     if np.any(positions < 0):
         raise ValueError(f"{name} contains unknown observation labels {requested[positions < 0].tolist()}")
     if len(np.unique(positions)) != len(positions):

@@ -6,6 +6,11 @@ build:
   os: ubuntu-24.04
   tools:
     python: "3.12"
+  jobs:
+    build:
+      html:
+        # Executable examples initialize threads that cannot safely be forked.
+        - python -u -m sphinx -T -W --keep-going -j 1 -b html docs/source "$READTHEDOCS_OUTPUT/html"
 
 sphinx:
   fail_on_warning: true
