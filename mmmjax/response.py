@@ -119,12 +119,15 @@ def response_curves(
     totals = context.reference_spend
     indices = context.indices
     selected_count = len(indices)
+
     allocation = np.broadcast_to(np.asarray(totals), (1 + selected_count * len(grid), len(totals))).copy()
     comparison = allocation.copy()
+
     for index, channel_index in enumerate(indices):
         start = 1 + index * len(grid)
         allocation[start : start + len(grid), channel_index] *= grid
         comparison[start : start + len(grid), channel_index] = 0
+
     if not np.isfinite(allocation).all():
         raise ValueError(
             "Candidate spending is too large for the model precision. Reduce the multipliers or change units"
@@ -135,6 +138,7 @@ def response_curves(
     response = responses[1:].reshape(selected_count, len(grid), *reference.shape).transpose(2, 3, 0, 1)
     incremental = increments[1:].reshape(selected_count, len(grid), *reference.shape).transpose(2, 3, 0, 1)
     curve_axes = ("chain", "draw", "channel", "multiplier")
+
     return xr.Dataset(
         {
             "response": (curve_axes, response),
@@ -242,45 +246,15 @@ def media_metrics(
         response_periods=response_periods,
         batch_size=batch_size,
     )
-    totals = np.asarray(context.reference_spend)
-    indices = context.indices
-    count = len(indices)
-    allocation = np.broadcast_to(totals, (1 + 2 * count, len(totals))).copy()
-    comparison = allocation.copy()
-    rows = np.arange(count)
-    comparison[1 + rows, indices] = 0
-    with np.errstate(over="ignore", invalid="ignore"):
-        allocation[1 + count + rows, indices] *= 1 + float(incremental_increase)
-    if not np.isfinite(allocation).all():
-        raise ValueError("Candidate spending is too large for the model precision. Reduce incremental_increase")
+    metrics = _allocation_metrics(
+        context,
+        np.asarray(context.reference_spend)[None, :],
+        allocation_labels=["reference"],
+        incremental_increase=float(incremental_increase),
+    )
 
-    reference_spend = totals[indices]
-    incremental_spend = allocation[1 + count + rows, indices] - reference_spend
-    if np.any(incremental_spend <= 0):
-        raise ValueError("incremental_increase is too small for the model precision. Use a larger increase")
-
-    responses, differences = _evaluate_response_pairs(context, allocation, comparison)
-    incremental = differences[1 : 1 + count].transpose(1, 2, 0)
-    marginal = differences[1 + count :].transpose(1, 2, 0)
-    with np.errstate(over="ignore", invalid="ignore"):
-        roi = incremental / reference_spend
-        marginal_roi = marginal / incremental_spend
-    if not np.isfinite(roi).all() or not np.isfinite(marginal_roi).all():
-        raise ValueError("Channel returns are nonfinite. Check the response and spending units")
-
-    axes = ("chain", "draw", "channel")
-    return xr.Dataset(
-        {
-            "incremental_response": (axes, incremental),
-            "roi": (axes, roi),
-            "marginal_response": (axes, marginal),
-            "marginal_roi": (axes, marginal_roi),
-            "reference_spend": ("channel", reference_spend),
-            "incremental_spend": ("channel", incremental_spend),
-            "reference_response": (("chain", "draw"), responses[0]),
-        },
-        coords=context.coords,
-        attrs={**context.attrs, "incremental_increase": float(incremental_increase)},
+    return metrics.sel(allocation="reference", drop=True).rename(
+        {"spend": "reference_spend", "response": "reference_response"}
     )
 
 
@@ -295,17 +269,83 @@ class _ResponseContext:
     attrs: dict[str, str]
 
 
+def _allocation_metrics(
+    context: _ResponseContext,
+    totals: NDArray[np.float32 | np.float64],
+    *,
+    allocation_labels: Sequence[str],
+    incremental_increase: float,
+) -> xr.Dataset:
+    """Evaluate channel interventions around each joint spending allocation."""
+    indices = context.indices
+    count = len(indices)
+
+    allocation = np.broadcast_to(totals[:, None, :], (len(totals), 1 + 2 * count, totals.shape[1])).copy()
+    comparison = allocation.copy()
+    rows = np.arange(count)
+    comparison[:, 1 + rows, indices] = 0
+
+    with np.errstate(over="ignore", invalid="ignore"):
+        allocation[:, 1 + count + rows, indices] *= 1 + incremental_increase
+
+    if not np.isfinite(allocation).all():
+        raise ValueError("Candidate spending is too large for the model precision. Reduce incremental_increase")
+
+    spend = totals[:, indices]
+    positive = spend > 0
+    incremental_spend = allocation[:, 1 + count + rows, indices] - spend
+
+    if np.any(positive & (incremental_spend <= 0)):
+        raise ValueError("incremental_increase is too small for the model precision. Use a larger increase")
+
+    responses, differences = _evaluate_response_pairs(
+        context, allocation.reshape(-1, totals.shape[1]), comparison.reshape(-1, totals.shape[1])
+    )
+
+    shape = (len(totals), 1 + 2 * count, *responses.shape[1:])
+    responses, differences = responses.reshape(shape), differences.reshape(shape)
+    incremental = differences[:, 1 : 1 + count].transpose(2, 3, 0, 1)
+    marginal = differences[:, 1 + count :].transpose(2, 3, 0, 1)
+
+    # Removing or proportionally increasing zero spending is unchanged, but
+    # neither ratio is defined. Preserve missing values rather than zero returns.
+    with np.errstate(over="ignore", invalid="ignore"):
+        roi = np.divide(incremental, spend, out=np.full_like(incremental, np.nan), where=positive)
+        marginal_roi = np.divide(marginal, incremental_spend, out=np.full_like(marginal, np.nan), where=positive)
+
+    if not np.all(np.isfinite(roi) | ~positive) or not np.all(np.isfinite(marginal_roi) | ~positive):
+        raise ValueError("Channel returns are nonfinite. Check the response and spending units")
+
+    axes = ("chain", "draw", "allocation", "channel")
+
+    return xr.Dataset(
+        {
+            "incremental_response": (axes, incremental),
+            "roi": (axes, roi),
+            "marginal_response": (axes, marginal),
+            "marginal_roi": (axes, marginal_roi),
+            "spend": (("allocation", "channel"), spend),
+            "incremental_spend": (("allocation", "channel"), incremental_spend),
+            "response": (("chain", "draw", "allocation"), responses[:, 0].transpose(1, 2, 0)),
+        },
+        coords={**context.coords, "allocation": list(allocation_labels)},
+        attrs={**context.attrs, "incremental_increase": incremental_increase},
+    )
+
+
 def _evaluate_response_pairs(
     context: _ResponseContext, allocation: NDArray[np.generic], comparison: NDArray[np.generic]
 ) -> tuple[NDArray[np.generic], NDArray[np.generic]]:
     """Evaluate paired scenarios sequentially while batching posterior draws."""
     evaluate = jax.jit(lambda budgets: jax.lax.map(lambda pair: context.evaluator.paired_evaluation(*pair), budgets))
+
     responses, differences = map(np.asarray, evaluate((jnp.asarray(allocation), jnp.asarray(comparison))))
     if not np.isfinite(responses).all() or not np.isfinite(differences).all():
         raise ValueError(
             "A scenario produced invalid media or a nonfinite response. "
             "Check the conversion, transformed quantity, and posterior draws"
         )
+
     return responses, differences
 
 
@@ -340,16 +380,20 @@ def _prepare_response(
     inputs = model._data
     prepared = _result_data(model)
     assert prepared is not None
+
     if new_data is not None:
         inputs, aligned = model._prepare_data(new_data)
         prepared = replace(aligned, arrays={name: np.array(value, copy=True) for name, value in inputs.values.items()})
+
     if not {"media", "spend"}.issubset(inputs.values):
         raise ValueError("Response evaluation requires paired media and spend columns")
+
     time_labels = _coordinates({"time": prepared.time_values})["time"]
     spend_indices = _period_indices(time_labels, spend_periods, name="spend_periods")
     response_indices = _period_indices(time_labels, response_periods, name="response_periods")
     spend_mask = np.zeros(len(time_labels), dtype=bool)
     spend_mask[spend_indices] = True
+
     labels = prepared.channels
     selected = labels if channels is None else channels
     if isinstance(selected, (str, bytes)) or not isinstance(selected, Sequence) or not selected:
@@ -361,10 +405,12 @@ def _prepare_response(
     # Recover original input units once. Candidate evaluation reuses the fitted factors.
     if model.scaling is not None:
         prepared = model.scaling.inverse_transform(prepared)
+
     spend = jnp.asarray(prepared.arrays["spend"], dtype=model._dtype)
     media = jnp.asarray(prepared.arrays["media"], dtype=model._dtype)
     observation_shape = spend.shape[:-1]
     periods = spend.shape[0]
+
     mask = jnp.asarray(spend_mask.reshape((-1,) + (1,) * (spend.ndim - 1)))
     selected_spend = jnp.where(mask, spend, 0)
     totals = jnp.sum(selected_spend, axis=tuple(range(spend.ndim - 1)))
@@ -372,6 +418,7 @@ def _prepare_response(
         raise ValueError(
             "Selected channels need positive reference spending during spend_periods to define their allocation"
         )
+
     if isinstance(spend_to_media, str):
         if np.any(np.asarray(mask) & (np.asarray(spend) == 0) & (np.asarray(media[-periods:]) > 0)):
             raise ValueError("Positive media with zero spend needs an explicit spend_to_media function")
@@ -395,6 +442,7 @@ def _prepare_response(
         reference_spend=spend,
         response_indices=jnp.asarray(response_indices),
     )
+
     return _ResponseContext(
         evaluator=evaluator,
         reference_spend=totals,
@@ -421,11 +469,13 @@ def _period_indices(labels: NDArray[np.generic], selected: Sequence[object] | No
     """Resolve existing time labels without changing the model's evaluation axis."""
     if selected is None:
         return np.arange(len(labels), dtype=np.intp)
+
     requested = np.asarray(selected)
     if requested.ndim != 1 or requested.size == 0:
         raise ValueError(f"{name} must be a nonempty sequence of observation time labels")
     if any(isinstance(value, (bool, np.bool_)) for value in selected):
         raise ValueError(f"{name} must contain time labels, not a boolean mask")
+
     index = pd.Index(labels)
     if isinstance(index, pd.DatetimeIndex):
         if requested.dtype.kind in "biufc":
@@ -434,11 +484,13 @@ def _period_indices(labels: NDArray[np.generic], selected: Sequence[object] | No
             requested = pd.DatetimeIndex(requested).to_numpy()
         except (TypeError, ValueError) as error:
             raise ValueError(f"{name} must contain valid observation dates") from error
+
     positions = index.get_indexer(pd.Index(requested))
     if np.any(positions < 0):
         raise ValueError(f"{name} contains unknown observation labels {requested[positions < 0].tolist()}")
     if len(np.unique(positions)) != len(positions):
         raise ValueError(f"{name} must contain distinct observation time labels")
+
     return np.sort(positions).astype(np.intp)
 
 
@@ -470,13 +522,16 @@ class _BudgetResponse:
             assert self.reference_spend is not None
             mask = self.spend_mask.reshape((-1,) + (1,) * (spend.ndim - 1))
             spend = jnp.where(mask, spend, self.reference_spend)
+
         media = jnp.asarray(self.convert(spend))
         if media.shape != spend.shape or not (
             jnp.issubdtype(media.dtype, jnp.floating) or jnp.issubdtype(media.dtype, jnp.integer)
         ):
             raise ValueError("spend_to_media must return real media values with the current spend shape")
+
         media = media.astype(self.model._dtype)
         valid = jnp.all(jnp.where(mask, jnp.isfinite(media) & (media >= 0), True))
+
         values = dict(self.inputs.values)
         scaling = self.model.scaling
         transformations = {} if scaling is None else scaling.transformations
@@ -484,12 +539,14 @@ class _BudgetResponse:
             media = transformations["media"].transform(media)
         if "spend" in transformations:
             spend = transformations["spend"].transform(spend)
+
         # Retain exact stored values outside the intervention, including fitted scaling.
         periods = self.observation_shape[0]
         media = jnp.where(mask, media, values["media"][-periods:])
         spend = jnp.where(mask, spend, values["spend"])
         values["media"] = jnp.concatenate((values["media"][:-periods], media), axis=0)
         values["spend"] = spend
+
         return replace(self.inputs, values=values), valid
 
     def _quantity(self, inputs: _ModelData, parameters: dict[str, jax.Array]) -> jax.Array:
@@ -497,9 +554,11 @@ class _BudgetResponse:
         quantities = self.model._evaluate_quantities(inputs, parameters)
         if self.quantity not in quantities:
             raise ValueError(f"Transformed quantity {self.quantity!r} is not available")
+
         value = quantities[self.quantity]
         if value.shape != self.observation_shape or not jnp.issubdtype(value.dtype, jnp.floating):
             raise ValueError("The response quantity must be floating-point with the observation shape")
+
         return value if self.response_indices is None else value[self.response_indices]
 
     def paired_evaluation(self, budgets: jax.Array, reference: jax.Array | None = None) -> tuple[jax.Array, jax.Array]:
@@ -515,12 +574,15 @@ class _BudgetResponse:
             difference = jnp.zeros((), dtype=value.dtype)
             if reference_inputs is not None:
                 difference = jnp.sum(value - self._quantity(reference_inputs, parameters))
+
             return jnp.where(valid, jnp.sum(value), jnp.nan), jnp.where(valid, difference, jnp.nan)
 
         chains, draws = next(iter(self.posterior.values())).shape[:2]
         flattened = {name: value.reshape((-1, *value.shape[2:])) for name, value in self.posterior.items()}
+
         totals, differences = cast(
             tuple[jax.Array, jax.Array],
             jax.lax.map(response, flattened, batch_size=min(self.batch_size, chains * draws)),
         )
+
         return totals.reshape(chains, draws), differences.reshape(chains, draws)
