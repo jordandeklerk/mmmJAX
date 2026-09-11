@@ -8277,7 +8277,7 @@ packages:
 - pypi: ./
   name: mmmjax
   version: 0.0.1
-  sha256: dd5151002564f958f32ad2c39211075a3687532929d0dcbd48efa7048fc0c073
+  sha256: de5a52693ef83f9770e1e519a12f48b88c8613f475ebb359935d752e5e5002ed
   requires_dist:
   - blackjax>=1.6.2,<1.7
   - jax>=0.10.0,<0.11
@@ -8285,6 +8285,7 @@ packages:
   - narwhals>=2.0
   - numpy>=2.0
   - pandas>=2.2
+  - scipy>=1.14
   - xarray>=2025.1.2
   - asv>=0.6.6,<0.7 ; extra == 'benchmark'
   - asv-runner==0.3.1 ; extra == 'benchmark'
@@ -8309,7 +8310,6 @@ packages:
   - pytest-split>=0.11,<0.12 ; extra == 'test'
   - pytest-timeout ; extra == 'test'
   - pytest-xdist>=3.8 ; extra == 'test'
-  - scipy>=1.14 ; extra == 'test'
   - polars>=1.0 ; extra == 'test'
   - pyarrow>=16.0 ; extra == 'test'
   requires_python: '>=3.11'

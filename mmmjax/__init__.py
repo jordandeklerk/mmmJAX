@@ -118,6 +118,7 @@ from mmmjax.distributions import (
 from mmmjax.hsgp import HSGPConfig, hsgp_basis, hsgp_weights, prepare_hsgp
 from mmmjax.media import MediaEffect, media_response, reach_frequency_response
 from mmmjax.model import Model
+from mmmjax.optimization import optimize_budget
 from mmmjax.parameters import Interval, LowerBound, Parameterization, Positive, Real, Simplex, UpperBound
 from mmmjax.response import response_curves
 from mmmjax.saturation import hill_saturation, log_saturation, logistic_saturation, root_saturation
@@ -245,6 +246,7 @@ __all__ = [
     "normal_logpdf",
     "normal_logsf",
     "normal_rng",
+    "optimize_budget",
     "poisson",
     "poisson_log",
     "poisson_log_logcdf",
