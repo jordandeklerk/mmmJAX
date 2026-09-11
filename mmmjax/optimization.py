@@ -10,7 +10,7 @@ import numpy as np
 import xarray as xr
 from jax.typing import ArrayLike
 from numpy.typing import NDArray
-from scipy.optimize import minimize
+from scipy.optimize import approx_fprime, minimize
 
 from mmmjax.model import Model
 from mmmjax.response import _prepare_response
@@ -196,18 +196,42 @@ def optimize_budget(
         free_indices = jnp.asarray(free)
         template = jnp.asarray(start, dtype=baseline.dtype)
 
-        def loss(shares: jax.Array) -> jax.Array:
+        def loss(shares: jax.Array, reference_shares: jax.Array) -> jax.Array:
             selected = template.at[free_indices].set(shares)
             allocation = baseline.at[indices].set(selected * budget)
-            _, change = context.evaluator.paired_evaluation(allocation, initial)
+            comparison = template.at[free_indices].set(reference_shares)
+            reference_allocation = baseline.at[indices].set(comparison * budget)
+            _, change = context.evaluator.paired_evaluation(allocation, reference_allocation)
             return -jnp.mean(change)
 
         compiled = jax.jit(jax.value_and_grad(loss))
+        difference = jax.jit(loss)
+        initial_shares = jnp.asarray(start[free], dtype=baseline.dtype)
+        difference_step = np.sqrt(np.finfo(baseline.dtype).eps)
 
         def evaluate(shares: NDArray[np.float64]) -> tuple[float, NDArray[np.float64]]:
-            value, gradient = compiled(jnp.asarray(shares, dtype=baseline.dtype))
+            current = jnp.asarray(shares, dtype=baseline.dtype)
+            value, gradient = compiled(current, initial_shares)
             value_host = float(value)
-            gradient_host = np.asarray(gradient, dtype=np.float64)
+            gradient_host = np.array(gradient, dtype=np.float64, copy=True)
+
+            # Fractional response curves can have unbounded or masked derivatives
+            # near zero. Measure one-sided changes without imposing a spend floor.
+            near_zero = np.flatnonzero(shares <= difference_step)
+            if near_zero.size:
+                steps = np.minimum(difference_step, upper[free][near_zero] - shares[near_zero])
+                backward = steps == 0
+                steps[backward] = -np.minimum(
+                    difference_step, shares[near_zero][backward] - lower[free][near_zero][backward]
+                )
+
+                def changed_loss(values: NDArray[np.float64]) -> float:
+                    candidate = shares.copy()
+                    candidate[near_zero] = values
+                    return float(difference(jnp.asarray(candidate, dtype=baseline.dtype), current))
+
+                gradient_host[near_zero] = approx_fprime(shares[near_zero], changed_loss, epsilon=steps)
+
             if not np.isfinite(value_host) or not np.isfinite(gradient_host).all():
                 raise ValueError(
                     "The response or its gradient is nonfinite. "
@@ -216,7 +240,13 @@ def optimize_budget(
 
             return value_host, gradient_host
 
-        _, initial_gradient = evaluate(start[free])
+        # Scale at the reference-proportioned feasible allocation, not at a
+        # user-supplied zero-spend starting point with singular derivatives.
+        scale_point = _initial_allocation(None, labels, reference, budget, lower, upper)[free]
+        _, scale_gradient = compiled(jnp.asarray(scale_point, dtype=baseline.dtype), initial_shares)
+        initial_gradient = np.asarray(scale_gradient, dtype=np.float64)
+        if not np.isfinite(initial_gradient).all():
+            raise ValueError("The response gradient is nonfinite at the reference-proportioned allocation")
 
         # A common derivative changes only the total budget, which is fixed.
         # Remove that affine term before scaling by sensitivity to reallocation.

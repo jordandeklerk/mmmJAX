@@ -13,7 +13,7 @@ import xarray as xr
 import mmmjax
 from mmmjax import MediaEffect, Model, Real, fit_data_scaling, prepare_data, response_curves
 from mmmjax._results import _collect_results
-from mmmjax.response import _BudgetResponse
+from mmmjax.response import _BudgetResponse, _prepare_response
 
 
 def _data(*, grouped=False, multiplier=1.0):
@@ -94,6 +94,19 @@ def _results(model, data):
     )
 
 
+@pytest.fixture
+def integer_media_model():
+    frame = pl.DataFrame({"week": [0, 1], "views": [1, 3], "cost": [1.0, 3.0]})
+    data = prepare_data(frame, time="week", media=["views"], spend=["cost"])
+    return Model(
+        {"coefficient": Real()},
+        lambda coefficient: -(coefficient**2),
+        data=data,
+        components=[],
+        transformed_parameters=lambda media, coefficient: {"expected": media[:, 0] * coefficient},
+    )
+
+
 def _expected(data, coefficient, *, scaling=None):
     values = (scaling.transform(data) if scaling is not None else data).arrays
     carried = values["media"][1:] + 0.5 * values["media"][:-1]
@@ -128,6 +141,41 @@ def test_response_curves_default_to_proportional_media():
     )
 
     xr.testing.assert_identical(curves, explicit)
+
+
+@pytest.mark.parametrize("conversion", ["proportional", lambda spend: spend])
+def test_response_curves_keep_fractional_exposures_and_gradients_with_integer_inputs(integer_media_model, conversion):
+    model = integer_media_model
+    results = _collect_results({"coefficient": jnp.ones((1, 1))})
+    assert jnp.issubdtype(model.data.values["media"].dtype, jnp.integer)
+
+    curves = response_curves(
+        model, results, quantity="expected", multipliers=[0.0, 0.5, 1.0, 1.5], spend_to_media=conversion
+    )
+    np.testing.assert_allclose(curves["response"][0, 0, 0], [0.0, 2.0, 4.0, 6.0])
+    np.testing.assert_allclose(curves["incremental_response"][0, 0, 0], [0.0, 2.0, 4.0, 6.0])
+    context = _prepare_response(model, results, quantity="expected", spend_to_media=conversion)
+    budgets = context.reference_spend * 0.5
+    value, gradient = jax.jit(jax.value_and_grad(lambda allocation: context.evaluator(allocation).mean()))(budgets)
+    np.testing.assert_allclose(value, 2.0)
+    np.testing.assert_allclose(gradient, [1.0])
+    scenario, valid = jax.jit(context.evaluator._scenario_inputs)(budgets)
+    assert valid
+    assert scenario.values["media"].dtype == model._dtype
+    np.testing.assert_array_equal(scenario.values["media"], [[0.5], [1.5]])
+    np.testing.assert_array_equal(model.data.values["media"], [[1], [3]])
+
+
+def test_response_curves_reject_fractional_negative_exposures_with_integer_inputs(integer_media_model):
+    results = _collect_results({"coefficient": jnp.ones((1, 1))})
+    with pytest.raises(ValueError, match="invalid media"):
+        response_curves(
+            integer_media_model,
+            results,
+            quantity="expected",
+            multipliers=[1.0],
+            spend_to_media=lambda spend: jnp.full_like(spend, -0.25),
+        )
 
 
 @pytest.mark.parametrize("grouped", [False, True])
@@ -763,10 +811,12 @@ def test_response_curves_ignore_unspendable_exposure_outside_spending_periods():
     np.testing.assert_allclose(curves["reference_spend"], data.arrays["spend"][2], rtol=1e-6)
 
 
-def test_budget_response_keeps_exact_stored_values_outside_spending_periods_after_scaling():
+@pytest.mark.parametrize("scaled", [False, True])
+def test_budget_response_keeps_exact_stored_values_outside_spending_periods(scaled):
     data = _data(grouped=True)
-    data.arrays["media"] += 0.137
-    model = _model(data, scaling=fit_data_scaling(data, adjust_population=True))
+    data.arrays["media"] = data.arrays["media"] + 0.137 if scaled else data.arrays["media"].astype(np.int64)
+    scaling = fit_data_scaling(data, adjust_population=True) if scaled else None
+    model = _model(data, scaling=scaling)
     spend = jnp.asarray(data.arrays["spend"], dtype=model.data.values["spend"].dtype)
     mask = jnp.array([True, False, False])
     budgets = spend[0].sum(axis=0)

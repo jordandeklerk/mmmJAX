@@ -12,7 +12,16 @@ from scipy.optimize import OptimizeResult
 
 import mmmjax
 import mmmjax.optimization as optimization
-from mmmjax import MediaEffect, Model, Real, fit_data_scaling, optimize_budget, prepare_data
+from mmmjax import (
+    MediaEffect,
+    Model,
+    Real,
+    fit_data_scaling,
+    hill_saturation,
+    optimize_budget,
+    prepare_data,
+    root_saturation,
+)
 from mmmjax._results import _collect_results
 
 
@@ -576,6 +585,67 @@ def test_optimize_budget_ignores_large_terms_constant_under_the_budget_constrain
     allocation = _optimize(model, results, budget=1.0, bounds=(0.0, 1.0))
     np.testing.assert_allclose(allocation["spend"].sel(allocation="optimized"), [1.0, 0.0], atol=2e-3)
     np.testing.assert_allclose(allocation["response_change"], 0.25, atol=2e-4)
+
+
+@pytest.mark.parametrize("saturation", [hill_saturation, root_saturation], ids=["hill", "root"])
+@pytest.mark.parametrize("initial", [None, {"video": 0.0, "search": 1.0}, {"video": 1.0, "search": 0.0}])
+def test_optimize_budget_recovers_concave_optimum_when_solver_reaches_zero(saturation, initial):
+    frame = pl.DataFrame({"week": [1], "video": [0.5], "search": [0.5]})
+    data = prepare_data(frame, time="week", media=["video", "search"], spend=["video", "search"])
+    model = Model(
+        {},
+        lambda expected: expected.sum(),
+        data=data,
+        components=[MediaEffect(max_lag=0, saturation=saturation)],
+        transformed_parameters=lambda paid_media_total: {"expected": paid_media_total},
+    )
+    parameters = {"paid_media_coefficient": [1.0, 3.0], "paid_media_retention": [0.0, 0.0]}
+    if saturation is hill_saturation:
+        parameters.update(
+            paid_media_coefficient=[1.0, 6.0],
+            paid_media_half_saturation=[1.0, 1.0],
+            paid_media_slope=[0.5, 0.5],
+        )
+    else:
+        parameters["paid_media_exponent"] = [0.5, 0.5]
+    posterior = {name: jnp.array([[value]]) for name, value in parameters.items()}
+    results = _collect_results(posterior, data=data, dims=dict.fromkeys(parameters, ("channel",)))
+
+    allocation = optimize_budget(model, results, quantity="expected", initial_spend=initial)
+
+    # Evaluate the closed-form concave curves independently on a fine allocation grid.
+    grid = np.linspace(0.0, 1.0, 10_001)
+    roots = np.sqrt(np.stack((grid, 1 - grid), axis=-1))
+    responses = roots / (1 + roots) if saturation is hill_saturation else roots
+    expected = responses @ np.asarray(parameters["paid_media_coefficient"])
+    optimized = allocation["spend"].sel(allocation="optimized").values
+    np.testing.assert_allclose(optimized, [grid[expected.argmax()], 1 - grid[expected.argmax()]], atol=2e-3)
+    np.testing.assert_allclose(allocation["response"].sel(allocation="optimized"), expected.max(), atol=1e-5)
+    np.testing.assert_array_equal(allocation["lower_bound"], [0.0, 0.0])
+    np.testing.assert_allclose(optimized.sum(), 1.0, atol=1e-8)
+    assert allocation.attrs["success"]
+
+
+def test_optimize_budget_reallocates_integer_exposures_and_preserves_a_zero_optimum():
+    frame = pl.DataFrame({"week": [1], "video": [1], "search": [1], "video_cost": [1.0], "search_cost": [1.0]})
+    data = prepare_data(frame, time="week", media=["video", "search"], spend=["video_cost", "search_cost"])
+    model = Model(
+        {"coefficient": Real((2,))},
+        lambda expected: expected.sum(),
+        data=data,
+        components=[],
+        transformed_parameters=lambda media, coefficient: {"expected": media @ coefficient},
+        dims={"coefficient": ("channel",)},
+    )
+    results = _collect_results(
+        {"coefficient": jnp.array([[[1.0, 3.0]]])}, data=data, dims={"coefficient": ("channel",)}
+    )
+
+    allocation = optimize_budget(model, results, quantity="expected")
+
+    np.testing.assert_allclose(allocation["spend"].sel(allocation="optimized"), [0.0, 2.0], atol=1e-8)
+    np.testing.assert_allclose(allocation["response"].sel(allocation="optimized"), 6.0, atol=1e-6)
+    np.testing.assert_allclose(allocation["response_change"], 2.0, atol=1e-6)
 
 
 def test_optimize_budget_uses_separate_spending_and_carryover_measurement_periods():

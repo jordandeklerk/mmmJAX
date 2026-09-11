@@ -334,7 +334,7 @@ class _BudgetResponse:
             jnp.issubdtype(media.dtype, jnp.floating) or jnp.issubdtype(media.dtype, jnp.integer)
         ):
             raise ValueError("spend_to_media must return real media values with the current spend shape")
-        media = media.astype(self.inputs.values["media"].dtype)
+        media = media.astype(self.model._dtype)
         valid = jnp.all(jnp.where(mask, jnp.isfinite(media) & (media >= 0), True))
         values = dict(self.inputs.values)
         scaling = self.model.scaling
