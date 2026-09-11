@@ -1,7 +1,7 @@
 Budget optimization
 ===================
 
-Allocate spending using posterior responses and explicit budget constraints.
+Allocate spending using posterior responses, explicit constraints, and customizable objectives.
 
 .. currentmodule:: mmmjax
 
