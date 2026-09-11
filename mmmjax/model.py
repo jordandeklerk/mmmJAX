@@ -14,7 +14,7 @@ from jax.typing import ArrayLike, DTypeLike
 from numpy.typing import NDArray
 
 from mmmjax._results import _coordinates, _dimensions
-from mmmjax.data import PreparedData, _DataLayout
+from mmmjax.data import PreparedData, _DataLayout, _prepare_model_frame
 from mmmjax.media import MediaEffect, _PreparedMedia
 from mmmjax.parameters import Parameterization
 from mmmjax.scaling import DataScaling, fit_data_scaling
@@ -325,7 +325,7 @@ class Model:
             raise RuntimeError("This model has no prepared data. Pass your data directly when evaluating it")
         return _ModelData(dict(self._data.values), self._data.components, self._data.owner)
 
-    def prepare_data(self, data: PreparedData) -> object:
+    def prepare_data(self, data: object) -> object:
         """Prepare new observations using the model's training configuration.
 
         Reuse fitted scaling, seasonal phase, and parameter declarations
@@ -333,13 +333,12 @@ class Model:
 
         Parameters
         ----------
-        data : PreparedData
-            Inputs from ``prepare_data``, raw or transformed by this model's
-            fitted scaling. Retain the original time column, groups, source
-            columns, and channel assignments. Ordering may differ.
-            Omit inputs only if no evaluated callback or component needs them.
-            For media effects, retain the observation spacing and supply any
-            needed ``media_history``. Earlier exposures are not added automatically.
+        data : dataframe-like or PreparedData
+            Observations using the original source columns and groups.
+            Dataframes reuse the model's selections and observation spacing.
+            Prepared inputs may be raw or use this model's fitted scaling.
+            Omit inputs only when no evaluated callback or component needs them.
+            For explicit media history, use ``prepare_data(media_history=...)``.
 
         Returns
         -------
@@ -348,10 +347,15 @@ class Model:
             fitted group and channel order, covering the supplied periods.
             Independent of stored model data and later source edits.
         """
+        return self._prepare_data(data)[0]
+
+    def _prepare_data(self, data: object) -> tuple[_ModelData, PreparedData]:
+        """Keep aligned observation labels alongside the evaluated model inputs."""
         if self._data is None or self._layout is None:
             raise RuntimeError("This model has no prepared training data. Pass your data directly when evaluating it")
         if not isinstance(data, PreparedData):
-            raise TypeError("Model data must be PreparedData. Use prepare_data with the observation dataframe")
+            assert self._time_column is not None
+            data = _prepare_model_frame(data, self._layout, time=self._time_column, frequency=self._frequency)
         if data.time_column != self._time_column:
             raise ValueError(f"The time column must match the training column {self._time_column!r}")
         if (
@@ -373,7 +377,7 @@ class Model:
             raise ValueError("This model uses unscaled inputs. Supply data in the original units")
         values = aligned._to_jax(dtype=self._dtype)
         components = tuple(component.for_data(aligned) for component in self._data.components)
-        return _ModelData(values, components, self._data.owner)
+        return _ModelData(values, components, self._data.owner), aligned
 
     def constrain(self, position: ParameterValues) -> dict[str, jax.Array]:
         """Map a complete unconstrained position into model space.

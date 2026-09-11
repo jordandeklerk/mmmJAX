@@ -122,7 +122,7 @@ from mmmjax.parameters import Interval, LowerBound, Parameterization, Positive, 
 from mmmjax.saturation import hill_saturation, log_saturation, logistic_saturation, root_saturation
 from mmmjax.scaling import DataScaling, Scaling, fit_data_scaling, fit_media_scaling, fit_scaling
 from mmmjax.seasonality import FourierSeasonality, fourier_features
-from mmmjax.sampling import sample
+from mmmjax.sampling import generate_quantities, sample
 from mmmjax.synthetic import SyntheticData, simulate_data
 
 __version__ = "0.0.1"
@@ -195,6 +195,7 @@ __all__ = [
     "gamma_logpdf",
     "gamma_logsf",
     "gamma_rng",
+    "generate_quantities",
     "geometric_adstock",
     "half_normal",
     "half_normal_logcdf",

@@ -1,7 +1,7 @@
 Sampling
 ========
 
-Sample a model and return labeled posterior draws and diagnostics.
+Sample a model or evaluate generated quantities from existing posterior draws.
 
 .. currentmodule:: mmmjax
 
@@ -10,3 +10,4 @@ Sample a model and return labeled posterior draws and diagnostics.
    :nosignatures:
 
    sample
+   generate_quantities

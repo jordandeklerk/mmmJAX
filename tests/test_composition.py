@@ -639,3 +639,34 @@ def test_prediction_retains_training_float_precision_when_global_precision_chang
         generated["effect"], _features([2, 3], 7, 1) @ np.asarray(coefficients), rtol=4e-6, atol=2e-6
     )
     np.testing.assert_array_equal(generated["observed"], np.array([0.5, 0.9], dtype=np.float32))
+
+
+@pytest.mark.parametrize("frequency", ["weekly", None])
+def test_model_prepares_dataframe_using_saved_calendar_configuration(frequency):
+    frame = pl.DataFrame({"week": ["2026-01-05", "2026-01-12", "2026-01-19"], "sales": [10.0, 20.0, 30.0]})
+    model = Model(
+        {},
+        lambda outcome: jnp.sum(outcome),
+        data=prepare_data(frame, time="week", outcome="sales", frequency=frequency),
+        components=[],
+    )
+    short = pl.DataFrame({"week": ["2026-01-26"], "sales": [40.0]})
+    actual = model.prepare_data(short)
+    expected = model.prepare_data(prepare_data(short, time="week", outcome="sales", frequency=frequency))
+    np.testing.assert_array_equal(actual.values["outcome"], expected.values["outcome"])
+
+    irregular = pl.DataFrame({"week": ["2026-01-26", "2026-02-09"], "sales": [40.0, 50.0]})
+    if frequency is None:
+        np.testing.assert_array_equal(model.prepare_data(irregular).values["outcome"], [40.0, 50.0])
+    else:
+        with pytest.raises(ValueError, match="expected 2026-02-02"):
+            model.prepare_data(irregular)
+
+
+@pytest.mark.parametrize("kind", ["lazy", "series", "mapping"])
+def test_model_dataframe_preparation_rejects_non_eager_tables(kind):
+    model, _, _ = _national_model()
+    source = pl.DataFrame({"time": [10, 11], "sales": [0.3, 0.7]})
+    value = {"lazy": source.lazy(), "series": source["sales"], "mapping": source.to_dict(as_series=False)}[kind]
+    with pytest.raises(TypeError, match="eager dataframe or PreparedData"):
+        model.prepare_data(value)

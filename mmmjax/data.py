@@ -12,6 +12,7 @@ import jax.numpy as jnp
 import narwhals as nw
 import numpy as np
 from jax.typing import ArrayLike, DTypeLike
+from narwhals.dependencies import is_into_dataframe
 from narwhals.typing import IntoDataFrameT
 from numpy.typing import NDArray
 
@@ -264,6 +265,54 @@ class _DataLayout:
     organic_channels: tuple[str, ...]
     rf_channels: tuple[str, ...]
     organic_rf_channels: tuple[str, ...]
+
+
+def _prepare_model_frame(
+    frame: object,
+    layout: _DataLayout,
+    *,
+    time: str,
+    frequency: str | None,
+) -> PreparedData:
+    """Reuse selected source columns without inferring roles from new column names."""
+    if not is_into_dataframe(frame):
+        raise TypeError("New data must be an eager dataframe or PreparedData")
+    native = nw.from_native(frame, eager_only=True)
+    available = set(native.columns)
+    columns = {}
+    for role, names in layout.columns.items():
+        if not available.intersection(names):
+            continue
+        missing = [name for name in names if name not in available]
+        if missing:
+            raise ValueError(
+                f"New data is missing selected {role} columns {missing}. Supply all columns for this input"
+            )
+        columns[role] = names
+
+    return prepare_data(
+        native,
+        time=time,
+        groups=layout.group_columns,
+        frequency=frequency,
+        outcome=columns["outcome"][0] if "outcome" in columns else None,
+        revenue_per_outcome=columns["revenue_per_outcome"][0] if "revenue_per_outcome" in columns else None,
+        population=columns["population"][0] if "population" in columns else None,
+        media=columns.get("media"),
+        organic_media=columns.get("organic_media"),
+        reach=columns.get("reach"),
+        media_frequency=columns.get("media_frequency"),
+        organic_reach=columns.get("organic_reach"),
+        organic_frequency=columns.get("organic_frequency"),
+        spend=columns.get("spend"),
+        rf_spend=columns.get("rf_spend"),
+        controls=columns.get("controls"),
+        treatments=columns.get("treatments"),
+        channels=layout.channels if "media" in columns else None,
+        organic_channels=layout.organic_channels if "organic_media" in columns else None,
+        rf_channels=layout.rf_channels if "reach" in columns else None,
+        organic_rf_channels=layout.organic_rf_channels if "organic_reach" in columns else None,
+    )
 
 
 def prepare_data(

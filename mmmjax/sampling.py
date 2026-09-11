@@ -1,7 +1,8 @@
-"""Posterior sampling with labeled model results."""
+"""Posterior sampling and evaluation with labeled model results."""
 
 import warnings
 from collections.abc import Mapping
+from dataclasses import replace
 from importlib.metadata import version
 from numbers import Integral, Real
 
@@ -13,13 +14,13 @@ from jax.typing import ArrayLike
 from numpy.typing import NDArray
 
 from mmmjax._nuts import _sample_nuts
-from mmmjax._results import _collect_results, _data_dimensions
+from mmmjax._results import _collect_results, _data_dimensions, _prepared_groups, _same_labels
 from mmmjax.data import PreparedData
 from mmmjax.media import _PreparedMedia
 from mmmjax.model import Model, _component_parameter_inputs
 from mmmjax.seasonality import _PreparedFourier
 
-__all__ = ["sample"]
+__all__ = ["generate_quantities", "sample"]
 
 
 def sample(
@@ -228,6 +229,155 @@ def sample(
     return results
 
 
+def generate_quantities(
+    model: Model,
+    results: xr.DataTree,
+    *,
+    new_data: object = None,
+    seed: int = 0,
+) -> xr.DataTree:
+    """Evaluate generated quantities from existing posterior draws without refitting.
+
+    The model's components, transformed parameters, and generation callback
+    run for every draw. Priors, likelihood evaluation in ``log_density``, and
+    sampling are not rerun. Scenario calculations remain defined by the model.
+
+    Parameters
+    ----------
+    model : Model
+        Model with a generation callback and the fitted parameter declarations.
+    results : xarray.DataTree
+        Results containing constrained posterior draws with the model's parameter
+        names, shapes, and axis labels. Draws may be sliced or thinned.
+    new_data : dataframe-like, PreparedData, or object, optional
+        Scenario observations using the original source columns. Dataframes
+        reuse the model's column selections, labels, and fitted scaling.
+        Omit to evaluate stored observations. Earlier exposures are not added
+        automatically. Include them through ``prepare_data(media_history=...)``.
+        Other models receive this input directly. Omit outcomes only when no
+        evaluated callback needs them.
+    seed : int, default 0
+        Random seed for generated quantities, with an independent key per draw.
+
+    Returns
+    -------
+    xarray.DataTree
+        A new result tree. The original results and model are unchanged.
+
+        - **posterior** contains the reused draws and sample labels.
+        - **posterior_predictive**, **log_likelihood**, and
+          **generated_quantities** contain newly evaluated outputs, classified
+          by the model's result settings.
+        - **observed_data** and **constant_data** contain the evaluated inputs
+          in model units. Original sampler diagnostics are not copied.
+    """
+    if not isinstance(model, Model):
+        raise TypeError("model must be a Model")
+    if model._generate is None:
+        raise ValueError("The model must define a generation callback")
+    if isinstance(seed, bool) or not isinstance(seed, Integral) or seed < 0:
+        raise ValueError("seed must be a nonnegative integer")
+
+    dimensions, coordinates = _parameter_metadata(model)
+    posterior, coordinates = _posterior_draws(model, results, dimensions, coordinates)
+    prepared = _result_data(model)
+    inputs = model.data if model._data is not None else new_data
+    if model._data is not None and new_data is not None:
+        inputs, aligned = model._prepare_data(new_data)
+        prepared = replace(aligned, arrays={name: np.array(value, copy=True) for name, value in inputs.values.items()})
+
+    generation_key, preview_key = jax.random.split(jax.random.key(int(seed)))
+    initial = {name: value[0, 0] for name, value in posterior.items()}
+    outputs, arguments = model._generate_with_inputs(preview_key, initial, inputs)
+    output_dimensions = _output_dimensions(model, outputs, arguments, dimensions, prepared)
+    chains, draws = next(iter(posterior.values())).shape[:2]
+    keys = jax.random.split(generation_key, (chains, draws))
+    generated = jax.jit(jax.vmap(jax.vmap(lambda key, parameters: model.generate(key, parameters, inputs))))(
+        keys, posterior
+    )
+    evaluated = _collect_results(
+        posterior,
+        data=prepared,
+        posterior_predictive={name: value for name, value in generated.items() if name in model._predictive_names},
+        log_likelihood={name: value for name, value in generated.items() if name in model._likelihood_names},
+        generated_quantities={
+            name: value
+            for name, value in generated.items()
+            if name not in (*model._predictive_names, *model._likelihood_names)
+        },
+        dims=dimensions,
+        generated_dims=output_dimensions,
+        coords=coordinates,
+    )
+    evaluated.attrs.update(generation_seed=int(seed), data_scale="model" if model.scaling is not None else "original")
+    return evaluated
+
+
+def _posterior_draws(
+    model: Model,
+    results: xr.DataTree,
+    dimensions: dict[str, tuple[str, ...]],
+    coordinates: dict[str, NDArray[np.generic]],
+) -> tuple[dict[str, jax.Array], dict[str, NDArray[np.generic]]]:
+    """Validate labeled constrained draws before passing them to model callbacks."""
+    if not isinstance(results, xr.DataTree):
+        raise TypeError("results must be an xarray.DataTree containing posterior draws")
+    if "posterior" not in results.children:
+        raise ValueError("results must contain a posterior group")
+    dataset = results["posterior"].to_dataset()
+    if not dataset.data_vars or set(dataset.data_vars) != set(model.parameters):
+        raise ValueError("Posterior parameter names must match the model declarations")
+    for axis in ("chain", "draw"):
+        if dataset.sizes.get(axis, 0) == 0:
+            raise ValueError(f"posterior must contain at least one {axis}")
+        if axis in coordinates:
+            raise ValueError("Posterior draws supply chain and draw coordinates. Supply only model axes in coords")
+
+    expected_coordinates = coordinates.copy()
+    training = _result_data(model)
+    if training is not None:
+        _, _, training_coordinates, auxiliary = _prepared_groups(training)
+        for axis, labels in training_coordinates.items():
+            if axis in expected_coordinates and not _same_labels(expected_coordinates[axis], labels):
+                raise ValueError(f"Coordinate {axis!r} conflicts with prepared data labels")
+            expected_coordinates[axis] = labels
+        if any("group" in axes for axes in dimensions.values()):
+            for name, (axis, labels) in auxiliary.items():
+                if (
+                    name not in dataset.coords
+                    or dataset.coords[name].dims != (axis,)
+                    or not _same_labels(dataset.coords[name].values, labels)
+                ):
+                    raise ValueError(f"Posterior coordinate {name!r} must match the model group labels and ordering")
+
+    posterior = {}
+    for name, parameter in model.parameters.items():
+        value = dataset[name]
+        axes = ("chain", "draw", *dimensions[name])
+        if len(value.dims) != len(axes) or set(value.dims) != set(axes):
+            raise ValueError(f"Posterior dimensions for {name!r} must match the model axes {axes}")
+        value = value.transpose(*axes)
+        if value.shape[2:] != parameter.shape:
+            raise ValueError(f"Posterior shape for {name!r} must match its constrained parameter shape")
+        for axis, size in zip(dimensions[name], parameter.shape, strict=True):
+            labels = expected_coordinates.get(axis, np.arange(size))
+            if axis not in value.coords or not _same_labels(value.coords[axis].values, labels):
+                raise ValueError(f"Posterior coordinate {axis!r} must match the model labels and ordering")
+            coordinates[axis] = labels.copy()
+        array = np.asarray(value)
+        if array.dtype.kind not in "fiu" or not np.isfinite(array).all():
+            raise ValueError(f"Posterior draws for {name!r} must be finite real numbers")
+        if jax.dtypes.canonicalize_dtype(array.dtype) != array.dtype:
+            raise ValueError("Enable JAX 64-bit mode to evaluate these posterior draws without losing precision")
+        posterior[name] = jnp.asarray(array)
+
+    for axis in ("chain", "draw"):
+        coordinates[axis] = np.array(
+            dataset.coords[axis].values if axis in dataset.coords else np.arange(dataset.sizes[axis])
+        )
+    return posterior, coordinates
+
+
 def _parameter_metadata(model: Model) -> tuple[dict[str, tuple[str, ...]], dict[str, NDArray[np.generic]]]:
     """Label known component axes without guessing the meaning of custom shapes."""
     dimensions: dict[str, tuple[str, ...]] = {}
@@ -265,12 +415,13 @@ def _output_dimensions(
         raise ValueError(f"Generated result metadata refers to missing outputs {sorted(missing)}")
     input_dimensions: dict[str, tuple[str, ...]] = {}
     observation_axes: tuple[str, ...] = ()
-    outcome_shape = None
+    outcome_shape: tuple[int, ...] | None = None
     if prepared is not None:
         role_dimensions = _data_dimensions(prepared)
         observation_axes = role_dimensions["outcome"]
-        if "outcome" in prepared.arrays:
-            outcome_shape = prepared.arrays["outcome"].shape
+        outcome_shape = (len(prepared.time_values),)
+        if prepared.group_columns:
+            outcome_shape += (len(prepared.group_values),)
         assert model._data is not None
         effect_dimensions = {
             component.specification.name: (
