@@ -434,7 +434,7 @@ def _period_indices(labels: NDArray[np.generic], selected: Sequence[object] | No
             requested = pd.DatetimeIndex(requested).to_numpy()
         except (TypeError, ValueError) as error:
             raise ValueError(f"{name} must contain valid observation dates") from error
-    positions = index.get_indexer(requested)
+    positions = index.get_indexer(pd.Index(requested))
     if np.any(positions < 0):
         raise ValueError(f"{name} contains unknown observation labels {requested[positions < 0].tolist()}")
     if len(np.unique(positions)) != len(positions):
