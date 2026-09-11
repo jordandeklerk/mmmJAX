@@ -1085,15 +1085,20 @@ def test_optimize_budget_rejects_invalid_metric_increases(increase):
         _optimize(model, results, include_metrics=True, incremental_increase=increase)
 
 
-def test_optimize_budget_rejects_unrepresentable_positive_spend_increases():
-    model, results, _ = _problem()
-    with pytest.raises(ValueError, match="too small for the model precision"):
-        _optimize(
-            model,
-            results,
-            include_metrics=True,
-            incremental_increase=1e-12,
-            spend_constraint_lower=0.0,
-            spend_constraint_upper=0.0,
-            bounds=None,
-        )
+@pytest.mark.parametrize("x64", [False, True], ids=["float32", "float64"])
+def test_optimize_budget_rejects_unrepresentable_positive_spend_increases(x64):
+    with jax.enable_x64(x64):
+        model, results, _ = _problem()
+        # Choose an increase that rounds away in the model's actual precision.
+        increase = np.finfo(model._dtype).eps / 8
+
+        with pytest.raises(ValueError, match="too small for the model precision"):
+            _optimize(
+                model,
+                results,
+                include_metrics=True,
+                incremental_increase=increase,
+                spend_constraint_lower=0.0,
+                spend_constraint_upper=0.0,
+                bounds=None,
+            )
