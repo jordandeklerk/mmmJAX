@@ -18,6 +18,7 @@ from mmmjax import (
     Real,
     fit_data_scaling,
     hill_saturation,
+    media_metrics,
     optimize_budget,
     prepare_data,
     root_saturation,
@@ -680,7 +681,16 @@ def test_optimize_budget_uses_separate_spending_and_carryover_measurement_period
     )
     coefficient = np.array([[[1.0, 3.0], [3.0, 5.0]]], dtype=np.float32)
     results = _collect_results({"coefficient": coefficient}, data=data, dims={"coefficient": ("channel",)})
-    allocation = _optimize(model, results, budget=10.0, bounds=(0.0, 10.0), spend_periods=[1], response_periods=[2])
+    allocation = _optimize(
+        model,
+        results,
+        budget=10.0,
+        bounds=(0.0, 10.0),
+        spend_periods=[1],
+        response_periods=[2],
+        include_metrics=True,
+        incremental_increase=0.25,
+    )
     optimized = allocation["spend"].sel(allocation="optimized").values
     np.testing.assert_allclose(optimized, [14 / 3, 16 / 3], rtol=2e-3, atol=1e-3)
     np.testing.assert_array_equal(allocation.spend_period, [1])
@@ -689,6 +699,27 @@ def test_optimize_budget_uses_separate_spending_and_carryover_measurement_period
     for name, spend in [("reference", np.array([4.0, 6.0])), ("optimized", optimized)]:
         expected = np.einsum("i,...i->...", np.log1p(np.array([2.0, 3.0]) + [0.5, 0.25] * spend), coefficient)
         np.testing.assert_allclose(allocation["response"].sel(allocation=name), expected, rtol=2e-6)
+
+        for index, channel in enumerate(["video", "search"]):
+            metrics = allocation.sel(allocation=name, channel=channel)
+            zero = spend.copy()
+            zero[index] = 0.0
+            increased = spend.copy()
+            increased[index] += float(metrics["incremental_spend"])
+            removed_response = np.einsum(
+                "i,...i->...", np.log1p(np.array([2.0, 3.0]) + [0.5, 0.25] * zero), coefficient
+            )
+            increased_response = np.einsum(
+                "i,...i->...", np.log1p(np.array([2.0, 3.0]) + [0.5, 0.25] * increased), coefficient
+            )
+            np.testing.assert_allclose(metrics["incremental_response"], expected - removed_response, atol=2e-6)
+            np.testing.assert_allclose(metrics["marginal_response"], increased_response - expected, atol=2e-6)
+            np.testing.assert_allclose(metrics["roi"], (expected - removed_response) / spend[index], atol=2e-6)
+            np.testing.assert_allclose(
+                metrics["marginal_roi"],
+                (increased_response - expected) / float(metrics["incremental_spend"]),
+                atol=2e-6,
+            )
 
 
 @pytest.mark.parametrize("infer_budget", [False, True])
@@ -738,7 +769,15 @@ def test_optimize_budget_recomputes_media_components_with_fitted_group_scaling(i
     reference = data.arrays["spend"].sum(axis=(0, 1))
     budget = float(reference.sum())
     bounds = (0.15 * budget, 0.85 * budget)
-    allocation = _optimize(model, results, budget=None if infer_budget else budget, bounds=bounds, batch_size=3)
+    allocation = _optimize(
+        model,
+        results,
+        budget=None if infer_budget else budget,
+        bounds=bounds,
+        batch_size=3,
+        include_metrics=True,
+        incremental_increase=0.25,
+    )
     assert allocation.attrs["budget"] == pytest.approx(budget)
     optimized = allocation["spend"].sel(allocation="optimized").values
 
@@ -766,3 +805,168 @@ def test_optimize_budget_recomputes_media_components_with_fitted_group_scaling(i
     np.testing.assert_allclose(allocation["response"].sel(allocation="optimized"), expected, rtol=2e-6)
     np.testing.assert_allclose(allocation["response"].sel(allocation="reference"), expected_reference, rtol=2e-6)
     np.testing.assert_allclose(allocation["response_change"], expected - expected_reference, atol=3e-6)
+
+    for label, spend, expected_response in [
+        ("reference", reference, expected_reference),
+        ("optimized", optimized, expected),
+    ]:
+        for index, channel in enumerate(data.channels):
+            metrics = allocation.sel(allocation=label, channel=channel)
+            zero = spend.copy()
+            zero[index] = 0.0
+            increased = spend.copy()
+            increased[index] += float(metrics["incremental_spend"])
+            removed = expected_response - direct_response(zero)
+            marginal = direct_response(increased) - expected_response
+
+            np.testing.assert_allclose(metrics["incremental_response"], removed, atol=5e-6)
+            np.testing.assert_allclose(metrics["marginal_response"], marginal, atol=5e-6)
+            np.testing.assert_allclose(metrics["roi"], removed / spend[index], atol=2e-6)
+            np.testing.assert_allclose(
+                metrics["marginal_roi"], marginal / float(metrics["incremental_spend"]), atol=2e-6
+            )
+
+
+@pytest.mark.parametrize("channels", [None, ["email", "video"]])
+@pytest.mark.parametrize("exposure_per_spend", [1.0, 2.0])
+def test_optimize_budget_reports_paired_channel_metrics_at_each_joint_allocation(channels, exposure_per_spend):
+    model, results, curvature = _problem()
+    conversion = "proportional" if exposure_per_spend == 1.0 else lambda spend: exposure_per_spend * spend
+    plain = _optimize(model, results, channels=channels, spend_to_media=conversion, batch_size=3)
+    reported = _optimize(
+        model,
+        results,
+        channels=channels,
+        spend_to_media=conversion,
+        include_metrics=True,
+        incremental_increase=0.2,
+        batch_size=3,
+    )
+
+    xr.testing.assert_equal(reported.drop_vars(set(reported.data_vars) - set(plain.data_vars)), plain)
+    assert reported.attrs["incremental_increase"] == 0.2
+    assert {name: value for name, value in reported.attrs.items() if name != "incremental_increase"} == plain.attrs
+    assert reported["incremental_spend"].dims == ("allocation", "channel")
+    names = ["video", "search", "email"]
+    selected = names if channels is None else channels
+    indices = [names.index(name) for name in selected]
+    np.testing.assert_array_equal(reported.channel, selected)
+    np.testing.assert_array_equal(reported.chain, [3, 9])
+    np.testing.assert_array_equal(reported.draw, [10, 30])
+    target = results["posterior"]["coefficient"].values.astype(float) ** 2
+    reference_metrics = media_metrics(
+        model,
+        results,
+        quantity="expected",
+        channels=channels,
+        spend_to_media=conversion,
+        incremental_increase=0.2,
+        batch_size=3,
+    )
+    for name in ["incremental_response", "roi", "marginal_response", "marginal_roi", "incremental_spend"]:
+        xr.testing.assert_allclose(reported[name].sel(allocation="reference", drop=True), reference_metrics[name])
+
+    for label in ["reference", "optimized"]:
+        full_spend = np.array([6.0, 9.0, 5.0])
+        spend = reported["spend"].sel(allocation=label).values
+        full_spend[indices] = spend
+        increase = reported["incremental_spend"].sel(allocation=label).values
+        np.testing.assert_allclose(increase, 0.2 * spend, rtol=2e-6)
+
+        # Closed-form differences retain cross-channel interactions without
+        # evaluating the model or subtracting rounded response totals.
+        gradient = (
+            -exposure_per_spend
+            * np.einsum("ij,...j->...i", curvature, exposure_per_spend * full_spend - target)[..., indices]
+        )
+        diagonal = exposure_per_spend**2 * np.diag(curvature)[indices]
+        incremental = spend * gradient + 0.5 * spend**2 * diagonal
+        marginal = increase * gradient - 0.5 * increase**2 * diagonal
+        expected = {
+            "incremental_response": incremental,
+            "roi": incremental / spend,
+            "marginal_response": marginal,
+            "marginal_roi": marginal / increase,
+        }
+
+        for name, values in expected.items():
+            assert reported[name].dims == ("chain", "draw", "allocation", "channel")
+            np.testing.assert_allclose(reported[name].sel(allocation=label), values, rtol=2e-5, atol=2e-4)
+        np.testing.assert_allclose(
+            reported["response"].sel(allocation=label),
+            _response(results, curvature, full_spend * exposure_per_spend),
+            atol=2e-4,
+        )
+
+
+def test_optimize_budget_reports_undefined_returns_for_zero_spend_without_rejecting_allocation():
+    model, results, _ = _problem(transformed=lambda media, coefficient: {"expected": media @ coefficient**2})
+    reported = _optimize(
+        model,
+        results,
+        bounds={"video": (0.0, 0.0), "search": (20.0, 20.0), "email": (0.0, 0.0)},
+        include_metrics=True,
+    )
+
+    optimized = reported.sel(allocation="optimized")
+    np.testing.assert_array_equal(optimized["spend"], [0.0, 20.0, 0.0])
+    inactive = optimized.sel(channel=["video", "email"])
+    for name in ["incremental_response", "marginal_response", "incremental_spend"]:
+        np.testing.assert_array_equal(inactive[name], np.zeros(inactive[name].shape))
+    for name in ["roi", "marginal_roi"]:
+        assert np.isnan(inactive[name]).all()
+        np.testing.assert_allclose(
+            optimized[name].sel(channel="search"),
+            results["posterior"]["coefficient"].sel(channel="search") ** 2,
+            rtol=2e-5,
+        )
+        assert np.isfinite(reported[name].sel(allocation="reference")).all()
+
+
+def test_optimize_budget_does_not_evaluate_channel_metrics_unless_requested(monkeypatch):
+    def unexpected_metrics(*args, **kwargs):
+        raise AssertionError("Channel metrics should only run when requested")
+
+    monkeypatch.setattr(optimization, "_allocation_metrics", unexpected_metrics)
+    model, results, _ = _problem()
+    default = _optimize(model, results, spend_constraint_lower=0.0, spend_constraint_upper=0.0, bounds=None)
+    explicit = _optimize(
+        model,
+        results,
+        include_metrics=False,
+        spend_constraint_lower=0.0,
+        spend_constraint_upper=0.0,
+        bounds=None,
+    )
+
+    xr.testing.assert_identical(default, explicit)
+    assert "roi" not in default
+    assert "incremental_increase" not in default.attrs
+
+
+@pytest.mark.parametrize("include_metrics", [None, 0, 1, "yes"])
+def test_optimize_budget_rejects_invalid_include_metrics(include_metrics):
+    model, results, _ = _problem()
+    with pytest.raises((TypeError, ValueError), match="include_metrics"):
+        _optimize(model, results, include_metrics=include_metrics)
+
+
+@pytest.mark.parametrize("increase", [0.0, -0.1, np.nan, np.inf, True, "0.01"])
+def test_optimize_budget_rejects_invalid_metric_increases(increase):
+    model, results, _ = _problem()
+    with pytest.raises(ValueError, match="incremental_increase"):
+        _optimize(model, results, include_metrics=True, incremental_increase=increase)
+
+
+def test_optimize_budget_rejects_unrepresentable_positive_spend_increases():
+    model, results, _ = _problem()
+    with pytest.raises(ValueError, match="too small for the model precision"):
+        _optimize(
+            model,
+            results,
+            include_metrics=True,
+            incremental_increase=1e-12,
+            spend_constraint_lower=0.0,
+            spend_constraint_upper=0.0,
+            bounds=None,
+        )

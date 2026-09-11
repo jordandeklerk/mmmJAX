@@ -242,45 +242,14 @@ def media_metrics(
         response_periods=response_periods,
         batch_size=batch_size,
     )
-    totals = np.asarray(context.reference_spend)
-    indices = context.indices
-    count = len(indices)
-    allocation = np.broadcast_to(totals, (1 + 2 * count, len(totals))).copy()
-    comparison = allocation.copy()
-    rows = np.arange(count)
-    comparison[1 + rows, indices] = 0
-    with np.errstate(over="ignore", invalid="ignore"):
-        allocation[1 + count + rows, indices] *= 1 + float(incremental_increase)
-    if not np.isfinite(allocation).all():
-        raise ValueError("Candidate spending is too large for the model precision. Reduce incremental_increase")
-
-    reference_spend = totals[indices]
-    incremental_spend = allocation[1 + count + rows, indices] - reference_spend
-    if np.any(incremental_spend <= 0):
-        raise ValueError("incremental_increase is too small for the model precision. Use a larger increase")
-
-    responses, differences = _evaluate_response_pairs(context, allocation, comparison)
-    incremental = differences[1 : 1 + count].transpose(1, 2, 0)
-    marginal = differences[1 + count :].transpose(1, 2, 0)
-    with np.errstate(over="ignore", invalid="ignore"):
-        roi = incremental / reference_spend
-        marginal_roi = marginal / incremental_spend
-    if not np.isfinite(roi).all() or not np.isfinite(marginal_roi).all():
-        raise ValueError("Channel returns are nonfinite. Check the response and spending units")
-
-    axes = ("chain", "draw", "channel")
-    return xr.Dataset(
-        {
-            "incremental_response": (axes, incremental),
-            "roi": (axes, roi),
-            "marginal_response": (axes, marginal),
-            "marginal_roi": (axes, marginal_roi),
-            "reference_spend": ("channel", reference_spend),
-            "incremental_spend": ("channel", incremental_spend),
-            "reference_response": (("chain", "draw"), responses[0]),
-        },
-        coords=context.coords,
-        attrs={**context.attrs, "incremental_increase": float(incremental_increase)},
+    metrics = _allocation_metrics(
+        context,
+        np.asarray(context.reference_spend)[None, :],
+        allocation_labels=["reference"],
+        incremental_increase=float(incremental_increase),
+    )
+    return metrics.sel(allocation="reference", drop=True).rename(
+        {"spend": "reference_spend", "response": "reference_response"}
     )
 
 
@@ -293,6 +262,63 @@ class _ResponseContext:
     indices: NDArray[np.intp]
     coords: dict[str, NDArray[np.generic]]
     attrs: dict[str, str]
+
+
+def _allocation_metrics(
+    context: _ResponseContext,
+    totals: NDArray[np.float32 | np.float64],
+    *,
+    allocation_labels: Sequence[str],
+    incremental_increase: float,
+) -> xr.Dataset:
+    """Evaluate channel interventions around each joint spending allocation."""
+    indices = context.indices
+    count = len(indices)
+    allocation = np.broadcast_to(totals[:, None, :], (len(totals), 1 + 2 * count, totals.shape[1])).copy()
+    comparison = allocation.copy()
+    rows = np.arange(count)
+    comparison[:, 1 + rows, indices] = 0
+    with np.errstate(over="ignore", invalid="ignore"):
+        allocation[:, 1 + count + rows, indices] *= 1 + incremental_increase
+    if not np.isfinite(allocation).all():
+        raise ValueError("Candidate spending is too large for the model precision. Reduce incremental_increase")
+
+    spend = totals[:, indices]
+    positive = spend > 0
+    incremental_spend = allocation[:, 1 + count + rows, indices] - spend
+    if np.any(positive & (incremental_spend <= 0)):
+        raise ValueError("incremental_increase is too small for the model precision. Use a larger increase")
+
+    responses, differences = _evaluate_response_pairs(
+        context, allocation.reshape(-1, totals.shape[1]), comparison.reshape(-1, totals.shape[1])
+    )
+    shape = (len(totals), 1 + 2 * count, *responses.shape[1:])
+    responses, differences = responses.reshape(shape), differences.reshape(shape)
+    incremental = differences[:, 1 : 1 + count].transpose(2, 3, 0, 1)
+    marginal = differences[:, 1 + count :].transpose(2, 3, 0, 1)
+
+    # Removing or proportionally increasing zero spending is unchanged, but
+    # neither ratio is defined. Preserve missing values rather than zero returns.
+    with np.errstate(over="ignore", invalid="ignore"):
+        roi = np.divide(incremental, spend, out=np.full_like(incremental, np.nan), where=positive)
+        marginal_roi = np.divide(marginal, incremental_spend, out=np.full_like(marginal, np.nan), where=positive)
+    if not np.all(np.isfinite(roi) | ~positive) or not np.all(np.isfinite(marginal_roi) | ~positive):
+        raise ValueError("Channel returns are nonfinite. Check the response and spending units")
+
+    axes = ("chain", "draw", "allocation", "channel")
+    return xr.Dataset(
+        {
+            "incremental_response": (axes, incremental),
+            "roi": (axes, roi),
+            "marginal_response": (axes, marginal),
+            "marginal_roi": (axes, marginal_roi),
+            "spend": (("allocation", "channel"), spend),
+            "incremental_spend": (("allocation", "channel"), incremental_spend),
+            "response": (("chain", "draw", "allocation"), responses[:, 0].transpose(1, 2, 0)),
+        },
+        coords={**context.coords, "allocation": list(allocation_labels)},
+        attrs={**context.attrs, "incremental_increase": incremental_increase},
+    )
 
 
 def _evaluate_response_pairs(

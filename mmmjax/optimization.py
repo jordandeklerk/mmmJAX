@@ -13,7 +13,7 @@ from numpy.typing import NDArray
 from scipy.optimize import approx_fprime, minimize
 
 from mmmjax.model import Model
-from mmmjax.response import _prepare_response
+from mmmjax.response import _allocation_metrics, _prepare_response
 
 __all__ = ["optimize_budget"]
 
@@ -33,6 +33,8 @@ def optimize_budget(
     spend_periods: Sequence[object] | None = None,
     response_periods: Sequence[object] | None = None,
     initial_spend: Mapping[str, float] | None = None,
+    include_metrics: bool = False,
+    incremental_increase: float = 0.01,
     batch_size: int = 64,
     maxiter: int = 200,
     tolerance: float = 1e-6,
@@ -96,6 +98,12 @@ def optimize_budget(
     initial_spend : mapping of str to float, optional
         Feasible starting spend for each selected channel. Defaults to
         reference proportions adjusted to the budget and bounds.
+    include_metrics : bool, default False
+        Also report channel incremental response, ROI, and marginal ROI at
+        both allocations. Requires additional evaluations after optimization.
+    incremental_increase : float, default 0.01
+        Positive fractional spend increase for marginal ROI when
+        ``include_metrics=True``. The default measures a 1% increase.
     batch_size : int, default 64
         Maximum posterior draws evaluated together.
     maxiter : int, default 200
@@ -114,6 +122,16 @@ def optimize_budget(
         - **lower_bound**, **upper_bound**, and **initial_spend** record constraints
           and the starting allocation.
         - **spend_period** and **response_period** record selected dates.
+
+        With ``include_metrics=True``, **incremental_response** measures
+        response lost by removing a channel's spending, and **roi** divides
+        it by that spending. **marginal_response** and **marginal_roi** measure
+        an increase using **incremental_spend**. Response and ROI arrays retain
+        chain, draw, allocation, and channel axes. Ratios use the quantity's units
+        per unit spend and are undefined (``NaN``) at zero spending.
+        Channel removal and increase scenarios hold other channels at the
+        allocation being evaluated and are not restricted by optimization
+        bounds. Channel effects need not add up when channels interact.
 
         A single allocation maximizes the posterior mean, not each draw
         separately. If the reference total differs from ``budget``, the
@@ -135,6 +153,10 @@ def optimize_budget(
         raise ValueError("maxiter must be a positive integer")
     if bounds is not None and (spend_constraint_lower is not None or spend_constraint_upper is not None):
         raise ValueError("Use either bounds or spend_constraint_lower and spend_constraint_upper, not both")
+    if not isinstance(include_metrics, bool):
+        raise ValueError("include_metrics must be a boolean")
+    if include_metrics:
+        incremental_increase = _positive_number(incremental_increase, "incremental_increase")
 
     context = _prepare_response(
         model,
@@ -296,7 +318,7 @@ def optimize_budget(
     if not all(np.isfinite(value).all() for value in (reference_response, response, change)):
         raise ValueError("An allocation produced invalid media or a nonfinite response. Check the model and conversion")
 
-    return xr.Dataset(
+    report = xr.Dataset(
         {
             "spend": (("allocation", "channel"), np.stack((reference, optimized * budget))),
             "response": (("chain", "draw", "allocation"), np.stack((reference_response, response), axis=-1)),
@@ -318,6 +340,18 @@ def optimize_budget(
             "tolerance": tolerance,
         },
     )
+    if include_metrics:
+        metrics = _allocation_metrics(
+            context,
+            np.stack((np.asarray(baseline), np.asarray(allocation))),
+            allocation_labels=["reference", "optimized"],
+            incremental_increase=incremental_increase,
+        )
+        for name in ("incremental_response", "roi", "marginal_response", "marginal_roi", "incremental_spend"):
+            report[name] = metrics[name]
+        report.attrs["incremental_increase"] = incremental_increase
+
+    return report
 
 
 def _positive_number(value: float, name: str) -> float:
