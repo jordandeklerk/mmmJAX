@@ -24,8 +24,10 @@ def optimize_budget(
     *,
     budget: float | None = None,
     quantity: str,
-    spend_to_media: Literal["proportional"] | Callable[[jax.Array], ArrayLike],
-    bounds: tuple[float, float] | Mapping[str, tuple[float, float]],
+    spend_to_media: Literal["proportional"] | Callable[[jax.Array], ArrayLike] = "proportional",
+    bounds: tuple[float, float] | Mapping[str, tuple[float, float]] | None = None,
+    spend_constraint_lower: float | Sequence[float] | None = None,
+    spend_constraint_upper: float | Sequence[float] | None = None,
     channels: Sequence[str] | None = None,
     new_data: object = None,
     spend_periods: Sequence[object] | None = None,
@@ -60,12 +62,26 @@ def optimize_budget(
         each allocation and posterior draw and need not be stored in ``results``.
         The objective maximizes the posterior mean of the total over selected
         measurement periods and groups.
-    spend_to_media : {"proportional"} or callable
-        Explicit exposure assumption, as in ``response_curves``. A callable
-        must be differentiable in JAX and return exposures from raw spending.
-    bounds : tuple of float or mapping of str to tuple of float
+    spend_to_media : {"proportional"} or callable, default "proportional"
+        By default, exposure scales with spending at each period and group,
+        retaining reference exposure per unit spend. A differentiable JAX
+        callable instead receives raw spending in model channel order and
+        returns exposures of the same shape.
+    bounds : tuple of float or mapping of str to tuple of float, optional
         Finite nonnegative lower and upper spending limits in original units.
         Supply one pair for all selected channels or one pair per channel name.
+        Cannot be combined with percentage constraints. Without either form,
+        each channel may receive zero through the total budget.
+    spend_constraint_lower : float or sequence of float, optional
+        Allowed fractional decrease from each channel's share of ``budget``
+        using reference spending proportions. Use ``0.5`` for a 50% decrease
+        across all channels or one value per selected channel in ``channels``
+        order. Values must be between zero and one. Omit for a zero lower limit.
+    spend_constraint_upper : float or sequence of float, optional
+        Allowed fractional increase from the same reference-proportioned
+        budget. Use ``0.5`` for a 50% increase or one value per selected channel.
+        Values must be finite and nonnegative. Omit for an upper limit equal
+        to the total budget. Lists use data channel order if ``channels`` is omitted.
     channels : sequence of str, optional
         Paid-media channels to optimize. Defaults to all. Each needs positive
         reference spending to define its allocation across periods and groups.
@@ -117,6 +133,8 @@ def optimize_budget(
         raise ValueError("tolerance must be smaller than one")
     if isinstance(maxiter, bool) or not isinstance(maxiter, Integral) or maxiter < 1:
         raise ValueError("maxiter must be a positive integer")
+    if bounds is not None and (spend_constraint_lower is not None or spend_constraint_upper is not None):
+        raise ValueError("Use either bounds or spend_constraint_lower and spend_constraint_upper, not both")
 
     context = _prepare_response(
         model,
@@ -136,7 +154,23 @@ def optimize_budget(
 
     budget = _positive_number(float(reference.sum()) if budget is None else budget, "budget")
     labels = context.coords["channel"].tolist()
-    limits = _spending_bounds(bounds, labels)
+    limits = _spending_bounds((0.0, budget) if bounds is None else bounds, labels)
+
+    center = budget * (reference / reference.sum())
+    if spend_constraint_lower is not None:
+        decrease = _spend_constraint(spend_constraint_lower, len(labels), "spend_constraint_lower")
+        if np.any(decrease > 1):
+            raise ValueError("spend_constraint_lower must be between zero and one")
+        limits[:, 0] = (1 - decrease) * center
+
+    if spend_constraint_upper is not None:
+        increase = _spend_constraint(spend_constraint_upper, len(labels), "spend_constraint_upper")
+        with np.errstate(over="ignore"):
+            limits[:, 1] = (1 + increase) * center
+        if not np.isfinite(limits[:, 1]).all():
+            raise ValueError(
+                "Spending constraints produce nonfinite bounds. Reduce the upper constraints or spending units"
+            )
 
     # Shares keep the constraints independent of the currency and budget size.
     if np.any(limits[:, 0] > budget):
@@ -287,6 +321,22 @@ def _spending_bounds(
         raise ValueError("Spending bounds must be finite and nonnegative with lower limits no larger than upper limits")
 
     return limits
+
+
+def _spend_constraint(value: float | Sequence[float], size: int, name: str) -> NDArray[np.float64]:
+    """Validate a fractional change for all channels or one per selected channel."""
+    try:
+        array = np.asarray(value)
+        contains_bool = any(isinstance(item, (bool, np.bool_)) for item in np.asarray(value, dtype=object).flat)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{name} must be a number or one number per selected channel") from error
+
+    if array.ndim > 1 or (array.ndim == 1 and array.size != size):
+        raise ValueError(f"{name} must be a number or one number per selected channel")
+    if array.dtype.kind not in "fiu" or contains_bool or not np.isfinite(array).all() or np.any(array < 0):
+        raise ValueError(f"{name} must contain finite nonnegative numbers")
+
+    return np.broadcast_to(array.astype(np.float64), (size,)).copy()
 
 
 def _initial_allocation(

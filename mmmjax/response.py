@@ -26,7 +26,7 @@ def response_curves(
     *,
     quantity: str,
     multipliers: Sequence[float] | ArrayLike,
-    spend_to_media: Literal["proportional"] | Callable[[jax.Array], ArrayLike],
+    spend_to_media: Literal["proportional"] | Callable[[jax.Array], ArrayLike] = "proportional",
     channels: Sequence[str] | None = None,
     new_data: object = None,
     spend_periods: Sequence[object] | None = None,
@@ -57,12 +57,13 @@ def response_curves(
     multipliers : array_like
         Distinct nonnegative spending multipliers. One retains reference
         spending and zero removes the channel's spending during ``spend_periods``.
-    spend_to_media : {"proportional"} or callable
-        Use ``"proportional"`` to scale exposure with spend at each period
-        and group. A JAX-compatible function instead receives current spend
-        in original units and model channel order, then returns nonnegative
-        exposures of the same shape. Only exposures during ``spend_periods``
-        are replaced. Earlier history is excluded from the conversion.
+    spend_to_media : {"proportional"} or callable, default "proportional"
+        By default, exposure scales with spend at each period and group,
+        retaining reference exposure per unit spend. A JAX-compatible function
+        instead receives current spend in original units and model channel
+        order, then returns nonnegative exposures of the same shape. Only
+        exposures during ``spend_periods`` are replaced. Earlier history is
+        excluded from the conversion.
     channels : sequence of str, optional
         Channel labels to evaluate, in the desired order. Defaults to all
         paid-media channels. Each needs positive reference spending.

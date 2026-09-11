@@ -1,4 +1,4 @@
-"""Tests for posterior response curves with explicit spending assumptions."""
+"""Tests for posterior response curves with proportional or custom spending assumptions."""
 
 from dataclasses import replace
 from datetime import date, datetime
@@ -115,6 +115,19 @@ def _scenario(data, channel, multiplier, *, conversion=None):
     else:
         arrays["media"][1:] = np.asarray(conversion(arrays["spend"]))
     return replace(data, arrays=arrays)
+
+
+def test_response_curves_default_to_proportional_media():
+    data = _data()
+    model = _model(data)
+    results = _results(model, data)
+
+    curves = response_curves(model, results, quantity="expected", multipliers=[0.0, 1.0, 2.0])
+    explicit = response_curves(
+        model, results, quantity="expected", multipliers=[0.0, 1.0, 2.0], spend_to_media="proportional"
+    )
+
+    xr.testing.assert_identical(curves, explicit)
 
 
 @pytest.mark.parametrize("grouped", [False, True])
@@ -429,11 +442,9 @@ def test_response_curves_require_an_observation_shaped_transformed_quantity(quan
         )
 
 
-def test_response_curves_require_explicit_spend_conversion():
+def test_response_curves_reject_unknown_spend_conversion():
     data = _data()
     model = _model(data)
-    with pytest.raises(TypeError, match="spend_to_media"):
-        response_curves(model, _results(model, data), quantity="expected", multipliers=[1.0])
     with pytest.raises((TypeError, ValueError), match="spend_to_media"):
         response_curves(
             model, _results(model, data), quantity="expected", multipliers=[1.0], spend_to_media="automatic"

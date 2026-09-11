@@ -87,19 +87,43 @@ def _response(results, curvature, allocation):
     return 1000.0 - 0.5 * np.einsum("...i,ij,...j->...", difference, curvature, difference)
 
 
-@pytest.mark.parametrize("options", [{}, {"budget": None}])
-def test_optimize_budget_defaults_to_reference_total(options):
+def test_optimize_budget_defaults_to_reference_total_and_proportional_media():
+    model, results, _ = _problem()
+    allocation = optimize_budget(model, results, quantity="expected")
+    explicit_none = optimize_budget(
+        model,
+        results,
+        quantity="expected",
+        budget=None,
+        bounds=None,
+        spend_constraint_lower=None,
+        spend_constraint_upper=None,
+    )
+    explicit = _optimize(model, results, budget=20.0, bounds=(0.0, 20.0))
+
+    xr.testing.assert_identical(allocation, explicit)
+    xr.testing.assert_identical(explicit_none, explicit)
+    np.testing.assert_array_equal(allocation["lower_bound"], [0.0, 0.0, 0.0])
+    np.testing.assert_array_equal(allocation["upper_bound"], [20.0, 20.0, 20.0])
+
+
+def test_optimize_budget_uses_overridden_total_for_default_bounds():
     model, results, _ = _problem()
     allocation = optimize_budget(
         model,
         results,
         quantity="expected",
-        spend_to_media="proportional",
-        bounds=(0.0, 40.0),
-        **options,
+        budget=35.0,
+        channels=["search", "video"],
+        spend_periods=[2],
     )
-    explicit = _optimize(model, results, budget=20.0)
-    xr.testing.assert_identical(allocation, explicit)
+
+    np.testing.assert_array_equal(allocation.channel, ["search", "video"])
+    np.testing.assert_array_equal(allocation["lower_bound"], [0.0, 0.0])
+    np.testing.assert_array_equal(allocation["upper_bound"], [35.0, 35.0])
+    np.testing.assert_allclose(allocation["spend"].sel(allocation="optimized").sum(), 35.0, rtol=2e-6)
+    assert allocation.attrs["budget"] == 35.0
+    assert allocation.attrs["reference_budget"] == pytest.approx(9.0)
 
 
 @pytest.mark.parametrize("use_new_data", [False, True])
@@ -120,8 +144,6 @@ def test_optimize_budget_infers_total_only_from_selected_channels_and_spending_p
         model,
         results,
         quantity="expected",
-        spend_to_media="proportional",
-        bounds=(0.0, 40.0),
         channels=["search", "video"],
         spend_periods=[2],
         response_periods=[1, 2],
@@ -132,6 +154,8 @@ def test_optimize_budget_infers_total_only_from_selected_channels_and_spending_p
     assert allocation.attrs["reference_budget"] == allocation.attrs["budget"]
     np.testing.assert_allclose(allocation["spend"].sum("channel"), expected, rtol=2e-6)
     np.testing.assert_allclose(allocation["initial_spend"].sum(), expected, rtol=2e-6)
+    np.testing.assert_array_equal(allocation["lower_bound"], [0.0, 0.0])
+    np.testing.assert_allclose(allocation["upper_bound"], [expected, expected], rtol=2e-6)
 
 
 def test_optimize_budget_does_not_adjust_inferred_total_to_infeasible_bounds():
@@ -185,9 +209,10 @@ def test_optimize_budget_maximizes_joint_posterior_response(budget, spend_unit):
 
 def test_optimize_budget_enforces_channel_bounds():
     model, results, _ = _problem()
-    allocation = _optimize(
+    allocation = optimize_budget(
         model,
         results,
+        quantity="expected",
         bounds={"email": (0.0, 20.0), "video": (10.0, 12.0), "search": (0.0, 6.0)},
     )
     np.testing.assert_allclose(allocation["spend"].sel(allocation="optimized"), [10.0, 6.0, 4.0], atol=2e-4)
@@ -197,6 +222,128 @@ def test_optimize_budget_enforces_channel_bounds():
     np.testing.assert_allclose(initial.sum(), 20.0)
     assert np.all(initial >= allocation["lower_bound"].values)
     assert np.all(initial <= allocation["upper_bound"].values)
+
+
+def test_optimize_budget_preserves_total_with_fifty_percent_reference_bounds():
+    model, results, _ = _problem(spend_unit=1_000.0)
+    reference = {"video": 6_000.0, "search": 9_000.0, "email": 5_000.0}
+    bounds = {channel: (0.5 * spend, 1.5 * spend) for channel, spend in reference.items()}
+
+    allocation = optimize_budget(model, results, quantity="expected", bounds=bounds)
+    relative = optimize_budget(
+        model,
+        results,
+        quantity="expected",
+        spend_constraint_lower=0.5,
+        spend_constraint_upper=0.5,
+    )
+
+    xr.testing.assert_identical(relative, allocation)
+    np.testing.assert_array_equal(allocation["lower_bound"], [3_000.0, 4_500.0, 2_500.0])
+    np.testing.assert_array_equal(allocation["upper_bound"], [9_000.0, 13_500.0, 7_500.0])
+    optimized = allocation["spend"].sel(allocation="optimized").values
+    np.testing.assert_allclose(optimized.sum(), sum(reference.values()), rtol=2e-6)
+    assert np.all(optimized >= allocation["lower_bound"].values)
+    assert np.all(optimized <= allocation["upper_bound"].values)
+    assert allocation.attrs["budget"] == pytest.approx(allocation.attrs["reference_budget"])
+    assert float(allocation["response_change"].mean()) > 0
+
+
+def test_optimize_budget_applies_asymmetric_constraint_vectors_in_channel_order():
+    model, results, _ = _problem()
+    allocation = optimize_budget(
+        model,
+        results,
+        quantity="expected",
+        spend_constraint_lower=[0.0, 0.5, 1.0],
+        spend_constraint_upper=[1.0, 0.0, 3.0],
+    )
+
+    np.testing.assert_array_equal(allocation.channel, ["video", "search", "email"])
+    np.testing.assert_array_equal(allocation["lower_bound"], [6.0, 4.5, 0.0])
+    np.testing.assert_array_equal(allocation["upper_bound"], [12.0, 9.0, 20.0])
+    optimized = allocation["spend"].sel(allocation="optimized").values
+    np.testing.assert_allclose(optimized.sum(), 20.0, rtol=2e-6)
+    assert np.all(optimized >= allocation["lower_bound"].values)
+    assert np.all(optimized <= allocation["upper_bound"].values)
+
+
+@pytest.mark.parametrize("use_new_data", [False, True])
+def test_optimize_budget_centers_relative_bounds_on_selected_reference_shares(use_new_data):
+    model, results, _ = _problem()
+    frame = pl.DataFrame(
+        {
+            "week": [1, 2],
+            "video": [4.0, 8.0],
+            "search": [4.0, 20.0],
+            "email": [6.0, 12.0],
+            "video_cost": [2.0, 4.0],
+            "search_cost": [2.0, 10.0],
+            "email_cost": [3.0, 6.0],
+        }
+    )
+    allocation = optimize_budget(
+        model,
+        results,
+        quantity="expected",
+        budget=35.0,
+        channels=["search", "video"],
+        spend_periods=[2],
+        response_periods=[1, 2],
+        new_data=frame if use_new_data else None,
+        spend_constraint_lower=[0.2, 0.6],
+        spend_constraint_upper=[0.1, 0.8],
+    )
+
+    reference = np.array([10.0, 4.0] if use_new_data else [5.4, 3.6])
+    center = 35.0 * reference / reference.sum()
+    np.testing.assert_array_equal(allocation.channel, ["search", "video"])
+    np.testing.assert_allclose(allocation["spend"].sel(allocation="reference"), reference)
+    np.testing.assert_allclose(allocation["lower_bound"], [0.8, 0.4] * center)
+    np.testing.assert_allclose(allocation["upper_bound"], [1.1, 1.8] * center)
+    np.testing.assert_allclose(allocation["initial_spend"], center)
+    np.testing.assert_allclose(allocation["spend"].sel(allocation="optimized").sum(), 35.0, rtol=2e-6)
+    assert allocation.attrs["reference_budget"] == pytest.approx(reference.sum())
+
+
+@pytest.mark.parametrize(
+    ("constraints", "lower", "upper"),
+    [
+        ({"spend_constraint_lower": 0.5}, [3.0, 4.5, 2.5], [20.0, 20.0, 20.0]),
+        ({"spend_constraint_upper": 1.5}, [0.0, 0.0, 0.0], [15.0, 22.5, 12.5]),
+    ],
+)
+def test_optimize_budget_retains_default_bound_on_unspecified_constraint_side(constraints, lower, upper):
+    model, results, _ = _problem()
+    allocation = optimize_budget(model, results, quantity="expected", **constraints)
+
+    np.testing.assert_array_equal(allocation["lower_bound"], lower)
+    np.testing.assert_array_equal(allocation["upper_bound"], upper)
+    np.testing.assert_allclose(allocation["spend"].sel(allocation="optimized").sum(), 20.0, rtol=2e-6)
+
+
+@pytest.mark.parametrize("budget", [None, 35.0])
+def test_optimize_budget_zero_relative_constraints_fix_reference_shares(monkeypatch, budget):
+    model, results, _ = _problem()
+
+    def unexpected_solver(*args, **kwargs):
+        raise AssertionError("Zero relative constraints determine the allocation")
+
+    monkeypatch.setattr(optimization, "minimize", unexpected_solver)
+    allocation = optimize_budget(
+        model,
+        results,
+        quantity="expected",
+        budget=budget,
+        spend_constraint_lower=0.0,
+        spend_constraint_upper=0.0,
+    )
+
+    center = np.array([6.0, 9.0, 5.0]) * ((20.0 if budget is None else budget) / 20.0)
+    np.testing.assert_allclose(allocation["lower_bound"], center)
+    np.testing.assert_allclose(allocation["upper_bound"], center)
+    np.testing.assert_allclose(allocation["spend"].sel(allocation="optimized"), center)
+    assert allocation.attrs["iterations"] == 0
 
 
 def test_optimize_budget_preserves_selection_order_and_fixed_channels():
@@ -278,6 +425,63 @@ def test_optimize_budget_rejects_invalid_or_infeasible_bounds(bounds):
     model, results, _ = _problem()
     with pytest.raises((TypeError, ValueError)):
         _optimize(model, results, bounds=bounds)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("spend_constraint_lower", -0.1),
+        ("spend_constraint_upper", -0.1),
+        ("spend_constraint_lower", 1.1),
+        ("spend_constraint_lower", np.nan),
+        ("spend_constraint_upper", np.inf),
+        ("spend_constraint_lower", True),
+        ("spend_constraint_upper", True),
+        ("spend_constraint_lower", [0.5]),
+        ("spend_constraint_upper", [[0.5, 0.5, 0.5]]),
+        ("spend_constraint_upper", [0.5, np.nan, 0.5]),
+        ("spend_constraint_lower", [0.5, True, 0.5]),
+        ("spend_constraint_upper", [0.5, -0.1, 0.5]),
+        ("spend_constraint_lower", [0.5, 1.1, 0.5]),
+    ],
+)
+def test_optimize_budget_rejects_invalid_relative_constraints(name, value):
+    model, results, _ = _problem()
+    with pytest.raises(ValueError, match=name):
+        optimize_budget(model, results, quantity="expected", **{name: value})
+
+
+def test_optimize_budget_rejects_nonfinite_bounds_from_finite_relative_constraints():
+    model, results, _ = _problem()
+    with pytest.raises(ValueError, match="nonfinite bounds"):
+        optimize_budget(model, results, quantity="expected", spend_constraint_upper=np.finfo(float).max)
+
+
+@pytest.mark.parametrize("name", ["spend_constraint_lower", "spend_constraint_upper"])
+def test_optimize_budget_requires_one_constraint_per_selected_channel(name):
+    model, results, _ = _problem()
+    with pytest.raises(ValueError, match=name):
+        optimize_budget(
+            model,
+            results,
+            quantity="expected",
+            channels=["search", "video"],
+            **{name: [0.5, 0.5, 0.5]},
+        )
+
+
+@pytest.mark.parametrize(
+    "constraints",
+    [
+        {"spend_constraint_lower": 0.5},
+        {"spend_constraint_upper": 0.5},
+        {"spend_constraint_lower": 0.0, "spend_constraint_upper": 0.0},
+    ],
+)
+def test_optimize_budget_rejects_combined_monetary_and_relative_bounds(constraints):
+    model, results, _ = _problem()
+    with pytest.raises(ValueError, match="bounds"):
+        optimize_budget(model, results, quantity="expected", bounds=(0.0, 20.0), **constraints)
 
 
 @pytest.mark.parametrize(
