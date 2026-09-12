@@ -251,7 +251,17 @@ def test_optimize_budget_respects_group_equalities_including_redundant_rules(red
 
     allocation = _optimize(model, results, constraints=constraints, tolerance=1e-8)
 
-    np.testing.assert_allclose(allocation["spend"].sel(allocation="optimized"), [9.0, 3.0, 8.0], atol=5e-4)
+    optimized = allocation["spend"].sel(allocation="optimized").values
+    np.testing.assert_allclose(
+        [optimized.sum(), optimized[:2].sum(), optimized[2]], [20.0, 12.0, 8.0], rtol=0, atol=2e-7
+    )
+
+    expected_response = _response(results, [9.0, 3.0, 8.0]).mean()
+    # Along the feasible direction [9 + d, 3 - d, 8], response loss is d**2.
+    # Check that loss independently in float64, allowing one model-precision ULP
+    # or the original coordinate tolerance squared, whichever is larger.
+    response_atol = max(5e-4**2, float(np.spacing(np.asarray(expected_response, dtype=model._dtype))))
+    np.testing.assert_allclose(_response(results, optimized).mean(), expected_response, rtol=0, atol=response_atol)
     assert allocation["constraint_satisfied"].sel(allocation="optimized").values.all()
 
 
