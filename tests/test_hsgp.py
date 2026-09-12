@@ -21,7 +21,10 @@ from mmmjax import (
     Real,
     generate_quantities,
     normal,
+    optimize_budget,
     prepare_data,
+    response_curves,
+    root_saturation,
     sample_prior,
 )
 from mmmjax._results import _collect_results
@@ -85,6 +88,27 @@ def _data(times, *, groups=(), outcome=True, media_history=None):
         outcome="sales" if outcome else None,
         media=["video"],
         media_history=media_history,
+        frequency=None,
+    )
+
+
+def _channel_data(times, *, channels=("video", "search"), groups=(), outcome=True):
+    labels = tuple(times)
+    group_count = len(groups) if groups else 1
+    columns = {"time": [label for label in labels for _ in range(group_count)]}
+    if groups:
+        columns["region"] = list(groups) * len(labels)
+    if outcome:
+        columns["sales"] = (0.5 + np.arange(len(labels) * group_count) / 10).tolist()
+    for index, channel in enumerate(channels, start=1):
+        columns[channel] = np.full(len(labels) * group_count, index, dtype=float)
+    return prepare_data(
+        pl.DataFrame(columns),
+        time="time",
+        groups=["region"] if groups else [],
+        outcome="sales" if outcome else None,
+        media=list(channels),
+        channels=list(channels),
         frequency=None,
     )
 
@@ -743,6 +767,8 @@ def test_hsgp_effect_is_exported_immutable_and_declares_actual_parameter_names()
     assert effect.boundary is None
     assert effect.n_basis == 3
     assert effect.demean is True
+    assert effect.channel_specific is False
+    assert prepared.channels == ()
     assert list(prepared.parameters) == [
         "baseline_coefficients",
         "baseline_length_scale",
@@ -752,9 +778,120 @@ def test_hsgp_effect_is_exported_immutable_and_declares_actual_parameter_names()
     assert prepared.parameters["baseline_coefficients"].shape == (3,)
     assert isinstance(prepared.parameters["baseline_length_scale"], Positive)
     assert isinstance(prepared.parameters["baseline_amplitude"], Positive)
-    for attribute, value in (("name", "trend"), ("covariance", "expquad"), ("demean", False)):
+    for attribute, value in (
+        ("name", "trend"),
+        ("covariance", "expquad"),
+        ("demean", False),
+        ("channel_specific", True),
+    ):
         with pytest.raises(FrozenInstanceError):
             setattr(effect, attribute, value)
+
+
+def test_channel_specific_curve_matches_independent_per_channel_formula_and_demeans_each_curve():
+    prepared = HSGPEffect(
+        length_scale_range=(1.0, 4.0),
+        boundary=8.0,
+        n_basis=3,
+        channel_specific=True,
+    )._prepare(_channel_data([0.0, 2.0, 5.0, 7.0]))
+    coefficients = np.array([[0.3, -0.7, 1.1], [-0.2, 0.8, 0.4]])
+    parameters = _values(prepared, coefficients=coefficients)
+    expected = np.stack(
+        [_matern52_curve(prepared, channel_coefficients, 2.5, 0.8) for channel_coefficients in coefficients],
+        axis=-1,
+    )
+    actual = prepared.apply(parameters)
+
+    assert prepared.channels == ("video", "search")
+    assert prepared.parameters["baseline_coefficients"].shape == (2, 3)
+    assert isinstance(prepared.parameters["baseline_length_scale"], Positive)
+    assert isinstance(prepared.parameters["baseline_amplitude"], Positive)
+    assert actual.shape == (4, 2)
+    np.testing.assert_allclose(actual, expected, rtol=5e-6, atol=3e-6)
+    np.testing.assert_allclose(actual.mean(axis=0), np.zeros(2), rtol=0, atol=1e-7)
+
+
+def test_channel_specific_curves_broadcast_unchanged_over_groups():
+    prepared = HSGPEffect(
+        length_scale_range=(1.0, 4.0),
+        boundary=8.0,
+        n_basis=3,
+        channel_specific=True,
+    )._prepare(_channel_data([0.0, 2.0, 5.0], groups=("west", "east")))
+    coefficients = np.array([[0.3, -0.7, 1.1], [-0.2, 0.8, 0.4]])
+    channel_curves = np.stack(
+        [_matern52_curve(prepared, values, 2.5, 0.8) for values in coefficients],
+        axis=-1,
+    )
+    result = prepared.apply(_values(prepared, coefficients=coefficients))
+
+    assert result.shape == (3, 2, 2)
+    np.testing.assert_allclose(
+        result,
+        np.broadcast_to(channel_curves[:, None, :], result.shape),
+        rtol=5e-6,
+        atol=3e-6,
+    )
+
+
+def test_channel_specific_apply_supports_jit_grad_vmap_and_has_no_cross_channel_coefficient_derivatives():
+    prepared = HSGPEffect(
+        length_scale_range=(1.0, 4.0),
+        boundary=8.0,
+        n_basis=3,
+        channel_specific=True,
+    )._prepare(_channel_data([0.0, 1.0, 3.0]))
+    coefficients = jnp.array([[0.3, -0.7, 1.1], [-0.2, 0.8, 0.4]])
+    parameters = _values(prepared, coefficients=coefficients)
+    observation_weights = jnp.array([0.2, -0.3, 0.7])
+
+    def first_channel(values):
+        return observation_weights @ prepared.apply(values)[:, 0]
+
+    value, gradient = jax.jit(jax.value_and_grad(first_channel))(parameters)
+    batched = jax.jit(jax.vmap(prepared.apply))(
+        {
+            "baseline_coefficients": jnp.stack((coefficients, -coefficients)),
+            "baseline_length_scale": jnp.array([2.5, 2.0]),
+            "baseline_amplitude": jnp.array([0.8, 0.4]),
+        }
+    )
+
+    assert np.isfinite(value)
+    assert all(np.isfinite(item).all() for item in gradient.values())
+    np.testing.assert_array_equal(gradient["baseline_coefficients"][1], jnp.zeros(3))
+    assert np.any(np.asarray(gradient["baseline_coefficients"][0]) != 0)
+    assert batched.shape == (2, 3, 2)
+
+
+def test_channel_specific_configuration_preparation_and_coefficient_shape_validation():
+    with pytest.raises(TypeError, match="channel_specific"):
+        HSGPEffect(length_scale_range=(1.0, 4.0), channel_specific=1)
+
+    without_media = prepare_data(
+        pl.DataFrame({"time": [0, 1], "sales": [1.0, 2.0]}),
+        time="time",
+        outcome="sales",
+        frequency=None,
+    )
+    with pytest.raises(ValueError, match=r"channel|media"):
+        HSGPEffect(length_scale_range=(1.0, 4.0), channel_specific=True)._prepare(without_media)
+
+    prepared = HSGPEffect(
+        length_scale_range=(1.0, 4.0),
+        boundary=8.0,
+        n_basis=3,
+        channel_specific=True,
+    )._prepare(_channel_data([0.0, 1.0, 3.0]))
+    valid = _values(
+        prepared,
+        coefficients=jnp.array([[0.3, -0.7, 1.1], [-0.2, 0.8, 0.4]]),
+    )
+    with pytest.raises(ValueError, match=r"coefficient|shape"):
+        prepared.apply({**valid, "baseline_coefficients": jnp.ones((3, 2))})
+    with pytest.raises(ValueError, match=r"channel|order"):
+        prepared.for_data(_channel_data([4.0, 5.0], channels=("search", "video"), outcome=False))
 
 
 def test_numeric_basis_and_spectral_weighted_curve_match_independent_formula():
@@ -1001,6 +1138,75 @@ def test_prior_and_scenario_generation_preserve_parameter_and_effect_axes():
     assert generated["posterior_predictive"]["prediction"].shape == (1, 3, 2, 2)
 
 
+def test_channel_specific_prior_and_scenario_generation_preserve_channel_axes_and_alignment():
+    training = _channel_data([0.0, 1.0, 3.0], groups=("west", "east"))
+
+    def generate(key, baseline, baseline_coefficients):
+        del key
+        return {"prediction": baseline, "coefficient_copy": baseline_coefficients}
+
+    def prior(key):
+        coefficient_key, length_key, amplitude_key = jax.random.split(key, 3)
+        return {
+            "baseline_coefficients": jax.random.normal(
+                coefficient_key, model.parameters["baseline_coefficients"].shape
+            ),
+            "baseline_length_scale": jnp.exp(jax.random.normal(length_key)),
+            "baseline_amplitude": jnp.exp(jax.random.normal(amplitude_key)),
+        }
+
+    model = Model(
+        {},
+        lambda outcome, baseline: normal(outcome[..., None], baseline, 1.0),
+        generate,
+        prior=prior,
+        data=training,
+        components=[
+            HSGPEffect(
+                length_scale_range=(0.5, 4.0),
+                boundary=8.0,
+                n_basis=3,
+                channel_specific=True,
+            )
+        ],
+        predictive=("prediction",),
+    )
+    draws = sample_prior(model, draws=3, seed=7)
+
+    assert draws["prior"]["baseline_coefficients"].dims == ("chain", "draw", "channel", "baseline_basis")
+    np.testing.assert_array_equal(draws["prior"]["channel"], ["video", "search"])
+    np.testing.assert_array_equal(draws["prior"]["baseline_basis"], [1, 2, 3])
+    assert draws["prior_generated_quantities"]["coefficient_copy"].dims == (
+        "chain",
+        "draw",
+        "channel",
+        "baseline_basis",
+    )
+    assert draws["prior_predictive"]["prediction"].dims == ("chain", "draw", "time", "group", "channel")
+
+    posterior = _collect_results(
+        {
+            name: draws["prior"][name].values
+            for name in ("baseline_coefficients", "baseline_length_scale", "baseline_amplitude")
+        },
+        data=training,
+        dims={"baseline_coefficients": ("channel", "baseline_basis")},
+        coords={"channel": ["video", "search"], "baseline_basis": [1, 2, 3]},
+    )
+    scenario = _channel_data(
+        [4.0, 5.0],
+        channels=("search", "video"),
+        groups=("east", "west"),
+        outcome=False,
+    )
+    generated = generate_quantities(model, posterior, new_data=scenario, seed=11)
+
+    assert generated["posterior_predictive"]["prediction"].dims == ("chain", "draw", "time", "group", "channel")
+    np.testing.assert_array_equal(generated["posterior_predictive"]["group"], ["west", "east"])
+    np.testing.assert_array_equal(generated["posterior_predictive"]["channel"], ["video", "search"])
+    assert generated["posterior_predictive"]["prediction"].shape == (1, 3, 2, 2, 2)
+
+
 def test_hsgp_composes_with_media_seasonality_and_user_parameters():
     data = _data([0.0, 1.0, 2.0, 3.0])
 
@@ -1064,3 +1270,140 @@ def test_prior_uses_automatically_prepared_basis_shape_after_model_construction(
     assert results["prior"]["trend_coefficients"].shape == (1, 2, *model.parameters["trend_coefficients"].shape)
     assert results["prior_generated_quantities"]["curve"].dims == ("chain", "draw", "time")
     np.testing.assert_allclose(results["prior_generated_quantities"]["curve"].mean("time"), 0.0, atol=1e-7)
+
+
+def test_channel_specific_hsgp_is_a_fixed_time_multiplier_during_media_response_interventions():
+    frame = pl.DataFrame(
+        {
+            "time": [0, 1, 2, 3],
+            "sales": [1.0, 1.0, 1.0, 1.0],
+            "video": [1.0, 2.0, 3.0, 4.0],
+            "search": [4.0, 3.0, 2.0, 1.0],
+            "video_spend": [1.0, 2.0, 3.0, 4.0],
+            "search_spend": [4.0, 3.0, 2.0, 1.0],
+        }
+    )
+    data = prepare_data(
+        frame,
+        time="time",
+        outcome="sales",
+        media=["video", "search"],
+        spend=["video_spend", "search_spend"],
+        channels=["video", "search"],
+        frequency=None,
+    )
+
+    def transformed_parameters(paid_media, baseline):
+        time_varying_media = paid_media * jnp.exp(baseline)
+        return {"expected": time_varying_media.sum(axis=-1)}
+
+    model = Model(
+        {},
+        lambda expected: expected.sum(),
+        data=data,
+        components=[
+            MediaEffect(max_lag=0, saturation=root_saturation),
+            HSGPEffect(
+                length_scale_range=(0.5, 4.0),
+                boundary=8.0,
+                n_basis=3,
+                channel_specific=True,
+            ),
+        ],
+        transformed_parameters=transformed_parameters,
+    )
+    parameters = {
+        "paid_media_coefficient": np.array([1.5, 0.7], dtype=np.float32),
+        "paid_media_retention": np.array([0.2, 0.4], dtype=np.float32),
+        "paid_media_exponent": np.full(2, 0.5, dtype=np.float32),
+        "baseline_coefficients": np.array(
+            [
+                [0.4, -0.3, 0.2],
+                [-0.5, 0.1, 0.6],
+            ],
+            dtype=np.float32,
+        ),
+        "baseline_length_scale": np.array(2.0, dtype=np.float32),
+        "baseline_amplitude": np.array(0.6, dtype=np.float32),
+    }
+    position = model.unconstrain(parameters)
+    density, gradient = jax.jit(jax.value_and_grad(model.log_density))(position, model.data)
+    assert np.isfinite(density)
+    assert all(np.isfinite(value).all() for value in gradient.values())
+
+    zero_curve = {
+        **parameters,
+        "baseline_coefficients": np.zeros_like(parameters["baseline_coefficients"]),
+    }
+    posterior_values = {name: np.stack([parameters[name], zero_curve[name]])[None, ...] for name in parameters}
+    results = _collect_results(
+        posterior_values,
+        data=data,
+        dims={
+            "paid_media_coefficient": ("channel",),
+            "paid_media_retention": ("channel",),
+            "paid_media_exponent": ("channel",),
+            "baseline_coefficients": ("channel", "baseline_basis"),
+        },
+        coords={"channel": data.channels, "baseline_basis": [1, 2, 3]},
+    )
+    multipliers = [0.5, 1.0, 1.5]
+
+    response = response_curves(
+        model,
+        results,
+        quantity="expected",
+        multipliers=multipliers,
+        spend_to_media="proportional",
+    )
+
+    # Re-preparing the same dates with intervened media and spend retains the
+    # fitted HSGP basis, so the latent multiplier itself is unchanged
+    scenario_arrays = {name: values.copy() for name, values in data.arrays.items()}
+    scenario_arrays["media"] *= 1.5
+    scenario_arrays["spend"] *= 1.5
+    scenario = replace(data, arrays=scenario_arrays)
+    scenario_inputs = model.prepare_data(scenario)
+    training_hsgp = model.data.components[1]
+    scenario_hsgp = scenario_inputs.components[1]
+    np.testing.assert_array_equal(scenario_hsgp.apply(parameters), training_hsgp.apply(parameters))
+
+    static_contribution = np.sqrt(frame[["video", "search"]].to_numpy()) * parameters["paid_media_coefficient"]
+    for channel_index, channel in enumerate(data.channels):
+        other = static_contribution[:, 1 - channel_index].sum()
+        selected = static_contribution[:, channel_index].sum()
+        expected = other + np.sqrt(np.asarray(multipliers)) * selected
+        np.testing.assert_allclose(
+            response["response"].sel(channel=channel).isel(chain=0, draw=1),
+            expected,
+            rtol=4e-6,
+            atol=3e-6,
+        )
+    np.testing.assert_array_equal(response["channel"], ["video", "search"])
+
+    curves = np.stack(
+        [
+            _matern52_curve(training_hsgp, coefficients, 2.0, 0.6)
+            for coefficients in parameters["baseline_coefficients"]
+        ],
+        axis=-1,
+    )
+    varying_contribution = static_contribution * np.exp(curves)
+    for channel_index, channel in enumerate(data.channels):
+        other = varying_contribution[:, 1 - channel_index].sum()
+        selected = varying_contribution[:, channel_index].sum()
+        np.testing.assert_allclose(
+            response["response"].sel(channel=channel).isel(chain=0, draw=0),
+            other + np.sqrt(np.asarray(multipliers)) * selected,
+            rtol=5e-6,
+            atol=3e-6,
+        )
+
+    allocation = optimize_budget(model, results, quantity="expected", budget=20.0, bounds=(0.1, 20.0))
+    optimized = allocation["spend"].sel(allocation="optimized").values
+    # With fixed time profiles the posterior mean is sum(a * sqrt(spend))
+    weights = (static_contribution + varying_contribution).sum(axis=0) / (2 * np.sqrt(10.0))
+    optimum_response = np.sqrt(20.0 * np.sum(weights**2))
+    np.testing.assert_allclose(optimized.sum(), 20.0, rtol=0, atol=2e-5)
+    np.testing.assert_allclose(np.sum(weights * np.sqrt(optimized)), optimum_response, rtol=5e-6)
+    np.testing.assert_allclose(allocation["response"].sel(allocation="optimized").mean(), optimum_response, rtol=5e-6)

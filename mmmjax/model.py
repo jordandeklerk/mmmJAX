@@ -84,9 +84,10 @@ class Model:
     components : sequence of FourierSeasonality, MediaEffect, or HSGPEffect, optional
         Named effects with inferred parameter shapes and constraints, without
         priors. Media supplies per-channel effects and ``<name>_total``.
-        Parameter inputs include ``<name>_coefficient`` for media and
-        ``<name>_coefficients`` for seasonality and HSGP effects. HSGP also
-        declares ``<name>_length_scale`` and ``<name>_amplitude``. Keep names distinct.
+        HSGP effects may be shared or channel-specific. Parameter inputs
+        include ``<name>_coefficient`` for media and ``<name>_coefficients``
+        for seasonality and HSGP effects. HSGP also declares
+        ``<name>_length_scale`` and ``<name>_amplitude``. Keep names distinct.
         Use ``components=[]`` for fully custom calculations.
     transformed_parameters : callable, optional
         Pure JAX-compatible function returning a mapping of names to derived
@@ -639,6 +640,7 @@ class Model:
                     and isinstance(reference, _PreparedHSGP)
                     and component.origin == reference.origin
                     and component.config is reference.config
+                    and component.channels == reference.channels
                 )
             else:
                 matches = matches and isinstance(reference, _PreparedFourier) and component.origin == reference.origin

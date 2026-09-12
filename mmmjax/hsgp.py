@@ -147,6 +147,12 @@ class HSGPEffect:
     demean : bool, default True
         Subtract the training feature mean so the curve has no average
         contribution over the training observations.
+    channel_specific : bool, default False
+        Give each media channel its own curve, with a shared length scale
+        and amplitude. Channel labels come from prepared data. Coefficients
+        have shape ``(channel, basis)`` and curves have a final channel axis.
+        Curves remain shared across groups. This does not assign priors or
+        transform the curves into positive multipliers.
 
     Examples
     --------
@@ -166,6 +172,7 @@ class HSGPEffect:
     boundary: float | None = None
     n_basis: int | None = None
     demean: bool = True
+    channel_specific: bool = False
 
     def __post_init__(self) -> None:
         """Validate choices that remain fixed after model preparation."""
@@ -205,11 +212,17 @@ class HSGPEffect:
                 raise ValueError("n_basis must be at least 1")
         if not isinstance(self.demean, bool):
             raise TypeError("demean must be True or False")
+        if not isinstance(self.channel_specific, bool):
+            raise TypeError("channel_specific must be True or False")
 
     def _prepare(self, data: PreparedData, *, reference: "_PreparedHSGP | None" = None) -> "_PreparedHSGP":
         """Prepare fixed basis state outside JAX transformations."""
         if not isinstance(data, PreparedData):
             raise TypeError("HSGP effects require PreparedData from prepare_data")
+        if self.channel_specific and not data.channels:
+            raise ValueError("Channel-specific HSGP effects require media channels selected in prepare_data")
+        channels = data.channels if self.channel_specific else ()
+
         if reference is not None and (
             self is not reference.specification
             or data.time_column != reference.time_column
@@ -218,6 +231,8 @@ class HSGPEffect:
             raise ValueError("HSGP prediction inputs must retain the training time and group columns")
         if reference is not None and set(data.group_values) != set(reference.group_values):
             raise ValueError("HSGP prediction inputs must contain the same group labels as training")
+        if reference is not None and channels != reference.channels:
+            raise ValueError("HSGP prediction inputs must retain the training channel labels and ordering")
 
         positions, origin = _time_positions(data.time_values, origin=None if reference is None else reference.origin)
         if reference is None:
@@ -253,13 +268,14 @@ class HSGPEffect:
             time_column=data.time_column,
             group_columns=data.group_columns,
             group_values=data.group_values if reference is None else reference.group_values,
+            channels=channels,
         )
 
 
 @partial(
     jax.tree_util.register_dataclass,
     data_fields=("features", "frequencies", "basis_mean"),
-    meta_fields=("specification", "config", "origin", "time_column", "group_columns", "group_values"),
+    meta_fields=("specification", "config", "origin", "time_column", "group_columns", "group_values", "channels"),
 )
 @dataclass(frozen=True, slots=True, eq=False)
 class _PreparedHSGP:
@@ -274,6 +290,13 @@ class _PreparedHSGP:
     time_column: str
     group_columns: tuple[str, ...]
     group_values: tuple[tuple[object, ...], ...]
+    channels: tuple[str, ...]
+
+    @property
+    def _coefficient_shape(self) -> tuple[int, ...]:
+        """Retain a single parameter block for shared or channel-specific curves."""
+        basis_shape = (self.config.n_basis,)
+        return (len(self.channels), *basis_shape) if self.specification.channel_specific else basis_shape
 
     @property
     def parameters(self) -> dict[str, Parameterization]:
@@ -281,7 +304,7 @@ class _PreparedHSGP:
         name = self.specification.name
         dtype = self.features.dtype
         return {
-            f"{name}_coefficients": Real(shape=(self.config.n_basis,), dtype=dtype),
+            f"{name}_coefficients": Real(shape=self._coefficient_shape, dtype=dtype),
             f"{name}_length_scale": Positive(dtype=dtype),
             f"{name}_amplitude": Positive(dtype=dtype),
         }
@@ -293,7 +316,7 @@ class _PreparedHSGP:
 
         name = self.specification.name
         shapes = {
-            f"{name}_coefficients": (self.config.n_basis,),
+            f"{name}_coefficients": self._coefficient_shape,
             f"{name}_length_scale": (),
             f"{name}_amplitude": (),
         }
@@ -317,9 +340,10 @@ class _PreparedHSGP:
             length_scale=values[f"{name}_length_scale"],
             amplitude=values[f"{name}_amplitude"],
         )
-        contribution = (self.features - self.basis_mean) @ (weights * coefficients)
+        contribution = (self.features - self.basis_mean) @ (weights * coefficients).T
         if self.group_columns:
-            return jnp.broadcast_to(contribution[:, None], (self.features.shape[0], len(self.group_values)))
+            shape = (self.features.shape[0], len(self.group_values), *contribution.shape[1:])
+            return jnp.broadcast_to(contribution[:, None, ...], shape)
         return contribution
 
     def for_data(self, data: PreparedData) -> "_PreparedHSGP":
