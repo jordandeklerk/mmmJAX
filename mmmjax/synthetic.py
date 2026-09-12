@@ -31,9 +31,9 @@ class SyntheticData:
         Channel families, platforms, input column names, and illustrative
         generation settings. Email is organic and has no spend column.
     truth : xarray.Dataset
-        Labeled parameters, true exposures, response curves, contributions,
-        expected revenue, and observation noise. These are simulation truth,
-        not posterior estimates or additional modeling inputs.
+        Labeled parameters, baseline paths, true exposures, response curves,
+        contributions, expected revenue, and observation noise. These are
+        simulation truth, not posterior estimates or additional modeling inputs.
     """
 
     frame: pd.DataFrame
@@ -55,8 +55,9 @@ def simulate_data(
 
     Ten paid channels and owned email combine always-on activity, campaign
     flights, and a later channel launch. Demand, holidays, and promotions
-    influence both media execution and revenue. Costs and seasonal patterns
-    change over time. Defaults are illustrative, not platform benchmarks.
+    influence both media execution and revenue. Baseline revenue drifts smoothly
+    over time, alongside changing costs and seasonal patterns. Defaults are
+    illustrative, not platform benchmarks.
 
     Revenue has conditional mean :math:`\mu` equal to baseline, seasonal,
     demand, price, promotion, holiday, and channel contributions. Each channel
@@ -143,8 +144,8 @@ def simulate_data(
     day = np.array([value.timetuple().tm_yday for value in dates])
     angle = 2 * np.pi * day / 365.25
     # Distinct streams keep measurement and revenue noise from changing the latent process.
-    driver_rng, media_rng, response_rng, noise_rng, measurement_rng = (
-        np.random.default_rng(stream) for stream in np.random.SeedSequence(seed).spawn(5)
+    driver_rng, media_rng, response_rng, noise_rng, measurement_rng, baseline_rng = (
+        np.random.default_rng(stream) for stream in np.random.SeedSequence(seed).spawn(6)
     )
     population = driver_rng.integers(100_000, 500_001, n_groups)
     demand = np.exp(0.2 * _persistent_noise(driver_rng, (len(dates), n_groups)) + 0.12 * np.sin(angle)[:, None])
@@ -192,9 +193,10 @@ def simulate_data(
     contribution = response * coefficient
 
     regional_baseline = population * response_rng.uniform(0.8, 1.2, n_groups)
-    baseline = np.broadcast_to(regional_baseline, demand.shape).copy()
+    baseline = regional_baseline * _baseline_multiplier(baseline_rng, periods, n_groups)
+
     seasonal_wave = (0.08 + 0.02 * np.sin(2 * np.pi * periods / (3 * 52))) * np.sin(angle)
-    seasonal_wave += 0.04 * np.cos(2 * angle) + 0.0005 * periods
+    seasonal_wave += 0.04 * np.cos(2 * angle)
     seasonality = seasonal_wave[:, None] * population
     demand_effect = 0.25 * population * (demand - 1)
     price_effect = -0.015 * population * (price - 20)
@@ -276,7 +278,6 @@ def simulate_data(
             "campaign_overlap": campaign_overlap,
             "noise_scale": noise_scale,
             "measurement_error": measurement_error,
-            "scenario_version": "1",
             "adstock": "geometric",
             "saturation": "hill",
             "normalize": "true",
@@ -287,6 +288,7 @@ def simulate_data(
     truth["half_saturation"].attrs["units"] = "exposures per person"
     truth["coefficient"].attrs["units"] = "revenue"
     truth["contribution"].attrs["units"] = "revenue"
+    truth["baseline"].attrs["units"] = "revenue"
     truth["roi"].attrs["units"] = "incremental revenue per unit spend"
     if groups is None:
         truth = truth.squeeze("group", drop=True)
@@ -375,6 +377,21 @@ def _channel_catalog() -> pd.DataFrame:
     channels["exposure_column"] = channels["channel"] + np.where(paid, "_impressions", "_sends")
     channels["spend_column"] = (channels["channel"] + "_spend").where(paid, None)
     return channels
+
+
+def _baseline_multiplier(rng: np.random.Generator, periods: NDArray[np.int64], n_groups: int) -> NDArray[np.float64]:
+    """Combine gradual growth with shared and regional changes in baseline revenue."""
+    # Smooth independent innovations over months, without an annual repeating cycle.
+    kernel = np.exp(-0.5 * (np.arange(-39, 40) / 13) ** 2)
+    # Preserve unit variance after smoothing so the drift scales remain interpretable.
+    kernel /= np.sqrt(np.sum(kernel**2))
+
+    # Extra innovations give edge periods the same smoothing window and variance.
+    innovations = rng.normal(size=(len(periods) + len(kernel) - 1, n_groups + 1))
+    smooth = np.stack([np.convolve(series, kernel, mode="valid") for series in innovations.T], axis=-1)
+    drift = 0.025 * periods[:, None] / 52 + 0.08 * smooth[:, :1] + 0.04 * smooth[:, 1:]
+
+    return np.asarray(np.exp(drift))
 
 
 def _persistent_noise(rng: np.random.Generator, shape: tuple[int, ...]) -> NDArray[np.float64]:

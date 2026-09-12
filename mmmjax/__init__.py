@@ -115,7 +115,7 @@ from mmmjax.distributions import (
     uniform_logsf,
     uniform_rng,
 )
-from mmmjax.hsgp import HSGPConfig, hsgp_basis, hsgp_weights, prepare_hsgp
+from mmmjax.hsgp import HSGPConfig, HSGPEffect, hsgp_basis, hsgp_weights, prepare_hsgp
 from mmmjax.media import MediaEffect, media_response, reach_frequency_response
 from mmmjax.model import Model
 from mmmjax.optimization import SpendConstraint, optimize_budget
@@ -133,6 +133,7 @@ __all__ = [
     "DataScaling",
     "FourierSeasonality",
     "HSGPConfig",
+    "HSGPEffect",
     "Interval",
     "LowerBound",
     "MediaEffect",

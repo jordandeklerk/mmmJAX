@@ -979,6 +979,55 @@ def _calendar_dates(labels: Sequence[object], *, time: str, frequency: str) -> l
     return sorted(times)
 
 
+def _time_positions(
+    labels: tuple[object, ...], *, origin: float | datetime | None = None
+) -> tuple[NDArray[np.float64], float | datetime]:
+    """Convert component time labels to fixed-origin positions, using days for dates."""
+    if not labels:
+        raise ValueError("Time components require at least one observation time")
+    numeric = all(
+        isinstance(label, (int, float, np.integer, np.floating)) and not isinstance(label, (bool, np.bool_))
+        for label in labels
+    )
+    if numeric:
+        if isinstance(origin, datetime):
+            raise TypeError("Prediction times must remain calendar dates as in training")
+        times = np.asarray(labels, dtype=np.float64)
+        if not np.all(np.isfinite(times)):
+            raise ValueError("Observation time positions must be finite")
+        numeric_origin = float(times.min()) if origin is None else origin
+        return times - numeric_origin, numeric_origin
+
+    if origin is not None and not isinstance(origin, datetime):
+        raise TypeError("Prediction times must remain numeric and use the training time units")
+    dates = []
+    for label in labels:
+        if isinstance(label, str):
+            try:
+                parsed = date.fromisoformat(label)
+                if parsed.isoformat() != label:
+                    raise ValueError
+            except ValueError as error:
+                raise ValueError(
+                    f"Invalid observation date {label!r}. Use YYYY-MM-DD strings or date columns"
+                ) from error
+            timestamp = datetime.combine(parsed, datetime.min.time())
+        elif isinstance(label, datetime):
+            timestamp = label
+        elif isinstance(label, date):
+            timestamp = datetime.combine(label, datetime.min.time())
+        else:
+            raise TypeError(
+                "Observation times must be numeric positions, dates, naive datetimes, or YYYY-MM-DD strings"
+            )
+        if timestamp.utcoffset() is not None:
+            raise ValueError("Convert timezone-aware timestamps to observation dates in the intended timezone")
+        dates.append(timestamp)
+    date_origin = min(dates) if origin is None else origin
+    positions = np.asarray([(value - date_origin).total_seconds() / 86400 for value in dates], dtype=np.float64)
+    return positions, date_origin
+
+
 def _resolve_frequency(labels: Sequence[object], *, time: str, frequency: str | None) -> str | None:
     """Infer only complete supported calendars, leaving numeric periods unassigned."""
     if frequency != "auto":
