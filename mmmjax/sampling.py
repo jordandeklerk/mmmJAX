@@ -1,4 +1,4 @@
-"""Posterior sampling and evaluation with labeled model results."""
+"""Prior and posterior sampling with labeled model results."""
 
 import warnings
 from collections.abc import Mapping
@@ -17,10 +17,10 @@ from mmmjax._nuts import _sample_nuts
 from mmmjax._results import _collect_results, _data_dimensions, _prepared_groups, _same_labels
 from mmmjax.data import PreparedData
 from mmmjax.media import _PreparedMedia
-from mmmjax.model import Model, _component_parameter_inputs
+from mmmjax.model import Model, Prior, _component_parameter_inputs
 from mmmjax.seasonality import _PreparedFourier
 
-__all__ = ["generate_quantities", "sample"]
+__all__ = ["generate_quantities", "sample", "sample_prior"]
 
 
 def sample(
@@ -227,6 +227,209 @@ def sample(
             stacklevel=2,
         )
     return results
+
+
+def sample_prior(
+    model: Model,
+    prior: Prior | None = None,
+    *,
+    data: object = None,
+    draws: int = 500,
+    seed: int = 0,
+    generate: bool = True,
+) -> xr.DataTree:
+    """Draw explicit priors and inspect their implied outcomes before fitting.
+
+    Use the model's prior-draw function and reuse its transformed parameters
+    and generation callback. No log density or posterior sampler is evaluated.
+    Keep the sampling distributions consistent with the priors in ``log_density``.
+
+    Parameters
+    ----------
+    model : Model
+        Model supplying parameter declarations and generated quantities.
+    prior : callable, optional
+        Override the prior-draw function attached to ``Model`` for this call.
+        The function ``prior(key)`` must return one constrained draw per
+        declared parameter. Required if the model has no prior-draw function.
+    data : object, optional
+        Inputs for a model without prepared data. Prepared models use their
+        stored observations and fitted scaling automatically.
+    draws : int, default 500
+        Number of independent prior draws.
+    seed : int, default 0
+        Random seed for parameters and generated quantities.
+    generate : bool, default True
+        Evaluate generated quantities when the model has a generation callback.
+
+    Returns
+    -------
+    xarray.DataTree
+        Labeled results with one chain axis and ``draws`` draws.
+
+        - **prior** contains constrained parameter draws.
+        - **prior_predictive** contains outputs selected by the model's
+          ``predictive`` argument.
+        - **prior_generated_quantities** contains other generated outputs.
+        - **observed_data** and **constant_data** contain prepared model inputs
+          in their evaluated units, including fitted scaling.
+
+        Outputs selected as log likelihoods are omitted. The chain axis is for
+        result compatibility, not an MCMC chain. Without generation, only prior
+        draws and available model inputs are returned.
+
+    Examples
+    --------
+    Define a Normal observation model with known noise scale. Write the prior
+    and likelihood explicitly, sharing the prior mean and scale with the
+    prior-draw function.
+
+    .. ipython::
+
+        In [1]: from mmmjax import Model, Real, normal, normal_rng
+           ...: from mmmjax import sample_prior
+           ...: prior_mean = 0.0
+           ...: prior_scale = 2.0
+           ...: observation_scale = 1.0
+           ...: parameters = {"location": Real()}
+
+        In [2]: def log_density(data, location):
+           ...:     target = normal(
+           ...:         location, location=prior_mean, scale=prior_scale
+           ...:     )
+           ...:     target += normal(
+           ...:         data, location=location, scale=observation_scale
+           ...:     )
+           ...:     return target
+
+        In [3]: def prior(key):
+           ...:     location = normal_rng(
+           ...:         key, location=prior_mean, scale=prior_scale
+           ...:     )
+           ...:     return {"location": location}
+
+        In [4]: def generate(key, data, location):
+           ...:     outcome = normal_rng(
+           ...:         key, location=location, scale=observation_scale
+           ...:     )
+           ...:     return {"outcome": outcome}
+
+        In [5]: model = Model(
+           ...:     parameters=parameters,
+           ...:     log_density=log_density,
+           ...:     prior=prior,
+           ...:     generate=generate,
+           ...:     predictive=("outcome",),
+           ...: )
+
+        In [6]: results = sample_prior(model, draws=100, seed=42)
+           ...: results
+    """
+    if not isinstance(model, Model):
+        raise TypeError("model must be a Model")
+    if prior is None:
+        prior = model._prior
+    if prior is None:
+        raise ValueError("Provide a prior-draw function on Model or pass prior to sample_prior")
+    if not callable(prior):
+        raise TypeError("prior must be a JAX-compatible function accepting a random key")
+    if isinstance(draws, bool) or not isinstance(draws, Integral) or draws < 1:
+        raise ValueError("draws must be a positive integer")
+    if isinstance(seed, bool) or not isinstance(seed, Integral) or seed < 0:
+        raise ValueError("seed must be a nonnegative integer")
+    if not isinstance(generate, bool):
+        raise TypeError("generate must be a bool")
+    if model._data is not None and data is not None:
+        raise ValueError("Prepared models use their stored data. Omit data when sampling")
+    if not model.parameters:
+        raise ValueError("Prior sampling requires at least one model parameter")
+
+    dimensions, coordinates = _parameter_metadata(model)
+    if set(coordinates) & {"chain", "draw"}:
+        raise ValueError("Sampling assigns chain and draw coordinates. Supply only model axes in coords")
+    inputs = model.data if model._data is not None else data
+    prepared = _result_data(model)
+    prior_key, generation_key, preview_key = jax.random.split(jax.random.key(int(seed)), 3)
+    parameters = _prior_draws(model, prior, prior_key, int(draws))
+    generated: dict[str, jax.Array] = {}
+    output_dimensions: dict[str, tuple[str, ...]] = {}
+
+    if generate and model._generate is not None:
+        initial = {name: value[0] for name, value in parameters.items()}
+        outputs, arguments = model._generate_with_inputs(preview_key, initial, inputs)
+        output_dimensions = _output_dimensions(model, outputs, arguments, dimensions, prepared)
+        keys = jax.random.split(generation_key, draws)
+        generated = jax.jit(jax.vmap(lambda key, values: model.generate(key, values, inputs)))(keys, parameters)
+
+    results = _collect_results(
+        {name: value[None] for name, value in parameters.items()},
+        data=prepared,
+        posterior_predictive={
+            name: value[None] for name, value in generated.items() if name in model._predictive_names
+        },
+        generated_quantities={
+            name: value[None]
+            for name, value in generated.items()
+            if name not in (*model._predictive_names, *model._likelihood_names)
+        },
+        dims=dimensions,
+        generated_dims=output_dimensions,
+        coords=coordinates,
+        sample_group="prior",
+    )
+    results.attrs.update(
+        sampling_method="prior",
+        seed=int(seed),
+        data_scale="model" if model.scaling is not None else "original",
+    )
+    return results
+
+
+def _prior_draws(
+    model: Model,
+    prior: Prior,
+    key: jax.Array,
+    draws: int,
+) -> dict[str, jax.Array]:
+    """Draw and validate constrained parameters without evaluating a density."""
+
+    def draw_parameters(draw_key: jax.Array) -> dict[str, jax.Array]:
+        values = prior(draw_key)
+        if not isinstance(values, Mapping):
+            raise TypeError("prior must return a mapping of parameter names to constrained draws")
+        if set(values) != set(model.parameters):
+            raise ValueError("Prior parameter names must match all model declarations, including component parameters")
+
+        parameters = {}
+        for name, declaration in model.parameters.items():
+            value = jnp.asarray(values[name])
+            if value.shape != declaration.shape:
+                raise ValueError(f"Prior draw shape for {name!r} must match its declared shape {declaration.shape}")
+            if not (jnp.issubdtype(value.dtype, jnp.floating) or jnp.issubdtype(value.dtype, jnp.integer)):
+                raise TypeError(f"Prior draws for {name!r} must be real numbers")
+            parameters[name] = value.astype(declaration.dtype)
+        return parameters
+
+    def valid_support(parameters: dict[str, jax.Array]) -> dict[str, jax.Array]:
+        valid = {}
+        for name, declaration in model.parameters.items():
+            value = parameters[name]
+            position = declaration.unconstrain(value)
+            restored = declaration.constrain(position)
+            tolerance = 32 * jnp.finfo(restored.dtype).eps
+            valid[name] = jnp.all(jnp.isfinite(position)) & jnp.all(
+                jnp.isclose(restored, value, rtol=tolerance, atol=0)
+            )
+        return valid
+
+    parameters: dict[str, jax.Array] = jax.jit(jax.vmap(draw_parameters))(jax.random.split(key, draws))
+    validity = jax.jit(jax.vmap(valid_support))(parameters)
+    for name, values in parameters.items():
+        if not np.isfinite(np.asarray(values)).all():
+            raise ValueError(f"Prior draws for {name!r} must be finite real numbers")
+        if not np.asarray(validity[name]).all():
+            raise ValueError(f"Prior draws for {name!r} must satisfy its parameter constraints")
+    return parameters
 
 
 def generate_quantities(

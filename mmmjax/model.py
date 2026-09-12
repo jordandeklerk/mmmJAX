@@ -24,6 +24,7 @@ __all__ = ["Model"]
 
 LogDensity: TypeAlias = Callable[..., ArrayLike]
 Generate: TypeAlias = Callable[..., Mapping[str, ArrayLike]]
+Prior: TypeAlias = Callable[[jax.Array], Mapping[str, ArrayLike]]
 TransformedParameters: TypeAlias = Callable[..., Mapping[str, ArrayLike]]
 ParameterValues: TypeAlias = Mapping[str, ArrayLike]
 _InputBindings: TypeAlias = tuple[tuple[str, str], ...]
@@ -65,6 +66,11 @@ class Model:
     generate : callable, optional
         Function returning a mapping of names to array-like generated quantities.
         Receives a JAX random key first, followed by the model inputs it needs.
+    prior : callable, optional
+        JAX-compatible function ``prior(key)`` returning one constrained draw
+        for every name in ``model.parameters``, with its declared shape.
+        Used by :func:`sample_prior` only. Keep its distributions consistent
+        with the priors written in ``log_density``.
     data : PreparedData, optional
         Training observations from ``prepare_data``, required with
         ``components``. Callback inputs use data roles such as ``outcome``,
@@ -97,7 +103,7 @@ class Model:
         Overrides labels inherited from unchanged data, parameters, or component
         inputs and from observation-shaped predictive and likelihood outputs.
     predictive : sequence of str, default ()
-        Generated output names to store as posterior predictive observations.
+        Generated output names to store as prior or posterior predictive observations.
         Outputs matching the outcome shape use its observation order and labels
         unless ``generated_dims`` specifies otherwise.
     log_likelihood : sequence of str, default ()
@@ -109,6 +115,7 @@ class Model:
     _parameterizations: tuple[tuple[str, Parameterization], ...]
     _log_density: LogDensity
     _generate: Generate | None
+    _prior: Prior | None
     _transformed_parameters: TransformedParameters | None
     _transform_inputs: _InputBindings
     _generate_parameter_names: tuple[str, ...] | None
@@ -134,6 +141,7 @@ class Model:
         log_density: LogDensity,
         generate: Generate | None = None,
         *,
+        prior: Prior | None = None,
         data: PreparedData | None = None,
         components: Sequence[FourierSeasonality | MediaEffect] | None = None,
         transformed_parameters: TransformedParameters | None = None,
@@ -145,6 +153,9 @@ class Model:
         log_likelihood: Sequence[str] = (),
     ) -> None:
         """Create a model from named parameter declarations and plain functions."""
+        if prior is not None and not callable(prior):
+            raise TypeError("prior must be a JAX-compatible function accepting a random key")
+
         parameterizations = _prepare_parameterizations(parameters)
         parameter_names = tuple(name for name, _ in parameterizations)
         prepared_data = None
@@ -269,6 +280,7 @@ class Model:
         object.__setattr__(self, "_parameterizations", parameterizations)
         object.__setattr__(self, "_log_density", log_density)
         object.__setattr__(self, "_generate", generate)
+        object.__setattr__(self, "_prior", prior)
         object.__setattr__(self, "_transformed_parameters", transformed_parameters)
         object.__setattr__(self, "_transform_inputs", transform_inputs)
         object.__setattr__(self, "_generate_parameter_names", generate_parameter_names)

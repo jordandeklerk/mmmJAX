@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime
-from typing import TypeAlias
+from typing import Literal, TypeAlias
 
 import numpy as np
 import xarray as xr
@@ -26,8 +26,16 @@ def _collect_results(
     dims: Mapping[str, Sequence[str]] | None = None,
     generated_dims: Mapping[str, Sequence[str]] | None = None,
     coords: Mapping[str, object] | None = None,
+    sample_group: Literal["posterior", "prior"] = "posterior",
 ) -> xr.DataTree:
     """Copy constrained draws, diagnostics, and model inputs into labeled groups."""
+    if sample_group not in ("posterior", "prior"):
+        raise ValueError("sample_group must be posterior or prior")
+    if sample_group == "prior" and (log_likelihood is not None or sample_stats is not None):
+        raise ValueError("Prior draws must not contain posterior likelihoods or sampler diagnostics")
+    predictive_group = f"{sample_group}_predictive"
+    generated_group = "prior_generated_quantities" if sample_group == "prior" else "generated_quantities"
+
     dimensions = _dimensions(dims)
     output_dimensions = dimensions if generated_dims is None else _dimensions(generated_dims)
     coordinates = _coordinates(coords)
@@ -43,38 +51,38 @@ def _collect_results(
                 raise ValueError(f"Coordinate {name!r} conflicts with prepared data labels")
             coordinates[name] = labels
 
-    posterior_dataset = _dataset(posterior, "posterior", dimensions, coordinates)
-    if not posterior_dataset.data_vars:
-        raise ValueError("posterior must contain at least one variable")
+    parameter_dataset = _dataset(posterior, sample_group, dimensions, coordinates)
+    if not parameter_dataset.data_vars:
+        raise ValueError(f"{sample_group} must contain at least one variable")
     for axis in ("chain", "draw"):
-        if posterior_dataset.sizes[axis] == 0:
-            raise ValueError(f"posterior must contain at least one {axis}")
-        # Array mappings in other groups inherit the posterior's sample labels.
-        labels = posterior_dataset.coords[axis].values
+        if parameter_dataset.sizes[axis] == 0:
+            raise ValueError(f"{sample_group} must contain at least one {axis}")
+        # Array mappings in other groups inherit the parameter draws' sample labels.
+        labels = parameter_dataset.coords[axis].values
         if axis in coordinates and not _same_labels(coordinates[axis], labels):
-            raise ValueError(f"Coordinate {axis!r} conflicts with posterior sample labels")
+            raise ValueError(f"Coordinate {axis!r} conflicts with {sample_group} sample labels")
         coordinates[axis] = labels.copy()
 
-    groups = {"posterior": posterior_dataset}
+    groups: dict[str, xr.Dataset] = {sample_group: parameter_dataset}
     for name, values in (
-        ("posterior_predictive", posterior_predictive),
+        (predictive_group, posterior_predictive),
         ("log_likelihood", log_likelihood),
         ("sample_stats", sample_stats),
-        ("generated_quantities", generated_quantities),
+        (generated_group, generated_quantities),
         ("observed_data", observed_data),
         ("constant_data", constant_data),
     ):
         if values is None:
             continue
         # Diagnostics do not inherit model parameter axes. Prepared datasets already have labels.
-        axes = output_dimensions if name in ("posterior_predictive", "log_likelihood", "generated_quantities") else {}
+        axes = output_dimensions if name in (predictive_group, "log_likelihood", generated_group) else {}
         dataset = _dataset(values, name, axes, coordinates)
         if not dataset.data_vars:
             continue
-        if name in ("posterior_predictive", "log_likelihood", "generated_quantities", "sample_stats"):
+        if name in (predictive_group, "log_likelihood", generated_group, "sample_stats"):
             for axis in ("chain", "draw"):
                 if axis in dataset.dims and not _same_labels(dataset.coords[axis].values, coordinates[axis]):
-                    raise ValueError(f"{name} must match posterior {axis} coordinates")
+                    raise ValueError(f"{name} must match {sample_group} {axis} coordinates")
         groups[name] = dataset
 
     for dataset in groups.values():
@@ -151,7 +159,16 @@ def _dataset(
     coordinates: _Coordinates,
 ) -> xr.Dataset:
     """Create one group without aligning its arrays or dropping labeled axes."""
-    sampled = group in ("posterior", "posterior_predictive", "log_likelihood", "generated_quantities", "sample_stats")
+    sampled = group in (
+        "posterior",
+        "posterior_predictive",
+        "log_likelihood",
+        "generated_quantities",
+        "sample_stats",
+        "prior",
+        "prior_predictive",
+        "prior_generated_quantities",
+    )
     if isinstance(values, xr.Dataset):
         if sampled:
             raise TypeError(f"{group} must be a mapping of names to unlabeled arrays")

@@ -124,7 +124,7 @@ from mmmjax.response import media_metrics, response_curves
 from mmmjax.saturation import hill_saturation, log_saturation, logistic_saturation, root_saturation
 from mmmjax.scaling import DataScaling, Scaling, fit_data_scaling, fit_media_scaling, fit_scaling
 from mmmjax.seasonality import FourierSeasonality, fourier_features
-from mmmjax.sampling import generate_quantities, sample
+from mmmjax.sampling import generate_quantities, sample, sample_prior
 from mmmjax.synthetic import SyntheticData, simulate_data
 
 __version__ = "0.0.1"
@@ -265,6 +265,7 @@ __all__ = [
     "response_curves",
     "root_saturation",
     "sample",
+    "sample_prior",
     "select_channels",
     "simulate_data",
     "student_t",
