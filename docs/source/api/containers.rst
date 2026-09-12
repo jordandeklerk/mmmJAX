@@ -16,3 +16,4 @@ Data, fitted transformations, and model configuration objects.
    HSGPConfig
    FourierSeasonality
    MediaEffect
+   SpendConstraint

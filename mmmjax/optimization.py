@@ -1,6 +1,7 @@
 """Fixed-budget allocation using posterior expected responses."""
 
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import KW_ONLY, dataclass
 from numbers import Integral, Real
 from typing import Literal
 
@@ -10,12 +11,82 @@ import numpy as np
 import xarray as xr
 from jax.typing import ArrayLike
 from numpy.typing import NDArray
-from scipy.optimize import approx_fprime, minimize
+from scipy.optimize import LinearConstraint, approx_fprime, linprog, minimize
 
 from mmmjax.model import Model
 from mmmjax.response import _allocation_metrics, _prepare_response
 
-__all__ = ["optimize_budget"]
+__all__ = ["SpendConstraint", "optimize_budget"]
+
+
+@dataclass(frozen=True)
+class SpendConstraint:
+    """Limit combined spending across a named set of channels.
+
+    Parameters
+    ----------
+    name : str
+        Unique label for this constraint in the allocation report.
+    channels : sequence of str
+        Channel names included in the combined spending total. All must
+        be selected for optimization. Constraints may share channels.
+    lower : float, default 0.0
+        Minimum combined spending. Set equal to ``upper`` to fix the total.
+    upper : float, optional
+        Maximum combined spending. Defaults to the entire selected budget.
+    units : {"spend", "share"}, default "spend"
+        Use original spending units or fractions of the selected budget.
+        With ``"share"``, ``upper=0.3`` caps the group at 30% of that budget.
+
+    Examples
+    --------
+    Cap combined social spending while allowing redistribution between channels.
+
+    .. ipython::
+
+        In [1]: from mmmjax import SpendConstraint
+           ...: social = SpendConstraint(
+           ...:     "social", ["Meta", "TikTok"], upper=0.3, units="share"
+           ...: )
+           ...: social.channels
+    """
+
+    name: str
+    channels: Sequence[str]
+    _: KW_ONLY
+    lower: float = 0.0
+    upper: float | None = None
+    units: Literal["spend", "share"] = "spend"
+
+    def __post_init__(self) -> None:
+        """Validate limits and retain an immutable copy of channel names."""
+        if not isinstance(self.name, str) or not self.name.strip():
+            raise ValueError("A spending constraint needs a nonempty name")
+        if isinstance(self.channels, str) or not isinstance(self.channels, Sequence) or not self.channels:
+            raise ValueError("Constraint channels must be a nonempty sequence of names")
+        if any(not isinstance(name, str) or not name.strip() for name in self.channels):
+            raise ValueError("Constraint channels must contain nonempty names")
+        if len(set(self.channels)) != len(self.channels):
+            raise ValueError("Constraint channels must not contain duplicates")
+        if self.units not in ("spend", "share"):
+            raise ValueError("Constraint units must be spend or share")
+
+        for name, value in (("lower", self.lower), ("upper", self.upper)):
+            if value is None and name == "upper":
+                continue
+            if (
+                isinstance(value, (bool, np.bool_))
+                or not isinstance(value, Real)
+                or not np.isfinite(value)
+                or value < 0
+            ):
+                raise ValueError("Constraint limits must be finite nonnegative numbers")
+            if self.units == "share" and value > 1:
+                raise ValueError("Constraint shares must lie between zero and one")
+        if self.upper is not None and self.lower > self.upper:
+            raise ValueError("The constraint lower limit must not exceed its upper limit")
+
+        object.__setattr__(self, "channels", tuple(self.channels))
 
 
 def optimize_budget(
@@ -29,6 +100,7 @@ def optimize_budget(
     bounds: tuple[float, float] | Mapping[str, tuple[float, float]] | None = None,
     spend_constraint_lower: float | Sequence[float] | None = None,
     spend_constraint_upper: float | Sequence[float] | None = None,
+    constraints: Sequence[SpendConstraint] | None = None,
     channels: Sequence[str] | None = None,
     new_data: object = None,
     spend_periods: Sequence[object] | None = None,
@@ -90,6 +162,10 @@ def optimize_budget(
         budget. Use ``0.5`` for a 50% increase or one value per selected channel.
         Values must be finite and nonnegative. Omit for an upper limit equal
         to the total budget. Lists use data channel order if ``channels`` is omitted.
+    constraints : sequence of SpendConstraint, optional
+        Limits on combined spending across named channel groups. These apply
+        alongside the total budget and individual channel limits. Overlapping
+        groups are allowed. Omit for individual limits only.
     channels : sequence of str, optional
         Paid-media channels to optimize. Defaults to all. Each needs positive
         reference spending to define its allocation across periods and groups.
@@ -103,7 +179,7 @@ def optimize_budget(
         Include later dates to measure carryover. No periods are added.
     initial_spend : mapping of str to float, optional
         Feasible starting spend for each selected channel. Defaults to
-        reference proportions adjusted to the budget and bounds.
+        reference proportions adjusted to the budget, bounds, and constraints.
     include_metrics : bool, default False
         Also report channel incremental response, ROI, and marginal ROI at
         both allocations. Requires additional evaluations after optimization.
@@ -129,6 +205,12 @@ def optimize_budget(
         - **lower_bound**, **upper_bound**, and **initial_spend** record constraints
           and the starting allocation.
         - **spend_period** and **response_period** record selected dates.
+
+        When group constraints are supplied, **constraint_spend** and
+        **constraint_satisfied** describe both allocations. **constraint_lower_bound**
+        and **constraint_upper_bound** use original spend units, and
+        **constraint_channels** identifies each group's channels. The reference
+        allocation need not satisfy the new limits.
 
         With ``include_metrics=True``, **incremental_response** measures
         response lost by removing a channel's spending, and **roi** divides
@@ -211,7 +293,18 @@ def optimize_budget(
     if lower.sum() > 1 + 1e-12 or upper.sum() < 1 - 1e-12:
         raise ValueError("The budget must lie between the sums of the lower and upper bounds")
 
+    specifications, group_matrix, group_limits = _resolve_constraints(constraints, labels, budget)
     start = _initial_allocation(initial_spend, labels, reference, budget, lower, upper)
+    if specifications:
+        lower, upper = _tighten_bounds(lower, upper, group_matrix, group_limits)
+        if initial_spend is None:
+            start = _initial_allocation(None, labels, reference, budget, lower, upper)
+
+    if specifications and not _constraints_satisfied(start, group_matrix, group_limits).all():
+        if initial_spend is not None:
+            raise ValueError("initial_spend must satisfy all group constraints")
+        start = _feasible_group_allocation(start, lower, upper, group_matrix, group_limits)
+
     indices = jnp.asarray(context.indices)
     baseline = context.reference_spend
     initial = baseline.at[indices].set(jnp.asarray(start * budget, dtype=baseline.dtype))
@@ -231,7 +324,9 @@ def optimize_budget(
     iterations = 0
     evaluations = 0
 
-    if len(free) > 1 and lower.sum() < 1 - 1e-12 and upper.sum() > 1 + 1e-12:
+    linear_constraints, equality_rank = _solver_constraints(start, free, group_matrix, group_limits)
+
+    if len(free) > equality_rank and lower.sum() < 1 - 1e-12 and upper.sum() > 1 + 1e-12:
         free_indices = jnp.asarray(free)
         template = jnp.asarray(start, dtype=baseline.dtype)
 
@@ -285,36 +380,37 @@ def optimize_budget(
 
             return value_host, gradient_host
 
-        # Scale at the reference-proportioned feasible allocation, not at a
-        # user-supplied zero-spend starting point with singular derivatives.
+        # Group rules can move the feasible start onto zero-spend boundaries.
+        # Apply the one-sided derivative fallback there before scaling.
         scale_point = _initial_allocation(None, labels, reference, budget, lower, upper)[free]
-        _, scale_gradient = compiled(jnp.asarray(scale_point, dtype=baseline.dtype), initial_shares)
-        initial_gradient = np.asarray(scale_gradient, dtype=np.float64)
+        if specifications:
+            _, initial_gradient = evaluate(start[free])
+        else:
+            _, scale_gradient = compiled(jnp.asarray(scale_point, dtype=baseline.dtype), initial_shares)
+            initial_gradient = np.asarray(scale_gradient, dtype=np.float64)
         if not np.isfinite(initial_gradient).all():
             raise ValueError("The objective gradient is nonfinite at the reference-proportioned allocation")
 
-        # A common derivative changes only the total budget, which is fixed.
-        # Remove that affine term before scaling by sensitivity to reallocation.
-        common_gradient = float(initial_gradient.mean())
-        scale = float(np.max(np.abs(initial_gradient - common_gradient))) or 1.0
+        # Fixed budget and group totals make their affine effects constant.
+        # Remove those gradients before scaling sensitivity to reallocation.
+        affine_gradient: float | NDArray[np.float64] = float(initial_gradient.mean())
+        if specifications:
+            equality_matrix = np.asarray(linear_constraints[0].A)
+            affine_gradient = equality_matrix.T @ np.linalg.lstsq(equality_matrix.T, initial_gradient, rcond=None)[0]
+        scale = float(np.max(np.abs(initial_gradient - affine_gradient))) or 1.0
 
         def objective(shares: NDArray[np.float64]) -> tuple[float, NDArray[np.float64]]:
             value, gradient = evaluate(shares)
-            value -= common_gradient * (shares.sum() - start[free].sum())
-            return value / scale, (gradient - common_gradient) / scale
+            value -= float(np.sum(affine_gradient * (shares - start[free])))
+            return value / scale, (gradient - affine_gradient) / scale
 
-        fixed_total = float(start.sum() - start[free].sum())
         result = minimize(
             objective,
             start[free],
             method="SLSQP",
             jac=True,
             bounds=list(zip(lower[free], upper[free], strict=True)),
-            constraints={
-                "type": "eq",
-                "fun": lambda shares: np.sum(shares) + fixed_total - 1,
-                "jac": lambda shares: np.ones_like(shares),
-            },
+            constraints=linear_constraints,
             options={"maxiter": int(maxiter), "ftol": tolerance},
         )
         if not result.success:
@@ -330,8 +426,11 @@ def optimize_budget(
         or abs(optimized.sum() - 1) > 1e-8
         or np.any(optimized < lower - 1e-8)
         or np.any(optimized > upper + 1e-8)
+        or not _constraints_satisfied(optimized, group_matrix, group_limits).all()
     ):
-        raise RuntimeError("Budget optimization returned an allocation outside the budget or spending bounds")
+        raise RuntimeError(
+            "Budget optimization returned an allocation outside the budget, bounds, or group constraints"
+        )
 
     allocation = baseline.at[indices].set(jnp.asarray(optimized * budget, dtype=baseline.dtype))
     evaluate_final = jax.jit(lambda current: context.evaluator.paired_evaluation(current, baseline))
@@ -369,6 +468,18 @@ def optimize_budget(
             "tolerance": tolerance,
         },
     )
+    if specifications:
+        shares = np.stack((reference / budget, optimized))
+        report = report.assign_coords(constraint=[spec.name for spec in specifications])
+        report["constraint_spend"] = (("allocation", "constraint"), (shares @ group_matrix.T) * budget)
+        report["constraint_lower_bound"] = ("constraint", group_limits[:, 0] * budget)
+        report["constraint_upper_bound"] = ("constraint", group_limits[:, 1] * budget)
+        report["constraint_channels"] = (("constraint", "channel"), group_matrix.astype(bool))
+        report["constraint_satisfied"] = (
+            ("allocation", "constraint"),
+            _constraints_satisfied(shares, group_matrix, group_limits),
+        )
+
     if include_metrics:
         metrics = _allocation_metrics(
             context,
@@ -388,6 +499,155 @@ def _positive_number(value: float, name: str) -> float:
     if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real) or not np.isfinite(value) or value <= 0:
         raise ValueError(f"{name} must be a finite positive number")
     return float(value)
+
+
+def _resolve_constraints(
+    constraints: Sequence[SpendConstraint] | None, labels: list[str], budget: float
+) -> tuple[tuple[SpendConstraint, ...], NDArray[np.float64], NDArray[np.float64]]:
+    """Resolve named groups to indicator rows and budget-share limits."""
+    if constraints is None:
+        constraints = ()
+    if isinstance(constraints, str) or not isinstance(constraints, Sequence):
+        raise ValueError("constraints must be a sequence of SpendConstraint objects")
+    specifications = tuple(constraints)
+    if any(not isinstance(spec, SpendConstraint) for spec in specifications):
+        raise ValueError("constraints must contain only SpendConstraint objects")
+    if len({spec.name for spec in specifications}) != len(specifications):
+        raise ValueError("Spending constraint names must be unique")
+
+    matrix = np.zeros((len(specifications), len(labels)), dtype=np.float64)
+    limits = np.zeros((len(specifications), 2), dtype=np.float64)
+    for index, spec in enumerate(specifications):
+        if set(spec.channels) - set(labels):
+            raise ValueError(f"Constraint {spec.name!r} contains channels not selected for optimization")
+        matrix[index] = [name in spec.channels for name in labels]
+        divisor = budget if spec.units == "spend" else 1.0
+        limits[index, 0] = spec.lower / divisor
+        limits[index, 1] = 1.0 if spec.upper is None else spec.upper / divisor
+
+    if not np.isfinite(limits).all() or np.any(limits[:, 0] > np.minimum(limits[:, 1], 1.0)):
+        raise ValueError("Group constraints cannot be satisfied with the selected budget")
+    return specifications, matrix, limits
+
+
+def _constraints_satisfied(
+    shares: NDArray[np.float64], matrix: NDArray[np.float64], limits: NDArray[np.float64]
+) -> NDArray[np.bool_]:
+    """Check each group in normalized units independently of solver status."""
+    values = shares @ matrix.T
+    return np.isfinite(values) & (values >= limits[:, 0] - 1e-8) & (values <= limits[:, 1] + 1e-8)
+
+
+def _tighten_bounds(
+    lower: NDArray[np.float64],
+    upper: NDArray[np.float64],
+    matrix: NDArray[np.float64],
+    limits: NDArray[np.float64],
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Propagate group and total limits, including channels forced to zero."""
+    lower, upper = lower.copy(), upper.copy()
+    rows = np.vstack((np.ones(len(lower)), matrix)).astype(bool)
+    targets = np.vstack(([1.0, 1.0], limits))
+
+    # Propagation is only preprocessing. Limit repeated tightening and leave
+    # unresolved combinations to the joint linear feasibility problem.
+    for _ in range(16):
+        previous_lower, previous_upper = lower.copy(), upper.copy()
+        for row, (minimum, maximum) in zip(rows, targets, strict=True):
+            low, high = lower[row], upper[row]
+            if low.sum() > maximum + 1e-12 or high.sum() < minimum - 1e-12:
+                raise ValueError("The budget, channel bounds, and group constraints cannot be satisfied together")
+
+            lower[row] = np.maximum(low, minimum - (high.sum() - high))
+            upper[row] = np.minimum(high, maximum - (low.sum() - low))
+
+        if np.any(lower > upper + 1e-12):
+            raise ValueError("The budget, channel bounds, and group constraints cannot be satisfied together")
+        # Collapse intervals determined to a single value up to arithmetic roundoff.
+        fixed = upper - lower <= 1e-12
+        lower[fixed] = upper[fixed] = (lower[fixed] + upper[fixed]) / 2
+        lower, upper = np.clip(lower, 0.0, 1.0), np.clip(upper, 0.0, 1.0)
+
+        if max(np.max(lower - previous_lower), np.max(previous_upper - upper)) <= 1e-12:
+            return lower, upper
+
+    return lower, upper
+
+
+def _feasible_group_allocation(
+    start: NDArray[np.float64],
+    lower: NDArray[np.float64],
+    upper: NDArray[np.float64],
+    matrix: NDArray[np.float64],
+    limits: NDArray[np.float64],
+) -> NDArray[np.float64]:
+    """Find a jointly feasible allocation minimizing absolute changes from the start."""
+    size = len(start)
+    identity = np.eye(size)
+    zeros = np.zeros_like(matrix)
+    inequalities = np.vstack(
+        (
+            np.hstack((matrix, zeros)),
+            np.hstack((-matrix, zeros)),
+            np.hstack((identity, -identity)),
+            np.hstack((-identity, -identity)),
+        )
+    )
+    targets = np.concatenate((limits[:, 1], -limits[:, 0], start, -start))
+    result = linprog(
+        np.concatenate((np.zeros(size), np.ones(size))),
+        A_ub=inequalities,
+        b_ub=targets,
+        A_eq=np.concatenate((np.ones(size), np.zeros(size)))[None, :],
+        b_eq=[1.0],
+        bounds=[*zip(lower, upper, strict=True), *[(0.0, None)] * size],
+        method="highs",
+        options={"primal_feasibility_tolerance": 1e-9, "dual_feasibility_tolerance": 1e-9},
+    )
+    if result.status == 2:
+        raise ValueError("The budget, channel bounds, and group constraints cannot be satisfied together")
+    if not result.success:
+        raise RuntimeError(f"Could not find a feasible starting allocation. {result.message}")
+
+    feasible = np.asarray(result.x[:size], dtype=np.float64)
+    if (
+        not np.isfinite(feasible).all()
+        or abs(feasible.sum() - 1) > 1e-8
+        or np.any(feasible < lower - 1e-8)
+        or np.any(feasible > upper + 1e-8)
+        or not _constraints_satisfied(feasible, matrix, limits).all()
+    ):
+        raise RuntimeError("The starting allocation does not satisfy all spending constraints")
+    return feasible
+
+
+def _solver_constraints(
+    start: NDArray[np.float64],
+    free: NDArray[np.intp],
+    matrix: NDArray[np.float64],
+    limits: NDArray[np.float64],
+) -> tuple[list[LinearConstraint], int]:
+    """Substitute fixed channels and remove redundant equality rows."""
+    if not len(free):
+        return [], 0
+    rows = np.vstack((np.ones(len(start)), matrix))
+    targets = np.vstack(([1.0, 1.0], limits))
+    fixed_values = start.copy()
+    fixed_values[free] = 0
+    targets = targets - (rows @ fixed_values)[:, None]
+    rows = rows[:, free]
+
+    equal = targets[:, 0] == targets[:, 1]
+    independent: list[int] = []
+    for index in np.flatnonzero(equal).tolist():
+        if np.linalg.matrix_rank(rows[[*independent, index]]) > len(independent):
+            independent.append(index)
+    equality = rows[independent]
+    result = [LinearConstraint(equality, targets[independent, 0], targets[independent, 1])]
+    inequalities = ~equal & np.any(rows != 0, axis=1)
+    if np.any(inequalities):
+        result.append(LinearConstraint(rows[inequalities], targets[inequalities, 0], targets[inequalities, 1]))
+    return result, len(independent)
 
 
 def _spending_bounds(
