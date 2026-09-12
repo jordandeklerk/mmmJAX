@@ -1,7 +1,7 @@
 Sampling
 ========
 
-Sample a model or evaluate generated quantities from existing posterior draws.
+Draw priors, fit a model, or evaluate generated quantities from posterior draws.
 
 .. currentmodule:: mmmjax
 
@@ -10,4 +10,5 @@ Sample a model or evaluate generated quantities from existing posterior draws.
    :nosignatures:
 
    sample
+   sample_prior
    generate_quantities
