@@ -97,6 +97,130 @@ def _response(results, curvature, allocation):
     return 1000.0 - 0.5 * np.einsum("...i,ij,...j->...", difference, curvature, difference)
 
 
+def _uncertain_linear_problem():
+    frame = pl.DataFrame({"week": [1], "video": [0.5], "search": [0.5]})
+    data = prepare_data(frame, time="week", media=["video", "search"], spend=["video", "search"])
+
+    def transformed(media, gain):
+        return {"expected": 10.0 + gain * (0.2 + media[..., 0])}
+
+    model = Model(
+        {"gain": Real()},
+        lambda expected: expected.sum(),
+        data=data,
+        components=[],
+        transformed_parameters=transformed,
+    )
+    results = _collect_results({"gain": np.array([[0.0, 1.0], [2.0, 3.0]], dtype=np.float32)}, data=data)
+    return model, results
+
+
+@pytest.mark.parametrize("batch_size", [1, 3])
+def test_optimize_budget_applies_custom_utility_to_absolute_response_draws(batch_size):
+    model, results = _uncertain_linear_problem()
+
+    def utility(response):
+        assert response.shape == (2, 2)
+        return jnp.mean(response) - jnp.var(response)
+
+    allocation = optimize_budget(model, results, quantity="expected", utility_function=utility, batch_size=batch_size)
+    mean_allocation = optimize_budget(model, results, quantity="expected", batch_size=batch_size)
+
+    # For R = 10 + gain * (0.2 + x), mean(R) - var(R) is a concave
+    # quadratic. Correlation between baseline and gain shifts its optimum.
+    gain = np.arange(4.0).reshape(2, 2)
+    expected_video = gain.mean() / (2.0 * gain.var()) - 0.2
+    np.testing.assert_allclose(
+        allocation["spend"].sel(allocation="optimized"), [expected_video, 1.0 - expected_video], atol=3e-4
+    )
+    np.testing.assert_allclose(mean_allocation["spend"].sel(allocation="optimized"), [1.0, 0.0], atol=2e-5)
+
+    assert allocation["utility"].dims == ("allocation",)
+    assert allocation.attrs["objective"] == "custom utility"
+    assert mean_allocation.attrs["objective"] == "posterior mean response"
+
+    response = 10.0 + gain[..., None] * (0.2 + np.array([0.5, expected_video]))
+    expected_utility = response.mean(axis=(0, 1)) - response.var(axis=(0, 1))
+    np.testing.assert_allclose(allocation["response"], response, atol=1e-4)
+    np.testing.assert_allclose(allocation["utility"], expected_utility, atol=2e-5)
+    np.testing.assert_allclose(mean_allocation["utility"], mean_allocation["response"].mean(("chain", "draw")))
+    assert allocation["utility"].sel(allocation="optimized") > allocation["utility"].sel(allocation="reference")
+
+    # Scoring changes instead would remove the uncertain baseline and favor
+    # spending the entire budget on video, which is a different objective.
+    difference_optimum = min(1.0, 0.5 + gain.mean() / (2.0 * gain.var()))
+    assert not np.isclose(expected_video, difference_optimum)
+
+
+def test_optimize_budget_custom_mean_matches_default_objective():
+    model, results, _ = _problem()
+    default = _optimize(model, results)
+    explicit = _optimize(model, results, utility_function=jnp.mean)
+
+    np.testing.assert_allclose(explicit["spend"], default["spend"], atol=4e-4)
+    np.testing.assert_allclose(explicit["response"], default["response"], atol=0.01)
+    np.testing.assert_allclose(explicit["utility"], explicit["response"].mean(("chain", "draw")), atol=1e-4)
+
+
+@pytest.mark.parametrize("utility_function", ["mean", 1.0, False])
+def test_optimize_budget_rejects_noncallable_utility(utility_function):
+    model, results, _ = _problem()
+
+    with pytest.raises(ValueError, match="utility_function"):
+        _optimize(model, results, utility_function=utility_function)
+
+
+@pytest.mark.parametrize("fixed", [False, True], ids=["free", "fixed"])
+@pytest.mark.parametrize(
+    "value",
+    [np.array([1.0]), 1, True, 1.0 + 0.0j, np.nan, np.inf, -np.inf],
+    ids=["vector", "integer", "boolean", "complex", "nan", "positive_infinity", "negative_infinity"],
+)
+def test_optimize_budget_rejects_invalid_utility_outputs(value, fixed):
+    model, results, _ = _problem()
+    bounds = {"video": (6.0, 6.0), "search": (9.0, 9.0), "email": (5.0, 5.0)} if fixed else (0.0, 20.0)
+
+    with pytest.raises((TypeError, ValueError), match="utility"):
+        _optimize(model, results, bounds=bounds, utility_function=lambda response: jnp.asarray(value))
+
+
+def test_optimize_budget_reports_custom_utility_for_a_unique_allocation():
+    model, results = _uncertain_linear_problem()
+    allocation = optimize_budget(
+        model,
+        results,
+        quantity="expected",
+        bounds={"video": (0.4, 0.4), "search": (0.6, 0.6)},
+        utility_function=lambda response: jnp.mean(response) - jnp.var(response),
+    )
+
+    np.testing.assert_allclose(allocation["utility"], [10.4375, 10.45], atol=2e-5)
+    assert allocation.attrs["iterations"] == 0
+    assert allocation.attrs["function_evaluations"] == 0
+
+
+def test_optimize_budget_rejects_nonfinite_custom_utility_gradients():
+    model, results = _uncertain_linear_problem()
+
+    def utility(response):
+        mean = jnp.mean(response)
+        return jnp.sqrt(mean - jax.lax.stop_gradient(mean))
+
+    with pytest.raises(ValueError, match="gradient"):
+        optimize_budget(model, results, quantity="expected", utility_function=utility)
+
+
+def test_optimize_budget_rejects_nonfinite_responses_hidden_by_custom_utility():
+    def transformed(media, coefficient):
+        response = jnp.where(coefficient[0] == 3.0, jnp.nan, media.sum())
+        return {"expected": jnp.full(media.shape[0], response)}
+
+    model, results, _ = _problem(transformed=transformed)
+
+    with pytest.raises(ValueError):
+        _optimize(model, results, utility_function=jnp.nanmean)
+
+
 def test_optimize_budget_defaults_to_reference_total_and_proportional_media():
     model, results, _ = _problem()
     allocation = optimize_budget(model, results, quantity="expected")
@@ -590,7 +714,8 @@ def test_optimize_budget_ignores_large_terms_constant_under_the_budget_constrain
 
 @pytest.mark.parametrize("saturation", [hill_saturation, root_saturation], ids=["hill", "root"])
 @pytest.mark.parametrize("initial", [None, {"video": 0.0, "search": 1.0}, {"video": 1.0, "search": 0.0}])
-def test_optimize_budget_recovers_concave_optimum_when_solver_reaches_zero(saturation, initial):
+@pytest.mark.parametrize("utility_function", [None, jnp.mean], ids=["default", "custom_mean"])
+def test_optimize_budget_recovers_concave_optimum_when_solver_reaches_zero(saturation, initial, utility_function):
     frame = pl.DataFrame({"week": [1], "video": [0.5], "search": [0.5]})
     data = prepare_data(frame, time="week", media=["video", "search"], spend=["video", "search"])
     model = Model(
@@ -612,7 +737,9 @@ def test_optimize_budget_recovers_concave_optimum_when_solver_reaches_zero(satur
     posterior = {name: jnp.array([[value]]) for name, value in parameters.items()}
     results = _collect_results(posterior, data=data, dims=dict.fromkeys(parameters, ("channel",)))
 
-    allocation = optimize_budget(model, results, quantity="expected", initial_spend=initial)
+    allocation = optimize_budget(
+        model, results, quantity="expected", initial_spend=initial, utility_function=utility_function
+    )
 
     # Evaluate the closed-form concave curves independently on a fine allocation grid.
     grid = np.linspace(0.0, 1.0, 10_001)
@@ -958,15 +1085,20 @@ def test_optimize_budget_rejects_invalid_metric_increases(increase):
         _optimize(model, results, include_metrics=True, incremental_increase=increase)
 
 
-def test_optimize_budget_rejects_unrepresentable_positive_spend_increases():
-    model, results, _ = _problem()
-    with pytest.raises(ValueError, match="too small for the model precision"):
-        _optimize(
-            model,
-            results,
-            include_metrics=True,
-            incremental_increase=1e-12,
-            spend_constraint_lower=0.0,
-            spend_constraint_upper=0.0,
-            bounds=None,
-        )
+@pytest.mark.parametrize("x64", [False, True], ids=["float32", "float64"])
+def test_optimize_budget_rejects_unrepresentable_positive_spend_increases(x64):
+    with jax.enable_x64(x64):
+        model, results, _ = _problem()
+        # Choose an increase that rounds away in the model's actual precision.
+        increase = np.finfo(model._dtype).eps / 8
+
+        with pytest.raises(ValueError, match="too small for the model precision"):
+            _optimize(
+                model,
+                results,
+                include_metrics=True,
+                incremental_increase=increase,
+                spend_constraint_lower=0.0,
+                spend_constraint_upper=0.0,
+                bounds=None,
+            )

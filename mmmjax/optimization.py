@@ -24,6 +24,7 @@ def optimize_budget(
     *,
     budget: float | None = None,
     quantity: str,
+    utility_function: Callable[[jax.Array], ArrayLike] | None = None,
     spend_to_media: Literal["proportional"] | Callable[[jax.Array], ArrayLike] = "proportional",
     bounds: tuple[float, float] | Mapping[str, tuple[float, float]] | None = None,
     spend_constraint_lower: float | Sequence[float] | None = None,
@@ -39,7 +40,7 @@ def optimize_budget(
     maxiter: int = 200,
     tolerance: float = 1e-6,
 ) -> xr.Dataset:
-    """Allocate a fixed budget to maximize the posterior mean response.
+    """Allocate a fixed budget using posterior responses and a chosen objective.
 
     Optimize selected channels jointly using the full model. Retain their
     reference spending proportions across selected periods and groups.
@@ -62,8 +63,13 @@ def optimize_budget(
         ``"expected_revenue"``. Its value must contain one expected response
         per observation in the desired reporting units. It is recomputed for
         each allocation and posterior draw and need not be stored in ``results``.
-        The objective maximizes the posterior mean of the total over selected
-        measurement periods and groups.
+        Responses are totaled over selected measurement periods and groups.
+    utility_function : callable, optional
+        Differentiable JAX function receiving total expected responses with
+        shape ``(chain, draw)`` and returning a floating-point scalar to
+        maximize. Defaults to the posterior mean. Custom functions can
+        penalize uncertainty. Inputs are absolute responses in the quantity's
+        units, not changes from the reference allocation.
     spend_to_media : {"proportional"} or callable, default "proportional"
         By default, exposure scales with spending at each period and group,
         retaining reference exposure per unit spend. A differentiable JAX
@@ -119,6 +125,7 @@ def optimize_budget(
         - **spend** contains reference and optimized channel budgets.
         - **response** contains their total responses for every chain and draw.
         - **response_change** contains paired optimized-minus-reference responses.
+        - **utility** contains the objective value for each allocation.
         - **lower_bound**, **upper_bound**, and **initial_spend** record constraints
           and the starting allocation.
         - **spend_period** and **response_period** record selected dates.
@@ -133,8 +140,8 @@ def optimize_budget(
         allocation being evaluated and are not restricted by optimization
         bounds. Channel effects need not add up when channels interact.
 
-        A single allocation maximizes the posterior mean, not each draw
-        separately. If the reference total differs from ``budget``, the
+        A single allocation maximizes the chosen utility across posterior
+        draws. If the reference total differs from ``budget``, the
         comparison also reflects the change in total spending. Responses
         retain the quantity's units and receive no inverse scaling.
 
@@ -142,7 +149,7 @@ def optimize_budget(
     ------
     ValueError
         Inputs are invalid, constraints are infeasible, or model evaluation
-        produces nonfinite responses or gradients.
+        produces invalid responses, utility values, or gradients.
     RuntimeError
         The solver fails to converge or returns an infeasible allocation.
     """
@@ -155,6 +162,8 @@ def optimize_budget(
         raise ValueError("Use either bounds or spend_constraint_lower and spend_constraint_upper, not both")
     if not isinstance(include_metrics, bool):
         raise ValueError("include_metrics must be a boolean")
+    if utility_function is not None and not callable(utility_function):
+        raise ValueError("utility_function must be callable")
     if include_metrics:
         incremental_increase = _positive_number(incremental_increase, "incremental_increase")
 
@@ -209,6 +218,14 @@ def optimize_budget(
     if not np.isfinite(np.asarray(initial)).all():
         raise ValueError("The budget is too large for the model precision. Change spending units")
 
+    def utility(responses: jax.Array) -> jax.Array:
+        value = jnp.asarray(jnp.mean(responses) if utility_function is None else utility_function(responses))
+        if value.shape != () or not jnp.issubdtype(value.dtype, jnp.floating):
+            raise ValueError("utility_function must return a floating-point scalar")
+
+        # Custom reductions must not hide invalid draws by dropping or masking them.
+        return jnp.where(jnp.all(jnp.isfinite(responses)), value, jnp.nan)
+
     free = np.flatnonzero(upper > lower)
     optimized = start.copy()
     iterations = 0
@@ -223,8 +240,14 @@ def optimize_budget(
             allocation = baseline.at[indices].set(selected * budget)
             comparison = template.at[free_indices].set(reference_shares)
             reference_allocation = baseline.at[indices].set(comparison * budget)
-            _, change = context.evaluator.paired_evaluation(allocation, reference_allocation)
-            return -jnp.mean(change)
+
+            if utility_function is None:
+                _, change = context.evaluator.paired_evaluation(allocation, reference_allocation)
+                return -jnp.mean(change)
+
+            # Nonlinear utilities score absolute responses. Subtracting a scalar
+            # reference score shifts the objective without changing its optimum.
+            return utility(context.evaluator(reference_allocation)) - utility(context.evaluator(allocation))
 
         compiled = jax.jit(jax.value_and_grad(loss))
         difference = jax.jit(loss)
@@ -256,8 +279,8 @@ def optimize_budget(
 
             if not np.isfinite(value_host) or not np.isfinite(gradient_host).all():
                 raise ValueError(
-                    "The response or its gradient is nonfinite. "
-                    "Check the conversion, transformed quantity, posterior draws, and spending bounds"
+                    "The response, utility, or gradient is nonfinite. "
+                    "Check the model, utility_function, conversion, posterior draws, and spending bounds"
                 )
 
             return value_host, gradient_host
@@ -268,7 +291,7 @@ def optimize_budget(
         _, scale_gradient = compiled(jnp.asarray(scale_point, dtype=baseline.dtype), initial_shares)
         initial_gradient = np.asarray(scale_gradient, dtype=np.float64)
         if not np.isfinite(initial_gradient).all():
-            raise ValueError("The response gradient is nonfinite at the reference-proportioned allocation")
+            raise ValueError("The objective gradient is nonfinite at the reference-proportioned allocation")
 
         # A common derivative changes only the total budget, which is fixed.
         # Remove that affine term before scaling by sensitivity to reallocation.
@@ -318,11 +341,17 @@ def optimize_budget(
     if not all(np.isfinite(value).all() for value in (reference_response, response, change)):
         raise ValueError("An allocation produced invalid media or a nonfinite response. Check the model and conversion")
 
+    evaluate_utility = jax.jit(utility)
+    utilities = np.asarray([evaluate_utility(jnp.asarray(value)) for value in (reference_response, response)])
+    if not np.isfinite(utilities).all():
+        raise ValueError("An allocation produced a nonfinite utility. Check utility_function and the response units")
+
     report = xr.Dataset(
         {
             "spend": (("allocation", "channel"), np.stack((reference, optimized * budget))),
             "response": (("chain", "draw", "allocation"), np.stack((reference_response, response), axis=-1)),
             "response_change": (("chain", "draw"), change),
+            "utility": ("allocation", utilities),
             "lower_bound": ("channel", limits[:, 0]),
             "upper_bound": ("channel", limits[:, 1]),
             "initial_spend": ("channel", start * budget),
@@ -336,7 +365,7 @@ def optimize_budget(
             "success": True,
             "iterations": iterations,
             "function_evaluations": evaluations,
-            "objective": "posterior mean response",
+            "objective": "posterior mean response" if utility_function is None else "custom utility",
             "tolerance": tolerance,
         },
     )
