@@ -1,6 +1,10 @@
 """Hilbert-space Gaussian process primitives for smooth time-varying effects."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
+from functools import partial
+from keyword import iskeyword
 from typing import Literal
 
 import jax
@@ -8,7 +12,10 @@ import jax.numpy as jnp
 import numpy as np
 from jax.typing import ArrayLike
 
-__all__ = ["HSGPConfig", "hsgp_basis", "hsgp_weights", "prepare_hsgp"]
+from mmmjax.data import PreparedData, _time_positions
+from mmmjax.parameters import Parameterization, Positive, Real
+
+__all__ = ["HSGPConfig", "HSGPEffect", "hsgp_basis", "hsgp_weights", "prepare_hsgp"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +113,218 @@ class HSGPConfig:
                ...: weights.shape
         """
         return hsgp_weights(frequencies, length_scale=length_scale, amplitude=amplitude, covariance=self.covariance)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class HSGPEffect:
+    """Configure a smooth time-varying contribution for model composition.
+
+    Model preparation fixes the approximation domain and basis from the
+    observed time positions. The same basis definition and training mean are
+    retained for prediction. The coefficient block is unscaled, so a standard
+    Normal prior gives the usual HSGP construction after the component applies
+    its spectral weights. No priors are assigned automatically.
+
+    Parameters
+    ----------
+    length_scale_range : tuple of float
+        Shortest and longest expected length scales in increasing order. Use
+        days for calendar dates and the original units for numeric times. The
+        range sizes the approximation and does not constrain the learned
+        length scale.
+    name : str, default "baseline"
+        Name of the time-varying contribution. Named callbacks request its
+        parameters through ``<name>_coefficients``, ``<name>_length_scale``,
+        and ``<name>_amplitude``.
+    covariance : {"expquad", "matern32", "matern52"}, default "matern52"
+        Covariance family used to weight the basis coefficients.
+    boundary : float, optional
+        Fixed domain half-width in time units. When omitted, preparation
+        chooses a value from the observed span and expected length scales.
+    n_basis : int, optional
+        Positive number of basis functions. When omitted, preparation chooses
+        a count from the domain and shortest expected length scale.
+    demean : bool, default True
+        Subtract the training feature mean so the curve has no average
+        contribution over the training observations.
+
+    Examples
+    --------
+    Configure a smooth baseline whose priors will be written in the model
+    callback.
+
+    .. ipython::
+
+        In [1]: from mmmjax import HSGPEffect
+           ...: baseline = HSGPEffect(length_scale_range=(14.0, 90.0))
+           ...: baseline.name
+    """
+
+    length_scale_range: tuple[float, float]
+    name: str = "baseline"
+    covariance: Literal["expquad", "matern32", "matern52"] = "matern52"
+    boundary: float | None = None
+    n_basis: int | None = None
+    demean: bool = True
+
+    def __post_init__(self) -> None:
+        """Validate choices that remain fixed after model preparation."""
+        if not isinstance(self.length_scale_range, tuple) or len(self.length_scale_range) != 2:
+            raise TypeError("length_scale_range must be a tuple containing two real numbers")
+        if any(
+            isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, float, np.integer, np.floating))
+            for value in self.length_scale_range
+        ):
+            raise TypeError("length_scale_range must contain two real numbers")
+        shortest, longest = (float(value) for value in self.length_scale_range)
+        if not np.isfinite(shortest) or not np.isfinite(longest):
+            raise ValueError("length_scale_range must contain finite values")
+        if shortest <= 0 or shortest >= longest:
+            raise ValueError("length_scale_range must contain positive values in increasing order")
+        object.__setattr__(self, "length_scale_range", (shortest, longest))
+
+        if not isinstance(self.name, str):
+            raise TypeError("name must be a string naming the time-varying contribution")
+        if not self.name.isidentifier() or iskeyword(self.name):
+            raise ValueError("name must be a valid non-keyword Python identifier")
+        if self.covariance not in ("expquad", "matern32", "matern52"):
+            raise ValueError("covariance must be 'expquad', 'matern32', or 'matern52'")
+        if self.boundary is not None:
+            if isinstance(self.boundary, (bool, np.bool_)) or not isinstance(
+                self.boundary, (int, float, np.integer, np.floating)
+            ):
+                raise TypeError("boundary must be a real scalar domain half-width")
+            boundary = float(self.boundary)
+            if not np.isfinite(boundary) or boundary <= 0:
+                raise ValueError("boundary must be finite and positive")
+            object.__setattr__(self, "boundary", boundary)
+        if self.n_basis is not None:
+            if isinstance(self.n_basis, bool) or not isinstance(self.n_basis, int):
+                raise TypeError("n_basis must be a positive Python integer")
+            if self.n_basis <= 0:
+                raise ValueError("n_basis must be at least 1")
+        if not isinstance(self.demean, bool):
+            raise TypeError("demean must be True or False")
+
+    def _prepare(self, data: PreparedData, *, reference: "_PreparedHSGP | None" = None) -> "_PreparedHSGP":
+        """Prepare fixed basis state outside JAX transformations."""
+        if not isinstance(data, PreparedData):
+            raise TypeError("HSGP effects require PreparedData from prepare_data")
+        if reference is not None and (
+            self is not reference.specification
+            or data.time_column != reference.time_column
+            or data.group_columns != reference.group_columns
+        ):
+            raise ValueError("HSGP prediction inputs must retain the training time and group columns")
+        if reference is not None and set(data.group_values) != set(reference.group_values):
+            raise ValueError("HSGP prediction inputs must contain the same group labels as training")
+
+        positions, origin = _time_positions(data.time_values, origin=None if reference is None else reference.origin)
+        if reference is None:
+            if len(positions) < 2 or float(np.min(positions)) == float(np.max(positions)):
+                raise ValueError("HSGP effects require at least two distinct observation times")
+            config = prepare_hsgp(
+                np.asarray((np.min(positions), np.max(positions))),
+                length_scale_range=np.asarray(self.length_scale_range),
+                covariance=self.covariance,
+                boundary=self.boundary,
+                n_basis=self.n_basis,
+            )
+            features, frequencies = config.basis(positions)
+            basis_mean = jnp.mean(features, axis=0) if self.demean else jnp.zeros(features.shape[1], features.dtype)
+        else:
+            config = reference.config
+            outside_domain = np.abs(positions - config.center) > config.boundary
+            if np.any(outside_domain):
+                raise ValueError(
+                    "HSGP prediction times fall outside the training domain. "
+                    "Use a wider boundary when configuring the training model"
+                )
+            features, frequencies = config.basis(jnp.asarray(positions, dtype=reference.features.dtype))
+            basis_mean = reference.basis_mean
+
+        return _PreparedHSGP(
+            features=features,
+            frequencies=frequencies,
+            basis_mean=basis_mean,
+            specification=self,
+            config=config,
+            origin=origin,
+            time_column=data.time_column,
+            group_columns=data.group_columns,
+            group_values=data.group_values if reference is None else reference.group_values,
+        )
+
+
+@partial(
+    jax.tree_util.register_dataclass,
+    data_fields=("features", "frequencies", "basis_mean"),
+    meta_fields=("specification", "config", "origin", "time_column", "group_columns", "group_values"),
+)
+@dataclass(frozen=True, slots=True, eq=False)
+class _PreparedHSGP:
+    """Carry one fixed HSGP approximation into model callbacks."""
+
+    features: jax.Array
+    frequencies: jax.Array
+    basis_mean: jax.Array
+    specification: HSGPEffect
+    config: HSGPConfig
+    origin: float | datetime
+    time_column: str
+    group_columns: tuple[str, ...]
+    group_values: tuple[tuple[object, ...], ...]
+
+    @property
+    def parameters(self) -> dict[str, Parameterization]:
+        """Declare curve parameters without assigning their priors."""
+        name = self.specification.name
+        dtype = self.features.dtype
+        return {
+            f"{name}_coefficients": Real(shape=(self.config.n_basis,), dtype=dtype),
+            f"{name}_length_scale": Positive(dtype=dtype),
+            f"{name}_amplitude": Positive(dtype=dtype),
+        }
+
+    def apply(self, parameters: Mapping[str, ArrayLike]) -> jax.Array:
+        """Return the smooth contribution for each prepared observation."""
+        if not isinstance(parameters, Mapping):
+            raise TypeError("HSGP parameters must be a mapping of declared names to arrays")
+
+        name = self.specification.name
+        shapes = {
+            f"{name}_coefficients": (self.config.n_basis,),
+            f"{name}_length_scale": (),
+            f"{name}_amplitude": (),
+        }
+        values = {}
+        for parameter_name, shape in shapes.items():
+            if parameter_name not in parameters:
+                raise ValueError(f"Missing HSGP parameter {parameter_name!r}")
+            try:
+                value = jnp.asarray(parameters[parameter_name])
+            except (TypeError, ValueError) as error:
+                raise TypeError(f"HSGP parameter {parameter_name!r} must be real numeric and array-like") from error
+            if not (jnp.issubdtype(value.dtype, jnp.floating) or jnp.issubdtype(value.dtype, jnp.integer)):
+                raise TypeError(f"HSGP parameter {parameter_name!r} must have a real numeric dtype")
+            if value.shape != shape:
+                raise ValueError(f"HSGP parameter {parameter_name!r} must have shape {shape}, got shape {value.shape}")
+            values[parameter_name] = jnp.asarray(value, dtype=jnp.result_type(value, self.features))
+
+        coefficients = values[f"{name}_coefficients"]
+        weights = self.config.weights(
+            self.frequencies,
+            length_scale=values[f"{name}_length_scale"],
+            amplitude=values[f"{name}_amplitude"],
+        )
+        contribution = (self.features - self.basis_mean) @ (weights * coefficients)
+        if self.group_columns:
+            return jnp.broadcast_to(contribution[:, None], (self.features.shape[0], len(self.group_values)))
+        return contribution
+
+    def for_data(self, data: PreparedData) -> "_PreparedHSGP":
+        """Prepare predictions with the training domain and feature mean."""
+        return self.specification._prepare(data, reference=self)
 
 
 def prepare_hsgp(

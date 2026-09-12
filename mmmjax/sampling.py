@@ -16,6 +16,7 @@ from numpy.typing import NDArray
 from mmmjax._nuts import _sample_nuts
 from mmmjax._results import _collect_results, _data_dimensions, _prepared_groups, _same_labels
 from mmmjax.data import PreparedData
+from mmmjax.hsgp import _PreparedHSGP
 from mmmjax.media import _PreparedMedia
 from mmmjax.model import Model, Prior, _component_parameter_inputs
 from mmmjax.seasonality import _PreparedFourier
@@ -598,6 +599,13 @@ def _parameter_metadata(model: Model) -> tuple[dict[str, tuple[str, ...]], dict[
                 coordinates.setdefault(
                     axis, np.array([f"{kind}_{index}" for kind in ("sin", "cos") for index in range(1, order + 1)])
                 )
+            elif isinstance(component, _PreparedHSGP):
+                name = component.specification.name
+                axis = f"{name}_basis"
+                dimensions[f"{name}_coefficients"] = (axis,)
+                dimensions[f"{name}_length_scale"] = ()
+                dimensions[f"{name}_amplitude"] = ()
+                coordinates.setdefault(axis, np.arange(1, component.config.n_basis + 1))
     dimensions.update(model._result_dims)
     for name, parameter in model.parameters.items():
         dimensions.setdefault(name, tuple(f"{name}_dim_{index}" for index in range(len(parameter.shape))))

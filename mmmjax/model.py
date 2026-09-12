@@ -15,6 +15,7 @@ from numpy.typing import NDArray
 
 from mmmjax._results import _coordinates, _dimensions
 from mmmjax.data import PreparedData, _DataLayout, _prepare_model_frame
+from mmmjax.hsgp import HSGPEffect, _PreparedHSGP
 from mmmjax.media import MediaEffect, _PreparedMedia
 from mmmjax.parameters import Parameterization
 from mmmjax.scaling import DataScaling, fit_data_scaling
@@ -36,7 +37,7 @@ class _ModelData:
     """Keep observation arrays and prepared components in one dynamic PyTree."""
 
     values: dict[str, jax.Array]
-    components: tuple[_PreparedFourier | _PreparedMedia, ...]
+    components: tuple[_PreparedFourier | _PreparedMedia | _PreparedHSGP, ...]
     owner: object = field(default_factory=object, metadata={"static": True})
 
 
@@ -80,11 +81,12 @@ class Model:
         with ``"auto"``. Automatic scaling leaves outcomes unchanged.
         ``None`` preserves supplied inputs. Fitted scales remain available
         through ``model.scaling`` and are reused on new data.
-    components : sequence of FourierSeasonality or MediaEffect, optional
+    components : sequence of FourierSeasonality, MediaEffect, or HSGPEffect, optional
         Named effects with inferred parameter shapes and constraints, without
         priors. Media supplies per-channel effects and ``<name>_total``.
         Parameter inputs include ``<name>_coefficient`` for media and
-        ``<name>_coefficients`` for seasonality. Keep names distinct.
+        ``<name>_coefficients`` for seasonality and HSGP effects. HSGP also
+        declares ``<name>_length_scale`` and ``<name>_amplitude``. Keep names distinct.
         Use ``components=[]`` for fully custom calculations.
     transformed_parameters : callable, optional
         Pure JAX-compatible function returning a mapping of names to derived
@@ -143,7 +145,7 @@ class Model:
         *,
         prior: Prior | None = None,
         data: PreparedData | None = None,
-        components: Sequence[FourierSeasonality | MediaEffect] | None = None,
+        components: Sequence[FourierSeasonality | MediaEffect | HSGPEffect] | None = None,
         transformed_parameters: TransformedParameters | None = None,
         scaling: DataScaling | Literal["auto"] | None = None,
         dims: Mapping[str, Sequence[str]] | None = None,
@@ -174,7 +176,9 @@ class Model:
             if not isinstance(data, PreparedData):
                 raise TypeError("Components require PreparedData. Use prepare_data with the observation dataframe")
             if not isinstance(components, Sequence) or isinstance(components, (str, bytes)):
-                raise TypeError("components must be a sequence of FourierSeasonality or MediaEffect configurations")
+                raise TypeError(
+                    "components must be a sequence of FourierSeasonality, MediaEffect, or HSGPEffect configurations"
+                )
             if scaling == "auto":
                 fitted_scaling = fit_data_scaling(data)
             elif isinstance(scaling, DataScaling):
@@ -190,8 +194,10 @@ class Model:
             specifications = tuple(components)
             names = set(parameter_names)
             for specification in specifications:
-                if not isinstance(specification, (FourierSeasonality, MediaEffect)):
-                    raise TypeError("Each component must be a FourierSeasonality or MediaEffect configuration")
+                if not isinstance(specification, (FourierSeasonality, MediaEffect, HSGPEffect)):
+                    raise TypeError(
+                        "Each component must be a FourierSeasonality, MediaEffect, or HSGPEffect configuration"
+                    )
                 if specification.name in names:
                     raise ValueError(
                         f"Component name {specification.name!r} conflicts with another component or parameter"
@@ -627,6 +633,13 @@ class Model:
                     and component.channels == reference.channels
                     and component.dtype == reference.dtype
                 )
+            elif isinstance(component, _PreparedHSGP):
+                matches = (
+                    matches
+                    and isinstance(reference, _PreparedHSGP)
+                    and component.origin == reference.origin
+                    and component.config is reference.config
+                )
             else:
                 matches = matches and isinstance(reference, _PreparedFourier) and component.origin == reference.origin
             if not matches:
@@ -656,19 +669,23 @@ def _component_effects(inputs: _ModelData, parameters: ParameterValues) -> dict[
             if "media" not in inputs.values:
                 raise ValueError("Media effects require media exposures in the prepared model inputs")
             effects[name] = component.apply(inputs.values["media"], parameters)
+        elif isinstance(component, _PreparedHSGP):
+            effects[name] = component.apply(parameters)
         else:
             effects[name] = component.apply(parameters[name])
     return effects
 
 
-def _media_total_names(components: Sequence[_PreparedFourier | _PreparedMedia]) -> set[str]:
+def _media_total_names(components: Sequence[_PreparedFourier | _PreparedMedia | _PreparedHSGP]) -> set[str]:
     """Name channel totals separately from the existing per-channel contributions."""
     return {
         f"{component.specification.name}_total" for component in components if isinstance(component, _PreparedMedia)
     }
 
 
-def _component_parameter_inputs(components: Sequence[_PreparedFourier | _PreparedMedia]) -> dict[str, str]:
+def _component_parameter_inputs(
+    components: Sequence[_PreparedFourier | _PreparedMedia | _PreparedHSGP],
+) -> dict[str, str]:
     """Map callback inputs to constrained parameters without shadowing seasonal curves."""
     names: dict[str, str] = {}
     for component in components:
@@ -677,6 +694,8 @@ def _component_parameter_inputs(components: Sequence[_PreparedFourier | _Prepare
                 (f"{component.specification.name}_{role}", f"{component.specification.name}_{role}")
                 for role in component.specification._parameter_roles
             )
+        elif isinstance(component, _PreparedHSGP):
+            names.update((name, name) for name in component.parameters)
         else:
             name = component.specification.name
             names[f"{name}_coefficients"] = name

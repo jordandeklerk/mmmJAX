@@ -231,6 +231,25 @@ def test_revenue_components_and_paid_media_costs_reconcile(groups):
 
 
 @pytest.mark.parametrize("groups", [None, ("west", "east")])
+def test_baseline_is_positive_smooth_and_nonperiodic(groups):
+    truth = simulate_data(seed=41, n_periods=130, groups=groups).truth
+    baseline = np.asarray(truth.baseline).reshape(len(truth.time), -1)
+
+    assert np.all(baseline > 0)
+    assert np.all(np.ptp(baseline, axis=0) > 0)
+
+    log_baseline = np.log(baseline)
+    weekly_changes = np.abs(np.diff(log_baseline, axis=0))
+    quarterly_changes = np.abs(log_baseline[13:] - log_baseline[:-13])
+    assert np.all(np.median(weekly_changes, axis=0) < np.median(quarterly_changes, axis=0))
+    assert not np.allclose(baseline[52:], baseline[:-52])
+
+    if groups is not None:
+        relative_paths = baseline / baseline[:1]
+        assert not np.allclose(relative_paths[:, 0], relative_paths[:, 1])
+
+
+@pytest.mark.parametrize("groups", [None, ("west", "east")])
 def test_contributions_match_independent_convolution_and_public_transformations(groups):
     truth = simulate_data(seed=37, n_periods=30, groups=groups).truth
     independent = _numpy_contribution(truth, truth.exposure.values)
