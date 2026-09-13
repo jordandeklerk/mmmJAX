@@ -183,6 +183,62 @@ def test_geometric_adstock_media_jacobian_has_only_causal_lag_weights() -> None:
     np.testing.assert_allclose(reverse, expected, rtol=1e-7, atol=0)
 
 
+@pytest.mark.parametrize(
+    "function,parameters",
+    [
+        (geometric_adstock, {"alpha": 0.5}),
+        (delayed_adstock, {"alpha": 0.5, "theta": 0.0}),
+        (weibull_pdf_adstock, {"shape": 2.0, "scale": 3.0}),
+        (weibull_cdf_adstock, {"shape": 2.0, "scale": 3.0}),
+    ],
+)
+@pytest.mark.parametrize("max_lag", [0, 1, 3])
+@pytest.mark.parametrize("axis", [0, -1])
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
+def test_adstock_nonfinite_cotangents_do_not_cross_series(function, parameters, max_lag, axis, dtype):
+    if dtype == jnp.float64 and not jax.config.x64_enabled:
+        pytest.skip("JAX 64-bit mode is disabled")
+
+    media = jnp.ones((4, 2), dtype=dtype)
+    cotangent = media.at[:, 0].set(jnp.inf)
+    if axis == -1:
+        media = media.T
+        cotangent = cotangent.T
+    transformed = partial(function, **parameters, max_lag=max_lag, axis=axis)
+
+    def pullback(values, sensitivity):
+        _, backward = jax.vjp(transformed, values)
+        return backward(sensitivity)[0]
+
+    expected = jax.jit(pullback)(media, jnp.ones_like(media))
+    actual = jax.jit(pullback)(media, cotangent)
+    if axis == -1:
+        expected, actual = expected.T, actual.T
+
+    # A singular downstream response must not affect an independent channel.
+    assert np.isfinite(expected).all()
+    np.testing.assert_allclose(actual[:, 1], expected[:, 1], rtol=1e-6)
+    assert not np.isfinite(actual[:, 0]).all()
+
+
+@pytest.mark.parametrize("max_lag", [0, 2])
+def test_adstock_nonfinite_cotangents_do_not_cross_vectorized_draws_or_groups(max_lag):
+    media = jnp.ones((2, 2, 4, 3))
+    cotangent = media.at[0, 0, :, 0].set(jnp.inf)
+    transformed = jax.vmap(partial(geometric_adstock, alpha=0.5, max_lag=max_lag, axis=1))
+
+    def pullback(values, sensitivity):
+        _, backward = jax.vjp(transformed, values)
+        return backward(sensitivity)[0]
+
+    expected = jax.jit(pullback)(media, jnp.ones_like(media))
+    actual = jax.jit(pullback)(media, cotangent)
+    unaffected = np.isfinite(cotangent)
+
+    np.testing.assert_allclose(actual[unaffected], expected[unaffected], rtol=1e-6)
+    assert not np.isfinite(actual[~unaffected]).all()
+
+
 @pytest.mark.parametrize("max_lag", [0, 3])
 def test_geometric_adstock_invalid_retention_only_affects_its_series(max_lag) -> None:
     media = jnp.ones((5, 7))

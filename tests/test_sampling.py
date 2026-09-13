@@ -1,4 +1,4 @@
-"""Sampling JAX models and collecting constrained, labeled draws."""
+"""Tests for sampling JAX models and collecting constrained, labeled draws."""
 
 import jax
 import jax.numpy as jnp
@@ -234,6 +234,59 @@ def test_generation_can_be_disabled_without_executing_the_callback(nuts_calls):
     model = Model({"location": Real()}, lambda data, location: normal(location, 0.0, 1.0), forbidden_generate)
     result = sample(model, draws=2, warmup=3, chains=1, generate=False)
     assert set(result.children) == {"posterior", "sample_stats"}
+
+
+@pytest.mark.parametrize("generate", [False, True])
+def test_auxiliary_inputs_keep_evaluated_values_and_experiment_labels(nuts_calls, generate):
+    _, data = _prepared_model()
+    inputs = xr.Dataset(
+        {
+            "lift": ("experiment", np.array([0.1, 0.2, 0.3], dtype=np.float64)),
+            "uncertainty": ("experiment", [0.5, 0.25, 0.125]),
+            "reference": 2.0,
+        },
+        coords={"experiment": ["north", "south", "national"]},
+    )
+    model = Model(
+        {"effect": Real(dims="experiment")},
+        lambda lift, expected_lift, uncertainty, effect: (
+            normal(lift, expected_lift, uncertainty) + normal(effect, 0.0, 1.0)
+        ),
+        lambda key, lift, expected_lift, uncertainty: {
+            "lift_copy": lift,
+            "pointwise": normal_logpdf(lift, expected_lift, uncertainty),
+        },
+        data=data,
+        inputs=inputs,
+        scaling=fit_data_scaling(data, scale_outcome=True),
+        transformed_parameters=lambda effect, reference: {"expected_lift": effect * reference},
+        save=("expected_lift",),
+        predictive=("lift_copy",),
+        log_likelihood=("pointwise",),
+        generated_dims={"expected_lift": ("experiment",), "pointwise": ("experiment",)},
+    )
+    effect = np.array([1.0, 2.0, 3.0])
+    result = sample(model, draws=2, warmup=1, chains=1, initial_values={"effect": effect}, generate=generate)
+
+    assert result["posterior"]["effect"].dims == ("chain", "draw", "experiment")
+    np.testing.assert_array_equal(result["posterior"]["experiment"], inputs.experiment)
+    assert set(result["observed_data"].data_vars) == {"outcome"}
+    np.testing.assert_allclose(result["observed_data"]["outcome"], model.data.values["outcome"])
+    for name in inputs.data_vars:
+        actual = result["constant_data"][name]
+        assert actual.dims == inputs[name].dims
+        assert actual.dtype == model.data.values[name].dtype
+        np.testing.assert_array_equal(actual, model.data.values[name])
+    np.testing.assert_array_equal(result["constant_data"]["time"], data.time_values)
+    if generate:
+        assert result["posterior_predictive"]["lift_copy"].dims == ("chain", "draw", "experiment")
+        assert "time" not in result["posterior_predictive"].dims
+        np.testing.assert_allclose(result["generated_quantities"]["expected_lift"], [[effect * 2, effect * 2]])
+        expected = normal_logpdf(model.data.values["lift"], effect * 2, model.data.values["uncertainty"])
+        np.testing.assert_allclose(result["log_likelihood"]["pointwise"], [[expected, expected]])
+    else:
+        assert "generated_quantities" not in result.children
+        assert "posterior_predictive" not in result.children
 
 
 def test_unspecified_vector_axes_receive_parameter_specific_names(nuts_calls):

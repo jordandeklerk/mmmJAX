@@ -151,6 +151,48 @@ def test_response_curves_default_to_proportional_media():
     xr.testing.assert_identical(curves, explicit)
 
 
+@pytest.mark.parametrize("new_data", [False, True])
+def test_response_curves_retain_fixed_inputs_during_budget_changes(new_data):
+    data = _data()
+    inputs = xr.Dataset(
+        {"weights": (("experiment", "channel"), [[2.0, 3.0], [4.0, 5.0]])},
+        coords={"experiment": ["first", "second"], "channel": list(data.channels)},
+    )
+
+    def transformed(media, spend, weights, coefficient):
+        return {"expected": media[-spend.shape[0] :] @ (coefficient * weights.mean(axis=0))}
+
+    model = Model(
+        {"coefficient": Real(dims="channel")},
+        lambda expected: -expected.sum(),
+        data=data,
+        inputs=inputs,
+        transformed_parameters=transformed,
+    )
+    results = _results(model, data)
+    reference = _data(multiplier=1.5) if new_data else data
+    curves = response_curves(
+        model,
+        results,
+        quantity="expected",
+        multipliers=[0.0, 1.0, 2.0],
+        new_data=reference if new_data else None,
+    )
+
+    coefficients = results["posterior"]["coefficient"].values
+    for channel in range(2):
+        for index, multiplier in enumerate([0.0, 1.0, 2.0]):
+            media = reference.arrays["media"][-len(reference.time_values) :].copy()
+            media[:, channel] *= multiplier
+            expected = (coefficients * np.array([3.0, 4.0]) * media.sum(axis=0)).sum(axis=-1)
+            np.testing.assert_allclose(curves["response"][:, :, channel, index], expected, rtol=1e-6)
+
+    context = _prepare_response(model, results, quantity="expected", spend_to_media="proportional")
+    gradient = jax.jit(jax.grad(lambda budgets: context.evaluator(budgets).mean()))(context.reference_spend)
+    np.testing.assert_allclose(gradient, coefficients.mean(axis=(0, 1)) * [3.0, 4.0] * [2.0, 3.0], rtol=1e-6)
+    np.testing.assert_array_equal(model.data.values["weights"], inputs["weights"])
+
+
 @pytest.mark.parametrize("conversion", ["proportional", lambda spend: spend])
 def test_response_curves_keep_fractional_exposures_and_gradients_with_integer_inputs(integer_media_model, conversion):
     model = integer_media_model

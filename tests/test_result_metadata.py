@@ -7,6 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 import polars as pl
 import pytest
+import xarray as xr
 
 from mmmjax import (
     Model,
@@ -529,3 +530,62 @@ def test_named_parameter_axes_survive_reordered_scenario_inputs():
         generated["response"],
         (data.arrays["media"][-3:] * coefficient)[None, None],
     )
+
+
+def test_auxiliary_inputs_remain_fixed_across_shorter_reordered_scenarios():
+    data = _prepared_data()
+    inputs = xr.Dataset(
+        {"experiment_spend": (("experiment", "channel"), [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])},
+        coords={"experiment": ["north", "south", "national"], "channel": ["video", "search"]},
+    )
+    model = Model(
+        {"coefficient": Real(dims="channel")},
+        lambda coefficient: -jnp.square(coefficient).sum(),
+        lambda key, media, experiment_spend: {"media_copy": media, "experiment_copy": experiment_spend},
+        data=data,
+        inputs=inputs,
+        transformed_parameters=lambda experiment_spend, coefficient: {
+            "experiment_response": experiment_spend @ coefficient
+        },
+        save=("experiment_response",),
+        generated_dims={"experiment_response": ("experiment",)},
+    )
+    coefficient = np.array([2.0, 3.0], dtype=jax.dtypes.canonicalize_dtype(float))
+    results = _collect_results(
+        {"coefficient": coefficient[None, None]}, data=data, inputs=inputs, dims=model._result_dims
+    )
+    scenario = pl.DataFrame(
+        [
+            {"week": week, "region": region, "segment": segment, "video": 20.0, "search": 10.0}
+            for week in (8, 9)
+            for region, segment in reversed(data.group_values)
+        ]
+    )
+    prepared = model.prepare_data(scenario)
+    np.testing.assert_array_equal(prepared.values["experiment_spend"], model.data.values["experiment_spend"])
+    evaluated = generate_quantities(model, results, new_data=scenario)
+
+    assert "observed_data" not in evaluated.children
+    assert evaluated["constant_data"]["experiment_spend"].dims == ("experiment", "channel")
+    np.testing.assert_array_equal(evaluated["constant_data"]["experiment"], inputs.experiment)
+    np.testing.assert_array_equal(evaluated["constant_data"]["channel"], ["video", "search"])
+    np.testing.assert_array_equal(evaluated["constant_data"]["media_time"], [8, 9])
+    np.testing.assert_array_equal(evaluated["constant_data"]["experiment_spend"], inputs.experiment_spend)
+    generated = evaluated["generated_quantities"]
+    assert generated["experiment_copy"].dims == ("chain", "draw", "experiment", "channel")
+    np.testing.assert_array_equal(generated["experiment_response"], [[[8.0, 18.0, 28.0]]])
+    np.testing.assert_array_equal(generated["media_time"], [8, 9])
+    np.testing.assert_array_equal(model.data.values["experiment_spend"], inputs.experiment_spend)
+    np.testing.assert_array_equal(results["constant_data"]["media_time"], [1, 2, 3, 4])
+
+
+def test_result_collection_rejects_auxiliary_coordinate_alignment():
+    inputs = xr.Dataset({"offset": ("channel", [1.0, 2.0])}, coords={"channel": ["search", "video"]})
+    with pytest.raises(ValueError, match="Coordinate 'channel' conflicts"):
+        _collect_results({"location": np.zeros((1, 1))}, data=_prepared_data(), inputs=inputs)
+
+
+@pytest.mark.parametrize("name", ["outcome", "media"])
+def test_result_collection_rejects_auxiliary_overwrite_of_prepared_data(name):
+    with pytest.raises(ValueError, match="conflict with prepared data variables"):
+        _collect_results({"location": np.zeros((1, 1))}, data=_prepared_data(), inputs=xr.Dataset({name: 1.0}))

@@ -19,6 +19,7 @@ def _collect_results(
     posterior: _Group,
     *,
     data: PreparedData | None = None,
+    inputs: xr.Dataset | None = None,
     posterior_predictive: _Group | None = None,
     log_likelihood: _Group | None = None,
     sample_stats: _Group | None = None,
@@ -50,6 +51,30 @@ def _collect_results(
             if name in coordinates and not _same_labels(coordinates[name], labels):
                 raise ValueError(f"Coordinate {name!r} conflicts with prepared data labels")
             coordinates[name] = labels
+
+    if inputs is not None:
+        if not isinstance(inputs, xr.Dataset):
+            raise TypeError("inputs must be an xarray.Dataset")
+        for raw_axis, size in inputs.sizes.items():
+            axis = _name(raw_axis)
+            labels = np.array(inputs.coords[axis] if axis in inputs.coords else np.arange(size), copy=True)
+            if axis in coordinates and not _same_labels(coordinates[axis], labels):
+                raise ValueError(f"Coordinate {axis!r} conflicts with input labels")
+            coordinates[axis] = labels
+        input_data = _dataset(inputs, "constant_data", {}, coordinates)
+        if constant_data is None:
+            constant_data = input_data
+        else:
+            assert observed_data is not None
+            existing = set(constant_data.variables) | set(observed_data.variables)
+            conflicts = {_name(name) for name in existing & input_data.data_vars.keys()}
+            if conflicts:
+                raise ValueError(f"Inputs {sorted(conflicts)} conflict with prepared data variables")
+            constant_data = xr.merge(
+                [_dataset(constant_data, "constant_data", {}, coordinates), input_data],
+                join="exact",
+                compat="equals",
+            )
 
     parameter_dataset = _dataset(posterior, sample_group, dimensions, coordinates)
     if not parameter_dataset.data_vars:

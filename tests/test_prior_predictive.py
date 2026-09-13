@@ -257,6 +257,47 @@ def test_prepared_groups_infer_data_axes_and_exclude_selected_likelihoods():
             assert isinstance(variable.data, np.ndarray)
 
 
+@pytest.mark.parametrize("generate", [False, True])
+def test_prior_auxiliary_inputs_supply_parameter_axes_and_saved_calculations(generate):
+    _, data = _prepared_model()
+    inputs = xr.Dataset(
+        {"lift": ("experiment", [0.1, 0.2, 0.3]), "basis": (("experiment", "component"), np.eye(3))},
+        coords={"experiment": ["north", "south", "national"]},
+    )
+
+    def forbidden_density(effect):
+        raise AssertionError("Prior sampling must not evaluate the model density")
+
+    model = Model(
+        {"effect": Real(dims="component")},
+        forbidden_density,
+        lambda key, lift: {"lift_copy": lift},
+        prior=lambda key: {"effect": jnp.array([1.0, 2.0, 3.0])},
+        data=data,
+        inputs=inputs,
+        transformed_parameters=lambda basis, effect: {"expected_lift": basis @ effect},
+        save=("expected_lift",),
+        predictive=("lift_copy",),
+        generated_dims={"expected_lift": ("experiment",)},
+    )
+    result = sample_prior(model, draws=2, generate=generate)
+
+    assert result["prior"]["effect"].dims == ("chain", "draw", "component")
+    np.testing.assert_array_equal(result["prior"]["component"], np.arange(3))
+    assert set(result["observed_data"].data_vars) == {"outcome"}
+    for name in inputs.data_vars:
+        np.testing.assert_array_equal(result["constant_data"][name], model.data.values[name])
+        assert result["constant_data"][name].dtype == model.data.values[name].dtype
+    if generate:
+        assert result["prior_predictive"]["lift_copy"].dims == ("chain", "draw", "experiment")
+        np.testing.assert_array_equal(result["prior_predictive"]["experiment"], inputs.experiment)
+        np.testing.assert_array_equal(
+            result["prior_generated_quantities"]["expected_lift"], [[[1.0, 2.0, 3.0], [1.0, 2.0, 3.0]]]
+        )
+    else:
+        assert "prior_generated_quantities" not in result.children
+
+
 def test_generation_toggle_does_not_execute_callback_and_keeps_prepared_data():
     prepared, _ = _prepared_model()
 

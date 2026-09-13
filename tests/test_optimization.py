@@ -714,8 +714,14 @@ def test_optimize_budget_ignores_large_terms_constant_under_the_budget_constrain
 @pytest.mark.parametrize("saturation", [hill_saturation, root_saturation], ids=["hill", "root"])
 @pytest.mark.parametrize("initial", [None, {"video": 0.0, "search": 1.0}, {"video": 1.0, "search": 0.0}])
 @pytest.mark.parametrize("utility_function", [None, jnp.mean], ids=["default", "custom_mean"])
-def test_optimize_budget_recovers_concave_optimum_when_solver_reaches_zero(saturation, initial, utility_function):
-    frame = pl.DataFrame({"week": [1], "video": [0.5], "search": [0.5]})
+@pytest.mark.parametrize("max_lag,retention", [(0, 0.0), (1, 0.0), (1, 0.5), (3, 0.5)])
+def test_optimize_budget_recovers_concave_optimum_when_solver_reaches_zero(
+    saturation, initial, utility_function, max_lag, retention
+):
+    n_periods = max_lag + 1
+    frame = pl.DataFrame(
+        {"week": np.arange(n_periods), "video": np.full(n_periods, 0.5 / n_periods), "search": 0.5 / n_periods}
+    )
     data = prepare_data(frame, time="week", media=["video", "search"], spend=["video", "search"])
 
     def hill_response(
@@ -725,12 +731,12 @@ def test_optimize_budget_recovers_concave_optimum_when_solver_reaches_zero(satur
         paid_media_half_saturation,
         paid_media_slope,
     ):
-        carried = geometric_adstock(media, alpha=paid_media_retention, max_lag=0)
+        carried = geometric_adstock(media, alpha=paid_media_retention, max_lag=max_lag)
         response = hill_saturation(carried, half_saturation=paid_media_half_saturation, slope=paid_media_slope)
         return {"expected": response @ paid_media_coefficient}
 
     def root_response(media, paid_media_coefficient, paid_media_retention, paid_media_exponent):
-        carried = geometric_adstock(media, alpha=paid_media_retention, max_lag=0)
+        carried = geometric_adstock(media, alpha=paid_media_retention, max_lag=max_lag)
         return {"expected": root_saturation(carried, exponent=paid_media_exponent) @ paid_media_coefficient}
 
     declarations = {
@@ -751,7 +757,7 @@ def test_optimize_budget_recovers_concave_optimum_when_solver_reaches_zero(satur
         data=data,
         transformed_parameters=hill_response if saturation is hill_saturation else root_response,
     )
-    parameters = {"paid_media_coefficient": [1.0, 3.0], "paid_media_retention": [0.0, 0.0]}
+    parameters = {"paid_media_coefficient": [1.0, 3.0], "paid_media_retention": [retention, retention]}
     if saturation is hill_saturation:
         parameters.update(
             paid_media_coefficient=[1.0, 6.0],
@@ -769,9 +775,11 @@ def test_optimize_budget_recovers_concave_optimum_when_solver_reaches_zero(satur
 
     # Evaluate the closed-form concave curves independently on a fine allocation grid.
     grid = np.linspace(0.0, 1.0, 10_001)
-    roots = np.sqrt(np.stack((grid, 1 - grid), axis=-1))
+    weights = retention ** np.arange(max_lag + 1)
+    carryover = np.convolve(np.full(n_periods, 1 / n_periods), weights / weights.sum())[:n_periods]
+    roots = np.sqrt(carryover[:, None, None] * np.stack((grid, 1 - grid), axis=-1))
     responses = roots / (1 + roots) if saturation is hill_saturation else roots
-    expected = responses @ np.asarray(parameters["paid_media_coefficient"])
+    expected = (responses @ np.asarray(parameters["paid_media_coefficient"])).sum(axis=0)
     optimized = allocation["spend"].sel(allocation="optimized").values
     np.testing.assert_allclose(optimized, [grid[expected.argmax()], 1 - grid[expected.argmax()]], atol=2e-3)
     np.testing.assert_allclose(allocation["response"].sel(allocation="optimized"), expected.max(), atol=1e-5)

@@ -11,10 +11,11 @@ from typing import Literal, TypeAlias
 import jax
 import jax.numpy as jnp
 import numpy as np
+import xarray as xr
 from jax.typing import ArrayLike, DTypeLike
 from numpy.typing import NDArray
 
-from mmmjax._results import _coordinates, _dimensions, _prepared_coordinates, _same_labels
+from mmmjax._results import _coordinates, _data_dimensions, _dimensions, _name, _prepared_coordinates, _same_labels
 from mmmjax.data import PreparedData, _DataLayout, _prepare_model_frame, _time_positions
 from mmmjax.parameters import Interval, LowerBound, Parameterization, Positive, Real, Simplex, UpperBound, _as_array
 from mmmjax.scaling import DataScaling, fit_data_scaling
@@ -84,6 +85,13 @@ class Model:
         Request ``time`` or ``media_time`` for one-dimensional elapsed positions
         from the first modeling period. Dates use days and numeric labels
         retain their units. New observations reuse the same time origin.
+    inputs : xarray.Dataset, optional
+        Additional numeric inputs requested by variable name in callbacks.
+        Dimensions and labels travel with the dataset, for example an
+        ``experiment`` axis. Shared axes must match the model's labels and order.
+        Requires prepared data. Inputs are not scaled and remain fixed across
+        scenarios. Use axes other than ``time`` or ``media_time``.
+        Construct a new model to replace them.
     scaling : DataScaling, "auto", or None, default None
         Apply supplied transformations or fit :func:`fit_data_scaling` defaults
         with ``"auto"``. Automatic scaling leaves outcomes unchanged.
@@ -128,6 +136,8 @@ class Model:
     _generation_inputs: _InputBindings
     _data: _ModelData | None
     _layout: _DataLayout | None
+    _input_dims: dict[str, tuple[str, ...]]
+    _input_coords: dict[str, NDArray[np.generic]]
     _time_column: str | None
     _frequency: str | None
     _time_values: tuple[object, ...]
@@ -151,6 +161,7 @@ class Model:
         save: Sequence[str] = (),
         prior: Prior | None = None,
         data: PreparedData | None = None,
+        inputs: xr.Dataset | None = None,
         transformed_parameters: TransformedParameters | None = None,
         scaling: DataScaling | Literal["auto"] | None = None,
         dims: Mapping[str, Sequence[str]] | None = None,
@@ -177,6 +188,8 @@ class Model:
         if data is None:
             if scaling is not None:
                 raise ValueError("Model scaling requires prepared data")
+            if inputs is not None:
+                raise ValueError("Additional inputs require prepared data")
         else:
             if not isinstance(data, PreparedData):
                 raise TypeError("data must be PreparedData. Use prepare_data with the observation dataframe")
@@ -201,12 +214,18 @@ class Model:
         result_dims = _dimensions(dims)
         result_coords = _coordinates(coords)
         axis_coordinates = result_coords.copy()
+        input_dims: dict[str, tuple[str, ...]] = {}
+        input_coords: dict[str, NDArray[np.generic]] = {}
         if data is not None:
             prepared_coords, _ = _prepared_coordinates(data)
             for axis, labels in prepared_coords.items():
                 if axis in axis_coordinates and not _same_labels(axis_coordinates[axis], labels):
                     raise ValueError(f"Coordinate {axis!r} conflicts with prepared data labels")
                 axis_coordinates[axis] = labels
+            input_values, input_dims, input_coords = _prepare_inputs(inputs, data, parameter_names, axis_coordinates)
+            axis_coordinates.update(input_coords)
+            assert prepared_data is not None
+            prepared_data.values.update(input_values)
         parameterizations = _resolve_parameter_dimensions(parameterizations, result_dims, axis_coordinates)
 
         transform_inputs: _InputBindings = ()
@@ -288,6 +307,8 @@ class Model:
         object.__setattr__(self, "_generation_inputs", generation_inputs)
         object.__setattr__(self, "_data", prepared_data)
         object.__setattr__(self, "_layout", None if data is None else data._layout())
+        object.__setattr__(self, "_input_dims", input_dims)
+        object.__setattr__(self, "_input_coords", input_coords)
         object.__setattr__(self, "_time_column", None if data is None else data.time_column)
         object.__setattr__(self, "_frequency", None if data is None else data.frequency)
         object.__setattr__(self, "_time_values", () if data is None else tuple(data.time_values))
@@ -349,6 +370,7 @@ class Model:
 
         Reuse fitted scaling, the time origin, and parameter declarations
         without changing the model's stored data. Call outside JAX transformations.
+        Additional ``inputs`` retain their original values and labels.
 
         Parameters
         ----------
@@ -397,6 +419,7 @@ class Model:
         values = aligned._to_jax(dtype=self._dtype)
         if self._time_origin is not None:
             values.update(_model_time_inputs(aligned, self._time_inputs, self._time_origin, dtype=self._dtype))
+        values.update({name: self._data.values[name] for name in self._input_dims})
         return _ModelData(values, self._data.owner), aligned
 
     def constrain(self, position: ParameterValues) -> dict[str, jax.Array]:
@@ -693,6 +716,70 @@ class Model:
         if self._data is None or data.owner is not self._data.owner:
             raise ValueError("The prepared inputs must belong to this model and use its training labels")
         return data
+
+
+def _prepare_inputs(
+    inputs: xr.Dataset | None,
+    data: PreparedData,
+    parameter_names: tuple[str, ...],
+    coordinates: Mapping[str, NDArray[np.generic]],
+) -> tuple[dict[str, jax.Array], dict[str, tuple[str, ...]], dict[str, NDArray[np.generic]]]:
+    """Validate fixed labeled inputs without aligning or rescaling their values."""
+    if inputs is None:
+        return {}, {}, {}
+    if not isinstance(inputs, xr.Dataset):
+        raise TypeError("inputs must be an xarray.Dataset with named numeric variables")
+
+    dimensions = _dimensions(
+        {_name(name): tuple(_name(axis) for axis in value.dims) for name, value in inputs.data_vars.items()}
+    )
+    if {"time", "media_time"} & inputs.sizes.keys():
+        raise ValueError("Additional inputs remain fixed across scenarios. Use axes other than time or media_time")
+    if {"chain", "draw", "sample", "pred_id"} & inputs.sizes.keys():
+        raise ValueError("Additional inputs must not contain sample dimensions")
+    _, group_labels = _prepared_coordinates(data)
+    role_names = set(_data_dimensions(data)) | set(group_labels)
+    conflicts = role_names & inputs.sizes.keys()
+    if conflicts:
+        raise ValueError(f"Input dimensions {sorted(conflicts)} conflict with prepared data variables")
+    for name, coordinate in inputs.coords.items():
+        if coordinate.dims != (name,):
+            raise ValueError(f"Input coordinate {name!r} must label only its own dimension")
+
+    input_coords = _coordinates(
+        {
+            _name(axis): inputs.coords[axis].values if axis in inputs.coords else np.arange(size)
+            for axis, size in inputs.sizes.items()
+        }
+    )
+    for axis, labels in input_coords.items():
+        if not inputs.get_index(axis).is_unique:
+            raise ValueError(f"Input coordinate {axis!r} must have unique labels")
+        if axis in coordinates and not _same_labels(coordinates[axis], labels):
+            raise ValueError(f"Input coordinate {axis!r} must match the model labels and ordering")
+
+    reserved = role_names | {"time", "media_time"} | set(parameter_names) | set(coordinates) | set(input_coords)
+    values = {}
+    for name in dimensions:
+        _validate_name(name, label="input")
+        if name in reserved:
+            raise ValueError(f"Input {name!r} conflicts with a data role, parameter, or coordinate")
+        array = np.array(inputs[name].values, copy=True)
+        if array.dtype.kind not in "biuf" or not np.isfinite(array).all():
+            raise ValueError(f"Input {name!r} must contain finite real numbers or booleans")
+        dtype = jax.dtypes.canonicalize_dtype(array.dtype.newbyteorder("="))
+        if array.dtype.kind in "iu":
+            limits = np.iinfo(dtype)
+            if np.any(array < limits.min) or np.any(array > limits.max):
+                raise ValueError(f"Input {name!r} contains integers outside the JAX dtype range. Enable 64-bit mode")
+        with np.errstate(over="ignore"):
+            array = array.astype(dtype)
+        if not np.isfinite(array).all():
+            raise ValueError(
+                f"Input {name!r} is not finite at the current JAX precision. Rescale it or enable 64-bit mode"
+            )
+        values[name] = jnp.asarray(array)
+    return values, dimensions, input_coords
 
 
 def _requested_time_inputs(

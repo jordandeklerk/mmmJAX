@@ -79,6 +79,7 @@ def sample(
           **generated_quantities**.
         - **observed_data** and **constant_data** contain prepared model inputs
           in their evaluated units, including any fitted scaling.
+          Additional inputs supplied to ``Model`` are stored in **constant_data**.
 
         Declared parameter and data axes retain their labels, including unchanged
         generation inputs. Observation-shaped predictive and likelihood outputs
@@ -138,6 +139,7 @@ def sample(
         )
 
     prepared = _result_data(model)
+    constant_inputs = _result_inputs(model)
     dimensions, coordinates = _parameter_metadata(model)
 
     if set(coordinates) & {"chain", "draw"}:
@@ -159,6 +161,7 @@ def sample(
         return _collect_results(
             posterior,
             data=prepared,
+            inputs=constant_inputs,
             posterior_predictive={name: value for name, value in generated.items() if name in model._predictive_names},
             log_likelihood={name: value for name, value in generated.items() if name in model._likelihood_names},
             generated_quantities={
@@ -273,6 +276,7 @@ def sample_prior(
           generated outputs.
         - **observed_data** and **constant_data** contain prepared model inputs
           in their evaluated units, including fitted scaling.
+          Additional inputs supplied to ``Model`` are stored in **constant_data**.
 
         Outputs selected as log likelihoods are omitted. The chain axis is for
         result compatibility, not an MCMC chain. Without generation, only prior
@@ -364,6 +368,7 @@ def sample_prior(
     results = _collect_results(
         {name: value[None] for name, value in parameters.items()},
         data=prepared,
+        inputs=_result_inputs(model),
         posterior_predictive={
             name: value[None] for name, value in generated.items() if name in model._predictive_names
         },
@@ -459,7 +464,8 @@ def generate_quantities(
         Omit to evaluate stored observations. Earlier exposures are not added
         automatically. Include them through ``prepare_data(media_history=...)``.
         Other models receive this input directly. Omit outcomes only when no
-        evaluated callback needs them.
+        evaluated callback needs them. Additional inputs supplied to ``Model``
+        remain fixed across scenarios.
     seed : int, default 0
         Random seed for generated quantities, with an independent key per draw.
 
@@ -502,6 +508,7 @@ def generate_quantities(
     evaluated = _collect_results(
         posterior,
         data=prepared,
+        inputs=_result_inputs(model),
         posterior_predictive={name: value for name, value in generated.items() if name in model._predictive_names},
         log_likelihood={name: value for name, value in generated.items() if name in model._likelihood_names},
         generated_quantities={
@@ -585,7 +592,8 @@ def _posterior_draws(
 def _parameter_metadata(model: Model) -> tuple[dict[str, tuple[str, ...]], dict[str, NDArray[np.generic]]]:
     """Use declared parameter axes without guessing the meaning of custom shapes."""
     dimensions: dict[str, tuple[str, ...]] = {}
-    coordinates = {name: labels.copy() for name, labels in model._result_coords.items()}
+    coordinates = {name: labels.copy() for name, labels in model._input_coords.items()}
+    coordinates.update({name: labels.copy() for name, labels in model._result_coords.items()})
     dimensions.update(model._result_dims)
     for name, parameter in model.parameters.items():
         dimensions.setdefault(name, tuple(f"{name}_dim_{index}" for index in range(len(parameter.shape))))
@@ -614,6 +622,7 @@ def _output_dimensions(
         if prepared.group_columns:
             outcome_shape += (len(prepared.group_values),)
         role_dimensions.update(time=("time",), media_time=("media_time",))
+        role_dimensions.update(model._input_dims)
         for name, source in (*model._generation_inputs, *model._saved_inputs):
             if source == "data":
                 input_dimensions[name] = role_dimensions[name]
@@ -627,6 +636,10 @@ def _output_dimensions(
     for name, value in outputs.items():
         if name in model._generated_dims:
             dimensions[name] = model._generated_dims[name]
+            continue
+        input_axes = {axes for argument, axes in model._input_dims.items() if value is arguments.get(argument)}
+        if len(input_axes) == 1:
+            dimensions[name] = input_axes.pop()
             continue
         if name in observation_names and value.shape == outcome_shape:
             dimensions[name] = observation_axes
@@ -649,7 +662,7 @@ def _result_data(model: Model) -> PreparedData | None:
         arrays={
             name: np.array(value, copy=True)
             for name, value in model._data.values.items()
-            if name not in model._time_inputs
+            if name not in model._time_inputs and name not in model._input_dims
         },
         time_column=model._time_column or "time",
         time_values=model._time_values,
@@ -662,4 +675,18 @@ def _result_data(model: Model) -> PreparedData | None:
         rf_channels=layout.rf_channels,
         organic_rf_channels=layout.organic_rf_channels,
         frequency=model._frequency,
+    )
+
+
+def _result_inputs(model: Model) -> xr.Dataset | None:
+    """Snapshot auxiliary inputs in their evaluated dtype and declared ordering."""
+    if not model._input_dims:
+        return None
+    assert model._data is not None
+    return xr.Dataset(
+        {
+            name: xr.Variable(axes, np.array(model._data.values[name], copy=True))
+            for name, axes in model._input_dims.items()
+        },
+        coords={name: labels.copy() for name, labels in model._input_coords.items()},
     )
