@@ -16,7 +16,7 @@ from numpy.typing import NDArray
 from mmmjax._results import _coordinates, _dimensions, _prepared_coordinates, _same_labels
 from mmmjax.data import PreparedData, _DataLayout, _prepare_model_frame
 from mmmjax.hsgp import HSGPEffect, _PreparedHSGP
-from mmmjax.media import MediaEffect, _PreparedMedia
+from mmmjax.media import MediaEffect, ReachFrequencyEffect, _PreparedMedia
 from mmmjax.parameters import Interval, LowerBound, Parameterization, Positive, Real, Simplex, UpperBound, _as_array
 from mmmjax.scaling import DataScaling, fit_data_scaling
 from mmmjax.seasonality import FourierSeasonality, _PreparedFourier
@@ -93,7 +93,7 @@ class Model:
         with ``"auto"``. Automatic scaling leaves outcomes unchanged.
         ``None`` preserves supplied inputs. Fitted scales remain available
         through ``model.scaling`` and are reused on new data.
-    components : sequence of FourierSeasonality, MediaEffect, or HSGPEffect, optional
+    components : sequence of FourierSeasonality, MediaEffect, ReachFrequencyEffect, or HSGPEffect, optional
         Named effects with inferred parameter shapes and constraints, without
         priors. Media supplies per-channel effects and ``<name>_total``.
         HSGP effects may be shared or channel-specific. Parameter inputs
@@ -161,7 +161,7 @@ class Model:
         save: Sequence[str] = (),
         prior: Prior | None = None,
         data: PreparedData | None = None,
-        components: Sequence[FourierSeasonality | MediaEffect | HSGPEffect] | None = None,
+        components: Sequence[FourierSeasonality | MediaEffect | ReachFrequencyEffect | HSGPEffect] | None = None,
         transformed_parameters: TransformedParameters | None = None,
         scaling: DataScaling | Literal["auto"] | None = None,
         dims: Mapping[str, Sequence[str]] | None = None,
@@ -193,7 +193,8 @@ class Model:
                 raise TypeError("Components require PreparedData. Use prepare_data with the observation dataframe")
             if not isinstance(components, Sequence) or isinstance(components, (str, bytes)):
                 raise TypeError(
-                    "components must be a sequence of FourierSeasonality, MediaEffect, or HSGPEffect configurations"
+                    "components must be a sequence of FourierSeasonality, MediaEffect, "
+                    "ReachFrequencyEffect, or HSGPEffect configurations"
                 )
             if scaling == "auto":
                 fitted_scaling = fit_data_scaling(data)
@@ -210,9 +211,10 @@ class Model:
             specifications = tuple(components)
             names = set(parameter_names)
             for specification in specifications:
-                if not isinstance(specification, (FourierSeasonality, MediaEffect, HSGPEffect)):
+                if not isinstance(specification, (FourierSeasonality, MediaEffect, ReachFrequencyEffect, HSGPEffect)):
                     raise TypeError(
-                        "Each component must be a FourierSeasonality, MediaEffect, or HSGPEffect configuration"
+                        "Each component must be a FourierSeasonality, MediaEffect, "
+                        "ReachFrequencyEffect, or HSGPEffect configuration"
                     )
                 if specification.name in names:
                     raise ValueError(
@@ -781,6 +783,7 @@ class Model:
                     matches
                     and isinstance(reference, _PreparedMedia)
                     and component.media_columns == reference.media_columns
+                    and component.frequency_columns == reference.frequency_columns
                     and component.channels == reference.channels
                     and component.dtype == reference.dtype
                 )
@@ -818,9 +821,16 @@ def _component_effects(inputs: _ModelData, parameters: ParameterValues) -> dict[
     for component in inputs.components:
         name = component.specification.name
         if isinstance(component, _PreparedMedia):
-            if "media" not in inputs.values:
-                raise ValueError("Media effects require media exposures in the prepared model inputs")
-            effects[name] = component.apply(inputs.values["media"], parameters)
+            if isinstance(component.specification, ReachFrequencyEffect):
+                if not {"reach", "media_frequency"}.issubset(inputs.values):
+                    raise ValueError("Reach-frequency effects require reach and media_frequency in the model inputs")
+                effects[name] = component.apply(
+                    inputs.values["reach"], parameters, frequency=inputs.values["media_frequency"]
+                )
+            else:
+                if "media" not in inputs.values:
+                    raise ValueError("Media effects require media exposures in the prepared model inputs")
+                effects[name] = component.apply(inputs.values["media"], parameters)
         elif isinstance(component, _PreparedHSGP):
             effects[name] = component.apply(parameters)
         else:

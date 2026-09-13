@@ -15,7 +15,7 @@ from mmmjax.data import PreparedData
 from mmmjax.parameters import Interval, Parameterization, Positive
 from mmmjax.saturation import hill_saturation, log_saturation, logistic_saturation, root_saturation
 
-__all__ = ["MediaEffect", "media_response", "reach_frequency_response"]
+__all__ = ["MediaEffect", "ReachFrequencyEffect", "media_response", "reach_frequency_response"]
 
 
 @dataclass(frozen=True, slots=True, eq=False, kw_only=True)
@@ -79,86 +79,182 @@ class MediaEffect:
 
     def __post_init__(self) -> None:
         """Validate configuration before preparing channel parameters."""
-        if isinstance(self.max_lag, bool) or not isinstance(self.max_lag, int):
-            raise TypeError("max_lag must be a nonnegative Python integer")
-        if self.max_lag < 0:
-            raise ValueError("max_lag must be nonnegative")
-        if not isinstance(self.name, str):
-            raise TypeError("name must be a string naming the media contribution")
-        if not self.name.isidentifier() or iskeyword(self.name):
-            raise ValueError("name must be a valid non-keyword Python identifier")
-        for field in ("normalize", "adstock_first", "group_specific_coefficients"):
-            if not isinstance(getattr(self, field), bool):
-                raise TypeError(f"{field} must be True or False")
-        for field, supported in (
-            ("adstock", (geometric_adstock, delayed_adstock, weibull_pdf_adstock, weibull_cdf_adstock)),
-            ("saturation", (hill_saturation, logistic_saturation, root_saturation, log_saturation)),
-        ):
-            selected = getattr(self, field)
-            if not callable(selected):
-                raise TypeError(f"{field} must be a supported transformation function")
-            if not any(selected is function for function in supported):
-                choices = ", ".join(function.__name__ for function in supported)
-                raise ValueError(f"Choose {field} directly from {choices}. Use media_response for custom functions")
+        _validate_media_configuration(self)
+        if not isinstance(self.adstock_first, bool):
+            raise TypeError("adstock_first must be True or False")
 
     @property
     def _parameter_roles(self) -> tuple[str, ...]:
         """Identify the learned parameters for the selected transformations."""
-        roles: tuple[str, ...] = ("coefficient",)
-        if self.adstock is geometric_adstock:
-            roles += ("retention",)
-        elif self.adstock is delayed_adstock:
-            roles += ("retention", "delay") if self.max_lag > 0 else ("retention",)
-        else:
-            roles += ("adstock_shape", "adstock_scale")
-        if self.saturation is hill_saturation:
-            roles += ("half_saturation", "slope")
-        elif self.saturation is logistic_saturation:
-            roles += ("half_saturation",)
-        elif self.saturation is root_saturation:
-            roles += ("exponent",)
-        return roles
+        return _media_parameter_roles(self)
 
     def _prepare(self, data: PreparedData, *, reference: "_PreparedMedia | None" = None) -> "_PreparedMedia":
         """Retain channel identities and shapes without capturing exposure arrays."""
-        if not isinstance(data, PreparedData):
-            raise TypeError("Media effects require PreparedData. Use prepare_data with the exposure dataframe")
-        if "media" not in data.arrays or not data.channels:
-            raise ValueError("Media effects require exposure columns selected with media in prepare_data")
-        if self.group_specific_coefficients and not data.group_columns:
-            raise ValueError("group_specific_coefficients=True requires grouped data. Select groups in prepare_data")
-        if reference is not None and (
-            self is not reference.specification
-            or data.time_column != reference.time_column
-            or data.columns["media"] != reference.media_columns
-            or data.channels != reference.channels
-            or data.group_columns != reference.group_columns
-            or data.group_values != reference.group_values
-        ):
-            raise ValueError("Media prediction inputs must retain the training time column, channel and group ordering")
+        return _prepare_media(self, data, reference=reference)
 
-        n_periods = len(data.time_values)
-        n_media_periods = len(data.media_time_values)
-        if n_periods == 0 or n_media_periods < n_periods or data.media_time_values[-n_periods:] != data.time_values:
-            raise ValueError("Media periods must include the modeling periods after any earlier exposure history")
-        group_shape = (len(data.group_values),) if data.group_columns else ()
-        media_shape = (n_media_periods, *group_shape, len(data.channels))
-        if data.arrays["media"].shape != media_shape:
+
+@dataclass(frozen=True, slots=True, eq=False, kw_only=True)
+class ReachFrequencyEffect:
+    """Configure paid channel contributions from reach and average frequency.
+
+    Use the ``reach`` and ``media_frequency`` inputs selected by ``prepare_data``.
+    Saturate frequency, multiply by reach, and apply carryover over the full
+    exposure history before selecting modeling periods. Each channel has a
+    positive contribution coefficient. Write all parameter priors explicitly
+    in the model's ``log_density`` callback. Reach is not scaled here, and
+    saturation thresholds use the original frequency units.
+
+    Parameters
+    ----------
+    max_lag : int
+        Nonnegative number of previous, regularly spaced periods to include.
+        Supply earlier reach and frequency through ``media_history``.
+    name : str, default "paid_rf"
+        Name of the weighted per-channel array. Named callbacks request
+        ``<name>_total`` for its channel sum and ``<name>_<parameter>`` for
+        parameters such as ``paid_rf_retention``.
+    adstock : callable, default geometric_adstock
+        Choose :func:`geometric_adstock`, :func:`delayed_adstock`,
+        :func:`weibull_pdf_adstock`, or :func:`weibull_cdf_adstock` directly.
+        Geometric uses ``retention``, delayed adds ``delay``, and Weibull
+        uses ``adstock_shape`` and ``adstock_scale``. Delayed adstock fixes
+        delay at zero when ``max_lag=0``.
+    saturation : callable, default hill_saturation
+        Choose :func:`hill_saturation`, :func:`logistic_saturation`,
+        :func:`root_saturation`, or :func:`log_saturation` directly.
+        Hill uses ``half_saturation`` and ``slope``, logistic uses
+        ``half_saturation``, root uses ``exponent``, and log has no parameters.
+        Sublinear Hill and root curves use zero frequency gradients at zero.
+    normalize : bool, default True
+        Divide the adstock weights by their sum over the full lag window.
+    group_specific_coefficients : bool, default False
+        Give each group its own channel coefficients while sharing curve
+        parameters across groups. This does not add hierarchical pooling.
+    """
+
+    max_lag: int
+    name: str = "paid_rf"
+    adstock: Callable[..., jax.Array] = geometric_adstock
+    saturation: Callable[..., jax.Array] = hill_saturation
+    normalize: bool = True
+    group_specific_coefficients: bool = False
+
+    def __post_init__(self) -> None:
+        """Validate configuration before preparing channel parameters."""
+        _validate_media_configuration(self)
+
+    @property
+    def _parameter_roles(self) -> tuple[str, ...]:
+        """Identify the learned parameters for the selected transformations."""
+        return _media_parameter_roles(self)
+
+    def _prepare(self, data: PreparedData, *, reference: "_PreparedMedia | None" = None) -> "_PreparedMedia":
+        """Retain channel identities and shapes without capturing exposure arrays."""
+        return _prepare_media(self, data, reference=reference)
+
+
+def _validate_media_configuration(specification: MediaEffect | ReachFrequencyEffect) -> None:
+    """Validate shared choices for paid exposure components."""
+    if isinstance(specification.max_lag, bool) or not isinstance(specification.max_lag, int):
+        raise TypeError("max_lag must be a nonnegative Python integer")
+    if specification.max_lag < 0:
+        raise ValueError("max_lag must be nonnegative")
+    if not isinstance(specification.name, str):
+        raise TypeError("name must be a string naming the media contribution")
+    if not specification.name.isidentifier() or iskeyword(specification.name):
+        raise ValueError("name must be a valid non-keyword Python identifier")
+
+    for field in ("normalize", "group_specific_coefficients"):
+        if not isinstance(getattr(specification, field), bool):
+            raise TypeError(f"{field} must be True or False")
+    for field, supported in (
+        ("adstock", (geometric_adstock, delayed_adstock, weibull_pdf_adstock, weibull_cdf_adstock)),
+        ("saturation", (hill_saturation, logistic_saturation, root_saturation, log_saturation)),
+    ):
+        selected = getattr(specification, field)
+        if not callable(selected):
+            raise TypeError(f"{field} must be a supported transformation function")
+        if not any(selected is function for function in supported):
+            choices = ", ".join(function.__name__ for function in supported)
+            response = (
+                "reach_frequency_response" if isinstance(specification, ReachFrequencyEffect) else "media_response"
+            )
+            raise ValueError(f"Choose {field} directly from {choices}. Use {response} for custom functions")
+
+
+def _media_parameter_roles(specification: MediaEffect | ReachFrequencyEffect) -> tuple[str, ...]:
+    """Identify shared coefficient and transformation parameter blocks."""
+    roles: tuple[str, ...] = ("coefficient",)
+    if specification.adstock is geometric_adstock:
+        roles += ("retention",)
+    elif specification.adstock is delayed_adstock:
+        roles += ("retention", "delay") if specification.max_lag > 0 else ("retention",)
+    else:
+        roles += ("adstock_shape", "adstock_scale")
+    if specification.saturation is hill_saturation:
+        roles += ("half_saturation", "slope")
+    elif specification.saturation is logistic_saturation:
+        roles += ("half_saturation",)
+    elif specification.saturation is root_saturation:
+        roles += ("exponent",)
+    return roles
+
+
+def _prepare_media(
+    specification: MediaEffect | ReachFrequencyEffect,
+    data: PreparedData,
+    *,
+    reference: "_PreparedMedia | None" = None,
+) -> "_PreparedMedia":
+    """Validate shared exposure history and retain static channel metadata."""
+    if not isinstance(data, PreparedData):
+        raise TypeError("Media effects require PreparedData. Use prepare_data with the exposure dataframe")
+
+    is_rf = isinstance(specification, ReachFrequencyEffect)
+    media_role = "reach" if is_rf else "media"
+    channels = data.rf_channels if is_rf else data.channels
+    roles = (media_role, "media_frequency") if is_rf else (media_role,)
+    if not channels or any(role not in data.arrays or role not in data.columns for role in roles):
+        required = "reach and media_frequency" if is_rf else "media"
+        raise ValueError(f"Media effects require exposure columns selected with {required} in prepare_data")
+    frequency_columns = data.columns["media_frequency"] if is_rf else ()
+    if specification.group_specific_coefficients and not data.group_columns:
+        raise ValueError("group_specific_coefficients=True requires grouped data. Select groups in prepare_data")
+    if reference is not None and (
+        specification is not reference.specification
+        or data.time_column != reference.time_column
+        or data.columns[media_role] != reference.media_columns
+        or frequency_columns != reference.frequency_columns
+        or channels != reference.channels
+        or data.group_columns != reference.group_columns
+        or data.group_values != reference.group_values
+    ):
+        raise ValueError("Media prediction inputs must retain the training time column, channel and group ordering")
+
+    n_periods = len(data.time_values)
+    n_media_periods = len(data.media_time_values)
+    if n_periods == 0 or n_media_periods < n_periods or data.media_time_values[-n_periods:] != data.time_values:
+        raise ValueError("Media periods must include the modeling periods after any earlier exposure history")
+    group_shape = (len(data.group_values),) if data.group_columns else ()
+    media_shape = (n_media_periods, *group_shape, len(channels))
+    for role in roles:
+        if data.arrays[role].shape != media_shape or len(data.columns[role]) != len(channels):
             raise ValueError(
-                f"Prepared media must have shape {media_shape} to match its time, group and channel labels"
+                f"Prepared {role} must have shape {media_shape} to match its time, group and channel labels"
             )
 
-        return _PreparedMedia(
-            specification=self,
-            n_periods=n_periods,
-            media_shape=media_shape,
-            time_column=data.time_column,
-            media_columns=data.columns["media"],
-            channels=data.channels,
-            group_columns=data.group_columns,
-            group_values=data.group_values,
-            dtype=np.dtype(jax.dtypes.canonicalize_dtype(float)) if reference is None else reference.dtype,
-        )
+    return _PreparedMedia(
+        specification=specification,
+        n_periods=n_periods,
+        media_shape=media_shape,
+        time_column=data.time_column,
+        media_columns=data.columns[media_role],
+        frequency_columns=frequency_columns,
+        channels=channels,
+        group_columns=data.group_columns,
+        group_values=data.group_values,
+        dtype=np.dtype(jax.dtypes.canonicalize_dtype(float)) if reference is None else reference.dtype,
+    )
 
 
 @partial(
@@ -170,6 +266,7 @@ class MediaEffect:
         "media_shape",
         "time_column",
         "media_columns",
+        "frequency_columns",
         "channels",
         "group_columns",
         "group_values",
@@ -180,15 +277,21 @@ class MediaEffect:
 class _PreparedMedia:
     """Keep static media layout separate from dynamic exposures and parameters."""
 
-    specification: MediaEffect
+    specification: MediaEffect | ReachFrequencyEffect
     n_periods: int
     media_shape: tuple[int, ...]
     time_column: str
     media_columns: tuple[str, ...]
+    frequency_columns: tuple[str, ...]
     channels: tuple[str, ...]
     group_columns: tuple[str, ...]
     group_values: tuple[tuple[object, ...], ...]
     dtype: np.dtype[np.floating]
+
+    @property
+    def channel_axis(self) -> str:
+        """Identify the prepared channel axis used by this component."""
+        return "rf_channel" if isinstance(self.specification, ReachFrequencyEffect) else "channel"
 
     @property
     def _parameter_shapes(self) -> dict[str, tuple[int, ...]]:
@@ -217,10 +320,23 @@ class _PreparedMedia:
                 parameters[name] = Positive(shape=shape, dtype=self.dtype)
         return parameters
 
-    def apply(self, media: ArrayLike, parameters: Mapping[str, ArrayLike]) -> jax.Array:
+    def apply(
+        self,
+        media: ArrayLike,
+        parameters: Mapping[str, ArrayLike],
+        *,
+        frequency: ArrayLike | None = None,
+    ) -> jax.Array:
         """Return weighted channel responses over the modeling periods."""
         if np.shape(media) != self.media_shape:
             raise ValueError(f"Media inputs must have the prepared shape {self.media_shape}, got {np.shape(media)}")
+        if isinstance(self.specification, ReachFrequencyEffect):
+            if frequency is None:
+                raise ValueError("Reach-frequency effects require frequency alongside reach")
+            if np.shape(frequency) != self.media_shape:
+                raise ValueError(
+                    f"Frequency inputs must have the prepared shape {self.media_shape}, got {np.shape(frequency)}"
+                )
         values = self._parameter_values(parameters)
 
         def carryover(exposures: ArrayLike) -> jax.Array:
@@ -257,13 +373,23 @@ class _PreparedMedia:
             # Multiplication retains NaNs from invalid parameters instead of hiding them.
             return jnp.where(zero_origin, response * 0.0, response)
 
-        response = media_response(
-            media,
-            adstock=carryover,
-            saturation=saturate,
-            n_periods=self.n_periods,
-            adstock_first=self.specification.adstock_first,
-        )
+        if isinstance(self.specification, ReachFrequencyEffect):
+            assert frequency is not None
+            response = reach_frequency_response(
+                media,
+                frequency,
+                adstock=carryover,
+                saturation=saturate,
+                n_periods=self.n_periods,
+            )
+        else:
+            response = media_response(
+                media,
+                adstock=carryover,
+                saturation=saturate,
+                n_periods=self.n_periods,
+                adstock_first=self.specification.adstock_first,
+            )
         return response * values["coefficient"]
 
     def for_data(self, data: PreparedData) -> "_PreparedMedia":
