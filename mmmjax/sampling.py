@@ -602,7 +602,9 @@ def _parameter_metadata(model: Model) -> tuple[dict[str, tuple[str, ...]], dict[
             elif isinstance(component, _PreparedHSGP):
                 name = component.specification.name
                 axis = f"{name}_basis"
-                dimensions[f"{name}_coefficients"] = (axis,)
+                dimensions[f"{name}_coefficients"] = (
+                    ("channel", axis) if component.specification.channel_specific else (axis,)
+                )
                 dimensions[f"{name}_length_scale"] = ()
                 dimensions[f"{name}_amplitude"] = ()
                 coordinates.setdefault(axis, np.arange(1, component.config.n_basis + 1))
@@ -636,7 +638,10 @@ def _output_dimensions(
         assert model._data is not None
         effect_dimensions = {
             component.specification.name: (
-                (*observation_axes, "channel") if isinstance(component, _PreparedMedia) else observation_axes
+                (*observation_axes, "channel")
+                if isinstance(component, _PreparedMedia)
+                or (isinstance(component, _PreparedHSGP) and component.specification.channel_specific)
+                else observation_axes
             )
             for component in model._data.components
         }
