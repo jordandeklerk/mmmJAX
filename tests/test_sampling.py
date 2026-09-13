@@ -584,3 +584,57 @@ def test_prepared_models_do_not_accept_separate_sampling_data(nuts_calls):
     with pytest.raises(ValueError, match="data"):
         sample(model, data=data, draws=2, warmup=3, chains=1)
     assert not nuts_calls
+
+
+def _saved_model(**options):
+    _, data = _prepared_model()
+
+    def transformed(controls, intercept):
+        return {"mu": intercept + controls[:, 0], "unused": intercept**2}
+
+    def density(outcome, mu, intercept):
+        return normal(outcome, mu, 10.0) + normal(intercept, 0.0, 1.0)
+
+    settings = {"save": ("mu",), "generated_dims": {"mu": ("time",)}} | options
+    return Model(
+        {"intercept": Real()},
+        density,
+        data=data,
+        components=[],
+        transformed_parameters=transformed,
+        **settings,
+    )
+
+
+def test_sampling_collects_selected_transformed_quantities_without_callback(nuts_calls):
+    model = _saved_model()
+    options = {"draws": 3, "warmup": 4, "chains": 2, "seed": 9, "initial_values": {"intercept": 2.0}}
+    results = sample(model, **options)
+    disabled = sample(model, **options, generate=False)
+
+    assert set(results["posterior"].data_vars) == {"intercept"}
+    assert set(results["generated_quantities"].data_vars) == {"mu"}
+    assert results["generated_quantities"]["mu"].dims == ("chain", "draw", "time")
+    np.testing.assert_allclose(results["generated_quantities"]["mu"], np.broadcast_to([7.0, 6.0, 5.0], (2, 3, 3)))
+    np.testing.assert_array_equal(results["generated_quantities"].coords["time"], [10, 11, 12])
+    xr.testing.assert_identical(results["posterior"], disabled["posterior"])
+    xr.testing.assert_identical(results["sample_stats"], disabled["sample_stats"])
+    assert "generated_quantities" not in disabled
+    assert len(nuts_calls) == 2
+
+
+@pytest.mark.parametrize("problem", ["missing", "collision", "dimensions"])
+def test_saved_quantities_are_validated_before_chain_adaptation(nuts_calls, problem):
+    if problem == "missing":
+        model = _saved_model(save=("unknown",))
+        message = "unknown"
+    elif problem == "collision":
+        model = _saved_model(generate=lambda key, mu: {"mu": mu})
+        message = "also returned by generate"
+    else:
+        model = _saved_model(generated_dims={"mu": ()})
+        message = "dims matching"
+
+    with pytest.raises(ValueError, match=message):
+        sample(model, draws=2, warmup=3, chains=1)
+    assert not nuts_calls

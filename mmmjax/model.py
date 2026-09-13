@@ -1,7 +1,7 @@
 """Model composition for transparent JAX probability models."""
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from inspect import Parameter as SignatureParameter
 from inspect import signature
 from keyword import iskeyword
@@ -13,11 +13,11 @@ import numpy as np
 from jax.typing import ArrayLike, DTypeLike
 from numpy.typing import NDArray
 
-from mmmjax._results import _coordinates, _dimensions
+from mmmjax._results import _coordinates, _dimensions, _prepared_coordinates, _same_labels
 from mmmjax.data import PreparedData, _DataLayout, _prepare_model_frame
 from mmmjax.hsgp import HSGPEffect, _PreparedHSGP
 from mmmjax.media import MediaEffect, _PreparedMedia
-from mmmjax.parameters import Parameterization
+from mmmjax.parameters import Interval, LowerBound, Parameterization, Positive, Real, Simplex, UpperBound, _as_array
 from mmmjax.scaling import DataScaling, fit_data_scaling
 from mmmjax.seasonality import FourierSeasonality, _PreparedFourier
 
@@ -29,6 +29,7 @@ Prior: TypeAlias = Callable[[jax.Array], Mapping[str, ArrayLike]]
 TransformedParameters: TypeAlias = Callable[..., Mapping[str, ArrayLike]]
 ParameterValues: TypeAlias = Mapping[str, ArrayLike]
 _InputBindings: TypeAlias = tuple[tuple[str, str], ...]
+_BuiltinParameter: TypeAlias = Real | Positive | LowerBound | UpperBound | Interval | Simplex
 
 
 @jax.tree_util.register_dataclass
@@ -54,11 +55,17 @@ class Model:
     their effects in ``transformed_parameters`` while reusing prepared data,
     constraint handling, and generated quantities.
 
+    Inspect derived quantities with ``evaluate`` and the constrained log
+    density with ``log_prob`` before fitting. ``log_density`` instead accepts
+    unconstrained inference positions and adds parameterization adjustments.
+
     Parameters
     ----------
     parameters : mapping of str to Parameterization
         Named parameter declarations and constraints. Do not include
-        parameters declared automatically by components.
+        parameters declared automatically by components. Use declaration
+        dimensions, such as ``Real(dims="control")``, to infer shapes and
+        result labels from prepared data or ``coords``.
     log_density : callable
         Scalar log density for constrained parameters. Every user-declared
         parameter must be requested here or by ``transformed_parameters``.
@@ -67,6 +74,11 @@ class Model:
     generate : callable, optional
         Function returning a mapping of names to array-like generated quantities.
         Receives a JAX random key first, followed by the model inputs it needs.
+    save : sequence of str, default ()
+        Transformed quantities or component contributions to retain in results,
+        such as ``("mu", "paid_media", "paid_media_total")``. These are evaluated
+        for each draw without a ``generate`` callback. Names must differ from
+        outputs returned by ``generate``. Requires prepared data.
     prior : callable, optional
         JAX-compatible function ``prior(key)`` returning one constrained draw
         for every name in ``model.parameters``, with its declared shape.
@@ -98,11 +110,12 @@ class Model:
         are needed for prediction.
     dims : mapping of str to sequence of str, optional
         Named axes for constrained parameter arrays, excluding chain and draw.
-        Use for custom parameters whose axes cannot be inferred from components.
+        Use for custom parameterizations or explicit-shape declarations.
+        Must agree with any dimensions set on a declaration.
     coords : mapping of str to array_like, optional
         One-dimensional labels for named axes. Labels are copied at construction.
     generated_dims : mapping of str to sequence of str, optional
-        Axis labels for custom generated arrays, excluding chain and draw.
+        Axis labels for saved or generated arrays, excluding chain and draw.
         Overrides labels inherited from unchanged data, parameters, or component
         inputs and from observation-shaped predictive and likelihood outputs.
     predictive : sequence of str, default ()
@@ -121,6 +134,7 @@ class Model:
     _prior: Prior | None
     _transformed_parameters: TransformedParameters | None
     _transform_inputs: _InputBindings
+    _saved_inputs: _InputBindings
     _generate_parameter_names: tuple[str, ...] | None
     _density_inputs: _InputBindings
     _generation_inputs: _InputBindings
@@ -144,6 +158,7 @@ class Model:
         log_density: LogDensity,
         generate: Generate | None = None,
         *,
+        save: Sequence[str] = (),
         prior: Prior | None = None,
         data: PreparedData | None = None,
         components: Sequence[FourierSeasonality | MediaEffect | HSGPEffect] | None = None,
@@ -227,6 +242,17 @@ class Model:
             parameterizations = _prepare_parameterizations(declarations)
             prepared_data = _ModelData(data._to_jax(), prepared_components)
 
+        result_dims = _dimensions(dims)
+        result_coords = _coordinates(coords)
+        axis_coordinates = result_coords.copy()
+        if data is not None:
+            prepared_coords, _ = _prepared_coordinates(data)
+            for axis, labels in prepared_coords.items():
+                if axis in axis_coordinates and not _same_labels(axis_coordinates[axis], labels):
+                    raise ValueError(f"Coordinate {axis!r} conflicts with prepared data labels")
+                axis_coordinates[axis] = labels
+        parameterizations = _resolve_parameter_dimensions(parameterizations, result_dims, axis_coordinates)
+
         transform_inputs: _InputBindings = ()
         if transformed_parameters is not None:
             if prepared_data is None:
@@ -262,17 +288,39 @@ class Model:
                     has_transformed=transformed_parameters is not None,
                 )
 
-        result_dims = _dimensions(dims)
-        result_coords = _coordinates(coords)
+        saved_names = _result_names(save, name="save")
+        saved_inputs: list[tuple[str, str]] = []
+        if saved_names:
+            if prepared_data is None:
+                raise ValueError("save requires prepared data and components, which may be empty")
+            effect_names = {component.specification.name for component in prepared_data.components}
+            total_names = _media_total_names(prepared_data.components)
+            reserved = (
+                set(prepared_data.values)
+                | {name for name, _ in parameterizations}
+                | set(_component_parameter_inputs(prepared_data.components))
+            )
+            for name in saved_names:
+                _validate_name(name, label="saved quantity")
+                if name in effect_names:
+                    source = "effect"
+                elif name in total_names:
+                    source = "media_total"
+                elif name in reserved or transformed_parameters is None:
+                    raise ValueError(f"save must select a transformed quantity or component contribution, got {name!r}")
+                else:
+                    source = "transformed"
+                saved_inputs.append((name, source))
+
         output_dims = _dimensions(generated_dims)
         predictive_names = _result_names(predictive, name="predictive")
         likelihood_names = _result_names(log_likelihood, name="log_likelihood")
         if set(predictive_names) & set(likelihood_names):
             raise ValueError("predictive and log_likelihood must identify different generated outputs")
-        if generate is None and (output_dims or predictive_names or likelihood_names):
-            raise ValueError("Generated result metadata requires a generate callback")
+        if generate is None and not saved_inputs and (output_dims or predictive_names or likelihood_names):
+            raise ValueError("Generated result metadata requires a generate callback or saved quantities")
         declarations = dict(parameterizations)
-        dimension_sizes = {axis: len(labels) for axis, labels in result_coords.items()}
+        dimension_sizes = {axis: len(labels) for axis, labels in axis_coordinates.items()}
         for name, axes in result_dims.items():
             if name not in declarations:
                 raise ValueError(f"dims refers to undeclared parameter {name!r}")
@@ -290,6 +338,7 @@ class Model:
         object.__setattr__(self, "_prior", prior)
         object.__setattr__(self, "_transformed_parameters", transformed_parameters)
         object.__setattr__(self, "_transform_inputs", transform_inputs)
+        object.__setattr__(self, "_saved_inputs", tuple(saved_inputs))
         object.__setattr__(self, "_generate_parameter_names", generate_parameter_names)
         object.__setattr__(self, "_density_inputs", density_inputs)
         object.__setattr__(self, "_generation_inputs", generation_inputs)
@@ -311,6 +360,11 @@ class Model:
     def parameters(self) -> dict[str, Parameterization]:
         """Return a copy of the named parameter declarations."""
         return dict(self._parameterizations)
+
+    @property
+    def _has_generated_quantities(self) -> bool:
+        """Indicate whether evaluation has saved or callback-generated outputs."""
+        return self._generate is not None or bool(self._saved_inputs)
 
     @property
     def scaling(self) -> DataScaling | None:
@@ -457,6 +511,95 @@ class Model:
             for (name, parameterization), parameter_key in zip(self._parameterizations, keys, strict=True)
         }
 
+    def evaluate(self, parameters: ParameterValues, data: object = None) -> dict[str, jax.Array]:
+        """Inspect deterministic model quantities at chosen parameter values.
+
+        Evaluate components and transformed parameters without sampling or
+        calling the density or generation functions. Supports JIT, automatic
+        differentiation, and batching through ``jax.vmap``.
+
+        Parameters
+        ----------
+        parameters : mapping of str to array_like
+            Constrained values for every declared parameter, matching its
+            shape and constraints. Values use the declaration's dtype.
+        data : object, optional
+            Prepared model inputs from ``model.prepare_data``. Defaults to
+            stored training inputs. Prepare new data outside JAX transformations.
+
+        Returns
+        -------
+        dict of str to jax.Array
+            Named quantities containing
+
+            - **Component contributions** with media channel axes retained.
+            - **Media totals** under ``<name>_total``.
+            - **Transformed quantities** returned by ``transformed_parameters``.
+
+            Includes all these quantities regardless of ``save``. Returns an
+            empty dictionary when the model has no components or transformations.
+        """
+        values = self._constrained_values(parameters)
+        if self._data is None:
+            return {}
+
+        inputs = self._component_data(self._data if data is None else data)
+        quantities = self._evaluate_quantities(inputs, values)
+        for name in sorted(_media_total_names(inputs.components)):
+            quantities[name] = quantities[name.removesuffix("_total")].sum(axis=-1)
+
+        return quantities
+
+    def log_prob(self, parameters: ParameterValues, data: object = None) -> jax.Array:
+        """Evaluate the scalar log density at constrained parameter values.
+
+        Includes the priors and likelihood written in the density callback,
+        without parameterization adjustments. This need not be a normalized
+        probability density. Supports JIT, gradients, and ``jax.vmap``.
+
+        Parameters
+        ----------
+        parameters : mapping of str to array_like
+            Constrained values for every declared parameter, matching its
+            shape and constraints. Values use the declaration's dtype.
+        data : object, optional
+            Defaults to stored training inputs for prepared models. For new
+            observations, pass ``model.prepare_data`` output. Otherwise, pass
+            the JAX-compatible data expected by the data-first callback.
+
+        Returns
+        -------
+        jax.Array
+            Scalar log density in model space, without constraint Jacobians
+            or other parameterization adjustments.
+        """
+        values = self._constrained_values(parameters)
+        inputs = self._data if data is None and self._data is not None else data
+        return self._constrained_log_density(values, inputs)
+
+    def _constrained_values(self, parameters: ParameterValues) -> dict[str, jax.Array]:
+        """Check declared names and shapes without transforming model-space values."""
+        _validate_value_names(parameters, self._parameterizations, name="parameters")
+        return {
+            name: _as_array(
+                parameters[name],
+                name=f"parameter {name!r}",
+                shape=parameterization.shape,
+                dtype=parameterization.dtype,
+            )
+            for name, parameterization in self._parameterizations
+        }
+
+    def _constrained_log_density(self, parameters: ParameterValues, data: object) -> jax.Array:
+        """Share the model-space density between inspection and inference."""
+        if self._data is None:
+            return _as_scalar(self._log_density(data, **parameters), name="log_density")
+
+        inputs = self._component_data(data)
+        effects = self._evaluate_quantities(inputs, parameters)
+        arguments = _callback_inputs(self._density_inputs, inputs, effects, parameters, name="log_density")
+        return _as_scalar(self._log_density(**arguments), name="log_density")
+
     def log_density(self, position: ParameterValues, data: object) -> jax.Array:
         r"""Evaluate the adjusted scalar log density in inference space.
 
@@ -488,14 +631,8 @@ class Model:
             Scalar callback log density plus parameterization adjustments.
         """
         parameters = self.constrain(position)
-        if self._data is None:
-            density = _as_scalar(self._log_density(data, **parameters), name="log_density")
-        else:
-            inputs = self._component_data(data)
-            effects = self._evaluate_quantities(inputs, parameters)
-            arguments = _callback_inputs(self._density_inputs, inputs, effects, parameters, name="log_density")
-            result = self._log_density(**arguments)
-            density = _as_scalar(result, name="log_density")
+        density = self._constrained_log_density(parameters, data)
+
         for name, parameterization in self._parameterizations:
             adjustment = _as_scalar(
                 parameterization.log_density_adjustment(position[name]),
@@ -511,7 +648,7 @@ class Model:
         parameters: ParameterValues,
         data: object,
     ) -> dict[str, jax.Array]:
-        """Evaluate generated quantities from constrained model parameters.
+        """Evaluate saved and generated quantities from constrained model parameters.
 
         Parameters
         ----------
@@ -529,8 +666,8 @@ class Model:
         Returns
         -------
         dict of str to jax.Array
-            Dictionary mapping the names returned by the generation callback
-            to JAX arrays. The callback determines the keys and array shapes.
+            Saved transformed quantities and component contributions alongside
+            outputs from the generation callback, each mapped to a JAX array.
         """
         return self._generate_with_inputs(key, parameters, data)[0]
 
@@ -541,11 +678,15 @@ class Model:
         data: object,
     ) -> tuple[dict[str, jax.Array], dict[str, ArrayLike]]:
         """Retain callback inputs so sampling can label unchanged generated arrays."""
-        if self._generate is None:
-            raise RuntimeError("generated quantities are unavailable because this model has no generate callback")
+        if not self._has_generated_quantities:
+            raise RuntimeError(
+                "generated quantities are unavailable because this model has no generate callback or save selection"
+            )
 
         _validate_value_names(parameters, self._parameterizations, name="parameters")
+        saved: dict[str, ArrayLike] = {}
         if self._data is None:
+            assert self._generate is not None
             arguments = (
                 dict(parameters)
                 if self._generate_parameter_names is None
@@ -555,8 +696,11 @@ class Model:
         else:
             inputs = self._component_data(data)
             effects = self._evaluate_quantities(inputs, parameters)
-            arguments = _callback_inputs(self._generation_inputs, inputs, effects, parameters, name="generate")
-            generated = self._generate(key, **arguments)
+            bindings = tuple(dict((*self._generation_inputs, *self._saved_inputs)).items())
+            arguments = _callback_inputs(bindings, inputs, effects, parameters, name="generate")
+            saved = {name: arguments[name] for name, _ in self._saved_inputs}
+            callback_arguments = {name: arguments[name] for name, _ in self._generation_inputs}
+            generated = {} if self._generate is None else self._generate(key, **callback_arguments)
         if not isinstance(generated, Mapping):
             raise TypeError(
                 f"generate must return a mapping from quantity names to values, got {type(generated).__name__}"
@@ -565,8 +709,14 @@ class Model:
         for name in generated:
             _validate_name(name, label="generated quantity")
 
+        conflicts = saved.keys() & generated.keys()
+        if conflicts:
+            raise ValueError(
+                f"Saved quantities {sorted(conflicts)} are also returned by generate. Choose one place to retain them"
+            )
+
         quantities: dict[str, jax.Array] = {}
-        for name, value in sorted(generated.items()):
+        for name, value in sorted((saved | dict(generated)).items()):
             try:
                 quantities[name] = jnp.asarray(value)
             except (TypeError, ValueError) as exc:
@@ -826,11 +976,41 @@ def _prepare_parameterizations(
 
     for name in parameters:
         _validate_name(name, label="parameter")
-        if not isinstance(parameters[name], Parameterization):
+        # Pending built-in dimensions are resolved before numerical protocol properties are used.
+        if not isinstance(parameters[name], _BuiltinParameter) and not isinstance(parameters[name], Parameterization):
             raise TypeError(
                 f"parameter {name!r} must implement Parameterization, got {type(parameters[name]).__name__}"
             )
     return tuple(sorted(parameters.items()))
+
+
+def _resolve_parameter_dimensions(
+    parameterizations: tuple[tuple[str, Parameterization], ...],
+    dimensions: dict[str, tuple[str, ...]],
+    coordinates: Mapping[str, NDArray[np.generic]],
+) -> tuple[tuple[str, Parameterization], ...]:
+    """Resolve named built-in shapes without changing reusable declarations."""
+    resolved = []
+    for name, parameter in parameterizations:
+        if isinstance(parameter, _BuiltinParameter) and parameter.dims:
+            axes = tuple(parameter.dims)
+            if name in dimensions and dimensions[name] != axes:
+                raise ValueError(
+                    f"Model dimensions for parameter {name!r} conflict with its declared dimensions {axes}"
+                )
+            shape = parameter.shape
+            if not shape:
+                missing = set(axes) - coordinates.keys()
+                if missing:
+                    raise ValueError(
+                        f"Unknown dimensions {sorted(missing)} for parameter {name!r}. "
+                        "Use prepared data axes or supply their labels in coords"
+                    )
+                shape = tuple(len(coordinates[axis]) for axis in axes)
+            parameter = replace(parameter, shape=shape)
+            dimensions[name] = axes
+        resolved.append((name, parameter))
+    return tuple(resolved)
 
 
 def _validate_name(name: object, *, label: str) -> None:

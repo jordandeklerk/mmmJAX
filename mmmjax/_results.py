@@ -223,6 +223,20 @@ def _prepared_groups(
     data: PreparedData,
 ) -> tuple[xr.Dataset, xr.Dataset, _Coordinates, dict[str, tuple[str, NDArray[np.generic]]]]:
     """Label prepared observations without extending their window to exposure history."""
+    coordinates, auxiliary = _prepared_coordinates(data)
+    role_dims = _data_dimensions(data)
+    observed: dict[str, xr.Variable] = {}
+    constant: dict[str, xr.Variable] = {}
+    for name, array in data.arrays.items():
+        target = observed if name == "outcome" else constant
+        target[name] = xr.Variable(role_dims[name], np.array(array, copy=True))
+    return xr.Dataset(observed), xr.Dataset(constant), coordinates, auxiliary
+
+
+def _prepared_coordinates(
+    data: PreparedData,
+) -> tuple[_Coordinates, dict[str, tuple[str, NDArray[np.generic]]]]:
+    """Share prepared axis labels between parameter declarations and results."""
     labels: dict[str, object] = {"time": data.time_values}
     if data.media_time_values:
         labels["media_time"] = data.media_time_values
@@ -247,14 +261,7 @@ def _prepared_groups(
             for index, column in enumerate(data.group_columns):
                 auxiliary[f"group_{column}"] = ("group", np.array([values[index] for values in data.group_values]))
 
-    role_dims = _data_dimensions(data)
-    coordinates = _coordinates(labels)
-    observed: dict[str, xr.Variable] = {}
-    constant: dict[str, xr.Variable] = {}
-    for name, array in data.arrays.items():
-        target = observed if name == "outcome" else constant
-        target[name] = xr.Variable(role_dims[name], np.array(array, copy=True))
-    return xr.Dataset(observed), xr.Dataset(constant), coordinates, auxiliary
+    return _coordinates(labels), auxiliary
 
 
 def _data_dimensions(data: PreparedData) -> dict[str, tuple[str, ...]]:

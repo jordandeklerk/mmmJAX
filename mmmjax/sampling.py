@@ -66,7 +66,7 @@ def sample(
         Complete constrained parameter values used to start every chain.
         Otherwise, each chain starts from a random unconstrained position.
     generate : bool, default True
-        Evaluate the model's generated quantities when a callback is available.
+        Evaluate saved quantities and outputs from the generation callback.
 
     Returns
     -------
@@ -77,7 +77,8 @@ def sample(
         - **sample_stats** contains sampler diagnostics, including divergences
           and the unconstrained log density in ``lp``.
         - **posterior_predictive** and **log_likelihood** contain generated
-          outputs selected by the model. Other outputs are stored in
+          outputs selected by the model. Other outputs, including saved
+          transformed quantities and component effects, are stored in
           **generated_quantities**.
         - **observed_data** and **constant_data** contain prepared model inputs
           in their evaluated units, including any fitted scaling.
@@ -149,7 +150,7 @@ def sample(
     outputs: dict[str, jax.Array] = {}
     output_dimensions: dict[str, tuple[str, ...]] = {}
 
-    if generate and model._generate:
+    if generate and model._has_generated_quantities:
         outputs, arguments = model._generate_with_inputs(preview_key, initial_parameters, inputs)
         output_dimensions = _output_dimensions(model, outputs, arguments, dimensions, prepared)
 
@@ -194,7 +195,7 @@ def sample(
     posterior = jax.jit(jax.vmap(jax.vmap(model.constrain)))(positions)
     generated = {}
 
-    if generate and model._generate is not None:
+    if generate and model._has_generated_quantities:
         keys = jax.random.split(generation_key, (chains, draws))
         generated = jax.jit(jax.vmap(jax.vmap(lambda key, parameters: model.generate(key, parameters, inputs))))(
             keys, posterior
@@ -261,7 +262,7 @@ def sample_prior(
     seed : int, default 0
         Random seed for parameters and generated quantities.
     generate : bool, default True
-        Evaluate generated quantities when the model has a generation callback.
+        Evaluate saved quantities and outputs from the generation callback.
 
     Returns
     -------
@@ -271,7 +272,8 @@ def sample_prior(
         - **prior** contains constrained parameter draws.
         - **prior_predictive** contains outputs selected by the model's
           ``predictive`` argument.
-        - **prior_generated_quantities** contains other generated outputs.
+        - **prior_generated_quantities** contains saved quantities and other
+          generated outputs.
         - **observed_data** and **constant_data** contain prepared model inputs
           in their evaluated units, including fitted scaling.
 
@@ -355,7 +357,7 @@ def sample_prior(
     generated: dict[str, jax.Array] = {}
     output_dimensions: dict[str, tuple[str, ...]] = {}
 
-    if generate and model._generate is not None:
+    if generate and model._has_generated_quantities:
         initial = {name: value[0] for name, value in parameters.items()}
         outputs, arguments = model._generate_with_inputs(preview_key, initial, inputs)
         output_dimensions = _output_dimensions(model, outputs, arguments, dimensions, prepared)
@@ -442,14 +444,15 @@ def generate_quantities(
 ) -> xr.DataTree:
     """Evaluate generated quantities from existing posterior draws without refitting.
 
-    The model's components, transformed parameters, and generation callback
-    run for every draw. Priors, likelihood evaluation in ``log_density``, and
-    sampling are not rerun. Scenario calculations remain defined by the model.
+    Evaluate saved quantities and any generation callback for every draw.
+    Priors, likelihood evaluation in ``log_density``, and sampling are not
+    rerun. Scenario calculations remain defined by the model.
 
     Parameters
     ----------
     model : Model
-        Model with a generation callback and the fitted parameter declarations.
+        Model with saved quantities or a generation callback and the fitted
+        parameter declarations.
     results : xarray.DataTree
         Results containing constrained posterior draws with the model's parameter
         names, shapes, and axis labels. Draws may be sliced or thinned.
@@ -477,8 +480,8 @@ def generate_quantities(
     """
     if not isinstance(model, Model):
         raise TypeError("model must be a Model")
-    if model._generate is None:
-        raise ValueError("The model must define a generation callback")
+    if not model._has_generated_quantities:
+        raise ValueError("The model must define a generation callback or select quantities with save")
     if isinstance(seed, bool) or not isinstance(seed, Integral) or seed < 0:
         raise ValueError("seed must be a nonnegative integer")
 
@@ -646,7 +649,7 @@ def _output_dimensions(
             for component in model._data.components
         }
         aliases = _component_parameter_inputs(model._data.components)
-        for name, source in model._generation_inputs:
+        for name, source in (*model._generation_inputs, *model._saved_inputs):
             if source == "data":
                 input_dimensions[name] = role_dimensions[name]
             elif source == "effect":

@@ -1,6 +1,7 @@
 """Parameter declarations and their inference-space mappings."""
 
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from math import prod
 from typing import Protocol, cast, runtime_checkable
 
@@ -109,24 +110,30 @@ class Real:
     Parameters
     ----------
     shape : tuple of int, default ()
-        Positive dimensions in model space. An empty tuple declares a scalar.
+        Positive dimensions in model space. Omit to infer sizes from ``dims``
+        or declare a scalar when ``dims`` is empty.
     dtype : data-type, default float
         Floating-point dtype for parameters and unconstrained positions.
         The default ``float`` follows JAX's precision setting.
+    dims : str or sequence of str, default ()
+        Named axes resolved from prepared data or ``Model`` coordinates.
+        Their order determines the parameter's shape and result labels.
     """
 
     shape: tuple[int, ...] = ()
     dtype: DTypeLike = float
+    dims: str | Sequence[str] = field(default=(), kw_only=True)
 
     def __post_init__(self) -> None:
         """Normalize metadata so equal specifications share JIT cache keys."""
         _validate_shape(self.shape)
+        object.__setattr__(self, "dims", _normalize_dims(self.dims, self.shape))
         object.__setattr__(self, "dtype", _canonicalize_dtype(self.dtype))
 
     @property
     def position_shape(self) -> tuple[int, ...]:
         """Shape of the parameter in unconstrained inference space."""
-        return self.shape
+        return _resolved_shape(self.shape, self.dims)
 
     def constrain(self, position: ArrayLike) -> jax.Array:
         """Apply the identity map from inference space to model space.
@@ -166,7 +173,7 @@ class Real:
         return _as_array(
             parameter,
             name="parameter",
-            shape=self.shape,
+            shape=_resolved_shape(self.shape, self.dims),
             dtype=self.dtype,
         )
 
@@ -220,24 +227,30 @@ class Positive:
     Parameters
     ----------
     shape : tuple of int, default ()
-        Positive dimensions in model space. An empty tuple declares a scalar.
+        Positive dimensions in model space. Omit to infer sizes from ``dims``
+        or declare a scalar when ``dims`` is empty.
     dtype : data-type, default float
         Floating-point dtype for parameters and unconstrained positions.
         The default ``float`` follows JAX's precision setting.
+    dims : str or sequence of str, default ()
+        Named axes resolved from prepared data or ``Model`` coordinates.
+        Their order determines the parameter's shape and result labels.
     """
 
     shape: tuple[int, ...] = ()
     dtype: DTypeLike = float
+    dims: str | Sequence[str] = field(default=(), kw_only=True)
 
     def __post_init__(self) -> None:
         """Normalize metadata so equal specifications share JIT cache keys."""
         _validate_shape(self.shape)
+        object.__setattr__(self, "dims", _normalize_dims(self.dims, self.shape))
         object.__setattr__(self, "dtype", _canonicalize_dtype(self.dtype))
 
     @property
     def position_shape(self) -> tuple[int, ...]:
         """Shape of the parameter in unconstrained inference space."""
-        return self.shape
+        return _resolved_shape(self.shape, self.dims)
 
     def constrain(self, position: ArrayLike) -> jax.Array:
         """Map an unconstrained position to the positive reals.
@@ -278,7 +291,7 @@ class Positive:
         parameter = _as_array(
             parameter,
             name="parameter",
-            shape=self.shape,
+            shape=_resolved_shape(self.shape, self.dims),
             dtype=self.dtype,
         )
         return jnp.log(parameter)
@@ -338,19 +351,25 @@ class LowerBound:
     lower : float
         Finite scalar lower bound, excluded from the parameter support.
     shape : tuple of int, default ()
-        Positive dimensions in model space. An empty tuple declares a scalar.
+        Positive dimensions in model space. Omit to infer sizes from ``dims``
+        or declare a scalar when ``dims`` is empty.
     dtype : data-type, default float
         Floating-point dtype for parameters and unconstrained positions.
         The default ``float`` follows JAX's precision setting.
+    dims : str or sequence of str, default ()
+        Named axes resolved from prepared data or ``Model`` coordinates.
+        Their order determines the parameter's shape and result labels.
     """
 
     lower: float
     shape: tuple[int, ...] = ()
     dtype: DTypeLike = float
+    dims: str | Sequence[str] = field(default=(), kw_only=True)
 
     def __post_init__(self) -> None:
         """Normalize metadata so equal specifications share JIT cache keys."""
         _validate_shape(self.shape)
+        object.__setattr__(self, "dims", _normalize_dims(self.dims, self.shape))
         dtype = _canonicalize_dtype(self.dtype)
         lower = _canonicalize_bound(self.lower, name="lower", dtype=dtype)
         object.__setattr__(self, "lower", lower)
@@ -359,7 +378,7 @@ class LowerBound:
     @property
     def position_shape(self) -> tuple[int, ...]:
         """Shape of the parameter in unconstrained inference space."""
-        return self.shape
+        return _resolved_shape(self.shape, self.dims)
 
     def constrain(self, position: ArrayLike) -> jax.Array:
         """Apply the lower-bound transform to an unconstrained position.
@@ -401,7 +420,7 @@ class LowerBound:
         parameter = _as_array(
             parameter,
             name="parameter",
-            shape=self.shape,
+            shape=_resolved_shape(self.shape, self.dims),
             dtype=self.dtype,
         )
         lower = jnp.asarray(self.lower, dtype=self.dtype)
@@ -462,19 +481,25 @@ class UpperBound:
     upper : float
         Finite scalar upper bound, excluded from the parameter support.
     shape : tuple of int, default ()
-        Positive dimensions in model space. An empty tuple declares a scalar.
+        Positive dimensions in model space. Omit to infer sizes from ``dims``
+        or declare a scalar when ``dims`` is empty.
     dtype : data-type, default float
         Floating-point dtype for parameters and unconstrained positions.
         The default ``float`` follows JAX's precision setting.
+    dims : str or sequence of str, default ()
+        Named axes resolved from prepared data or ``Model`` coordinates.
+        Their order determines the parameter's shape and result labels.
     """
 
     upper: float
     shape: tuple[int, ...] = ()
     dtype: DTypeLike = float
+    dims: str | Sequence[str] = field(default=(), kw_only=True)
 
     def __post_init__(self) -> None:
         """Normalize metadata so equal specifications share JIT cache keys."""
         _validate_shape(self.shape)
+        object.__setattr__(self, "dims", _normalize_dims(self.dims, self.shape))
         dtype = _canonicalize_dtype(self.dtype)
         upper = _canonicalize_bound(self.upper, name="upper", dtype=dtype)
         object.__setattr__(self, "upper", upper)
@@ -483,7 +508,7 @@ class UpperBound:
     @property
     def position_shape(self) -> tuple[int, ...]:
         """Shape of the parameter in unconstrained inference space."""
-        return self.shape
+        return _resolved_shape(self.shape, self.dims)
 
     def constrain(self, position: ArrayLike) -> jax.Array:
         """Apply the upper-bound transform to an unconstrained position.
@@ -525,7 +550,7 @@ class UpperBound:
         parameter = _as_array(
             parameter,
             name="parameter",
-            shape=self.shape,
+            shape=_resolved_shape(self.shape, self.dims),
             dtype=self.dtype,
         )
         upper = jnp.asarray(self.upper, dtype=self.dtype)
@@ -588,20 +613,26 @@ class Interval:
     upper : float
         Finite scalar upper bound, excluded from the parameter support.
     shape : tuple of int, default ()
-        Positive dimensions in model space. An empty tuple declares a scalar.
+        Positive dimensions in model space. Omit to infer sizes from ``dims``
+        or declare a scalar when ``dims`` is empty.
     dtype : data-type, default float
         Floating-point dtype for parameters and unconstrained positions.
         The default ``float`` follows JAX's precision setting.
+    dims : str or sequence of str, default ()
+        Named axes resolved from prepared data or ``Model`` coordinates.
+        Their order determines the parameter's shape and result labels.
     """
 
     lower: float
     upper: float
     shape: tuple[int, ...] = ()
     dtype: DTypeLike = float
+    dims: str | Sequence[str] = field(default=(), kw_only=True)
 
     def __post_init__(self) -> None:
         """Normalize and validate the finite interval metadata."""
         _validate_shape(self.shape)
+        object.__setattr__(self, "dims", _normalize_dims(self.dims, self.shape))
         dtype = _canonicalize_dtype(self.dtype)
         lower = _canonicalize_bound(self.lower, name="lower", dtype=dtype)
         upper = _canonicalize_bound(self.upper, name="upper", dtype=dtype)
@@ -622,7 +653,7 @@ class Interval:
     @property
     def position_shape(self) -> tuple[int, ...]:
         """Shape of the parameter in unconstrained inference space."""
-        return self.shape
+        return _resolved_shape(self.shape, self.dims)
 
     def constrain(self, position: ArrayLike) -> jax.Array:
         """Map an unconstrained position into the open interval.
@@ -667,7 +698,7 @@ class Interval:
         parameter = _as_array(
             parameter,
             name="parameter",
-            shape=self.shape,
+            shape=_resolved_shape(self.shape, self.dims),
             dtype=self.dtype,
         )
         lower = jnp.asarray(self.lower, dtype=self.dtype)
@@ -730,28 +761,35 @@ class Simplex:
 
     Parameters
     ----------
-    shape : tuple of int
+    shape : tuple of int, default ()
         Positive dimensions in model space. The final axis contains the
-        simplex weights; leading axes identify independent simplexes.
+        simplex weights and leading axes identify independent simplexes.
+        Omit to infer sizes from ``dims``.
     dtype : data-type, default float
         Floating-point dtype for parameters and unconstrained positions.
         The default ``float`` follows JAX's precision setting.
+    dims : str or sequence of str, default ()
+        Named axes resolved from prepared data or ``Model`` coordinates.
+        The final named axis contains the simplex weights.
     """
 
-    shape: tuple[int, ...]
+    shape: tuple[int, ...] = ()
     dtype: DTypeLike = float
+    dims: str | Sequence[str] = field(default=(), kw_only=True)
 
     def __post_init__(self) -> None:
         """Normalize metadata and require a simplex event dimension."""
         _validate_shape(self.shape)
-        if not self.shape:
+        object.__setattr__(self, "dims", _normalize_dims(self.dims, self.shape))
+        if not self.shape and not self.dims:
             raise ValueError("shape must include a final simplex dimension, got ()")
         object.__setattr__(self, "dtype", _canonicalize_dtype(self.dtype))
 
     @property
     def position_shape(self) -> tuple[int, ...]:
         """Shape of the parameter in unconstrained inference space."""
-        return (*self.shape[:-1], self.shape[-1] - 1)
+        shape = _resolved_shape(self.shape, self.dims)
+        return (*shape[:-1], shape[-1] - 1)
 
     def constrain(self, position: ArrayLike) -> jax.Array:
         """Map isometric log-ratio coordinates to simplex weights.
@@ -792,7 +830,7 @@ class Simplex:
         parameter = _as_array(
             parameter,
             name="parameter",
-            shape=self.shape,
+            shape=_resolved_shape(self.shape, self.dims),
             dtype=self.dtype,
         )
         log_parameter = jnp.log(parameter)
@@ -853,6 +891,33 @@ def _simplex_logits(position: jax.Array) -> jax.Array:
         (zero, dimensions * coordinates),
         axis=-1,
     )
+
+
+def _normalize_dims(dims: str | Sequence[str], shape: tuple[int, ...]) -> tuple[str, ...]:
+    """Copy named axes and validate their constrained-space ordering."""
+    if isinstance(dims, str):
+        dims = (dims,)
+    elif isinstance(dims, bytes) or not isinstance(dims, Sequence):
+        raise TypeError("dims must be a string or a sequence of dimension names")
+
+    axes = tuple(dims)
+    if any(not isinstance(axis, str) or not axis for axis in axes):
+        raise ValueError("Dimension names must be nonempty strings")
+    if len(set(axes)) != len(axes):
+        raise ValueError("dims must not repeat dimension names")
+    if set(axes) & {"chain", "draw", "sample", "pred_id"}:
+        raise ValueError("dims must omit reserved sample dimensions")
+    if shape and axes and len(axes) != len(shape):
+        raise ValueError(f"dims must match the constrained shape {shape}")
+
+    return axes
+
+
+def _resolved_shape(shape: tuple[int, ...], dims: str | Sequence[str]) -> tuple[int, ...]:
+    """Prevent unresolved named declarations from acting as scalar parameters."""
+    if dims and not shape:
+        raise ValueError("Named parameter dimensions must be resolved by Model before numerical evaluation")
+    return shape
 
 
 def _validate_shape(shape: tuple[int, ...]) -> None:

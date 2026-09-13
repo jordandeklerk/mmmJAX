@@ -3,12 +3,13 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
+import polars as pl
 import pytest
 import xarray as xr
 
 import mmmjax
 import mmmjax.sampling as sampling
-from mmmjax import Model, Positive, generate_quantities
+from mmmjax import Model, Positive, generate_quantities, prepare_data
 from mmmjax._results import _collect_results
 
 
@@ -183,3 +184,92 @@ def test_generate_quantities_does_not_silently_drop_missing_declared_outputs(res
     )
     with pytest.raises(ValueError, match="missing outputs"):
         generate_quantities(model, results)
+
+
+def _saved_data(*, start=0, observations=3):
+    return prepare_data(
+        pl.DataFrame(
+            {
+                "week": np.arange(start, start + observations),
+                "sales": np.arange(1.0, observations + 1),
+                "price": np.arange(2.0, observations + 2),
+                "promotion": np.full(observations, 0.5),
+            }
+        ),
+        time="week",
+        outcome="sales",
+        controls=["price", "promotion"],
+    )
+
+
+def _saved_model(*, generated_dims=None, predictive=(), log_likelihood=()):
+    def forbidden_density(signal):
+        raise AssertionError("Saving quantities must not evaluate the model density")
+
+    def forbidden_prior(key):
+        raise AssertionError("Saving quantities must not sample the prior")
+
+    def transformed(controls, scale, outcome):
+        signal = controls @ scale
+        return {"signal": signal, "pointwise": -0.5 * (outcome - signal) ** 2, "total": signal.sum()}
+
+    return Model(
+        {"scale": Positive((2,))},
+        forbidden_density,
+        data=_saved_data(),
+        components=[],
+        transformed_parameters=transformed,
+        prior=forbidden_prior,
+        save=("signal", "pointwise", "total"),
+        dims={"scale": ("channel",)},
+        coords={"channel": ["search", "video"]},
+        generated_dims=generated_dims,
+        predictive=predictive,
+        log_likelihood=log_likelihood,
+    )
+
+
+def test_generate_quantities_saves_transforms_without_callback_and_recomputes_scenarios(results, monkeypatch):
+    def forbidden_sampler(*args, **kwargs):
+        raise AssertionError("Saving quantities must not run the sampler")
+
+    monkeypatch.setattr(sampling, "_sample_nuts", forbidden_sampler)
+    model = _saved_model(generated_dims={"signal": ("time",), "pointwise": ("time",)})
+    original = results.copy(deep=True)
+    original_controls = np.array(model.data.values["controls"], copy=True)
+    baseline = generate_quantities(model, results)
+    scenario = _saved_data(start=6, observations=2)
+    changed = generate_quantities(model, results, new_data=scenario)
+
+    assert set(changed["generated_quantities"].data_vars) == {"signal", "pointwise", "total"}
+    assert changed["generated_quantities"]["signal"].dims == ("chain", "draw", "time")
+    assert changed["generated_quantities"]["signal"].shape == (2, 3, 2)
+    assert baseline["generated_quantities"]["signal"].shape == (2, 3, 3)
+    np.testing.assert_array_equal(changed["generated_quantities"]["time"], [6, 7])
+    expected = np.asarray(results["posterior"]["scale"]) @ scenario.arrays["controls"].T
+    np.testing.assert_allclose(changed["generated_quantities"]["signal"], expected, rtol=2e-6)
+    np.testing.assert_allclose(changed["generated_quantities"]["total"], expected.sum(-1), rtol=2e-6)
+    xr.testing.assert_identical(changed["posterior"], original["posterior"])
+    xr.testing.assert_identical(results, original)
+    np.testing.assert_array_equal(model.data.values["controls"], original_controls)
+
+
+def test_saved_outputs_support_predictive_and_likelihood_groups_with_observation_labels(results):
+    model = _saved_model(predictive=("signal",), log_likelihood=("pointwise",))
+    result = generate_quantities(model, results)
+
+    assert result["posterior_predictive"]["signal"].dims == ("chain", "draw", "time")
+    assert result["log_likelihood"]["pointwise"].dims == ("chain", "draw", "time")
+    assert set(result["generated_quantities"].data_vars) == {"total"}
+    for group in ("posterior_predictive", "log_likelihood"):
+        np.testing.assert_array_equal(result[group]["time"], [0, 1, 2])
+        np.testing.assert_array_equal(result[group]["chain"], results["posterior"]["chain"])
+        np.testing.assert_array_equal(result[group]["draw"], results["posterior"]["draw"])
+
+
+def test_saved_custom_outputs_keep_fallback_axes_without_guessing_observation_dimensions(results):
+    result = generate_quantities(_saved_model(), results)
+
+    assert result["generated_quantities"]["signal"].dims == ("chain", "draw", "signal_dim_0")
+    assert result["generated_quantities"]["pointwise"].dims == ("chain", "draw", "pointwise_dim_0")
+    assert result["generated_quantities"]["total"].dims == ("chain", "draw")
