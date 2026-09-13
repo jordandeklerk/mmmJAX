@@ -7,13 +7,15 @@ import polars as pl
 import pytest
 
 from mmmjax import (
-    FourierSeasonality,
-    MediaEffect,
+    Interval,
     Model,
     Positive,
     Real,
     beta,
+    fourier_features,
+    geometric_adstock,
     half_normal,
+    hill_saturation,
     normal,
     normal_rng,
     prepare_data,
@@ -57,7 +59,6 @@ def _regression(*, save=(), include_generate=True):
         density,
         quantities if include_generate else None,
         data=_data(),
-        components=[],
         transformed_parameters=transformed,
         save=save,
     )
@@ -107,7 +108,7 @@ def test_transformed_outputs_change_with_positions_and_outcome_free_forecasts_un
     assert set(model.parameters) == {"beta", "scale", "intercept"}
 
 
-def _media_model(transformed, *, save=(), include_generate=True):
+def _media_model(transformed=None, *, save=(), include_generate=True):
     def density(
         *,
         outcome,
@@ -135,19 +136,46 @@ def _media_model(transformed, *, save=(), include_generate=True):
         media=["video", "search"],
         outcome="sales",
     )
+
+    def media_quantities(
+        media,
+        time,
+        intercept,
+        annual_coefficients,
+        paid_media_coefficient,
+        paid_media_retention,
+        paid_media_half_saturation,
+        paid_media_slope,
+    ):
+        carried = geometric_adstock(media, alpha=paid_media_retention, max_lag=1)
+        paid_media = (
+            hill_saturation(carried, half_saturation=paid_media_half_saturation, slope=paid_media_slope)
+            * paid_media_coefficient
+        )
+        annual = fourier_features(time, period=8, order=1) @ annual_coefficients
+        total = paid_media.sum(-1)
+        return {"mu": intercept + total + annual, "paid_media": paid_media, "paid_media_total": total, "annual": annual}
+
     model = Model(
-        {"intercept": Real(), "sigma": Positive()},
+        {
+            "intercept": Real(),
+            "sigma": Positive(),
+            "annual_coefficients": Real((2,)),
+            "paid_media_coefficient": Positive(dims="channel"),
+            "paid_media_retention": Interval(0.0, 1.0, dims="channel"),
+            "paid_media_half_saturation": Positive(dims="channel"),
+            "paid_media_slope": Positive(dims="channel"),
+        },
         density,
         (lambda key, *, mu: {"mu": mu}) if include_generate else None,
         data=data,
-        components=[MediaEffect(max_lag=1), FourierSeasonality(period=8, order=1, name="annual")],
-        transformed_parameters=transformed,
+        transformed_parameters=media_quantities if transformed is None else transformed,
         save=save,
     )
     position = {
         "intercept": jnp.array(0.2),
         "sigma": jnp.log(jnp.array(0.6)),
-        "annual": jnp.array([0.1, -0.2]),
+        "annual_coefficients": jnp.array([0.1, -0.2]),
         "paid_media_coefficient": jnp.log(jnp.array([0.7, 1.1])),
         "paid_media_retention": jnp.log(jnp.array([0.2, 0.5]) / jnp.array([0.8, 0.5])),
         "paid_media_half_saturation": jnp.log(jnp.array([1.5, 2.0])),
@@ -157,10 +185,7 @@ def _media_model(transformed, *, save=(), include_generate=True):
 
 
 def test_transform_combines_media_and_fourier_effects_without_duplicate_priors():
-    def transformed(*, paid_media, annual, intercept):
-        return {"mu": intercept + paid_media.sum(axis=-1) + annual}
-
-    model, data, position = _media_model(transformed)
+    model, data, position = _media_model()
     values = {name: np.asarray(value, dtype=np.float64) for name, value in position.items()}
     retention = 1 / (1 + np.exp(-values["paid_media_retention"]))
     media = np.array([[1.0, 2.0], [3.0, 1.0], [2.0, 4.0]])
@@ -168,9 +193,9 @@ def test_transform_combines_media_and_fourier_effects_without_duplicate_priors()
     half, slope = np.exp(values["paid_media_half_saturation"]), np.exp(values["paid_media_slope"])
     paid = carried**slope / (carried**slope + half**slope) * np.exp(values["paid_media_coefficient"])
     angles = 2 * np.pi * np.arange(3) / 8
-    annual = np.column_stack((np.sin(angles), np.cos(angles))) @ values["annual"]
+    annual = np.column_stack((np.sin(angles), np.cos(angles))) @ values["annual_coefficients"]
     mean = values["intercept"] + paid.sum(-1) + annual
-    expected = _normal(data.arrays["outcome"] - mean, np.exp(values["sigma"])) + _normal(values["annual"])
+    expected = _normal(data.arrays["outcome"] - mean, np.exp(values["sigma"])) + _normal(values["annual_coefficients"])
     expected += (np.log(3) + 2 * np.log1p(-retention) + np.log(retention) + np.log1p(-retention)).sum()
     expected += values["sigma"]
     for role in ("coefficient", "half_saturation", "slope"):
@@ -194,7 +219,6 @@ def test_construction_does_not_probe_callbacks_and_runs_the_whole_transform_for_
         lambda *, summary: summary,
         lambda key: {"constant": jnp.array(1.0)},
         data=_data(),
-        components=[],
         transformed_parameters=transformed,
     )
     assert calls == []
@@ -208,9 +232,7 @@ def test_construction_does_not_probe_callbacks_and_runs_the_whole_transform_for_
 
 def test_unknown_density_and_generation_inputs_are_deferred_to_runtime_even_with_defaults():
     for density in (lambda *, typo: typo, lambda *, typo=1.0: jnp.asarray(typo)):
-        model = Model(
-            {}, density, data=_data(), components=[], transformed_parameters=lambda: {"actual": jnp.array(0.0)}
-        )
+        model = Model({}, density, data=_data(), transformed_parameters=lambda: {"actual": jnp.array(0.0)})
         with pytest.raises(ValueError, match="typo"):
             model.log_density({}, model.data)
     model = Model(
@@ -218,7 +240,6 @@ def test_unknown_density_and_generation_inputs_are_deferred_to_runtime_even_with
         lambda: jnp.array(0.0),
         lambda key, *, typo=1.0: {"value": typo},
         data=_data(),
-        components=[],
         transformed_parameters=lambda: {"actual": jnp.array(0.0)},
     )
     with pytest.raises(ValueError, match="typo"):
@@ -232,7 +253,7 @@ def test_transformed_names_cannot_shadow_sources_even_when_unused_or_absent_in_f
 
         return transformed
 
-    for name in ("outcome", "intercept", "annual", "paid_media", "paid_media_coefficient"):
+    for name in ("outcome", "intercept", "annual_coefficients", "paid_media_coefficient"):
         model, _, position = _media_model(returning(name))
         with pytest.raises(ValueError, match=name):
             model.log_density(position, model.data)
@@ -254,7 +275,6 @@ def test_transform_outputs_must_be_a_mapping_of_valid_names_to_array_like_values
             lambda: jnp.array(0.0),
             lambda key: {},
             data=_data(),
-            components=[],
             transformed_parameters=make_transform(result),
         )
         with pytest.raises((TypeError, ValueError)):
@@ -269,7 +289,6 @@ def test_empty_transforms_and_python_scalar_list_boolean_outputs_are_supported()
         lambda: jnp.array(1.5),
         lambda key: {"constant": 2.5},
         data=_data(),
-        components=[],
         transformed_parameters=lambda: {},
     )
     np.testing.assert_array_equal(jax.jit(empty.log_density)({}, empty.data), 1.5)
@@ -284,7 +303,7 @@ def test_empty_transforms_and_python_scalar_list_boolean_outputs_are_supported()
     def quantities(key, *, constant, values, mask):
         return {"constant": constant, "values": values, "mask": mask}
 
-    model = Model({}, density, quantities, data=_data(), components=[], transformed_parameters=transformed)
+    model = Model({}, density, quantities, data=_data(), transformed_parameters=transformed)
     np.testing.assert_array_equal(jax.jit(model.log_density)({}, model.data), 3.5)
     generated = jax.jit(model.generate)(jax.random.key(0), {}, model.data)
     assert generated["constant"].shape == ()
@@ -300,7 +319,6 @@ def test_parameter_usage_is_checked_across_transform_and_density_not_generation(
             lambda: jnp.array(0.0),
             lambda key, *, unused: {"unused": unused},
             data=_data(),
-            components=[],
             transformed_parameters=lambda: {},
         )
     with pytest.raises(ValueError, match="paid_media_exponent"):
@@ -310,7 +328,6 @@ def test_parameter_usage_is_checked_across_transform_and_density_not_generation(
             {},
             lambda *, first_stage: first_stage,
             data=_data(),
-            components=[],
             transformed_parameters=lambda *, second_stage: {"first_stage": second_stage},
         )
 
@@ -318,12 +335,10 @@ def test_parameter_usage_is_checked_across_transform_and_density_not_generation(
 def test_transformed_stage_requires_prepared_named_callbacks_and_one_callable():
     for transformed in ([lambda: {}], 0.5):
         with pytest.raises(TypeError):
-            Model({}, lambda: jnp.array(0.0), data=_data(), components=[], transformed_parameters=transformed)
+            Model({}, lambda: jnp.array(0.0), data=_data(), transformed_parameters=transformed)
     with pytest.raises((TypeError, ValueError)):
         Model({}, lambda: jnp.array(0.0), transformed_parameters=lambda: {})
-    model = Model(
-        {}, lambda data, effects: jnp.array(0.0), data=_data(), components=[], transformed_parameters=lambda: {}
-    )
+    model = Model({}, lambda data, effects: jnp.array(0.0), data=_data(), transformed_parameters=lambda: {})
     with pytest.raises(ValueError, match="not data or effects bundles"):
         model.log_density({}, model.data)
     model = Model(
@@ -331,14 +346,13 @@ def test_transformed_stage_requires_prepared_named_callbacks_and_one_callable():
         lambda: jnp.array(0.0),
         lambda key, data, effects: {},
         data=_data(),
-        components=[],
         transformed_parameters=lambda: {},
     )
     with pytest.raises(ValueError, match="not data or effects bundles"):
         model.generate(jax.random.key(0), {}, model.data)
     for transformed in (lambda controls, /: {}, lambda **values: {}, lambda *values: {}):
         with pytest.raises(TypeError):
-            Model({}, lambda: jnp.array(0.0), data=_data(), components=[], transformed_parameters=transformed)
+            Model({}, lambda: jnp.array(0.0), data=_data(), transformed_parameters=transformed)
 
 
 def test_transformed_quantities_named_data_or_effects_are_not_legacy_bundles():
@@ -347,7 +361,6 @@ def test_transformed_quantities_named_data_or_effects_are_not_legacy_bundles():
         lambda data, effects: jnp.sum(data + effects),
         lambda key, effects, data: {"sum": data + effects},
         data=_data(),
-        components=[],
         transformed_parameters=lambda controls: {"data": controls[:, 0], "effects": controls[:, 1]},
     )
     expected = _data().arrays["controls"].sum(axis=-1)
@@ -374,9 +387,8 @@ def test_saved_transformed_quantities_work_without_generate_and_preserve_density
     np.testing.assert_allclose(generated["spread"], np.sqrt(0.7**2 + 0.4), rtol=2e-6)
 
 
-def test_saved_component_values_include_media_totals_and_fourier_effect_not_coefficients():
+def test_saved_transforms_include_media_totals_and_fourier_curves():
     model, _, position = _media_model(
-        lambda paid_media_total, annual, intercept: {"mu": intercept + paid_media_total + annual},
         save=("mu", "paid_media", "paid_media_total", "annual"),
         include_generate=False,
     )
@@ -385,7 +397,7 @@ def test_saved_component_values_include_media_totals_and_fourier_effect_not_coef
     assert set(generated) == {"mu", "paid_media", "paid_media_total", "annual"}
     assert generated["paid_media"].shape == (3, 2)
     assert generated["paid_media_total"].shape == generated["annual"].shape == (3,)
-    assert model.parameters["annual"].shape == (2,)
+    assert model.parameters["annual_coefficients"].shape == (2,)
     np.testing.assert_allclose(generated["paid_media_total"], generated["paid_media"].sum(axis=-1), rtol=2e-6)
     np.testing.assert_allclose(
         generated["mu"], position["intercept"] + generated["paid_media_total"] + generated["annual"], rtol=2e-6
@@ -406,9 +418,7 @@ def test_saved_outputs_merge_with_generate_and_evaluate_transform_once():
     def density(signal):
         raise AssertionError("Saving quantities must not evaluate density")
 
-    model = Model(
-        {}, density, generate, data=_data(), components=[], transformed_parameters=transformed, save=("signal",)
-    )
+    model = Model({}, density, generate, data=_data(), transformed_parameters=transformed, save=("signal",))
     assert calls == []
     result = model.generate(jax.random.key(0), {}, model.data)
 
@@ -432,9 +442,7 @@ def test_saved_unknown_transformed_names_are_checked_only_at_evaluation():
         calls.append("transformed")
         return {"actual": jnp.array(1.0)}
 
-    model = Model(
-        {}, lambda: jnp.array(0.0), data=_data(), components=[], transformed_parameters=transformed, save=("typo",)
-    )
+    model = Model({}, lambda: jnp.array(0.0), data=_data(), transformed_parameters=transformed, save=("typo",))
     assert calls == []
 
     with pytest.raises(ValueError, match="typo"):
@@ -442,10 +450,9 @@ def test_saved_unknown_transformed_names_are_checked_only_at_evaluation():
 
 
 @pytest.mark.parametrize("name", ["annual_coefficients", "paid_media_coefficient", "paid_media_retention"])
-def test_saved_names_cannot_select_component_parameter_aliases(name):
+def test_saved_names_cannot_select_parameter_inputs(name):
     with pytest.raises(ValueError, match=name):
         model, _, position = _media_model(
-            lambda paid_media_total, annual, intercept: {"mu": intercept + paid_media_total + annual},
             save=(name,),
             include_generate=False,
         )
@@ -481,9 +488,7 @@ def test_direct_evaluation_returns_all_quantities_without_density_or_generation(
     def generate(key, signal):
         raise AssertionError("Direct evaluation must not generate random quantities")
 
-    model = Model(
-        {}, density, generate, data=_data(), components=[], transformed_parameters=transformed, save=("signal",)
-    )
+    model = Model({}, density, generate, data=_data(), transformed_parameters=transformed, save=("signal",))
     assert calls == []
 
     evaluated = model.evaluate({})
@@ -527,9 +532,8 @@ def test_direct_evaluation_supports_training_inputs_and_outcome_free_scenarios_u
     np.testing.assert_array_equal(model.data.values["controls"], original_controls)
 
 
-def test_direct_evaluation_includes_component_effects_and_media_totals_not_parameter_aliases():
+def test_direct_evaluation_includes_explicit_effects_and_media_totals():
     model, _, position = _media_model(
-        lambda paid_media_total, annual, intercept: {"mu": intercept + paid_media_total + annual},
         include_generate=False,
     )
     parameters = model.constrain(position)
@@ -538,7 +542,7 @@ def test_direct_evaluation_includes_component_effects_and_media_totals_not_param
     assert set(evaluated) == {"mu", "paid_media", "paid_media_total", "annual"}
     assert evaluated["paid_media"].shape == (3, 2)
     assert evaluated["annual"].shape == (3,)
-    assert parameters["annual"].shape == (2,)
+    assert parameters["annual_coefficients"].shape == (2,)
     np.testing.assert_allclose(evaluated["paid_media_total"], evaluated["paid_media"].sum(axis=-1), rtol=2e-6)
     np.testing.assert_allclose(
         evaluated["mu"], parameters["intercept"] + evaluated["paid_media_total"] + evaluated["annual"], rtol=2e-6

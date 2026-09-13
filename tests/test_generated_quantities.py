@@ -9,8 +9,31 @@ import xarray as xr
 
 import mmmjax
 import mmmjax.sampling as sampling
-from mmmjax import Model, Positive, generate_quantities, prepare_data
+from mmmjax import Model, Positive, Real, generate_quantities, prepare_data
 from mmmjax._results import _collect_results
+
+
+def test_generated_time_inputs_retain_date_labels_without_becoming_observed_data():
+    frame = pl.DataFrame({"period": [10, 11, 12], "sales": [1.0, 2.0, 3.0], "search": [5.0, 6.0, 7.0]})
+    data = prepare_data(frame, time="period", outcome="sales", media=["search"])
+
+    def density(outcome, level):
+        return -jnp.sum((outcome - level) ** 2)
+
+    def generate(key, time, media_time, level):
+        return {"elapsed": time, "exposure_elapsed": media_time, "prediction": time + level}
+
+    model = Model({"level": Real()}, density, generate, data=data, predictive=("prediction",))
+    results = _collect_results({"level": np.zeros((1, 2), dtype=np.float32)})
+    for new_data in (None, frame.slice(1)):
+        evaluated = generate_quantities(model, results, new_data=new_data)
+        expected = [0.0, 1.0, 2.0] if new_data is None else [1.0, 2.0]
+        assert evaluated["generated_quantities"]["elapsed"].dims == ("chain", "draw", "time")
+        assert evaluated["generated_quantities"]["exposure_elapsed"].dims == ("chain", "draw", "media_time")
+        np.testing.assert_array_equal(evaluated["generated_quantities"]["elapsed"][0, 0], expected)
+        np.testing.assert_array_equal(evaluated["generated_quantities"]["exposure_elapsed"][0, 0], expected)
+        assert set(evaluated["observed_data"].data_vars) == {"outcome"}
+        assert set(evaluated["constant_data"].data_vars) == {"media"}
 
 
 def _unused_density(data, scale):
@@ -217,7 +240,6 @@ def _saved_model(*, generated_dims=None, predictive=(), log_likelihood=()):
         {"scale": Positive((2,))},
         forbidden_density,
         data=_saved_data(),
-        components=[],
         transformed_parameters=transformed,
         prior=forbidden_prior,
         save=("signal", "pointwise", "total"),

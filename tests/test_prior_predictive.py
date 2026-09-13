@@ -10,14 +10,15 @@ import xarray as xr
 import mmmjax
 import mmmjax.sampling as sampling
 from mmmjax import (
-    FourierSeasonality,
     Interval,
-    MediaEffect,
     Model,
     Positive,
     Real,
     Simplex,
     fit_data_scaling,
+    fourier_features,
+    geometric_adstock,
+    hill_saturation,
     prepare_data,
     sample_prior,
 )
@@ -60,7 +61,6 @@ def _prepared_model(*, scaling=False):
         forbidden_density,
         generate,
         data=data,
-        components=[],
         scaling=fit_data_scaling(data, scale_outcome=True) if scaling else None,
         predictive=("prediction",),
         log_likelihood=("pointwise",),
@@ -268,7 +268,6 @@ def test_generation_toggle_does_not_execute_callback_and_keeps_prepared_data():
         lambda location: jnp.nan,
         forbidden_generate,
         data=prepare_data(pd.DataFrame({"week": [1, 2], "sales": [3.0, 4.0]}), time="week", outcome="sales"),
-        components=[],
     )
     result = sample_prior(model, _normal_prior, draws=2, generate=False)
     assert set(result.children) == {"prior", "observed_data"}
@@ -294,7 +293,7 @@ def test_scaled_prepared_inputs_are_snapshotted_without_rescaling_prior_values()
     np.testing.assert_array_equal(model.data.values["outcome"], expected_outcome)
 
 
-def test_components_and_transformed_parameters_run_for_each_prior_draw():
+def test_explicit_media_and_seasonality_run_for_each_prior_draw():
     data = prepare_data(
         pd.DataFrame(
             {"week": [0, 1, 2], "sales": [1.0, 2.0, 3.0], "video": [1.0, 3.0, 2.0], "search": [2.0, 1.0, 4.0]}
@@ -304,19 +303,39 @@ def test_components_and_transformed_parameters_run_for_each_prior_draw():
         media=["video", "search"],
     )
 
-    def transformed(intercept, paid_total, annual):
-        return {"mean": intercept + paid_total + annual}
+    def transformed(
+        media,
+        time,
+        intercept,
+        paid_coefficient,
+        paid_retention,
+        paid_half_saturation,
+        paid_slope,
+        annual_coefficients,
+    ):
+        carried = geometric_adstock(media, alpha=paid_retention, max_lag=1)
+        paid = hill_saturation(carried, half_saturation=paid_half_saturation, slope=paid_slope) * paid_coefficient
+        annual = fourier_features(time, period=8, order=1) @ annual_coefficients
+        return {"mean": intercept + paid.sum(-1) + annual, "paid": paid, "annual": annual}
 
     def generate(key, mean, paid, annual, annual_coefficients):
         return {"prediction": mean, "paid": paid, "seasonal": annual, "weights": annual_coefficients}
 
     model = Model(
-        {"intercept": Real()},
+        {
+            "intercept": Real(),
+            "paid_coefficient": Positive(dims="channel"),
+            "paid_retention": Interval(0.0, 1.0, dims="channel"),
+            "paid_half_saturation": Positive(dims="channel"),
+            "paid_slope": Positive(dims="channel"),
+            "annual_coefficients": Real(dims="annual_mode"),
+        },
         lambda outcome, mean: jnp.nan,
         generate,
         data=data,
-        components=[MediaEffect(max_lag=1, name="paid"), FourierSeasonality(period=8, order=1, name="annual")],
         transformed_parameters=transformed,
+        coords={"annual_mode": ["sin_1", "cos_1"]},
+        generated_dims={"paid": ("time", "channel"), "seasonal": ("time",)},
         predictive=("prediction",),
     )
 
@@ -328,7 +347,7 @@ def test_components_and_transformed_parameters_run_for_each_prior_draw():
             "paid_retention": jnp.array([0.2, 0.5]),
             "paid_half_saturation": jnp.array([1.5, 2.0]),
             "paid_slope": jnp.array([1.2, 0.8]),
-            "annual": jax.random.normal(annual_key, (2,)),
+            "annual_coefficients": jax.random.normal(annual_key, (2,)),
         }
 
     result = sample_prior(model, prior, draws=3)
@@ -339,7 +358,7 @@ def test_components_and_transformed_parameters_run_for_each_prior_draw():
     generated = result["prior_generated_quantities"]
     assert generated["paid"].dims == ("chain", "draw", "time", "channel")
     assert generated["seasonal"].dims == ("chain", "draw", "time")
-    assert generated["weights"].dims == parameters["annual"].dims
+    assert generated["weights"].dims == parameters["annual_coefficients"].dims
     for draw in range(3):
         constrained = {name: jnp.asarray(parameters[name].values[0, draw]) for name in model.parameters}
         expected = model.generate(jax.random.key(0), constrained, model.data)
@@ -404,7 +423,6 @@ def test_prior_saves_transformed_quantities_without_generation_callback_or_densi
         {"location": Real()},
         forbidden_density,
         data=data,
-        components=[],
         prior=_normal_prior,
         transformed_parameters=transformed,
         save=("mean", "pointwise", "total"),
@@ -433,7 +451,6 @@ def test_prior_generation_toggle_skips_saved_transforms_entirely():
         {"location": Real()},
         lambda mean: jnp.nan,
         data=data,
-        components=[],
         prior=_normal_prior,
         transformed_parameters=forbidden_transform,
         save=("mean",),
@@ -445,18 +462,48 @@ def test_prior_generation_toggle_skips_saved_transforms_entirely():
     assert "prior_predictive" not in result
 
 
-def test_prior_saves_component_only_effects_with_media_and_seasonal_axes():
+def test_prior_saves_explicit_media_and_seasonal_outputs_with_named_axes():
     data = prepare_data(
         pd.DataFrame({"week": [0, 1, 2], "sales": [1.0, 2.0, 3.0], "video": [1.0, 3.0, 2.0]}),
         time="week",
         outcome="sales",
         media=["video"],
     )
+
+    def transformed(
+        media,
+        time,
+        paid_media_coefficient,
+        paid_media_retention,
+        paid_media_half_saturation,
+        paid_media_slope,
+        annual_coefficients,
+    ):
+        carried = geometric_adstock(media, alpha=paid_media_retention, max_lag=1)
+        paid_media = (
+            hill_saturation(carried, half_saturation=paid_media_half_saturation, slope=paid_media_slope)
+            * paid_media_coefficient
+        )
+        annual = fourier_features(time, period=8, order=1) @ annual_coefficients
+        return {"paid_media": paid_media, "paid_media_total": paid_media.sum(-1), "annual": annual}
+
     model = Model(
-        {},
+        {
+            "paid_media_coefficient": Positive(dims="channel"),
+            "paid_media_retention": Interval(0.0, 1.0, dims="channel"),
+            "paid_media_half_saturation": Positive(dims="channel"),
+            "paid_media_slope": Positive(dims="channel"),
+            "annual_coefficients": Real(dims="annual_mode"),
+        },
         lambda outcome: jnp.nan,
         data=data,
-        components=[MediaEffect(max_lag=1), FourierSeasonality(period=8, order=1, name="annual")],
+        transformed_parameters=transformed,
+        coords={"annual_mode": ["sin_1", "cos_1"]},
+        generated_dims={
+            "paid_media": ("time", "channel"),
+            "paid_media_total": ("time",),
+            "annual": ("time",),
+        },
         save=("paid_media", "paid_media_total", "annual"),
     )
 
@@ -466,7 +513,7 @@ def test_prior_saves_component_only_effects_with_media_and_seasonal_axes():
             "paid_media_retention": jnp.array([0.2]),
             "paid_media_half_saturation": jnp.array([1.5]),
             "paid_media_slope": jnp.array([1.2]),
-            "annual": jax.random.normal(key, (2,)),
+            "annual_coefficients": jax.random.normal(key, (2,)),
         }
 
     result = sample_prior(model, prior, draws=3, seed=25)
@@ -476,7 +523,7 @@ def test_prior_saves_component_only_effects_with_media_and_seasonal_axes():
     assert generated["paid_media"].dims == ("chain", "draw", "time", "channel")
     assert generated["paid_media_total"].dims == ("chain", "draw", "time")
     assert generated["annual"].dims == ("chain", "draw", "time")
-    assert result["prior"]["annual"].dims == ("chain", "draw", "annual_mode")
+    assert result["prior"]["annual_coefficients"].dims == ("chain", "draw", "annual_mode")
     np.testing.assert_array_equal(generated["channel"], ["video"])
     np.testing.assert_allclose(generated["paid_media_total"], generated["paid_media"].sum("channel"), rtol=2e-6)
 

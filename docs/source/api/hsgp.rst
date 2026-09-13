@@ -1,9 +1,7 @@
 Time-varying effects
 ====================
 
-Build reduced-rank Gaussian process components over time.
-Use :class:`~mmmjax.HSGPEffect` for model composition or the functions below
-for custom calculations.
+Build reduced-rank Gaussian processes for time-varying model effects.
 
 .. currentmodule:: mmmjax
 

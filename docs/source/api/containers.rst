@@ -14,8 +14,4 @@ Data, fitted transformations, and model configuration objects.
    DataScaling
    Scaling
    HSGPConfig
-   HSGPEffect
-   FourierSeasonality
-   MediaEffect
-   ReachFrequencyEffect
    SpendConstraint

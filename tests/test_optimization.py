@@ -13,10 +13,12 @@ from scipy.optimize import OptimizeResult
 import mmmjax
 import mmmjax.optimization as optimization
 from mmmjax import (
-    MediaEffect,
+    Interval,
     Model,
+    Positive,
     Real,
     fit_data_scaling,
+    geometric_adstock,
     hill_saturation,
     media_metrics,
     optimize_budget,
@@ -64,7 +66,6 @@ def _problem(*, spend_unit=1.0, transformed=None):
         density,
         generated,
         data=data,
-        components=[],
         transformed_parameters=quadratic if transformed is None else transformed,
         dims={"coefficient": ("channel",)},
     )
@@ -108,7 +109,6 @@ def _uncertain_linear_problem():
         {"gain": Real()},
         lambda expected: expected.sum(),
         data=data,
-        components=[],
         transformed_parameters=transformed,
     )
     results = _collect_results({"gain": np.array([[0.0, 1.0], [2.0, 3.0]], dtype=np.float32)}, data=data)
@@ -703,7 +703,6 @@ def test_optimize_budget_ignores_large_terms_constant_under_the_budget_constrain
         {"coefficient": Real()},
         lambda expected: expected.sum(),
         data=data,
-        components=[],
         transformed_parameters=transformed,
     )
     results = _collect_results({"coefficient": np.array([[2.0]], dtype=np.float32)}, data=data)
@@ -718,12 +717,39 @@ def test_optimize_budget_ignores_large_terms_constant_under_the_budget_constrain
 def test_optimize_budget_recovers_concave_optimum_when_solver_reaches_zero(saturation, initial, utility_function):
     frame = pl.DataFrame({"week": [1], "video": [0.5], "search": [0.5]})
     data = prepare_data(frame, time="week", media=["video", "search"], spend=["video", "search"])
+
+    def hill_response(
+        media,
+        paid_media_coefficient,
+        paid_media_retention,
+        paid_media_half_saturation,
+        paid_media_slope,
+    ):
+        carried = geometric_adstock(media, alpha=paid_media_retention, max_lag=0)
+        response = hill_saturation(carried, half_saturation=paid_media_half_saturation, slope=paid_media_slope)
+        return {"expected": response @ paid_media_coefficient}
+
+    def root_response(media, paid_media_coefficient, paid_media_retention, paid_media_exponent):
+        carried = geometric_adstock(media, alpha=paid_media_retention, max_lag=0)
+        return {"expected": root_saturation(carried, exponent=paid_media_exponent) @ paid_media_coefficient}
+
+    declarations = {
+        "paid_media_coefficient": Positive(dims="channel"),
+        "paid_media_retention": Interval(0.0, 1.0, dims="channel"),
+    }
+    if saturation is hill_saturation:
+        declarations.update(
+            paid_media_half_saturation=Positive(dims="channel"),
+            paid_media_slope=Positive(dims="channel"),
+        )
+    else:
+        declarations["paid_media_exponent"] = Interval(0.0, 1.0, dims="channel")
+
     model = Model(
-        {},
+        declarations,
         lambda expected: expected.sum(),
         data=data,
-        components=[MediaEffect(max_lag=0, saturation=saturation)],
-        transformed_parameters=lambda paid_media_total: {"expected": paid_media_total},
+        transformed_parameters=hill_response if saturation is hill_saturation else root_response,
     )
     parameters = {"paid_media_coefficient": [1.0, 3.0], "paid_media_retention": [0.0, 0.0]}
     if saturation is hill_saturation:
@@ -761,7 +787,6 @@ def test_optimize_budget_reallocates_integer_exposures_and_preserves_a_zero_opti
         {"coefficient": Real((2,))},
         lambda expected: expected.sum(),
         data=data,
-        components=[],
         transformed_parameters=lambda media, coefficient: {"expected": media @ coefficient},
         dims={"coefficient": ("channel",)},
     )
@@ -802,7 +827,6 @@ def test_optimize_budget_uses_separate_spending_and_carryover_measurement_period
         {"coefficient": Real((2,))},
         lambda expected: expected.sum(),
         data=data,
-        components=[],
         transformed_parameters=transformed,
         dims={"coefficient": ("channel",)},
     )
@@ -850,7 +874,7 @@ def test_optimize_budget_uses_separate_spending_and_carryover_measurement_period
 
 
 @pytest.mark.parametrize("infer_budget", [False, True])
-def test_optimize_budget_recomputes_media_components_with_fitted_group_scaling(infer_budget):
+def test_optimize_budget_recomputes_media_transformations_with_fitted_group_scaling(infer_budget):
     rows = []
     exposures = np.array([[8.0, 9.0], [1.0, 7.0], [4.0, 2.0], [0.0, 6.0], [8.0, 1.0]])
     for week, exposure in enumerate(exposures):
@@ -877,12 +901,31 @@ def test_optimize_budget_recomputes_media_components_with_fitted_group_scaling(i
         media_history=frame.filter(pl.col("week") == 0),
     )
     scaling = fit_data_scaling(data, adjust_population=True)
+
+    def transformed(
+        media,
+        spend,
+        paid_media_coefficient,
+        paid_media_retention,
+        paid_media_half_saturation,
+        paid_media_slope,
+    ):
+        carried = geometric_adstock(media, alpha=paid_media_retention, max_lag=1)
+        response = hill_saturation(carried, half_saturation=paid_media_half_saturation, slope=paid_media_slope)[
+            -spend.shape[0] :
+        ]
+        return {"expected": response @ paid_media_coefficient}
+
     model = Model(
-        {},
+        {
+            "paid_media_coefficient": Positive(dims="channel"),
+            "paid_media_retention": Interval(0.0, 1.0, dims="channel"),
+            "paid_media_half_saturation": Positive(dims="channel"),
+            "paid_media_slope": Positive(dims="channel"),
+        },
         lambda expected: expected.sum(),
         data=data,
-        components=[MediaEffect(max_lag=1)],
-        transformed_parameters=lambda paid_media_total: {"expected": paid_media_total},
+        transformed_parameters=transformed,
         scaling=scaling,
     )
     parameters = {

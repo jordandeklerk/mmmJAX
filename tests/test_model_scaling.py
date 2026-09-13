@@ -1,4 +1,4 @@
-"""Fitted scaling at the model data boundary."""
+"""Tests for fitted scaling at the model data boundary."""
 
 from dataclasses import replace
 from datetime import date, timedelta
@@ -9,7 +9,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from mmmjax import MediaEffect, Model, Real, fit_data_scaling, normal, prepare_data
+from mmmjax import Model, Real, fit_data_scaling, normal, prepare_data
 
 
 def _data(*, multiplier=1.0, reverse=False, outcome=True):
@@ -51,7 +51,7 @@ def _model(data, *, scaling=None):
             "mu": intercept + media.sum(-1) + controls[..., 0] + treatments[..., 0],
         }
 
-    return Model({"intercept": Real()}, density, generate, data=data, components=[], scaling=scaling)
+    return Model({"intercept": Real()}, density, generate, data=data, scaling=scaling)
 
 
 def test_auto_scaling_matches_explicit_fitting_without_changing_counts_or_costs():
@@ -168,28 +168,12 @@ def test_scaling_requires_a_prepared_model():
         Model({}, lambda data: jnp.array(0.0), scaling="auto")
 
 
-def test_models_without_components_cannot_exchange_scaled_input_bundles():
+def test_models_cannot_exchange_scaled_input_bundles():
     data = _data()
     first = _model(data, scaling="auto")
     second = _model(data)
     with pytest.raises(ValueError, match="this model"):
         jax.jit(first.log_density)({"intercept": jnp.array(0.0)}, second.data)
-
-
-@pytest.mark.parametrize("compiled", [False, True])
-def test_models_sharing_a_component_cannot_exchange_differently_scaled_inputs(compiled):
-    component = MediaEffect(max_lag=2)
-    raw = _data()
-
-    def density(*, paid_media_total):
-        return normal(paid_media_total, location=0.0, scale=1.0)
-
-    first = Model({}, density, data=raw, components=[component], scaling="auto")
-    second = Model({}, density, data=raw, components=[component])
-    evaluate = jax.jit(first.log_density) if compiled else first.log_density
-    position = first.initialize_random(jax.random.key(0))
-    with pytest.raises(ValueError, match="this model"):
-        evaluate(position, second.data)
 
 
 def test_media_models_reject_changes_to_known_observation_spacing():
@@ -208,9 +192,8 @@ def test_media_models_reject_changes_to_known_observation_spacing():
 
     model = Model(
         {},
-        lambda *, paid_media_total: normal(paid_media_total, 0.0, 1.0),
+        lambda media: normal(media.sum(-1), 0.0, 1.0),
         data=dated_data(7),
-        components=[MediaEffect(max_lag=2)],
         scaling="auto",
     )
     with pytest.raises(ValueError, match="weekly observation spacing"):

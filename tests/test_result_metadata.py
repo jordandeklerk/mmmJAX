@@ -9,13 +9,12 @@ import polars as pl
 import pytest
 
 from mmmjax import (
-    FourierSeasonality,
-    MediaEffect,
     Model,
     Positive,
     Real,
     Simplex,
     fit_data_scaling,
+    fourier_features,
     generate_quantities,
     prepare_data,
 )
@@ -188,7 +187,6 @@ def test_save_selection_is_copied_without_probing_callbacks():
         {},
         lambda mu: mu.sum(),
         data=_prepared_data(),
-        components=[],
         transformed_parameters=transformed,
         save=selection,
         generated_dims={"mu": ("time", "group")},
@@ -204,15 +202,14 @@ def test_save_rejects_data_parameter_and_invalid_names(name):
             {"intercept": Real()},
             lambda intercept: -(intercept**2),
             data=_prepared_data(),
-            components=[],
             transformed_parameters=lambda: {"mu": jnp.zeros(3)},
             save=(name,),
         )
 
 
-def test_save_rejects_unknown_component_without_transformed_parameters():
-    with pytest.raises(ValueError, match="transformed quantity or component contribution"):
-        Model({}, lambda: jnp.array(0.0), data=_prepared_data(), components=[], save=("missing",))
+def test_save_requires_transformed_parameters():
+    with pytest.raises(ValueError, match="transformed quantity"):
+        Model({}, lambda: jnp.array(0.0), data=_prepared_data(), save=("missing",))
 
 
 def test_predictive_and_likelihood_names_cannot_overlap():
@@ -256,24 +253,20 @@ def test_metadata_does_not_execute_generated_quantities_at_construction():
     assert model._predictive_names == ("later_output",)
 
 
-def test_component_parameters_and_generated_names_have_separate_dimension_maps():
+def test_parameters_and_generated_names_have_separate_dimension_maps():
     data = _prepared_data()
 
-    def density(outcome, annual, paid_media_total):
-        return -jnp.square(outcome - annual - paid_media_total).sum()
+    def density(outcome, annual, paid_media_coefficient):
+        return -jnp.square(outcome).sum() - jnp.square(annual).sum() - jnp.square(paid_media_coefficient).sum()
 
-    def generate(key, annual):
-        return {"annual": annual}
+    def generate(key, time, annual):
+        return {"annual": fourier_features(time, period=52, order=2) @ annual}
 
     model = Model(
-        {},
+        {"annual": Real((4, 2)), "paid_media_coefficient": Real((2, 2))},
         density,
         generate,
         data=data,
-        components=[
-            FourierSeasonality(period=52, name="annual", group_specific_coefficients=True),
-            MediaEffect(max_lag=1, group_specific_coefficients=True),
-        ],
         dims={"annual": ("annual_mode", "group"), "paid_media_coefficient": ("group", "channel")},
         coords={"annual_mode": ["sin_1", "sin_2", "cos_1", "cos_2"]},
         generated_dims={"annual": ("time", "group")},
@@ -284,10 +277,9 @@ def test_component_parameters_and_generated_names_have_separate_dimension_maps()
     assert model.parameters["paid_media_coefficient"].shape == (2, 2)
     with pytest.raises(ValueError, match="undeclared parameter 'annual_coefficients'"):
         Model(
-            {},
+            {"annual": Real((4,))},
             lambda annual: jnp.sum(annual),
             data=data,
-            components=[FourierSeasonality(period=52, name="annual")],
             dims={"annual_coefficients": ("annual_mode",)},
         )
 
@@ -301,7 +293,6 @@ def test_aligned_time_history_and_group_metadata_follow_actual_scaled_model_inpu
         {},
         lambda outcome: -jnp.square(outcome).sum(),
         data=incoming,
-        components=[],
         scaling=scaling,
     )
     assert model._time_values == expected.time_values == (2, 3, 4)
@@ -397,7 +388,6 @@ def test_parameter_axes_infer_shapes_and_labels_from_prepared_data(axis, labels)
         {"coefficient": Real(dims=axis)},
         lambda coefficient: -jnp.square(coefficient).sum(),
         data=data,
-        components=[],
     )
 
     assert model.parameters["coefficient"].shape == (len(labels),)
@@ -417,7 +407,6 @@ def test_named_simplex_axes_resolve_constrained_and_unconstrained_batch_shapes()
         {"weights": Simplex(dims=("group", "channel"))},
         lambda weights: jnp.log(weights).sum(),
         data=_prepared_data(),
-        components=[],
     )
 
     assert model.parameters["weights"].shape == (2, 2)
@@ -470,7 +459,6 @@ def test_explicit_parameter_shape_must_agree_with_declared_coordinate_length():
             {"coefficient": Real(shape=(3,), dims="channel")},
             lambda coefficient: coefficient.sum(),
             data=_prepared_data(),
-            components=[],
         )
 
 
@@ -481,7 +469,6 @@ def test_declared_axes_must_be_available_at_model_construction(axis):
             {"coefficient": Real(dims=axis)},
             lambda coefficient: coefficient.sum(),
             data=_prepared_data(),
-            components=[],
         )
 
 
@@ -508,7 +495,6 @@ def test_explicit_coordinates_cannot_reorder_prepared_channel_labels():
             {"coefficient": Real(dims="channel")},
             lambda coefficient: coefficient.sum(),
             data=_prepared_data(),
-            components=[],
             coords={"channel": ["search", "video"]},
         )
 
@@ -523,7 +509,6 @@ def test_named_parameter_axes_survive_reordered_scenario_inputs():
             "response": media[-3:] * coefficient,
         },
         data=data,
-        components=[],
         generated_dims={"response": ("time", "group", "channel")},
     )
     coefficient = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=jax.dtypes.canonicalize_dtype(float))

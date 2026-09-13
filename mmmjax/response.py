@@ -383,7 +383,7 @@ def _prepare_response(
 
     if new_data is not None:
         inputs, aligned = model._prepare_data(new_data)
-        prepared = replace(aligned, arrays={name: np.array(value, copy=True) for name, value in inputs.values.items()})
+        prepared = replace(aligned, arrays={name: np.array(inputs.values[name], copy=True) for name in aligned.arrays})
 
     if not {"media", "spend"}.issubset(inputs.values):
         raise ValueError("Response evaluation requires paired media and spend columns")

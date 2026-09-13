@@ -1,4 +1,4 @@
-"""Tests for posterior scenarios with fitted components and labeled inputs."""
+"""Tests for posterior scenarios with explicit transformations and labeled inputs."""
 
 import jax
 import jax.numpy as jnp
@@ -10,13 +10,15 @@ import pytest
 import xarray as xr
 
 from mmmjax import (
-    FourierSeasonality,
-    MediaEffect,
+    Interval,
     Model,
     Positive,
     Real,
     fit_data_scaling,
+    fourier_features,
     generate_quantities,
+    geometric_adstock,
+    hill_saturation,
     normal,
     normal_logpdf,
     normal_rng,
@@ -59,8 +61,31 @@ def _media(periods):
 
 
 def _model(data):
-    def transformed(paid_media_total, annual, controls, intercept):
-        return {"mean": intercept + paid_media_total + annual + 0.1 * controls[..., 0]}
+    def transformed(
+        media,
+        controls,
+        time,
+        intercept,
+        annual_coefficients,
+        paid_media_coefficient,
+        paid_media_retention,
+        paid_media_half_saturation,
+        paid_media_slope,
+    ):
+        carried = geometric_adstock(media, alpha=paid_media_retention, max_lag=2)
+        response = hill_saturation(
+            carried,
+            half_saturation=paid_media_half_saturation,
+            slope=paid_media_slope,
+        )[-controls.shape[0] :]
+        paid_media = response * paid_media_coefficient
+        features = fourier_features(time, period=8, order=1)
+        annual = features @ annual_coefficients
+        return {
+            "mean": intercept + paid_media.sum(-1) + annual + 0.1 * controls[..., 0],
+            "paid_media": paid_media,
+            "annual": annual,
+        }
 
     def density(outcome, mean, intercept, sigma):
         return normal(outcome, mean, sigma) + normal(intercept, 0.0, 1.0)
@@ -75,17 +100,26 @@ def _model(data):
         }
 
     return Model(
-        {"intercept": Real(), "sigma": Positive()},
+        {
+            "intercept": Real(),
+            "sigma": Positive(),
+            "paid_media_coefficient": Positive(dims=("group", "channel")),
+            "paid_media_retention": Interval(0.0, 1.0, dims="channel"),
+            "paid_media_half_saturation": Positive(dims="channel"),
+            "paid_media_slope": Positive(dims="channel"),
+            "annual_coefficients": Real(dims=("annual_mode", "group")),
+        },
         density,
         generated,
         data=data,
-        components=[
-            MediaEffect(max_lag=2, group_specific_coefficients=True),
-            FourierSeasonality(period=8, order=1, name="annual", group_specific_coefficients=True),
-        ],
         transformed_parameters=transformed,
         scaling=fit_data_scaling(data, scale_outcome=True),
-        generated_dims={"mean": ("time", "group")},
+        coords={"annual_mode": ["sin_1", "cos_1"]},
+        generated_dims={
+            "mean": ("time", "group"),
+            "contribution": ("time", "group", "channel"),
+            "seasonal": ("time", "group"),
+        },
         predictive=("prediction",),
     )
 
@@ -98,7 +132,7 @@ def _results(model, data):
         "paid_media_retention": np.array([0.25, 0.6]),
         "paid_media_half_saturation": np.array([1.5, 2.5]),
         "paid_media_slope": np.array([1.2, 0.8]),
-        "annual": np.array([[0.3, -0.2], [0.7, 1.1]]),
+        "annual_coefficients": np.array([[0.3, -0.2], [0.7, 1.1]]),
     }
     posterior = {
         name: np.broadcast_to(value, (2, 3, *value.shape)).astype(jax.dtypes.canonicalize_dtype(float))
@@ -111,7 +145,7 @@ def _results(model, data):
         "paid_media_retention": ("channel",),
         "paid_media_half_saturation": ("channel",),
         "paid_media_slope": ("channel",),
-        "annual": ("annual_mode", "group"),
+        "annual_coefficients": ("annual_mode", "group"),
     }
     result = _collect_results(
         posterior,
@@ -315,7 +349,7 @@ def test_dataframe_scenario_preserves_additional_data_roles_and_channel_labels()
             "population_copy": population,
         }
 
-    model = Model({"intercept": Real()}, density, generated, data=training, components=[], scaling=None)
+    model = Model({"intercept": Real()}, density, generated, data=training, scaling=None)
     results = _collect_results({"intercept": jnp.array([[100.0, 110.0]])}, data=training)
     scenario = frame.iloc[::-1, ::-1].copy()
     scenario["video_frequency"] += 1
@@ -447,7 +481,6 @@ def test_missing_outcome_is_rejected_when_any_evaluated_callback_requires_it(req
         density,
         generate if required_by == "generate" else independent_generate,
         data=training,
-        components=[],
         transformed_parameters=transform if required_by == "transformed_parameters" else None,
         log_likelihood=("pointwise",) if required_by == "generate" else (),
         predictive=("prediction",) if required_by == "transformed_parameters" else (),
@@ -478,7 +511,6 @@ def test_default_data_uses_stored_inputs_and_recomputes_likelihood_outputs():
         density,
         generated,
         data=training,
-        components=[],
         log_likelihood=("pointwise",),
     )
     results = _collect_results(
@@ -543,7 +575,6 @@ def test_multicolumn_group_posterior_requires_matching_auxiliary_identities(coor
         density,
         generated,
         data=training,
-        components=[],
         dims={"intercept": ("group",)},
         generated_dims={"mean": ("time", "group")},
     )

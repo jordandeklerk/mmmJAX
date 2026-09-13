@@ -43,7 +43,6 @@ def _problem(*, spend_unit=1.0, fail_evaluation=False):
         {"target": Real((3,))},
         lambda expected: expected.sum(),
         data=data,
-        components=[],
         transformed_parameters=transformed,
         dims={"target": ("channel",)},
     )
@@ -80,7 +79,6 @@ def _four_channel_problem(*, fail_evaluation=False, transformed=None):
         {"target": Real((4,))},
         lambda expected: expected.sum(),
         data=data,
-        components=[],
         transformed_parameters=quadratic if transformed is None else transformed,
         dims={"target": ("channel",)},
     )
@@ -565,7 +563,6 @@ def test_optimize_budget_scales_gradients_with_a_constant_group_response():
         {"target": Real((4,))},
         lambda expected: expected.sum(),
         data=data,
-        components=[],
         transformed_parameters=transformed,
         dims={"target": ("channel",)},
     )

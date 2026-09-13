@@ -69,7 +69,6 @@ def _model(data, *, scaling=None):
         density,
         generated,
         data=data,
-        components=[],
         transformed_parameters=transformed,
         scaling=scaling,
         dims={"coefficient": ("channel",)},
@@ -252,7 +251,6 @@ def _linear_model(*, media=(1, 3), spend=(1.0, 3.0), baseline=0.0, scaling=None)
         {"coefficient": Real()},
         lambda coefficient: -(coefficient**2),
         data=data,
-        components=[],
         transformed_parameters=lambda media, coefficient: {"expected_users": baseline + media[:, 0] * coefficient},
         scaling=scaling,
     )

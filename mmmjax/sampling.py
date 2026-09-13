@@ -16,10 +16,7 @@ from numpy.typing import NDArray
 from mmmjax._nuts import _sample_nuts
 from mmmjax._results import _collect_results, _data_dimensions, _prepared_groups, _same_labels
 from mmmjax.data import PreparedData
-from mmmjax.hsgp import _PreparedHSGP
-from mmmjax.media import _PreparedMedia
-from mmmjax.model import Model, Prior, _component_parameter_inputs
-from mmmjax.seasonality import _PreparedFourier
+from mmmjax.model import Model, Prior
 
 __all__ = ["generate_quantities", "sample", "sample_prior"]
 
@@ -78,12 +75,12 @@ def sample(
           and the unconstrained log density in ``lp``.
         - **posterior_predictive** and **log_likelihood** contain generated
           outputs selected by the model. Other outputs, including saved
-          transformed quantities and component effects, are stored in
+          transformed quantities, are stored in
           **generated_quantities**.
         - **observed_data** and **constant_data** contain prepared model inputs
           in their evaluated units, including any fitted scaling.
 
-        Known component and data axes retain their labels, including unchanged
+        Declared parameter and data axes retain their labels, including unchanged
         generation inputs. Observation-shaped predictive and likelihood outputs
         inherit outcome labels. Use ``dims``, ``generated_dims``, and ``coords``
         on the model for custom axes. Inspect diagnostics before interpreting results.
@@ -401,7 +398,7 @@ def _prior_draws(
         if not isinstance(values, Mapping):
             raise TypeError("prior must return a mapping of parameter names to constrained draws")
         if set(values) != set(model.parameters):
-            raise ValueError("Prior parameter names must match all model declarations, including component parameters")
+            raise ValueError("Prior parameter names must match all model declarations")
 
         parameters = {}
         for name, declaration in model.parameters.items():
@@ -491,7 +488,7 @@ def generate_quantities(
     inputs = model.data if model._data is not None else new_data
     if model._data is not None and new_data is not None:
         inputs, aligned = model._prepare_data(new_data)
-        prepared = replace(aligned, arrays={name: np.array(value, copy=True) for name, value in inputs.values.items()})
+        prepared = replace(aligned, arrays={name: np.array(inputs.values[name], copy=True) for name in aligned.arrays})
 
     generation_key, preview_key = jax.random.split(jax.random.key(int(seed)))
     initial = {name: value[0, 0] for name, value in posterior.items()}
@@ -586,33 +583,9 @@ def _posterior_draws(
 
 
 def _parameter_metadata(model: Model) -> tuple[dict[str, tuple[str, ...]], dict[str, NDArray[np.generic]]]:
-    """Label known component axes without guessing the meaning of custom shapes."""
+    """Use declared parameter axes without guessing the meaning of custom shapes."""
     dimensions: dict[str, tuple[str, ...]] = {}
     coordinates = {name: labels.copy() for name, labels in model._result_coords.items()}
-    if model._data is not None:
-        for component in model._data.components:
-            if isinstance(component, _PreparedMedia):
-                for name, parameter in component.parameters.items():
-                    dimensions[name] = (
-                        ("group", component.channel_axis) if len(parameter.shape) == 2 else (component.channel_axis,)
-                    )
-            elif isinstance(component, _PreparedFourier):
-                name = component.specification.name
-                axis = f"{name}_mode"
-                dimensions[name] = (axis, "group") if component.specification.group_specific_coefficients else (axis,)
-                order = component.specification.order
-                coordinates.setdefault(
-                    axis, np.array([f"{kind}_{index}" for kind in ("sin", "cos") for index in range(1, order + 1)])
-                )
-            elif isinstance(component, _PreparedHSGP):
-                name = component.specification.name
-                axis = f"{name}_basis"
-                dimensions[f"{name}_coefficients"] = (
-                    ("channel", axis) if component.specification.channel_specific else (axis,)
-                )
-                dimensions[f"{name}_length_scale"] = ()
-                dimensions[f"{name}_amplitude"] = ()
-                coordinates.setdefault(axis, np.arange(1, component.config.n_basis + 1))
     dimensions.update(model._result_dims)
     for name, parameter in model.parameters.items():
         dimensions.setdefault(name, tuple(f"{name}_dim_{index}" for index in range(len(parameter.shape))))
@@ -640,27 +613,10 @@ def _output_dimensions(
         outcome_shape = (len(prepared.time_values),)
         if prepared.group_columns:
             outcome_shape += (len(prepared.group_values),)
-        assert model._data is not None
-        effect_dimensions = {}
-        for component in model._data.components:
-            if isinstance(component, _PreparedMedia):
-                axes = (*observation_axes, component.channel_axis)
-            elif isinstance(component, _PreparedHSGP) and component.specification.channel_specific:
-                axes = (*observation_axes, "channel")
-            else:
-                axes = observation_axes
-            effect_dimensions[component.specification.name] = axes
-
-        aliases = _component_parameter_inputs(model._data.components)
+        role_dimensions.update(time=("time",), media_time=("media_time",))
         for name, source in (*model._generation_inputs, *model._saved_inputs):
             if source == "data":
                 input_dimensions[name] = role_dimensions[name]
-            elif source == "effect":
-                input_dimensions[name] = effect_dimensions[name]
-            elif source == "media_total":
-                input_dimensions[name] = observation_axes
-            elif source == "component_parameter":
-                input_dimensions[name] = parameter_dimensions[aliases[name]]
             elif source == "parameter":
                 input_dimensions[name] = parameter_dimensions[name]
     else:
@@ -690,7 +646,11 @@ def _result_data(model: Model) -> PreparedData | None:
         return None
     layout = model._layout
     return PreparedData(
-        arrays={name: np.array(value, copy=True) for name, value in model._data.values.items()},
+        arrays={
+            name: np.array(value, copy=True)
+            for name, value in model._data.values.items()
+            if name not in model._time_inputs
+        },
         time_column=model._time_column or "time",
         time_values=model._time_values,
         media_time_values=model._media_time_values,
