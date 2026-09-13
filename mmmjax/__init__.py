@@ -65,6 +65,9 @@ from mmmjax.distributions import (
     laplace_logpdf,
     laplace_logsf,
     laplace_rng,
+    lkj_cholesky,
+    lkj_cholesky_logpdf,
+    lkj_cholesky_rng,
     lognormal,
     lognormal_logcdf,
     lognormal_logpdf,
@@ -76,6 +79,9 @@ from mmmjax.distributions import (
     multinomial_logit_rng,
     multinomial_logpmf,
     multinomial_rng,
+    multivariate_normal,
+    multivariate_normal_logpdf,
+    multivariate_normal_rng,
     negative_binomial,
     negative_binomial_log,
     negative_binomial_log_logcdf,
@@ -119,7 +125,16 @@ from mmmjax.hsgp import HSGPConfig, hsgp_basis, hsgp_weights, prepare_hsgp
 from mmmjax.media import media_response, reach_frequency_response
 from mmmjax.model import Model
 from mmmjax.optimization import SpendConstraint, optimize_budget
-from mmmjax.parameters import Interval, LowerBound, Parameterization, Positive, Real, Simplex, UpperBound
+from mmmjax.parameters import (
+    CorrelationCholesky,
+    Interval,
+    LowerBound,
+    Parameterization,
+    Positive,
+    Real,
+    Simplex,
+    UpperBound,
+)
 from mmmjax.response import media_metrics, response_curves
 from mmmjax.saturation import hill_saturation, log_saturation, logistic_saturation, root_saturation
 from mmmjax.scaling import DataScaling, Scaling, fit_data_scaling, fit_media_scaling, fit_scaling
@@ -130,6 +145,7 @@ from mmmjax.synthetic import SyntheticData, simulate_data
 __version__ = "0.0.1"
 
 __all__ = [
+    "CorrelationCholesky",
     "DataScaling",
     "HSGPConfig",
     "Interval",
@@ -216,6 +232,9 @@ __all__ = [
     "laplace_logpdf",
     "laplace_logsf",
     "laplace_rng",
+    "lkj_cholesky",
+    "lkj_cholesky_logpdf",
+    "lkj_cholesky_rng",
     "log_saturation",
     "logistic_saturation",
     "lognormal",
@@ -231,6 +250,9 @@ __all__ = [
     "multinomial_logit_rng",
     "multinomial_logpmf",
     "multinomial_rng",
+    "multivariate_normal",
+    "multivariate_normal_logpdf",
+    "multivariate_normal_rng",
     "negative_binomial",
     "negative_binomial_log",
     "negative_binomial_log_logcdf",

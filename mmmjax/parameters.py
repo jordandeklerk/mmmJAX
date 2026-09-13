@@ -11,6 +11,7 @@ from jax.typing import ArrayLike, DTypeLike
 from tensorflow_probability.substrates.jax import bijectors as tfb
 
 __all__ = [
+    "CorrelationCholesky",
     "Interval",
     "LowerBound",
     "Parameterization",
@@ -878,6 +879,120 @@ class Simplex:
         -------
         jax.Array
             Unconstrained initial values with shape ``position_shape``.
+        """
+        return _initialize(key, shape=self.position_shape, dtype=self.dtype)
+
+
+@dataclass(frozen=True, slots=True)
+class CorrelationCholesky:
+    r"""Lower Cholesky factor of a positive-definite correlation matrix.
+
+    Each factor has a positive diagonal and unit-length rows. A
+    :math:`K \times K` factor uses :math:`K(K-1)/2` unconstrained values.
+    Declare its prior separately with :func:`lkj_cholesky`.
+
+    Parameters
+    ----------
+    shape : tuple of int, default ()
+        Constrained shape with two equal final dimensions. Leading axes
+        identify independent factors. Omit to infer sizes from ``dims``.
+    dtype : data-type, default float
+        Floating-point dtype. The default follows JAX's precision setting.
+    dims : sequence of str, default ()
+        Named axes resolved from data or ``Model`` coordinates. Use distinct
+        names for the row and column axes, such as ``("effect", "effect_to")``.
+    """
+
+    shape: tuple[int, ...] = ()
+    dtype: DTypeLike = float
+    dims: str | Sequence[str] = field(default=(), kw_only=True)
+
+    def __post_init__(self) -> None:
+        """Validate the square event shape and normalize declaration metadata."""
+        _validate_shape(self.shape)
+        object.__setattr__(self, "dims", _normalize_dims(self.dims, self.shape))
+
+        if self.shape:
+            if len(self.shape) < 2 or self.shape[-2] != self.shape[-1]:
+                raise ValueError("shape must end in two equal correlation dimensions")
+        elif len(self.dims) < 2:
+            raise ValueError("Specify a square correlation shape or at least two named axes")
+
+        object.__setattr__(self, "dtype", _canonicalize_dtype(self.dtype))
+
+    @property
+    def position_shape(self) -> tuple[int, ...]:
+        """Shape of the packed unconstrained values."""
+        shape = _resolved_shape(self.shape, self.dims)
+        dimension = shape[-1]
+        return (*shape[:-2], dimension * (dimension - 1) // 2)
+
+    def constrain(self, position: ArrayLike) -> jax.Array:
+        """Map unconstrained values to correlation Cholesky factors.
+
+        Parameters
+        ----------
+        position : array_like
+            Values with shape ``position_shape``.
+
+        Returns
+        -------
+        jax.Array
+            Lower-triangular factors with shape ``shape``.
+        """
+        position = _as_array(position, name="position", shape=self.position_shape, dtype=self.dtype)
+        # Recompute after inverse calls so round-trip checks can detect invalid factors.
+        return cast(jax.Array, tfb.CorrelationCholesky().forward(jnp.copy(position)))
+
+    def unconstrain(self, parameter: ArrayLike) -> jax.Array:
+        """Map valid correlation Cholesky factors to unconstrained values.
+
+        Parameters
+        ----------
+        parameter : array_like
+            Factors with shape ``shape``, positive diagonals and unit-length rows.
+
+        Returns
+        -------
+        jax.Array
+            Packed values with shape ``position_shape``.
+        """
+        parameter = _as_array(
+            parameter, name="parameter", shape=_resolved_shape(self.shape, self.dims), dtype=self.dtype
+        )
+        if parameter.shape[-1] == 1:
+            return jnp.zeros(self.position_shape, dtype=parameter.dtype)
+        return cast(jax.Array, tfb.CorrelationCholesky().inverse(jnp.copy(parameter)))
+
+    def log_density_adjustment(self, position: ArrayLike) -> jax.Array:
+        """Return the scalar log absolute Jacobian determinant.
+
+        Parameters
+        ----------
+        position : array_like
+            Values with shape ``position_shape``.
+
+        Returns
+        -------
+        jax.Array
+            Adjustment summed over all factors, in Cholesky-factor space.
+        """
+        position = _as_array(position, name="position", shape=self.position_shape, dtype=self.dtype)
+        adjustment = tfb.CorrelationCholesky().forward_log_det_jacobian(position, event_ndims=1)
+        return jnp.sum(adjustment)
+
+    def initialize(self, key: jax.Array) -> jax.Array:
+        """Draw an unconstrained initial position uniformly from ``[-2, 2)``.
+
+        Parameters
+        ----------
+        key : jax.Array
+            JAX random key. Use a fresh key for each independent initialization.
+
+        Returns
+        -------
+        jax.Array
+            Initial values with shape ``position_shape``.
         """
         return _initialize(key, shape=self.position_shape, dtype=self.dtype)
 
