@@ -558,10 +558,16 @@ def _convolve_adstock(media: jax.Array, weights: jax.Array, *, axis: int) -> jax
 
     time_last = jnp.moveaxis(media, axis, -1)
     n_times = time_last.shape[-1]
+    n_lags = min(weights.shape[-1], n_times)
+    padding = [(0, 0)] * (time_last.ndim - 1) + [(n_lags - 1, 0)]
+    padded = jnp.pad(time_last, padding)
 
-    def convolve_series(series: jax.Array, kernel: jax.Array) -> jax.Array:
-        # The leading part of full convolution is causal; 'same' would center the window
-        return jnp.convolve(series, kernel, mode="full", precision=jax.lax.Precision.HIGHEST)[:n_times]
+    def add_lag(lag: int, accumulated: jax.Array) -> jax.Array:
+        shifted: jax.Array = jax.lax.dynamic_slice_in_dim(padded, n_lags - 1 - lag, n_times, axis=-1)
+        weight: jax.Array = jax.lax.dynamic_index_in_dim(weights, lag, axis=-1, keepdims=True)
+        return accumulated + shifted * weight
 
-    transformed = jax.vmap(convolve_series)(time_last.reshape((-1, n_times)), weights.reshape((-1, weights.shape[-1])))
-    return jnp.moveaxis(transformed.reshape(time_last.shape), -1, axis)
+    # Elementwise lag products keep singular derivatives within their own series.
+    # Any normalization uses the full window, including lags beyond the data.
+    transformed = jax.lax.fori_loop(0, n_lags, add_lag, jnp.zeros_like(time_last))
+    return jnp.moveaxis(transformed, -1, axis)

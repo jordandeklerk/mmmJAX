@@ -767,7 +767,7 @@ def _prepare_inputs(
         array = np.array(inputs[name].values, copy=True)
         if array.dtype.kind not in "biuf" or not np.isfinite(array).all():
             raise ValueError(f"Input {name!r} must contain finite real numbers or booleans")
-        dtype = jax.dtypes.canonicalize_dtype(array.dtype)
+        dtype = jax.dtypes.canonicalize_dtype(array.dtype.newbyteorder("="))
         if array.dtype.kind in "iu":
             limits = np.iinfo(dtype)
             if np.any(array < limits.min) or np.any(array > limits.max):

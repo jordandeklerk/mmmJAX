@@ -235,6 +235,25 @@ def test_labeled_inputs_require_finite_real_values_or_booleans(auxiliary_data, v
         Model({}, lambda: jnp.array(0.0), data=auxiliary_data, inputs=xr.Dataset({"lift": ("experiment", values)}))
 
 
+@pytest.mark.parametrize("dtype", ["float32", "float64", "int32", "int64", "uint32", "uint64"])
+@pytest.mark.parametrize("byteorder", ["=", "S"], ids=["native", "non-native"])
+@pytest.mark.parametrize("enable_x64", [False, True])
+def test_labeled_inputs_normalize_byte_order_without_changing_values(auxiliary_data, dtype, byteorder, enable_x64):
+    values = np.array([1, 3, 7], dtype=np.dtype(dtype).newbyteorder(byteorder))
+    inputs = xr.Dataset({"lift": ("experiment", values)})
+
+    with jax.enable_x64(enable_x64):
+        model = Model({}, lambda: jnp.array(0.0), data=auxiliary_data, inputs=inputs)
+        converted = model.data.values["lift"]
+
+        assert converted.dtype == jax.dtypes.canonicalize_dtype(dtype)
+        np.testing.assert_array_equal(converted, values)
+
+    assert inputs["lift"].dtype == values.dtype
+    np.testing.assert_array_equal(inputs["lift"].values, values)
+
+
+@pytest.mark.parametrize("byteorder", ["=", "S"], ids=["native", "non-native"])
 @pytest.mark.parametrize(
     ("value", "message"),
     [
@@ -244,7 +263,8 @@ def test_labeled_inputs_require_finite_real_values_or_booleans(auxiliary_data, v
         (np.array([1e100], dtype=np.float64), "not finite at the current JAX precision"),
     ],
 )
-def test_labeled_inputs_reject_values_that_overflow_jax_precision(auxiliary_data, value, message):
+def test_labeled_inputs_reject_values_that_overflow_jax_precision(auxiliary_data, value, message, byteorder):
+    value = value.astype(value.dtype.newbyteorder(byteorder))
     inputs = xr.Dataset({"lift": ("experiment", value)})
     with jax.enable_x64(False), pytest.raises(ValueError, match=message):
         Model({}, lambda: jnp.array(0.0), data=auxiliary_data, inputs=inputs)
