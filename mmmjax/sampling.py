@@ -28,6 +28,7 @@ def sample(
     draws: int = 1000,
     warmup: int = 1000,
     chains: int = 4,
+    chain_method: str = "sequential",
     seed: int = 0,
     target_accept: float = 0.8,
     max_tree_depth: int = 10,
@@ -38,8 +39,8 @@ def sample(
     """Sample a model with NUTS and return labeled posterior results.
 
     Warmup tunes each chain's step size and, when long enough, its diagonal
-    mass matrix. Chains run sequentially. Warmup draws are discarded, and generated
-    quantities are evaluated for every retained draw when available.
+    mass matrix. Warmup draws are discarded, and generated quantities are
+    evaluated for every retained draw when available.
 
     Parameters
     ----------
@@ -54,6 +55,11 @@ def sample(
         Adaptation steps per chain.
     chains : int, default 4
         Number of independently adapted chains.
+    chain_method : {"sequential", "vectorized", "parallel"}, default "sequential"
+        Run chains one at a time, together on one device, or one per local
+        JAX device. Parallel sampling requires at least ``chains`` devices.
+        Vectorized chains use more memory and can wait for the longest
+        trajectory, so they are not always faster.
     seed : int, default 0
         Random seed for initialization, sampling, and generated quantities.
     target_accept : float, default 0.8
@@ -98,6 +104,15 @@ def sample(
     for name, value in (("draws", draws), ("warmup", warmup), ("chains", chains), ("max_tree_depth", max_tree_depth)):
         if isinstance(value, bool) or not isinstance(value, Integral) or value < 1:
             raise ValueError(f"{name} must be a positive integer")
+
+    if not isinstance(chain_method, str) or chain_method not in ("sequential", "vectorized", "parallel"):
+        raise ValueError("chain_method must be 'sequential', 'vectorized', or 'parallel'")
+    if chain_method == "parallel" and chains > jax.local_device_count():
+        raise ValueError(
+            f"Parallel sampling requested {chains} chains but only {jax.local_device_count()} local JAX devices "
+            "are available. Use fewer chains or choose 'sequential' or 'vectorized'"
+        )
+
     if isinstance(seed, bool) or not isinstance(seed, Integral) or seed < 0:
         raise ValueError("seed must be a nonnegative integer")
     if isinstance(target_accept, bool) or not isinstance(target_accept, Real) or not 0 < target_accept < 1:
@@ -184,6 +199,7 @@ def sample(
         warmup=warmup,
         target_accept=target_accept,
         max_tree_depth=max_tree_depth,
+        chain_method=chain_method,
     )
     if not np.isfinite(np.asarray(stats["lp"])).all():
         raise RuntimeError("Sampling produced nonfinite log densities. Check the model and initial_values")
@@ -209,6 +225,7 @@ def sample(
         inference_library="blackjax",
         inference_library_version=version("blackjax"),
         inference_method="nuts",
+        chain_method=chain_method,
         warmup_steps=warmup,
         target_accept=target_accept,
         max_tree_depth=max_tree_depth,

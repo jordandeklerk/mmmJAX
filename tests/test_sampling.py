@@ -1,5 +1,10 @@
 """Tests for sampling JAX models and collecting constrained, labeled draws."""
 
+import os
+import subprocess
+import sys
+from textwrap import dedent
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -42,7 +47,9 @@ def normal_model():
 def nuts_calls(monkeypatch):
     calls = []
 
-    def stationary_draws(logdensity, initial_positions, keys, *, draws, warmup, target_accept, max_tree_depth):
+    def stationary_draws(
+        logdensity, initial_positions, keys, *, draws, warmup, target_accept, max_tree_depth, chain_method
+    ):
         calls.append(
             {
                 "positions": jax.tree.map(np.array, initial_positions),
@@ -51,6 +58,7 @@ def nuts_calls(monkeypatch):
                 "warmup": warmup,
                 "target_accept": target_accept,
                 "max_tree_depth": max_tree_depth,
+                "chain_method": chain_method,
             }
         )
         positions = jax.tree.map(
@@ -104,8 +112,17 @@ def test_public_sampling_replaces_manual_result_collection():
     assert not hasattr(mmmjax, "collect_results")
 
 
-def test_normal_nuts_produces_reproducible_independent_chains(normal_model):
-    options = {"data": 0.0, "draws": 200, "warmup": 150, "chains": 2, "seed": 19, "target_accept": 0.8}
+@pytest.mark.parametrize("chain_method", ["sequential", "vectorized"])
+def test_normal_nuts_produces_reproducible_independent_chains(normal_model, chain_method):
+    options = {
+        "data": 0.0,
+        "draws": 200,
+        "warmup": 150,
+        "chains": 2,
+        "seed": 19,
+        "target_accept": 0.8,
+        "chain_method": chain_method,
+    }
     first = sample(normal_model, **options)
     second = sample(normal_model, **options)
     assert isinstance(first, xr.DataTree)
@@ -119,6 +136,25 @@ def test_normal_nuts_produces_reproducible_independent_chains(normal_model):
     xr.testing.assert_equal(first["posterior"].to_dataset(), second["posterior"].to_dataset())
     assert first["sample_stats"]["diverging"].dtype == np.bool_
     assert first["sample_stats"]["diverging"].shape == (2, 200)
+    assert first.attrs["chain_method"] == chain_method
+    statistics = first["sample_stats"]
+    assert set(statistics.data_vars) == {
+        "lp",
+        "diverging",
+        "acceptance_rate",
+        "energy",
+        "tree_depth",
+        "n_steps",
+        "reached_max_treedepth",
+        "step_size",
+    }
+    for variable in statistics.data_vars.values():
+        assert variable.dims == ("chain", "draw")
+        assert variable.shape == (2, 200)
+        assert np.isfinite(variable).all()
+    assert np.all((statistics["acceptance_rate"] >= 0) & (statistics["acceptance_rate"] <= 1))
+    assert np.all(statistics["step_size"] > 0)
+    assert np.unique(statistics["step_size"].values[:, 0]).size == 2
     for group in first.children.values():
         for variable in group.data_vars.values():
             assert isinstance(variable.data, np.ndarray)
@@ -145,7 +181,8 @@ def test_nuts_allows_parameters_named_after_sampler_diagnostics(named_axes):
         np.testing.assert_array_equal(results["posterior"]["feature"], ["first", "second"])
 
 
-def test_nuts_returns_positive_parameters_and_full_simplex_events():
+@pytest.mark.parametrize("chain_method", ["sequential", "vectorized"])
+def test_nuts_returns_positive_parameters_and_full_simplex_events(chain_method):
     model = Model(
         {"scale": Positive(), "weights": Simplex((3,))},
         lambda data, scale, weights: half_normal(scale, 1.0) + dirichlet(weights, jnp.array([2.0, 3.0, 4.0])),
@@ -159,6 +196,7 @@ def test_nuts_returns_positive_parameters_and_full_simplex_events():
         chains=1,
         seed=5,
         initial_values={"scale": 1.0, "weights": np.array([0.2, 0.3, 0.5])},
+        chain_method=chain_method,
     )
     assert result["posterior"]["scale"].shape == (1, 40)
     assert (result["posterior"]["scale"].values > 0).all()
@@ -166,6 +204,7 @@ def test_nuts_returns_positive_parameters_and_full_simplex_events():
     assert (result["posterior"]["weights"].values > 0).all()
     np.testing.assert_allclose(result["posterior"]["weights"].sum("category"), 1.0, rtol=2e-6)
     np.testing.assert_array_equal(result["posterior"]["category"], ["a", "b", "c"])
+    assert result.attrs["chain_method"] == chain_method
 
 
 def test_default_initialization_and_keys_are_independent_per_chain(normal_model, nuts_calls):
@@ -174,6 +213,162 @@ def test_default_initialization_and_keys_are_independent_per_chain(normal_model,
     assert call["positions"]["location"].shape == (3,)
     assert len(np.unique(call["positions"]["location"])) == 3
     assert len(np.unique(call["keys"], axis=0)) == 3
+    assert call["chain_method"] == "sequential"
+
+
+@pytest.mark.parametrize("chain_method", ["sequential", "vectorized", "parallel"])
+def test_chain_methods_forward_options_without_changing_initialization_or_random_keys(nuts_calls, chain_method):
+    model, _ = _prepared_model()
+    chains = min(3, jax.local_device_count()) if chain_method == "parallel" else 3
+    options = {"draws": 3, "warmup": 5, "chains": chains, "seed": 12, "batch_size": 2}
+    expected = sample(model, **options)
+    result = sample(model, **options, chain_method=chain_method)
+
+    assert nuts_calls[1]["chain_method"] == chain_method
+    assert result.attrs["chain_method"] == chain_method
+    np.testing.assert_array_equal(nuts_calls[0]["keys"], nuts_calls[1]["keys"])
+    for name in nuts_calls[0]["positions"]:
+        np.testing.assert_array_equal(nuts_calls[0]["positions"][name], nuts_calls[1]["positions"][name])
+    for group in expected.children:
+        xr.testing.assert_identical(result[group], expected[group])
+
+
+@pytest.mark.parametrize("chain_method", [None, True, 1, [], {}, "", "automatic", "Parallel"])
+def test_invalid_chain_methods_are_rejected_before_sampling(normal_model, nuts_calls, chain_method):
+    with pytest.raises(ValueError, match="chain_method"):
+        sample(normal_model, data=0.0, draws=2, warmup=3, chains=1, chain_method=chain_method)
+    assert not nuts_calls
+
+
+def test_parallel_sampling_requires_enough_devices_before_evaluating_model(monkeypatch, nuts_calls):
+    def forbidden_density(data, location):
+        raise AssertionError("Device validation must run before model evaluation")
+
+    def forbidden_initialize(self, key):
+        raise AssertionError("Device validation must run before parameter initialization")
+
+    model = Model({"location": Real()}, forbidden_density)
+    devices = jax.local_devices()
+    configuration = {name: os.environ.get(name) for name in ("JAX_PLATFORMS", "JAX_NUM_CPU_DEVICES", "XLA_FLAGS")}
+    monkeypatch.setattr(Model, "initialize_random", forbidden_initialize)
+
+    with pytest.raises(ValueError, match=r"(?i)device"):
+        sample(model, draws=2, warmup=3, chains=len(devices) + 1, chain_method="parallel")
+
+    assert not nuts_calls
+    assert jax.local_devices() == devices
+    assert {name: os.environ.get(name) for name in configuration} == configuration
+
+
+def test_parallel_nuts_on_two_cpu_devices_preserves_targets_generation_and_labels():
+    script = dedent(
+        """
+        import jax
+        import jax.numpy as jnp
+        import numpy as np
+        import xarray as xr
+        import mmmjax.sampling as sampling
+        from mmmjax import Model, Real, Simplex, normal, sample
+
+        assert jax.local_device_count() == 2
+        assert all(device.platform == "cpu" for device in jax.local_devices())
+        run_nuts = sampling._sample_nuts
+
+        def check_execution(*args, **kwargs):
+            history = run_nuts(*args, **kwargs)
+            if kwargs["chain_method"] == "parallel":
+                chains = next(iter(args[1].values())).shape[0]
+                for value in jax.tree.leaves(history):
+                    assert len(value.sharding.device_set) == chains
+            return history
+
+        sampling._sample_nuts = check_execution
+        observed_location = jax.device_put(jnp.array(0.0), jax.local_devices()[1])
+        model = Model(
+            {"location": Real()},
+            lambda data, location: normal(location, data, 1.0),
+            lambda key, data, location: {
+                "prediction": location + 0.2 * jax.random.normal(key),
+                "location_copy": location,
+            },
+            predictive=("prediction",),
+        )
+        options = dict(data=observed_location, draws=160, warmup=120, chains=2, seed=19, batch_size=17)
+        generation_key = jax.random.split(jax.random.key(19), 4)[2]
+        keys = jax.random.split(generation_key, (2, 160))
+        noise = jax.jit(jax.vmap(jax.vmap(jax.random.normal)))(keys)
+
+        parallel = None
+        for method in ("parallel", "vectorized", "sequential"):
+            result = sample(model, **options, chain_method=method)
+            assert result.attrs["chain_method"] == method
+            assert set(result.children) == {
+                "posterior", "sample_stats", "posterior_predictive", "generated_quantities"
+            }
+            location = result["posterior"]["location"]
+            assert location.dims == ("chain", "draw")
+            assert location.shape == (2, 160)
+            assert abs(float(location.mean())) < 0.4
+            assert 0.55 < float(location.std()) < 1.5
+            assert not np.array_equal(location.values[0], location.values[1])
+            for group in result.children.values():
+                np.testing.assert_array_equal(group.coords["chain"], [0, 1])
+                np.testing.assert_array_equal(group.coords["draw"], np.arange(160))
+                for value in group.data_vars.values():
+                    assert value.shape == (2, 160)
+                    assert isinstance(value.data, np.ndarray)
+                    assert value.data.flags.writeable
+                    assert np.isfinite(value).all()
+            expected_lp = -0.5 * (location.values**2 + np.log(2 * np.pi))
+            np.testing.assert_allclose(result["sample_stats"]["lp"], expected_lp, rtol=2e-5, atol=2e-5)
+            np.testing.assert_array_equal(result["generated_quantities"]["location_copy"], location)
+            np.testing.assert_allclose(
+                result["posterior_predictive"]["prediction"],
+                location.values + 0.2 * np.asarray(noise),
+                rtol=2e-5, atol=2e-5,
+            )
+            if method == "parallel":
+                parallel = result
+
+        repeated = sample(model, **options, chain_method="parallel")
+        xr.testing.assert_allclose(parallel, repeated)
+        single_options = options | {
+            "draws": 8,
+            "warmup": 60,
+            "chains": 1,
+            "initial_values": {"location": jax.device_put(jnp.array(0.25), jax.local_devices()[1])},
+        }
+        single = sample(model, **single_options, chain_method="parallel", generate=False)
+        assert single["posterior"]["location"].shape == (1, 8)
+        assert set(single.children) == {"posterior", "sample_stats"}
+        np.testing.assert_allclose(
+            single["sample_stats"]["lp"],
+            -0.5 * (single["posterior"]["location"].values**2 + np.log(2 * np.pi)),
+            rtol=2e-5, atol=2e-5,
+        )
+        simplex_model = Model(
+            {"location": Real(), "weights": Simplex((1,))},
+            lambda data, location, weights: normal(location, 0.0, 1.0) + 0.0 * weights.sum(),
+        )
+        simplex = sample(
+            simplex_model, chains=2, draws=8, warmup=40, seed=8, chain_method="parallel",
+            initial_values={"location": 0.0, "weights": jnp.ones(1)}, generate=False,
+        )
+        assert simplex["posterior"]["weights"].shape == (2, 8, 1)
+        np.testing.assert_array_equal(simplex["posterior"]["weights"], np.ones((2, 8, 1)))
+        assert np.isfinite(simplex["posterior"]["location"]).all()
+        assert np.isfinite(simplex["sample_stats"]["lp"]).all()
+        assert jax.local_device_count() == 2
+        print("Two-device chain checks passed")
+        """
+    )
+    environment = os.environ.copy()
+    environment.update(JAX_PLATFORMS="cpu", JAX_NUM_CPU_DEVICES="2")
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=180, env=environment
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Two-device chain checks passed" in result.stdout
 
 
 def test_explicit_constrained_initial_values_are_replicated_and_sampler_options_forwarded(normal_model, nuts_calls):
