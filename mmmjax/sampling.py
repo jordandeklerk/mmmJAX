@@ -31,6 +31,7 @@ def sample(
     chain_method: str = "sequential",
     seed: int = 0,
     target_accept: float = 0.8,
+    mass_matrix: str = "diagonal",
     max_tree_depth: int = 10,
     initial_values: Mapping[str, ArrayLike] | None = None,
     generate: bool = True,
@@ -38,7 +39,7 @@ def sample(
 ) -> xr.DataTree:
     """Sample a model with NUTS and return labeled posterior results.
 
-    Warmup tunes each chain's step size and, when long enough, its diagonal
+    Warmup tunes each chain's step size and, when long enough, its selected
     mass matrix. Warmup draws are discarded, and generated quantities are
     evaluated for every retained draw when available.
 
@@ -64,6 +65,11 @@ def sample(
         Random seed for initialization, sampling, and generated quantities.
     target_accept : float, default 0.8
         Target acceptance probability during adaptation, between zero and one.
+    mass_matrix : {"diagonal", "dense"}, default "diagonal"
+        Adapt individual unconstrained parameter scales, or also their
+        correlations with a full dense matrix. Dense adaptation uses more
+        computation, with matrix storage growing quadratically in the
+        number of unconstrained parameter values.
     max_tree_depth : int, default 10
         Maximum trajectory expansion depth for each NUTS step.
     initial_values : mapping of str to array_like, optional
@@ -107,6 +113,8 @@ def sample(
 
     if not isinstance(chain_method, str) or chain_method not in ("sequential", "vectorized", "parallel"):
         raise ValueError("chain_method must be 'sequential', 'vectorized', or 'parallel'")
+    if not isinstance(mass_matrix, str) or mass_matrix not in ("diagonal", "dense"):
+        raise ValueError("mass_matrix must be 'diagonal' or 'dense'")
     if chain_method == "parallel" and chains > jax.local_device_count():
         raise ValueError(
             f"Parallel sampling requested {chains} chains but only {jax.local_device_count()} local JAX devices "
@@ -200,6 +208,7 @@ def sample(
         target_accept=target_accept,
         max_tree_depth=max_tree_depth,
         chain_method=chain_method,
+        mass_matrix=mass_matrix,
     )
     if not np.isfinite(np.asarray(stats["lp"])).all():
         raise RuntimeError("Sampling produced nonfinite log densities. Check the model and initial_values")
@@ -226,6 +235,7 @@ def sample(
         inference_library_version=version("blackjax"),
         inference_method="nuts",
         chain_method=chain_method,
+        mass_matrix=mass_matrix,
         warmup_steps=warmup,
         target_accept=target_accept,
         max_tree_depth=max_tree_depth,
