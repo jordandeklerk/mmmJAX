@@ -17,4 +17,5 @@ Data, fitted transformations, and model configuration objects.
    HSGPEffect
    FourierSeasonality
    MediaEffect
+   ReachFrequencyEffect
    SpendConstraint

@@ -116,7 +116,7 @@ from mmmjax.distributions import (
     uniform_rng,
 )
 from mmmjax.hsgp import HSGPConfig, HSGPEffect, hsgp_basis, hsgp_weights, prepare_hsgp
-from mmmjax.media import MediaEffect, media_response, reach_frequency_response
+from mmmjax.media import MediaEffect, ReachFrequencyEffect, media_response, reach_frequency_response
 from mmmjax.model import Model
 from mmmjax.optimization import SpendConstraint, optimize_budget
 from mmmjax.parameters import Interval, LowerBound, Parameterization, Positive, Real, Simplex, UpperBound
@@ -141,6 +141,7 @@ __all__ = [
     "Parameterization",
     "Positive",
     "PreparedData",
+    "ReachFrequencyEffect",
     "Real",
     "Scaling",
     "Simplex",

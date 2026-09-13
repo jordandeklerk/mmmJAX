@@ -593,7 +593,9 @@ def _parameter_metadata(model: Model) -> tuple[dict[str, tuple[str, ...]], dict[
         for component in model._data.components:
             if isinstance(component, _PreparedMedia):
                 for name, parameter in component.parameters.items():
-                    dimensions[name] = ("group", "channel") if len(parameter.shape) == 2 else ("channel",)
+                    dimensions[name] = (
+                        ("group", component.channel_axis) if len(parameter.shape) == 2 else (component.channel_axis,)
+                    )
             elif isinstance(component, _PreparedFourier):
                 name = component.specification.name
                 axis = f"{name}_mode"
@@ -639,15 +641,16 @@ def _output_dimensions(
         if prepared.group_columns:
             outcome_shape += (len(prepared.group_values),)
         assert model._data is not None
-        effect_dimensions = {
-            component.specification.name: (
-                (*observation_axes, "channel")
-                if isinstance(component, _PreparedMedia)
-                or (isinstance(component, _PreparedHSGP) and component.specification.channel_specific)
-                else observation_axes
-            )
-            for component in model._data.components
-        }
+        effect_dimensions = {}
+        for component in model._data.components:
+            if isinstance(component, _PreparedMedia):
+                axes = (*observation_axes, component.channel_axis)
+            elif isinstance(component, _PreparedHSGP) and component.specification.channel_specific:
+                axes = (*observation_axes, "channel")
+            else:
+                axes = observation_axes
+            effect_dimensions[component.specification.name] = axes
+
         aliases = _component_parameter_inputs(model._data.components)
         for name, source in (*model._generation_inputs, *model._saved_inputs):
             if source == "data":
