@@ -1,9 +1,9 @@
 """Laplace distribution functions."""
 
-import distrax
 import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax.distributions._utils import _promote_inexact, _random_shape
 
@@ -70,12 +70,12 @@ def laplace_logpdf(
         jnp.where(value_array < location_array, -standardized, standardized),
     )
 
-    distribution = distrax.Laplace(
+    distribution = tfd.Laplace(
         loc=jnp.zeros((), dtype=value_array.dtype),
         scale=jnp.ones((), dtype=value_array.dtype),
     )
     log_density = distribution.log_prob(standardized_distance) - jnp.log(scale_array)
-    return jnp.where(valid_location & valid_scale, log_density, jnp.nan)
+    return jnp.asarray(jnp.where(valid_location & valid_scale, log_density, jnp.nan), dtype=value_array.dtype)
 
 
 def laplace(
@@ -283,7 +283,7 @@ def laplace_rng(
         ("scale", scale),
     )
     _random_shape(sample_shape, location_array, scale_array)
-    samples = distrax.Laplace(location_array, scale_array).sample(
+    samples = tfd.Laplace(location_array, scale_array).sample(
         seed=key,
         sample_shape=sample_shape,
     )
@@ -301,14 +301,14 @@ def _laplace_log_probability(
 ) -> jax.Array:
     valid_parameters = jnp.isfinite(location) & jnp.isfinite(scale) & (scale > 0)
     standardized = _standardize(value, location, scale)
-    distribution = distrax.Laplace(
+    distribution = tfd.Laplace(
         loc=jnp.zeros((), dtype=value.dtype),
         scale=jnp.ones((), dtype=value.dtype),
     )
     log_probability = (
         distribution.log_survival_function(standardized) if survival else distribution.log_cdf(standardized)
     )
-    return jnp.where(valid_parameters, log_probability, jnp.nan)
+    return jnp.asarray(jnp.where(valid_parameters, log_probability, jnp.nan), dtype=value.dtype)
 
 
 @jax.custom_jvp

@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from jax.scipy import stats as jax_stats
 from scipy import special, stats
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax import (
     exponential_logpdf,
@@ -595,11 +596,11 @@ def test_gamma_can_be_vectorized_over_datasets() -> None:
     assert jnp.allclose(result, expected)
 
 
-def test_gamma_rng_scales_log_space_unit_rate_draws() -> None:
+def test_gamma_rng_uses_distribution_sampler() -> None:
     key = jax.random.key(42)
     shapes = jnp.array([0.5, 2.5], dtype=jnp.float32)
     rates = jnp.array([1.7, 0.8], dtype=jnp.float32)
-    expected = jnp.exp(jax.random.loggamma(key, shapes, shape=(3, 2), dtype=jnp.float32) - jnp.log(rates))
+    expected = tfd.Gamma(shapes, rate=rates).sample((3,), seed=key)
 
     result = gamma_rng(key, shapes, rates, sample_shape=(3,))
 

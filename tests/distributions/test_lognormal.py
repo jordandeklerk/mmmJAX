@@ -76,6 +76,49 @@ def test_lognormal_logpdf_remains_finite_for_extreme_valid_scales() -> None:
     assert jnp.allclose(result, expected)
 
 
+def test_lognormal_logpdf_remains_finite_at_large_location_and_small_scale() -> None:
+    location = jnp.float32(80)
+    value = jnp.exp(location)
+    scale = jnp.float32(2e-38)
+
+    result = lognormal_logpdf(value, location, scale)
+    compiled_result = jax.jit(lognormal_logpdf)(value, location, scale)
+
+    assert jnp.allclose(result, 5.886147814898559)
+    assert jnp.allclose(compiled_result, result)
+
+
+@pytest.mark.parametrize(
+    ("function", "expected_value", "expected_gradient"),
+    [
+        pytest.param(lognormal_logpdf, 68.1586142566167, -1e30, id="logpdf"),
+        pytest.param(lognormal_logcdf, -0.6931471805599453, 0.0, id="logcdf"),
+        pytest.param(lognormal_logsf, -0.6931471805599453, 0.0, id="logsf"),
+    ],
+)
+def test_lognormal_has_finite_scale_gradients_at_small_scale(function, expected_value, expected_gradient) -> None:
+    evaluate = jax.value_and_grad(lambda scale: function(jnp.float32(1), jnp.float32(0), scale))
+    scale = jnp.float32(1e-30)
+
+    result, gradient = evaluate(scale)
+    compiled_result, compiled_gradient = jax.jit(evaluate)(scale)
+
+    assert jnp.allclose(result, expected_value)
+    assert jnp.allclose(gradient, expected_gradient, rtol=1e-6, atol=0)
+    assert jnp.allclose(compiled_result, result)
+    assert jnp.allclose(compiled_gradient, gradient, rtol=1e-6, atol=0)
+
+
+@pytest.mark.parametrize("function", [lognormal_logpdf, lognormal_logcdf, lognormal_logsf])
+def test_lognormal_functions_do_not_leak_tracers(function) -> None:
+    with jax.check_tracer_leaks():
+        result = jax.jit(lambda value, location, scale: function(value, location, scale))(
+            jnp.float32(1), jnp.float32(0), jnp.float32(1)
+        )
+
+    assert jnp.isfinite(result)
+
+
 def test_lognormal_log_probabilities_match_normal_on_log_scale() -> None:
     values = jnp.array([0.1, 1.0, 10.0])
     location = 0.4
@@ -228,3 +271,14 @@ def test_lognormal_rng_uses_broadcast_parameter_shape() -> None:
     result = lognormal_rng(jax.random.key(0), location, scale, sample_shape=(4,))
 
     assert result.shape == (4, 2, 3)
+
+
+def test_lognormal_rng_does_not_leak_tracers() -> None:
+    with jax.check_tracer_leaks():
+        result = jax.jit(lambda key, location, scale: lognormal_rng(key, location, scale, sample_shape=(3,)))(
+            jax.random.key(0), jnp.float32(0), jnp.float32(1)
+        )
+
+    assert result.shape == (3,)
+    assert jnp.all(jnp.isfinite(result))
+    assert jnp.all(result > 0)

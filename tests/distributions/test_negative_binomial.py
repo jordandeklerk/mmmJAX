@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from jax.scipy.stats import nbinom as jax_negative_binomial_distribution
 from scipy import special, stats
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax import (
     negative_binomial,
@@ -670,24 +671,17 @@ def test_negative_binomial_log_functions_reject_complex_arguments(arguments, nam
         negative_binomial_log_logpmf(*arguments)
 
 
-def test_negative_binomial_rng_matches_gamma_poisson_mixture() -> None:
+@pytest.mark.filterwarnings("error:Explicitly requested dtype:UserWarning")
+def test_negative_binomial_rng_matches_log_gamma_poisson_mixture() -> None:
     key = jax.random.key(42)
     means = jnp.array([0.5, 3.0, 20.0], dtype=jnp.float32)
     concentrations = jnp.array([0.7, 2.5, 10.0], dtype=jnp.float32)
     gamma_key, poisson_key = jax.random.split(key)
-    log_unit_rate = jax.random.loggamma(
-        gamma_key,
-        concentrations,
-        shape=(4, 3),
-        dtype=jnp.float32,
-    )
-    latent_rate = jnp.exp(log_unit_rate + jnp.log(means) - jnp.log(concentrations))
-    expected = jax.random.poisson(
-        poisson_key,
-        latent_rate,
-        shape=(4, 3),
-        dtype=jnp.int32,
-    )
+    log_rate = tfd.ExpGamma(
+        concentration=concentrations,
+        log_rate=jnp.log(concentrations) - jnp.log(means),
+    ).sample((4,), seed=gamma_key)
+    expected = jax.random.poisson(poisson_key, jnp.exp(log_rate), shape=(4, 3), dtype=jnp.int32)
 
     result = negative_binomial_rng(key, means, concentrations, sample_shape=(4,))
 

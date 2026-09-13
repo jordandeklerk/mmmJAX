@@ -1,10 +1,10 @@
 """Exponential distribution functions."""
 
-import math
-
 import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
+from tensorflow_probability.substrates.jax import distributions as tfd
+from tensorflow_probability.substrates.jax import math as tfm
 
 from mmmjax.distributions._utils import _promote_inexact, _random_shape
 
@@ -59,7 +59,7 @@ def exponential_logpdf(value: ArrayLike, rate: ArrayLike) -> jax.Array:
     """
     value_array, rate_array = _promote_inexact(("value", value), ("rate", rate))
 
-    log_density = jnp.log(rate_array) - rate_array * value_array
+    log_density = tfd.Exponential(rate=rate_array).log_prob(value_array)
     supported_log_density = jnp.where(value_array < 0, -jnp.inf, log_density)
 
     valid_rate = jnp.isfinite(rate_array) & (rate_array > 0)
@@ -147,19 +147,18 @@ def exponential_logcdf(value: ArrayLike, rate: ArrayLike) -> jax.Array:
     safe_value = jnp.where(evaluate_probability, value_array, jnp.ones_like(value_array))
     safe_rate = jnp.where(evaluate_probability, rate_array, jnp.ones_like(rate_array))
     scaled_value = safe_rate * safe_value
+    use_direct = scaled_value < jnp.log(jnp.asarray(2, dtype=value_array.dtype))
+    direct_value = jnp.where(use_direct, scaled_value, jnp.ones_like(scaled_value))
+    tail_value = jnp.where(use_direct, jnp.ones_like(scaled_value), scaled_value)
 
-    # Each form keeps precision in one tail, and safe inputs stop the unused branch from leaking NaN derivatives
-    log_two = jnp.asarray(math.log(2), dtype=scaled_value.dtype)
-    use_expm1 = scaled_value < log_two
-    expm1_input = jnp.where(use_expm1, scaled_value, jnp.ones_like(scaled_value))
-    log1p_input = jnp.where(use_expm1, jnp.ones_like(scaled_value), scaled_value)
-    near_zero = jnp.log(-jnp.expm1(-expm1_input))
-    upper_tail = jnp.log1p(-jnp.exp(-log1p_input))
-    log_cdf = jnp.where(use_expm1, near_zero, upper_tail)
+    distribution = tfd.Exponential(rate=jnp.ones((), dtype=value_array.dtype))
+    direct_log_cdf = distribution.log_cdf(direct_value)
+    tail_log_cdf = tfm.log1mexp(-tail_value)
+    log_cdf = jnp.where(use_direct, direct_log_cdf, tail_log_cdf)
 
     boundary_log_cdf = jnp.where(lower_boundary, -jnp.inf, 0)
     supported_log_cdf = jnp.where(evaluate_probability, log_cdf, boundary_log_cdf)
-    return jnp.where(valid_rate, supported_log_cdf, jnp.nan)
+    return jnp.where(valid_rate & ~jnp.isnan(value_array), supported_log_cdf, jnp.nan)
 
 
 def exponential_logsf(value: ArrayLike, rate: ArrayLike) -> jax.Array:
@@ -211,6 +210,7 @@ def exponential_logsf(value: ArrayLike, rate: ArrayLike) -> jax.Array:
     evaluate_probability = valid_rate & ~lower_boundary & ~upper_boundary
     safe_value = jnp.where(evaluate_probability, value_array, jnp.zeros_like(value_array))
     safe_rate = jnp.where(evaluate_probability, rate_array, jnp.ones_like(rate_array))
+    # The exact survival formula avoids cancellation of density normalizers near zero
     log_survival = -safe_rate * safe_value
 
     boundary_log_survival = jnp.where(lower_boundary, 0, -jnp.inf)
@@ -257,9 +257,8 @@ def exponential_rng(
     """
     (rate_array,) = _promote_inexact(("rate", rate))
 
-    shape = _random_shape(sample_shape, rate_array)
-    standard_exponential = jax.random.exponential(key, shape=shape, dtype=rate_array.dtype)
-    samples = standard_exponential / rate_array
+    _random_shape(sample_shape, rate_array)
+    samples = tfd.Exponential(rate=rate_array).sample(seed=key, sample_shape=sample_shape)
 
     valid_rate = jnp.isfinite(rate_array) & (rate_array > 0)
     return jnp.where(valid_rate, samples, jnp.nan)

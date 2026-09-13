@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from scipy import special, stats
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax import (
     beta,
@@ -357,11 +358,11 @@ def test_beta_can_be_vectorized_over_datasets() -> None:
     assert jnp.allclose(result, expected)
 
 
-def test_beta_rng_wraps_jax_sampler() -> None:
+def test_beta_rng_uses_distribution_sampler() -> None:
     key = jax.random.key(42)
     alphas = jnp.array([0.5, 2.5], dtype=jnp.float32)
     betas = jnp.array([1.7, 0.8], dtype=jnp.float32)
-    expected = jax.random.beta(key, alphas, betas, shape=(3, 2), dtype=jnp.float32)
+    expected = tfd.Beta(alphas, betas).sample((3,), seed=key)
 
     result = beta_rng(key, alphas, betas, sample_shape=(3,))
 

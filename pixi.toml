@@ -17,7 +17,7 @@ scipy = ">=1.14"
 xarray = ">=2025.1.2"
 
 [pypi-dependencies]
-distrax = ">=0.1.9,<0.2"
+tfp-nightly = "==0.26.0.dev20260912"
 
 [feature.dev.dependencies]
 pytest = ">=7.0.0"
@@ -104,7 +104,7 @@ xarray = ">=2025.1.2"
 
 [feature.gpu.pypi-dependencies]
 blackjax = ">=1.6.2,<1.7"
-distrax = ">=0.1.9,<0.2"
+tfp-nightly = "==0.26.0.dev20260912"
 jax = { version = ">=0.10.0,<0.11", extras = ["cuda12"] }
 jaxtyping = ">=0.2.36"
 

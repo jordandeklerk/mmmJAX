@@ -3,13 +3,10 @@
 import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
+from tensorflow_probability.substrates.jax import distributions as tfd
 
-from mmmjax.distributions._normal import (
-    _normal_log_probability,
-    _normal_logpdf_kernel,
-    normal_rng,
-)
-from mmmjax.distributions._utils import _promote_inexact
+from mmmjax.distributions._normal import normal_logcdf, normal_logpdf, normal_logsf
+from mmmjax.distributions._utils import _promote_inexact, _random_shape
 
 
 def lognormal_logpdf(
@@ -71,7 +68,7 @@ def lognormal_logpdf(
     # Avoid an indeterminate expression at zero without changing NaN inputs
     safe_value = jnp.where(outside_support, jnp.ones_like(value_array), value_array)
     log_value = jnp.log(safe_value)
-    log_density = _normal_logpdf_kernel(log_value, location_array, scale_array) - log_value
+    log_density = normal_logpdf(log_value, location_array, scale_array) - log_value
     supported_log_density = jnp.where(outside_support, -jnp.inf, log_density)
 
     valid_parameters = jnp.isfinite(location_array) & jnp.isfinite(scale_array) & (scale_array > 0)
@@ -279,7 +276,12 @@ def lognormal_rng(
            ...: key = random.key(0)
            ...: lognormal_rng(key, location=0.0, scale=0.5, sample_shape=(5,))
     """
-    return jnp.exp(normal_rng(key, location, scale, sample_shape=sample_shape))
+    location_array, scale_array = _promote_inexact(("location", location), ("scale", scale))
+    _random_shape(sample_shape, location_array, scale_array)
+    samples = tfd.LogNormal(loc=location_array, scale=scale_array).sample(seed=key, sample_shape=sample_shape)
+
+    valid_parameters = jnp.isfinite(location_array) & jnp.isfinite(scale_array) & (scale_array > 0)
+    return jnp.where(valid_parameters, samples, jnp.nan)
 
 
 def _lognormal_log_probability(
@@ -290,15 +292,16 @@ def _lognormal_log_probability(
     direction: int,
 ) -> jax.Array:
     valid_parameters = jnp.isfinite(location) & jnp.isfinite(scale) & (scale > 0)
-    supported_boundary = (value <= 0) & valid_parameters
+    supported_boundary = ((value <= 0) | jnp.isposinf(value)) & valid_parameters
     safe_value = jnp.where(supported_boundary, jnp.ones_like(value), value)
     safe_location = jnp.where(supported_boundary, jnp.zeros_like(location), location)
     safe_scale = jnp.where(supported_boundary, jnp.ones_like(scale), scale)
-    log_probability = _normal_log_probability(
-        jnp.log(safe_value),
-        safe_location,
-        safe_scale,
-        direction=direction,
+    log_value = jnp.log(safe_value)
+    log_probability = (
+        normal_logcdf(log_value, safe_location, safe_scale)
+        if direction == 1
+        else normal_logsf(log_value, safe_location, safe_scale)
     )
-    boundary_probability = -jnp.inf if direction == 1 else 0
-    return jnp.where(supported_boundary, boundary_probability, log_probability)
+    boundary_probability = jnp.where(value <= 0, -jnp.inf, 0) if direction == 1 else jnp.where(value <= 0, 0, -jnp.inf)
+    supported_log_probability = jnp.where(supported_boundary, boundary_probability, log_probability)
+    return jnp.where(valid_parameters, supported_log_probability, jnp.nan)

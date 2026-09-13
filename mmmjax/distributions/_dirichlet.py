@@ -4,8 +4,8 @@ from typing import cast
 
 import jax
 import jax.numpy as jnp
-from jax.scipy.special import gammaln, xlogy
 from jax.typing import ArrayLike
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax.distributions._utils import (
     _asymptotic_gamma_shape_log_derivative,
@@ -218,12 +218,11 @@ def dirichlet_rng(
         jnp.ones_like(concentration_array),
     )
 
-    samples = jax.random.dirichlet(
-        key,
-        safe_concentration,
-        shape=output_batch_shape,
-        dtype=concentration_array.dtype,
-    )
+    if concentration_array.shape[-1] == 1:
+        samples = jnp.ones((*output_batch_shape, 1), dtype=concentration_array.dtype)
+    else:
+        samples = tfd.Dirichlet(safe_concentration).sample(sample_shape, seed=key)
+
     return jnp.where(valid_concentration[..., None], samples, jnp.nan)
 
 
@@ -284,12 +283,10 @@ def _standard_dirichlet_logpdf(
     value: jax.Array,
     concentration: jax.Array,
 ) -> jax.Array:
-    concentration_sum = jnp.sum(concentration, axis=-1)
-    return (
-        gammaln(concentration_sum)
-        - jnp.sum(gammaln(concentration), axis=-1)
-        + jnp.sum(xlogy(concentration - 1, value), axis=-1)
-    )
+    if value.shape[-1] == 1:
+        return (concentration[..., 0] - 1) * jnp.log(value[..., 0])
+
+    return cast(jax.Array, tfd.Dirichlet(concentration).log_prob(value))
 
 
 @jax.custom_jvp

@@ -5,6 +5,7 @@ from typing import cast
 import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax.distributions._utils import _promote_inexact, _random_shape
 
@@ -298,7 +299,10 @@ def uniform_rng(
 
     valid_bounds = jnp.isfinite(lower_array) & jnp.isfinite(upper_array) & (lower_array < upper_array)
 
-    unit_samples = jax.random.uniform(key, shape=output_shape, dtype=lower_array.dtype)
+    unit_samples = tfd.Uniform(
+        low=jnp.zeros((), dtype=lower_array.dtype),
+        high=jnp.ones((), dtype=lower_array.dtype),
+    ).sample(seed=key, sample_shape=output_shape)
     crosses_zero = (lower_array < 0) & (upper_array > 0)
 
     direct_lower = jnp.where(crosses_zero, jnp.zeros_like(lower_array), lower_array)
@@ -331,7 +335,7 @@ def _log_difference(
     # Splitting intervals that cross zero avoids subtracting opposite dtype extremes
     direct_lower = jnp.where(valid_interval & ~crosses_zero, lower, 0)
     direct_upper = jnp.where(valid_interval & ~crosses_zero, upper, 1)
-    direct_log_difference = jnp.log(direct_upper - direct_lower)
+    direct_log_difference = tfd.Uniform(low=direct_lower, high=direct_upper).entropy()
 
     negative_lower = jnp.where(crosses_zero, -lower, 1)
     positive_upper = jnp.where(crosses_zero, upper, 1)
@@ -367,8 +371,9 @@ def _uniform_interior_log_probability(
             jnp.zeros_like(complement_distance),
             complement_distance,
         )
+        distribution = tfd.Uniform(low=jnp.zeros_like(safe_width), high=safe_width)
         direct_log_probability = jnp.log(safe_direct_distance) - jnp.log(safe_width)
-        complement_log_probability = jnp.log1p(-safe_complement_distance / safe_width)
+        complement_log_probability = jnp.log1p(-distribution.cdf(safe_complement_distance))
         return jnp.where(
             use_direct_probability,
             direct_log_probability,

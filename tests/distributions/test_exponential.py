@@ -6,6 +6,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax import (
     exponential,
@@ -86,6 +87,15 @@ def test_exponential_logcdf_remains_finite_near_zero() -> None:
 
     assert jnp.isfinite(result)
     np.testing.assert_allclose(result, expected, rtol=3e-6)
+
+
+def test_exponential_logsf_preserves_small_log_probabilities() -> None:
+    value = jnp.asarray(1e-10, dtype=jnp.float32)
+    rate = jnp.asarray(2.3, dtype=jnp.float32)
+
+    result = exponential_logsf(value, rate)
+
+    np.testing.assert_allclose(result, -float(rate) * float(value), rtol=3e-6, atol=0)
 
 
 def test_exponential_log_probabilities_are_complements() -> None:
@@ -218,10 +228,10 @@ def test_exponential_can_be_vectorized_over_datasets() -> None:
     assert jnp.allclose(result, expected)
 
 
-def test_exponential_rng_matches_rate_scaled_standard_draws() -> None:
+def test_exponential_rng_uses_distribution_sampler() -> None:
     key = jax.random.key(42)
     rate = jnp.array([0.5, 2.0], dtype=jnp.float32)
-    expected = jax.random.exponential(key, shape=(3, 2), dtype=jnp.float32) / rate
+    expected = tfd.Exponential(rate=rate).sample(seed=key, sample_shape=(3,))
 
     result = exponential_rng(key, rate, sample_shape=(3,))
 

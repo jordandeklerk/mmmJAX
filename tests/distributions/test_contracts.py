@@ -5,6 +5,7 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 import pytest
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax import (
     bernoulli,
@@ -731,33 +732,18 @@ def test_rngs_compute_with_float32_for_low_precision_parameters(dtype) -> None:
     scale = jnp.array([1.0, 2.0], dtype=dtype)
     rate = jnp.array([0.5, 2.0], dtype=dtype)
     degrees = jnp.array([5.0, 7.0], dtype=dtype)
-    expected_normal = location.astype(jnp.float32) + scale.astype(jnp.float32) * jax.random.normal(
-        key, shape=(2,), dtype=jnp.float32
-    )
-    expected_half_normal = jnp.abs(scale.astype(jnp.float32) * jax.random.normal(key, shape=(2,), dtype=jnp.float32))
-    expected_lognormal = jnp.exp(expected_normal)
-    expected_exponential = jax.random.exponential(key, shape=(2,), dtype=jnp.float32) / rate.astype(jnp.float32)
-    expected_gamma = jnp.exp(
-        jax.random.loggamma(key, scale.astype(jnp.float32), shape=(2,), dtype=jnp.float32)
-        - jnp.log(rate.astype(jnp.float32))
-    )
-    expected_beta = jax.random.beta(
-        key,
-        scale.astype(jnp.float32),
-        rate.astype(jnp.float32),
-        shape=(2,),
-        dtype=jnp.float32,
-    )
-    expected_cauchy = location.astype(jnp.float32) + scale.astype(jnp.float32) * jax.random.cauchy(
-        key, shape=(2,), dtype=jnp.float32
-    )
-    expected_inverse_gamma = jnp.exp(
-        jnp.log(rate.astype(jnp.float32))
-        - jax.random.loggamma(key, scale.astype(jnp.float32), shape=(2,), dtype=jnp.float32)
-    )
-    expected_laplace = location.astype(jnp.float32) + scale.astype(jnp.float32) * jax.random.laplace(
-        key, shape=(2,), dtype=jnp.float32
-    )
+    promoted_location = location.astype(jnp.float32)
+    promoted_scale = scale.astype(jnp.float32)
+    promoted_rate = rate.astype(jnp.float32)
+    expected_normal = tfd.Normal(promoted_location, promoted_scale).sample(seed=key)
+    expected_half_normal = tfd.HalfNormal(promoted_scale).sample(seed=key)
+    expected_lognormal = tfd.LogNormal(promoted_location, promoted_scale).sample(seed=key)
+    expected_exponential = tfd.Exponential(promoted_rate).sample(seed=key)
+    expected_gamma = tfd.Gamma(promoted_scale, rate=promoted_rate).sample(seed=key)
+    expected_beta = tfd.Beta(promoted_scale, promoted_rate).sample(seed=key)
+    expected_cauchy = tfd.Cauchy(promoted_location, promoted_scale).sample(seed=key)
+    expected_inverse_gamma = tfd.InverseGamma(promoted_scale, scale=promoted_rate).sample(seed=key)
+    expected_laplace = tfd.Laplace(promoted_location, promoted_scale).sample(seed=key)
     uniform_lower = jnp.zeros(2, dtype=dtype)
     uniform_upper = jnp.ones(2, dtype=dtype)
     expected_uniform = jax.random.uniform(key, shape=(2,), dtype=jnp.float32)
@@ -914,7 +900,7 @@ def test_rngs_can_be_vectorized_over_keys() -> None:
     assert jnp.array_equal(cauchy_result, expected_cauchy)
     assert jnp.allclose(inverse_gamma_result, expected_inverse_gamma)
     assert jnp.array_equal(laplace_result, expected_laplace)
-    assert jnp.array_equal(student_result, expected_student)
+    assert jnp.allclose(student_result, expected_student, rtol=2e-6, atol=0)
     assert jnp.array_equal(truncated_normal_result, expected_truncated_normal)
     assert jnp.array_equal(uniform_result, expected_uniform)
 

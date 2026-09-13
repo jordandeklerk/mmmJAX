@@ -7,6 +7,7 @@ import jax.numpy as jnp
 from jax.scipy.special import gammaln, hyp1f1
 from jax.scipy.stats import gamma as gamma_distribution
 from jax.typing import ArrayLike
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax.distributions._utils import (
     _gamma_shape_log_derivative,
@@ -260,21 +261,15 @@ def gamma_rng(
            ...: gamma_rng(key, shape=3.0, rate=2.0, sample_shape=(5,))
     """
     shape_array, rate_array = _promote_inexact(("shape", shape), ("rate", rate))
-    output_shape = _random_shape(sample_shape, shape_array, rate_array)
+    _random_shape(sample_shape, shape_array, rate_array)
 
     valid_shape = jnp.isfinite(shape_array) & (shape_array > 0)
     valid_rate = jnp.isfinite(rate_array) & (rate_array > 0)
     # Keep invalid shapes out of JAX's rejection sampler
     safe_shape = jnp.where(valid_shape, shape_array, jnp.ones_like(shape_array))
 
-    # Scale in log space so tiny unit-rate draws can be rescaled before they underflow
-    log_unit_rate_samples = jax.random.loggamma(
-        key,
-        safe_shape,
-        shape=output_shape,
-        dtype=shape_array.dtype,
-    )
-    samples = jnp.exp(log_unit_rate_samples - jnp.log(rate_array))
+    safe_rate = jnp.where(valid_rate, rate_array, jnp.ones_like(rate_array))
+    samples = tfd.Gamma(safe_shape, rate=safe_rate).sample(sample_shape, seed=key)
 
     return jnp.where(valid_shape & valid_rate, samples, jnp.nan)
 
@@ -514,7 +509,7 @@ def _standard_gamma_terms(
     shape_normalizer = gammaln(shape)
     shape_contribution = (shape - 1) * (log_rate + jnp.log(value))
     rate_contribution = rate * value
-    log_density = log_rate - shape_normalizer + shape_contribution - rate_contribution
+    log_density = tfd.Gamma(shape, rate=rate).log_prob(value)
     term_magnitude = (
         jnp.abs(log_rate) + jnp.abs(shape_normalizer) + jnp.abs(shape_contribution) + jnp.abs(rate_contribution)
     )
@@ -575,7 +570,7 @@ def _gamma_log_probability(
             log_scaled_value,
         )
 
-    return jnp.where(valid_parameters, log_probability, jnp.nan)
+    return jnp.where(valid_parameters & ~jnp.isnan(value), log_probability, jnp.nan)
 
 
 def _gamma_logcdf_kernel(
@@ -605,7 +600,7 @@ def _gamma_logcdf_kernel(
     def recover_underflow(_: None) -> jax.Array:
         direct_value = jnp.where(use_log_series, jnp.ones_like(scaled_value), scaled_value)
         direct_shape = jnp.where(use_log_series, jnp.ones_like(shape), shape)
-        safe_direct_log_probability = gamma_distribution.logcdf(direct_value, direct_shape)
+        safe_direct_log_probability = tfd.Gamma(direct_shape, rate=jnp.ones_like(direct_shape)).log_cdf(direct_value)
 
         series_value = jnp.where(use_log_series, scaled_value, jnp.zeros_like(scaled_value))
         series_shape = jnp.where(use_log_series, shape, jnp.ones_like(shape))
@@ -638,7 +633,7 @@ def _gamma_logcdf_kernel(
         jax.lax.cond(
             jnp.any(use_log_series),
             recover_underflow,
-            lambda _: gamma_distribution.logcdf(scaled_value, shape),
+            lambda _: tfd.Gamma(shape, rate=jnp.ones_like(shape)).log_cdf(scaled_value),
             operand=None,
         ),
     )

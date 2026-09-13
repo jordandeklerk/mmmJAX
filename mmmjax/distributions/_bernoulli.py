@@ -1,9 +1,9 @@
 """Bernoulli distribution functions."""
 
-import distrax
 import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax.distributions._utils import _as_real_array, _promote_inexact, _random_shape
 
@@ -58,10 +58,18 @@ def bernoulli_logpmf(value: ArrayLike, probability: ArrayLike) -> jax.Array:
 
     success_probability = jnp.where(is_success, safe_probability, jnp.ones_like(safe_probability))
     failure_probability = jnp.where(is_failure, safe_probability, jnp.zeros_like(safe_probability))
-    supported_log_mass = jnp.where(
+    boundary_log_mass = jnp.where(
         is_success,
         jnp.log(success_probability),
         jnp.log1p(-failure_probability),
+    )
+    # Separate endpoint gradients from logarithms of impossible outcomes.
+    interior = (safe_probability > 0) & (safe_probability < 1)
+    backend_probability = jnp.where(interior, safe_probability, 0.5)
+    supported_log_mass = jnp.where(
+        interior,
+        tfd.Bernoulli(probs=backend_probability).log_prob(is_success.astype(probability_array.dtype)),
+        boundary_log_mass,
     )
 
     log_mass = jnp.where(is_failure | is_success, supported_log_mass, -jnp.inf)
@@ -305,7 +313,7 @@ def bernoulli_logit_logpmf(value: ArrayLike, logits: ArrayLike) -> jax.Array:
 
     is_failure = value_array == 0
     is_success = value_array == 1
-    supported_log_mass = distrax.Bernoulli(logits=logits_array).log_prob(is_success.astype(logits_array.dtype))
+    supported_log_mass = tfd.Bernoulli(logits=logits_array).log_prob(is_success.astype(logits_array.dtype))
 
     log_mass = jnp.where(is_failure | is_success, supported_log_mass, -jnp.inf)
     log_mass = jnp.where(jnp.isnan(value_array), jnp.nan, log_mass)
@@ -495,15 +503,13 @@ def bernoulli_logit_rng(
     (logits_array,) = _promote_inexact(("logits", logits))
     output_shape = _random_shape(sample_shape, logits_array)
 
-    # Sampling from logits keeps rare outcomes that sigmoid can round away in float32
-    categorical_logits = jnp.stack(
-        (jnp.zeros_like(logits_array), logits_array),
-        axis=-1,
-    )
-    samples = jax.random.categorical(
+    # Draw the less likely outcome directly instead of rounding a probability to one.
+    rare_probability = jax.nn.sigmoid(-jnp.abs(logits_array))
+    samples = jax.random.bernoulli(
         key,
-        categorical_logits,
+        rare_probability,
         shape=output_shape,
         mode="high",
     )
+    samples = jnp.where(logits_array > 0, ~samples, samples)
     return samples.astype(jnp.int32)

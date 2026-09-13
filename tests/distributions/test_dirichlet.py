@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from scipy import special, stats
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax import Simplex, beta_logpdf, dirichlet, dirichlet_logpdf, dirichlet_rng
 
@@ -64,18 +65,13 @@ def test_dirichlet_returns_scalar_sum() -> None:
     assert jnp.allclose(result, 2 * jnp.log(2.0))
 
 
-def test_dirichlet_rng_matches_jax_sampler() -> None:
+def test_dirichlet_rng_uses_distribution_sampler() -> None:
     key = jax.random.key(31)
     concentration = jnp.array([[0.5, 1.5, 2.5], [3.0, 2.0, 1.0]])
     sample_shape = (4,)
 
     result = dirichlet_rng(key, concentration, sample_shape=sample_shape)
-    expected = jax.random.dirichlet(
-        key,
-        concentration,
-        shape=sample_shape + concentration.shape[:-1],
-        dtype=concentration.dtype,
-    )
+    expected = tfd.Dirichlet(concentration).sample(sample_shape, seed=key)
 
     assert jnp.array_equal(result, expected)
 

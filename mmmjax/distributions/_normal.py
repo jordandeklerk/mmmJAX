@@ -2,10 +2,10 @@
 
 from typing import cast
 
-import distrax
 import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax.distributions._utils import _promote_inexact, _random_shape
 
@@ -277,7 +277,7 @@ def normal_rng(
     )
 
     _random_shape(sample_shape, location_array, scale_array)
-    samples = distrax.Normal(location_array, scale_array).sample(
+    samples = tfd.Normal(location_array, scale_array).sample(
         seed=key,
         sample_shape=sample_shape,
     )
@@ -292,7 +292,7 @@ def _normal_logpdf_kernel(
     scale: jax.Array,
 ) -> jax.Array:
     standardized = _standardize(value, location, scale)
-    distribution = distrax.Normal(
+    distribution = tfd.Normal(
         loc=jnp.zeros((), dtype=value.dtype),
         scale=jnp.ones((), dtype=value.dtype),
     )
@@ -329,7 +329,7 @@ def _normal_log_probability(
     safe_location = jnp.where(evaluate_probability, location, jnp.zeros_like(location))
     safe_scale = jnp.where(evaluate_probability, scale, jnp.ones_like(scale))
     standardized = _standardize(safe_value, safe_location, safe_scale)
-    distribution = distrax.Normal(
+    distribution = tfd.Normal(
         loc=jnp.zeros((), dtype=value.dtype),
         scale=jnp.ones((), dtype=value.dtype),
     )

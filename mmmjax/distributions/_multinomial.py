@@ -3,6 +3,7 @@
 import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax.distributions._utils import (
     _as_real_array,
@@ -483,13 +484,10 @@ def _draw_multinomial(
     )
 
     # Sampling the largest category last keeps float32 rounding from erasing smaller categories
-    ordered_counts = jax.random.multinomial(
-        key,
-        jnp.asarray(trials, dtype=probabilities.dtype),
-        ordered_probabilities,
-        shape=output_shape,
-        dtype=probabilities.dtype,
-    )
+    ordered_counts = tfd.Multinomial(
+        total_count=jnp.asarray(trials, dtype=probabilities.dtype),
+        probs=ordered_probabilities,
+    ).sample(sample_shape, seed=key)
     category_order = jnp.broadcast_to(category_order, output_shape)
     counts = jnp.take_along_axis(ordered_counts, category_order, axis=-1)
     return counts.astype(jnp.int32)

@@ -7,6 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from scipy import stats
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax import cauchy, cauchy_logcdf, cauchy_logpdf, cauchy_logsf, cauchy_rng
 
@@ -445,11 +446,11 @@ def test_cauchy_can_be_vectorized_over_datasets() -> None:
     assert jnp.allclose(result, expected)
 
 
-def test_cauchy_rng_matches_transformed_jax_draws() -> None:
+def test_cauchy_rng_uses_distribution_sampler() -> None:
     key = jax.random.key(42)
     locations = jnp.array([[1.0], [-2.0]], dtype=jnp.float32)
     scales = jnp.array([0.5, 2.0, 1.5], dtype=jnp.float32)
-    expected = locations + scales * jax.random.cauchy(key, shape=(4, 2, 3), dtype=jnp.float32)
+    expected = tfd.Cauchy(loc=locations, scale=scales).sample(seed=key, sample_shape=(4,))
 
     result = cauchy_rng(key, locations, scales, sample_shape=(4,))
 

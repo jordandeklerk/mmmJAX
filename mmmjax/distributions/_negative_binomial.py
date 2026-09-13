@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 from jax.scipy.special import digamma
 from jax.typing import ArrayLike
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax.distributions._beta_cdf import _log_betainc
 from mmmjax.distributions._discrete import (
@@ -924,21 +925,16 @@ def _negative_binomial_log_mean_rng(
     *,
     output_shape: tuple[int, ...],
 ) -> jax.Array:
+    batch_shape = jnp.broadcast_shapes(log_mean.shape, concentration.shape)
+    sample_shape = output_shape[: len(output_shape) - len(batch_shape)]
     gamma_key, poisson_key = jax.random.split(key)
-    log_unit_rate = jax.random.loggamma(
-        gamma_key,
-        concentration,
-        shape=output_shape,
-        dtype=concentration.dtype,
-    )
-    # Scaling in log space keeps the Gamma-Poisson mixture stable in the tails
-    latent_rate = jnp.exp(log_unit_rate + log_mean - jnp.log(concentration))
-    return jax.random.poisson(
-        poisson_key,
-        latent_rate,
-        shape=output_shape,
-        dtype=jnp.int32,
-    )
+
+    # Sampling the latent rate in log space preserves small Gamma scales.
+    log_rate = tfd.ExpGamma(
+        concentration=concentration,
+        log_rate=jnp.log(concentration) - log_mean,
+    ).sample(sample_shape, seed=gamma_key)
+    return jax.random.poisson(poisson_key, jnp.exp(log_rate), shape=output_shape, dtype=jnp.int32)
 
 
 def _negative_binomial_concentration_derivative(

@@ -10,6 +10,7 @@ import pytest
 from jax.scipy.special import betainc
 from jax.scipy.stats import binom as jax_binomial_distribution
 from scipy import special, stats
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax import (
     bernoulli_logit_logpmf,
@@ -844,17 +845,15 @@ def test_binomial_functions_reject_complex_arguments(function, arguments, argume
         function(*arguments)
 
 
-def test_binomial_rng_matches_jax_and_uses_integer_output() -> None:
+def test_binomial_rng_matches_backend_and_uses_integer_output() -> None:
     key = jax.random.key(42)
     trials = jnp.array([3, 8])
     probabilities = jnp.array([0.2, 0.8], dtype=jnp.float32)
-    expected = jax.random.binomial(
-        key,
-        trials.astype(probabilities.dtype),
-        probabilities,
-        shape=(4, 2),
-        dtype=probabilities.dtype,
-    ).astype(jnp.int32)
+    expected = (
+        tfd.Binomial(total_count=trials.astype(probabilities.dtype), probs=probabilities)
+        .sample((4,), seed=key)
+        .astype(jnp.int32)
+    )
 
     result = binomial_rng(key, trials, probabilities, sample_shape=(4,))
 
@@ -899,13 +898,7 @@ def test_binomial_logit_rng_uses_stable_rare_event_probabilities() -> None:
     trials = jnp.array([20.0, 20.0, 20.0])
     logits = jnp.array([-17.0, 0.0, 17.0])
     rare_probability = jnp.exp(jax.nn.log_sigmoid(-jnp.abs(logits)))
-    rare_outcomes = jax.random.binomial(
-        key,
-        trials,
-        rare_probability,
-        shape=(8, 3),
-        dtype=logits.dtype,
-    )
+    rare_outcomes = tfd.Binomial(total_count=trials, probs=rare_probability).sample((8,), seed=key)
     expected = jnp.where(logits > 0, trials - rare_outcomes, rare_outcomes).astype(jnp.int32)
 
     result = binomial_logit_rng(key, trials, logits, sample_shape=(8,))

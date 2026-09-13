@@ -3,6 +3,7 @@
 import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax.distributions._gamma import _gamma_log_probability
 from mmmjax.distributions._utils import (
@@ -249,21 +250,15 @@ def inverse_gamma_rng(
            ...: inverse_gamma_rng(key, shape=3.0, scale=2.0, sample_shape=(5,))
     """
     shape_array, scale_array = _promote_inexact(("shape", shape), ("scale", scale))
-    output_shape = _random_shape(sample_shape, shape_array, scale_array)
+    _random_shape(sample_shape, shape_array, scale_array)
 
     valid_shape = jnp.isfinite(shape_array) & (shape_array > 0)
     valid_scale = jnp.isfinite(scale_array) & (scale_array > 0)
     # Keep invalid shapes out of JAX's rejection sampler
     safe_shape = jnp.where(valid_shape, shape_array, jnp.ones_like(shape_array))
 
-    # Work in log space so tiny Gamma draws can be inverted before they underflow
-    log_unit_rate_samples = jax.random.loggamma(
-        key,
-        safe_shape,
-        shape=output_shape,
-        dtype=shape_array.dtype,
-    )
-    samples = jnp.exp(jnp.log(scale_array) - log_unit_rate_samples)
+    safe_scale = jnp.where(valid_scale, scale_array, jnp.ones_like(scale_array))
+    samples = tfd.InverseGamma(safe_shape, scale=safe_scale).sample(sample_shape, seed=key)
 
     return jnp.where(valid_shape & valid_scale, samples, jnp.nan)
 

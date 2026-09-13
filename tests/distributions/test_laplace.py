@@ -7,6 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from scipy import stats
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax import laplace, laplace_logcdf, laplace_logpdf, laplace_logsf, laplace_rng
 
@@ -421,11 +422,11 @@ def test_laplace_can_be_vectorized_over_datasets() -> None:
     assert jnp.allclose(result, expected)
 
 
-def test_laplace_rng_matches_transformed_jax_draws() -> None:
+def test_laplace_rng_uses_distribution_sampler() -> None:
     key = jax.random.key(42)
     locations = jnp.array([[1.0], [-2.0]], dtype=jnp.float32)
     scales = jnp.array([0.5, 2.0, 1.5], dtype=jnp.float32)
-    expected = locations + scales * jax.random.laplace(key, shape=(4, 2, 3), dtype=jnp.float32)
+    expected = tfd.Laplace(loc=locations, scale=scales).sample(seed=key, sample_shape=(4,))
 
     result = laplace_rng(key, locations, scales, sample_shape=(4,))
 

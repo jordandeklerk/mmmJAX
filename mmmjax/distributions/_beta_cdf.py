@@ -5,7 +5,8 @@ from typing import cast
 
 import jax
 import jax.numpy as jnp
-from jax.scipy.special import betainc, digamma
+from jax.scipy.special import digamma
+from tensorflow_probability.substrates.jax import math as tfp_math
 
 from mmmjax.distributions._beta import _beta_logpdf
 
@@ -66,7 +67,7 @@ def _betainc(alpha: jax.Array, beta: jax.Array, value: jax.Array) -> jax.Array:
     Callers must supply finite positive shapes and values strictly between
     zero and one, handling support boundaries in the distribution function.
     """
-    return betainc(alpha, beta, value)
+    return cast(jax.Array, tfp_math.betainc(alpha, beta, value))
 
 
 @_betainc.defjvp

@@ -326,6 +326,34 @@ def test_categorical_logit_logpmf_is_stable_for_extreme_finite_logits() -> None:
     np.testing.assert_allclose(result, jnp.array([0.0, -1000.0, -2000.0]), rtol=3e-6)
 
 
+@pytest.mark.parametrize(
+    ("dtype", "shift"),
+    [
+        (jnp.float32, 1e7),
+        (jnp.float32, -1e7),
+        pytest.param(
+            jnp.float64,
+            1e15,
+            marks=pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled"),
+        ),
+    ],
+)
+def test_categorical_logit_logpmf_preserves_normalization_under_large_common_shifts(dtype, shift) -> None:
+    values = jnp.arange(3)
+    logits = jnp.array([0.0, 1.0, 2.0], dtype=dtype) + shift
+    expected = special.log_softmax(np.array([0.0, 1.0, 2.0]))
+    expected_gradient = np.array([1.0, 1.0, 1.0]) - 3 * np.exp(expected)
+
+    for evaluate in (categorical_logit_logpmf, jax.jit(categorical_logit_logpmf)):
+        result = evaluate(values, logits)
+        np.testing.assert_allclose(result, expected, rtol=3e-6, atol=3e-6)
+        np.testing.assert_allclose(jnp.exp(result).sum(), 1.0, rtol=3e-6)
+
+    gradient = jax.jit(jax.grad(categorical_logit, argnums=1))(values, logits)
+
+    np.testing.assert_allclose(gradient, expected_gradient, rtol=3e-6, atol=3e-6)
+
+
 def test_categorical_logit_logpmf_supports_masked_categories() -> None:
     logits = jnp.array([0.0, -jnp.inf, jnp.log(2.0)])
     expected = jnp.array([-jnp.log(3.0), -jnp.inf, jnp.log(2 / 3)])
@@ -457,6 +485,30 @@ def test_categorical_logit_gradient_accumulates_repeated_categories() -> None:
     np.testing.assert_allclose(gradient, expected, rtol=3e-6, atol=3e-6)
 
 
+@pytest.mark.parametrize(
+    "function, logpmf", [(categorical, categorical_logpmf), (categorical_logit, categorical_logit_logpmf)]
+)
+@pytest.mark.parametrize("batch_shape", [(2,), (2, 3), (2, 1, 3)])
+def test_categorical_gradients_broadcast_shared_parameters(function, logpmf, batch_shape) -> None:
+    values = (jnp.arange(257) % 31).reshape((257,) + (1,) * len(batch_shape))
+    logits = jnp.linspace(-2.0, 2.0, int(np.prod(batch_shape)) * 31).reshape((*batch_shape, 31))
+    counts = np.bincount(np.asarray(values).ravel(), minlength=31)
+    if function is categorical:
+        parameters = jax.nn.softmax(logits, axis=-1)
+        expected = counts / np.asarray(parameters, dtype=np.float64)
+    else:
+        parameters = logits
+        expected = counts - values.size * special.softmax(np.asarray(logits, dtype=np.float64), axis=-1)
+
+    result = jax.jit(logpmf)(values, parameters)
+    gradient = jax.jit(jax.grad(function, argnums=1))(values, parameters)
+
+    assert result.shape == (257, *batch_shape)
+    assert gradient.shape == (*batch_shape, 31)
+    assert jnp.all(jnp.isfinite(gradient))
+    np.testing.assert_allclose(gradient, expected, rtol=3e-6, atol=3e-6)
+
+
 def test_categorical_logit_propagates_impossible_and_undefined_terms() -> None:
     logits = jnp.array([0.0, -jnp.inf, 1.0])
 
@@ -576,17 +628,12 @@ def test_categorical_functions_reject_complex_arguments(
         function(*arguments)
 
 
-def test_categorical_rng_matches_centered_jax_categorical_high_mode_and_shape() -> None:
+def test_categorical_rng_matches_high_precision_draws_and_shape() -> None:
     key = jax.random.key(42)
     probabilities = jnp.array([[0.2, 0.3, 0.5], [0.6, 0.1, 0.3]], dtype=jnp.float32)
     logits = jnp.log(probabilities)
     centered_logits = logits - jnp.max(logits, axis=-1, keepdims=True)
-    expected = jax.random.categorical(
-        key,
-        centered_logits,
-        shape=(4, 2),
-        mode="high",
-    ).astype(jnp.int32)
+    expected = jax.random.categorical(key, centered_logits, shape=(4, 2), mode="high")
 
     result = categorical_rng(key, probabilities, sample_shape=(4,))
 
@@ -595,17 +642,40 @@ def test_categorical_rng_matches_centered_jax_categorical_high_mode_and_shape() 
     assert jnp.array_equal(result, expected)
 
 
-def test_categorical_logit_rng_matches_centered_jax_categorical_high_mode_and_shape() -> None:
+def test_categorical_logit_rng_matches_high_precision_draws_and_shape() -> None:
     key = jax.random.key(5)
     logits = jnp.array([[2.0, -1.0, 0.5], [-4.0, 3.0, 1.0]])
     centered_logits = logits - jnp.max(logits, axis=-1, keepdims=True)
-    expected = jax.random.categorical(key, centered_logits, shape=(8, 2), mode="high").astype(jnp.int32)
+    expected = jax.random.categorical(key, centered_logits, shape=(8, 2), mode="high")
 
     result = categorical_logit_rng(key, logits, sample_shape=(8,))
 
     assert result.shape == (8, 2)
     assert result.dtype == jnp.dtype(jnp.int32)
     assert jnp.array_equal(result, expected)
+
+
+@pytest.mark.parametrize(
+    ("function", "parameters"),
+    [
+        (categorical_rng, jnp.array([1e-12, 1.0], dtype=jnp.float32)),
+        (categorical_logit_rng, jnp.array([-30.0, 0.0], dtype=jnp.float32)),
+    ],
+)
+def test_categorical_rngs_request_high_precision_for_rare_categories(function, parameters, monkeypatch) -> None:
+    sample = jax.random.categorical
+    modes = []
+
+    def draw(*args, **kwargs):
+        modes.append(kwargs.get("mode"))
+        return sample(*args, **kwargs)
+
+    monkeypatch.setattr(jax.random, "categorical", draw)
+
+    result = function(jax.random.key(0), parameters, sample_shape=(4,))
+
+    assert result.shape == (4,)
+    assert modes == ["high"]
 
 
 def test_categorical_rngs_prepend_sample_axes_and_drop_the_event_axis() -> None:

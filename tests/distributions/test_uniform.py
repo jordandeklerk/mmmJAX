@@ -195,6 +195,30 @@ def test_uniform_log_probabilities_preserve_values_next_to_extreme_bounds() -> N
 
 
 @pytest.mark.parametrize(
+    ("function", "arguments", "expected_gradient"),
+    [
+        pytest.param(uniform_logcdf, [1e-30, 0.0, 1e30], [1e30, -1e30, -1e-30], id="logcdf"),
+        pytest.param(uniform_logsf, [-1e-30, -1e30, 0.0], [-1e30, 1e-30, 1e30], id="logsf"),
+    ],
+)
+def test_uniform_log_probabilities_preserve_underflowing_probability_and_gradients(
+    function,
+    arguments,
+    expected_gradient,
+) -> None:
+    arguments = jnp.asarray(arguments, dtype=jnp.float32)
+    expected_gradient = jnp.asarray(expected_gradient, dtype=jnp.float32)
+
+    result = function(*arguments)
+    compiled_result, gradient = jax.jit(jax.value_and_grad(lambda current: function(*current)))(arguments)
+
+    assert jnp.isfinite(result)
+    assert jnp.allclose(result, -138.15510557964274)
+    assert jnp.allclose(compiled_result, result)
+    assert jnp.allclose(gradient, expected_gradient, rtol=1e-6, atol=0)
+
+
+@pytest.mark.parametrize(
     ("function", "expected_gradient", "expected_hessian"),
     [
         pytest.param(

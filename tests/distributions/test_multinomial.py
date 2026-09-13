@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 from jax.scipy.stats import multinomial as jax_multinomial_distribution
 from scipy import special, stats
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax import (
     binomial_logit_logpmf,
@@ -570,17 +571,15 @@ def test_multinomial_rngs_preserve_sample_batch_and_event_axes(function, paramet
     assert jnp.array_equal(jnp.sum(result, axis=-1), expected_totals)
 
 
-def test_multinomial_rng_matches_jax_when_largest_category_is_last() -> None:
+def test_multinomial_rng_matches_backend_when_largest_category_is_last() -> None:
     key = jax.random.key(8)
     trials = jnp.array([5, 11])
     probabilities = jnp.array([[0.2, 0.3, 0.5], [0.1, 0.25, 0.65]])
-    expected = jax.random.multinomial(
-        key,
-        trials.astype(probabilities.dtype),
-        probabilities,
-        shape=(7, 2, 3),
-        dtype=probabilities.dtype,
-    ).astype(jnp.int32)
+    expected = (
+        tfd.Multinomial(total_count=trials.astype(probabilities.dtype), probs=probabilities)
+        .sample((7,), seed=key)
+        .astype(jnp.int32)
+    )
 
     result = multinomial_rng(key, probabilities, trials, sample_shape=(7,))
 
