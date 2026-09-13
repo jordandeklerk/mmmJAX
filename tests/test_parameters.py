@@ -8,7 +8,102 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from mmmjax import Interval, LowerBound, Parameterization, Positive, Real, Simplex, UpperBound
+from mmmjax import (
+    CorrelationCholesky,
+    Interval,
+    LowerBound,
+    Model,
+    Parameterization,
+    Positive,
+    Real,
+    Simplex,
+    UpperBound,
+)
+
+
+@pytest.mark.parametrize("dimension", [1, 2, 4])
+@pytest.mark.parametrize("batch_shape", [(), (2,), (2, 3)])
+def test_correlation_cholesky_transform_roundtrip_and_shape(dimension, batch_shape):
+    declaration = CorrelationCholesky((*batch_shape, dimension, dimension))
+    position = declaration.initialize(jax.random.key(3))
+    assert position.shape == (*batch_shape, dimension * (dimension - 1) // 2)
+    assert isinstance(declaration, Parameterization)
+
+    factor = jax.jit(declaration.constrain)(position)
+    restored = jax.jit(declaration.unconstrain)(factor)
+    assert factor.shape == declaration.shape
+    assert jnp.allclose(restored, position, atol=3e-6, rtol=3e-6)
+    assert jnp.allclose(jnp.sum(factor**2, axis=-1), 1, atol=3e-6)
+    assert jnp.all(jnp.triu(factor, 1) == 0)
+    assert jnp.all(jnp.diagonal(factor, axis1=-2, axis2=-1) > 0)
+
+
+@pytest.mark.parametrize("dimension", [2, 3, 4])
+def test_correlation_cholesky_adjustment_matches_free_coordinate_jacobian(dimension):
+    declaration = CorrelationCholesky((dimension, dimension))
+    position = jnp.linspace(-0.5, 0.7, declaration.position_shape[0])
+    rows, columns = jnp.tril_indices(dimension, k=-1)
+    jacobian = jax.jacfwd(lambda value: declaration.constrain(value)[rows, columns])(position)
+    expected = jnp.linalg.slogdet(jacobian)[1]
+
+    assert jnp.allclose(declaration.log_density_adjustment(position), expected, atol=3e-6)
+    batched = CorrelationCholesky((2, dimension, dimension))
+    positions = jnp.stack((position, position * 0.5))
+    assert jnp.allclose(
+        batched.log_density_adjustment(positions),
+        jax.vmap(declaration.log_density_adjustment)(positions).sum(),
+        atol=3e-6,
+    )
+    gradient = jax.jit(jax.grad(batched.log_density_adjustment))(positions)
+    assert jnp.all(jnp.isfinite(gradient))
+
+
+@pytest.mark.parametrize("shape", [(), (3,), (2, 3), (2, 2, 3)])
+def test_correlation_cholesky_requires_square_event_shape(shape):
+    with pytest.raises(ValueError, match="shape"):
+        CorrelationCholesky(shape)
+
+
+def test_correlation_cholesky_named_axes_and_precision():
+    axes = ["effect", "effect_to"]
+    declaration = CorrelationCholesky(dims=axes, dtype=jnp.float16)
+    axes.append("unused")
+    assert declaration.dims == ("effect", "effect_to")
+    assert declaration.dtype == jnp.float32
+    with pytest.raises(ValueError, match="resolved by Model"):
+        _ = declaration.position_shape
+
+    model = Model(
+        {"factor": declaration},
+        lambda data, factor: jnp.sum(factor),
+        coords={"effect": ["search", "video"], "effect_to": ["search", "video"]},
+    )
+    resolved = model.parameters["factor"]
+    assert resolved.shape == (2, 2)
+    assert resolved.position_shape == (1,)
+    assert resolved.constrain(jnp.zeros(1)).dtype == jnp.float32
+    assert declaration.shape == ()
+
+
+def test_correlation_cholesky_rejects_nonsquare_resolved_axes_and_repeated_names():
+    with pytest.raises(ValueError, match="equal correlation dimensions"):
+        Model(
+            {"factor": CorrelationCholesky(dims=("effect", "effect_to"))},
+            lambda data, factor: jnp.sum(factor),
+            coords={"effect": ["a", "b"], "effect_to": ["a", "b", "c"]},
+        )
+    with pytest.raises(ValueError, match="must not repeat"):
+        CorrelationCholesky(dims=("effect", "effect"))
+
+
+def test_correlation_cholesky_checks_numeric_shapes():
+    declaration = CorrelationCholesky((3, 3))
+    with pytest.raises(ValueError, match="position must have shape"):
+        declaration.constrain(jnp.zeros(2))
+    with pytest.raises(ValueError, match="position must have shape"):
+        declaration.log_density_adjustment(jnp.zeros((2, 3)))
+    with pytest.raises(ValueError, match="parameter must have shape"):
+        declaration.unconstrain(jnp.eye(2))
 
 
 @pytest.fixture(

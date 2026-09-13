@@ -17,7 +17,17 @@ from numpy.typing import NDArray
 
 from mmmjax._results import _coordinates, _data_dimensions, _dimensions, _name, _prepared_coordinates, _same_labels
 from mmmjax.data import PreparedData, _DataLayout, _prepare_model_frame, _time_positions
-from mmmjax.parameters import Interval, LowerBound, Parameterization, Positive, Real, Simplex, UpperBound, _as_array
+from mmmjax.parameters import (
+    CorrelationCholesky,
+    Interval,
+    LowerBound,
+    Parameterization,
+    Positive,
+    Real,
+    Simplex,
+    UpperBound,
+    _as_array,
+)
 from mmmjax.scaling import DataScaling, fit_data_scaling
 
 __all__ = ["Model"]
@@ -28,7 +38,7 @@ Prior: TypeAlias = Callable[[jax.Array], Mapping[str, ArrayLike]]
 TransformedParameters: TypeAlias = Callable[..., Mapping[str, ArrayLike]]
 ParameterValues: TypeAlias = Mapping[str, ArrayLike]
 _InputBindings: TypeAlias = tuple[tuple[str, str], ...]
-_BuiltinParameter: TypeAlias = Real | Positive | LowerBound | UpperBound | Interval | Simplex
+_BuiltinParameter: TypeAlias = Real | Positive | LowerBound | UpperBound | Interval | Simplex | CorrelationCholesky
 
 
 @jax.tree_util.register_dataclass

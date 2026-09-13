@@ -11,7 +11,75 @@ import polars as pl
 import pytest
 import xarray as xr
 
-from mmmjax import Model, Positive, Real, Simplex, exponential, lognormal, normal, normal_rng, prepare_data
+from mmmjax import (
+    CorrelationCholesky,
+    Model,
+    Positive,
+    Real,
+    Simplex,
+    exponential,
+    half_normal,
+    lkj_cholesky,
+    lognormal,
+    multivariate_normal,
+    normal,
+    normal_rng,
+    prepare_data,
+)
+
+
+def test_explicit_noncentered_correlated_hierarchy_evaluates_and_differentiates(auxiliary_data):
+    def quantities(location, scales, factor, offsets, media):
+        scale_tril = scales[:, None] * factor
+        coefficients = location + offsets @ scale_tril.T
+        mu = jnp.sum(media * coefficients, axis=-1)
+        return {"coefficients": coefficients, "mu": mu}
+
+    def density(outcome, mu, location, scales, factor, offsets):
+        target = normal(location, 0.0, 1.0)
+        target += half_normal(scales, 1.0)
+        target += lkj_cholesky(factor, 2.0)
+        target += normal(offsets, 0.0, 1.0)
+        target += normal(outcome, mu, 1.0)
+        return target
+
+    model = Model(
+        {
+            "location": Real(dims="channel"),
+            "scales": Positive(dims="channel"),
+            "factor": CorrelationCholesky(dims=("channel", "channel_to")),
+            "offsets": Real((2, 2)),
+        },
+        density,
+        data=auxiliary_data,
+        transformed_parameters=quantities,
+        coords={"channel_to": auxiliary_data.channels},
+        save=("mu",),
+    )
+    values = {
+        "location": jnp.array([0.2, 0.3]),
+        "scales": jnp.array([0.5, 0.8]),
+        "factor": jnp.array([[1.0, 0.0], [0.6, 0.8]]),
+        "offsets": jnp.array([[0.1, -0.2], [0.4, 0.3]]),
+    }
+    result = model.evaluate(values)
+    covariance_factor = values["scales"][:, None] * values["factor"]
+    expected = values["location"] + values["offsets"] @ covariance_factor.T
+    np.testing.assert_allclose(result["coefficients"], expected, rtol=2e-6)
+
+    # Changing from group coefficients to standard-Normal offsets adds one
+    # scale determinant per group, recovering the independent offset density.
+    centered = multivariate_normal(expected, values["location"], covariance_factor)
+    coefficient_adjustment = 2 * jnp.log(jnp.diag(covariance_factor)).sum()
+    np.testing.assert_allclose(centered + coefficient_adjustment, normal(values["offsets"], 0, 1), rtol=3e-6)
+
+    position = model.unconstrain(values)
+    adjusted, gradient = jax.jit(jax.value_and_grad(model.log_density))(position, model.data)
+    correction = sum(
+        declaration.log_density_adjustment(position[name]) for name, declaration in model.parameters.items()
+    )
+    np.testing.assert_allclose(adjusted, model.log_prob(values) + correction, rtol=3e-6)
+    assert all(jnp.all(jnp.isfinite(value)) for value in gradient.values())
 
 
 @pytest.fixture

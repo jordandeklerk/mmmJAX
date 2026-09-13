@@ -62,6 +62,9 @@ from mmmjax.distributions._laplace import laplace_logcdf as laplace_logcdf
 from mmmjax.distributions._laplace import laplace_logpdf as laplace_logpdf
 from mmmjax.distributions._laplace import laplace_logsf as laplace_logsf
 from mmmjax.distributions._laplace import laplace_rng as laplace_rng
+from mmmjax.distributions._lkj import lkj_cholesky as lkj_cholesky
+from mmmjax.distributions._lkj import lkj_cholesky_logpdf as lkj_cholesky_logpdf
+from mmmjax.distributions._lkj import lkj_cholesky_rng as lkj_cholesky_rng
 from mmmjax.distributions._lognormal import lognormal as lognormal
 from mmmjax.distributions._lognormal import lognormal_logcdf as lognormal_logcdf
 from mmmjax.distributions._lognormal import lognormal_logpdf as lognormal_logpdf
@@ -73,6 +76,9 @@ from mmmjax.distributions._multinomial import multinomial_logit_logpmf as multin
 from mmmjax.distributions._multinomial import multinomial_logit_rng as multinomial_logit_rng
 from mmmjax.distributions._multinomial import multinomial_logpmf as multinomial_logpmf
 from mmmjax.distributions._multinomial import multinomial_rng as multinomial_rng
+from mmmjax.distributions._multivariate_normal import multivariate_normal as multivariate_normal
+from mmmjax.distributions._multivariate_normal import multivariate_normal_logpdf as multivariate_normal_logpdf
+from mmmjax.distributions._multivariate_normal import multivariate_normal_rng as multivariate_normal_rng
 from mmmjax.distributions._negative_binomial import negative_binomial as negative_binomial
 from mmmjax.distributions._negative_binomial import negative_binomial_log as negative_binomial_log
 from mmmjax.distributions._negative_binomial import negative_binomial_log_logcdf as negative_binomial_log_logcdf
@@ -175,6 +181,9 @@ __all__ = [
     "laplace_logpdf",
     "laplace_logsf",
     "laplace_rng",
+    "lkj_cholesky",
+    "lkj_cholesky_logpdf",
+    "lkj_cholesky_rng",
     "lognormal",
     "lognormal_logcdf",
     "lognormal_logpdf",
@@ -186,6 +195,9 @@ __all__ = [
     "multinomial_logit_rng",
     "multinomial_logpmf",
     "multinomial_rng",
+    "multivariate_normal",
+    "multivariate_normal_logpdf",
+    "multivariate_normal_rng",
     "negative_binomial",
     "negative_binomial_log",
     "negative_binomial_log_logcdf",

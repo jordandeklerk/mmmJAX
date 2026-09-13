@@ -10,6 +10,7 @@ import xarray as xr
 import mmmjax
 import mmmjax.sampling as sampling
 from mmmjax import (
+    CorrelationCholesky,
     Interval,
     Model,
     Positive,
@@ -22,6 +23,7 @@ from mmmjax import (
     geometric_adstock,
     half_normal,
     hill_saturation,
+    lkj_cholesky,
     lognormal,
     normal,
     normal_logpdf,
@@ -620,6 +622,38 @@ def test_initial_positive_parameters_must_be_in_the_interior(nuts_calls, value):
     model = Model({"scale": Positive()}, lambda data, scale: half_normal(scale, 1.0))
     with pytest.raises(ValueError):
         sample(model, initial_values={"scale": value}, draws=2, warmup=3, chains=1)
+    assert not nuts_calls
+
+
+def test_nuts_samples_correlation_factors_with_labeled_matrix_axes():
+    model = Model(
+        {"factor": CorrelationCholesky(dims=("effect", "effect_to"))},
+        lambda data, factor: lkj_cholesky(factor, 2.0),
+        coords={"effect": ["search", "video"], "effect_to": ["search", "video"]},
+    )
+    results = sample(model, draws=20, warmup=60, chains=1, seed=8, initial_values={"factor": jnp.eye(2)})
+    factors = results["posterior"]["factor"]
+    assert factors.dims == ("chain", "draw", "effect", "effect_to")
+    assert factors.shape == (1, 20, 2, 2)
+    np.testing.assert_array_equal(factors.effect, ["search", "video"])
+    np.testing.assert_allclose(np.sum(factors.values**2, axis=-1), 1, atol=3e-6)
+    assert np.all(np.isfinite(results["sample_stats"]["lp"]))
+    assert np.unique(factors.values[..., 1, 0]).size > 1
+
+
+@pytest.mark.parametrize(
+    "factor",
+    [
+        [[1.0, 0.1], [0.0, 1.0]],
+        [[1.0, 0.0], [0.5, 1.0]],
+        [[1.0, 0.0], [0.0, -1.0]],
+        [[1.0, 0.0], [1.0, 0.0]],
+    ],
+)
+def test_initial_correlation_factors_cannot_be_projected_into_support(nuts_calls, factor):
+    model = Model({"factor": CorrelationCholesky((2, 2))}, lambda data, factor: lkj_cholesky(factor, 1.0))
+    with pytest.raises(ValueError, match="factor"):
+        sample(model, initial_values={"factor": factor}, draws=2, warmup=3, chains=1)
     assert not nuts_calls
 
 

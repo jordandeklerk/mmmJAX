@@ -27,3 +27,25 @@ Multinomial
    multinomial_logit
    multinomial_logit_logpmf
    multinomial_logit_rng
+
+Multivariate Normal
+-------------------
+
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+
+   multivariate_normal
+   multivariate_normal_logpdf
+   multivariate_normal_rng
+
+LKJ correlation factors
+-----------------------
+
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+
+   lkj_cholesky
+   lkj_cholesky_logpdf
+   lkj_cholesky_rng

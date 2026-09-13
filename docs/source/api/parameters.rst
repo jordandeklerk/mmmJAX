@@ -15,4 +15,5 @@ Declare parameter constraints and map between model and inference spaces.
    UpperBound
    Interval
    Simplex
+   CorrelationCholesky
    Parameterization

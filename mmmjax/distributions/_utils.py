@@ -8,6 +8,19 @@ from jax.scipy.special import digamma, gammaln
 from jax.typing import ArrayLike
 
 
+def _validate_cholesky_shape(value: jax.Array, *, name: str) -> None:
+    if value.ndim < 2 or value.shape[-2] != value.shape[-1] or value.shape[-1] == 0:
+        raise ValueError(f"{name} must end in a nonempty square matrix")
+
+
+def _is_lower_cholesky(value: jax.Array) -> jax.Array:
+    return (
+        jnp.all(jnp.isfinite(value), axis=(-2, -1))
+        & jnp.all(jnp.triu(value, k=1) == 0, axis=(-2, -1))
+        & jnp.all(jnp.diagonal(value, axis1=-2, axis2=-1) > 0, axis=-1)
+    )
+
+
 def _as_real_array(name: str, value: ArrayLike) -> jax.Array:
     try:
         array = jnp.asarray(value)

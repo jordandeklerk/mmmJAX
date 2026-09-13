@@ -10,6 +10,7 @@ import xarray as xr
 import mmmjax
 import mmmjax.sampling as sampling
 from mmmjax import (
+    CorrelationCholesky,
     Interval,
     Model,
     Positive,
@@ -19,6 +20,10 @@ from mmmjax import (
     fourier_features,
     geometric_adstock,
     hill_saturation,
+    lkj_cholesky,
+    lkj_cholesky_rng,
+    multivariate_normal,
+    multivariate_normal_rng,
     prepare_data,
     sample_prior,
 )
@@ -34,6 +39,46 @@ def scalar_model():
 
 def _normal_prior(key):
     return {"location": jax.random.normal(key)}
+
+
+def test_correlated_joint_prior_draws_keep_parameter_and_predictive_axes():
+    def density(data, factor, coefficients):
+        return lkj_cholesky(factor, 2.0) + multivariate_normal(coefficients, jnp.zeros(2), factor)
+
+    def prior(key):
+        factor_key, coefficient_key = jax.random.split(key)
+        factor = lkj_cholesky_rng(factor_key, 2, 2.0)
+        coefficients = multivariate_normal_rng(coefficient_key, jnp.zeros(2), factor)
+        return {"factor": factor, "coefficients": coefficients}
+
+    model = Model(
+        {"factor": CorrelationCholesky(dims=("effect", "effect_to")), "coefficients": Real(dims="effect")},
+        density,
+        lambda key, data, coefficients: {"prediction": coefficients},
+        prior=prior,
+        coords={"effect": ["search", "video"], "effect_to": ["search", "video"]},
+        generated_dims={"prediction": ("effect",)},
+        predictive=("prediction",),
+    )
+    results = sample_prior(model, draws=12, seed=4)
+    assert results["prior"]["factor"].dims == ("chain", "draw", "effect", "effect_to")
+    assert results["prior"]["coefficients"].dims == ("chain", "draw", "effect")
+    np.testing.assert_array_equal(results["prior"]["coefficients"], results["prior_predictive"]["prediction"])
+    assert np.all(np.isfinite(results["prior"]["factor"]))
+
+
+@pytest.mark.parametrize(
+    "factor",
+    [
+        [[1.0, 0.1], [0.0, 1.0]],
+        [[1.0, 0.0], [0.5, 1.0]],
+        [[1.0, 0.0], [0.0, -1.0]],
+    ],
+)
+def test_prior_correlation_factors_must_already_satisfy_support(factor):
+    model = Model({"factor": CorrelationCholesky((2, 2))}, lambda data, factor: lkj_cholesky(factor, 1.0))
+    with pytest.raises(ValueError, match="factor"):
+        sample_prior(model, lambda key: {"factor": jnp.asarray(factor)}, draws=2)
 
 
 def _prepared_model(*, scaling=False):
