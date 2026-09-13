@@ -6,6 +6,7 @@ from typing import TypeAlias, cast
 import blackjax.util  # type: ignore[import-untyped]
 import jax
 import jax.numpy as jnp
+from jax.sharding import AxisType, NamedSharding, PartitionSpec
 
 _Position: TypeAlias = dict[str, jax.Array]
 _Samples: TypeAlias = tuple[_Position, dict[str, jax.Array]]
@@ -20,8 +21,9 @@ def _sample_nuts(
     warmup: int,
     target_accept: float,
     max_tree_depth: int,
+    chain_method: str,
 ) -> _Samples:
-    """Adapt and sample sequential chains, retaining positions and diagnostics."""
+    """Adapt each chain independently and retain positions and diagnostics."""
     adaptation = blackjax.window_adaptation(
         blackjax.nuts,
         logdensity,
@@ -61,6 +63,38 @@ def _sample_nuts(
             transform=retain,
         )
         return cast(_Samples, history)
+
+    if chain_method == "vectorized":
+        return cast(_Samples, jax.jit(jax.vmap(run_chain))(initial_positions, keys))
+
+    if chain_method == "parallel":
+        mesh = jax.make_mesh(
+            (keys.shape[0],),
+            ("chain",),
+            axis_types=(AxisType.Auto,),
+            devices=jax.local_devices()[: keys.shape[0]],
+        )
+
+        def run_device(positions: _Position, keys: jax.Array) -> _Samples:
+            position = jax.tree.map(lambda value: value[0], positions)
+            samples = run_chain(position, keys[0])
+            return cast(_Samples, jax.tree.map(lambda value: value[None], samples))
+
+        chain_spec = PartitionSpec("chain")  # type: ignore[no-untyped-call]
+        with jax.set_mesh(mesh):
+            initial_positions, keys = jax.device_put((initial_positions, keys), NamedSharding(mesh, chain_spec))
+            run_parallel = jax.jit(
+                jax.shard_map(
+                    run_device,
+                    mesh=mesh,
+                    in_specs=chain_spec,
+                    out_specs=chain_spec,
+                    # Chain-local control flow mixes constant and varying state.
+                    # Every output is sharded, with no replication assertions.
+                    check_vma=False,
+                )
+            )
+            return cast(_Samples, run_parallel(initial_positions, keys))
 
     chains = [
         run_chain({name: values[index] for name, values in initial_positions.items()}, keys[index])
