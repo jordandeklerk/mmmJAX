@@ -6,6 +6,7 @@ from jax.typing import ArrayLike
 from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax.distributions._utils import (
+    _as_real_array,
     _is_lower_cholesky,
     _promote_inexact,
     _random_shape,
@@ -48,11 +49,14 @@ def lkj_cholesky_logpdf(value: ArrayLike, concentration: ArrayLike) -> jax.Array
            ...: factor = jnp.linalg.cholesky(correlation)
            ...: lkj_cholesky_logpdf(factor, concentration=2.0)
     """
+    value = _as_real_array("value", value)
+    factor_dtype = jnp.result_type(value.dtype, jnp.float32)
     value, concentration = _promote_inexact(("value", value), ("concentration", concentration))
     _validate_cholesky_shape(value, name="value")
     jnp.broadcast_shapes(value.shape[:-2], concentration.shape)
 
-    tolerance = 32 * jnp.finfo(value.dtype).eps
+    # Promotion cannot recover precision lost when the factor was computed.
+    tolerance = 32 * jnp.finfo(factor_dtype).eps
     unit_rows = jnp.all(jnp.abs(jnp.sum(value**2, axis=-1) - 1) <= tolerance, axis=-1)
     supported = _is_lower_cholesky(value) & unit_rows
     valid_concentration = jnp.isfinite(concentration) & (concentration > 0)

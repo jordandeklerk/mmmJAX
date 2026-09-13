@@ -39,6 +39,36 @@ def test_lkj_broadcasts_concentrations_and_factors():
     np.testing.assert_allclose(result, expected, atol=2e-6)
 
 
+@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+@pytest.mark.parametrize("source", ["transformed", "sampled"])
+def test_lkj_preserves_factor_support_when_concentration_has_higher_precision(source):
+    if source == "transformed":
+        declaration = CorrelationCholesky((2, 2), dtype=jnp.float32)
+        factors = jax.vmap(declaration.constrain)(jnp.array([[-0.7], [0.4]], dtype=jnp.float32))
+    else:
+        factors = lkj_cholesky_rng(jax.random.key(11), 2, jnp.float32(2.0), sample_shape=(2,))
+
+    concentration = jnp.float64(2.0)
+    expected = 2 * np.log(np.asarray(factors[:, 1, 1], dtype=np.float64)) - betaln(0.5, 2.0)
+
+    for density in (lkj_cholesky_logpdf, jax.jit(lkj_cholesky_logpdf)):
+        actual = density(factors, concentration)
+        assert actual.dtype == jnp.float64
+        np.testing.assert_allclose(actual, expected, atol=1e-12, rtol=1e-12)
+
+    gradient = jax.jit(jax.grad(lambda eta: lkj_cholesky(factors, eta)))(concentration)
+    assert jnp.isfinite(gradient)
+
+
+@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+def test_lkj_row_tolerance_still_rejects_invalid_factors_at_their_input_precision():
+    factors32 = jnp.eye(2, dtype=jnp.float32).at[1, 1].set(1.001)
+    factors64 = jnp.eye(2, dtype=jnp.float64).at[1, 1].set(1 + 1e-8)
+
+    assert jnp.isneginf(lkj_cholesky_logpdf(factors32, jnp.float64(2.0)))
+    assert jnp.isneginf(lkj_cholesky_logpdf(factors64, jnp.float64(2.0)))
+
+
 def test_lkj_rng_axes_support_and_marginal_moments():
     concentration = jnp.array([1.0, 4.0])
     factors = jax.jit(lambda key: lkj_cholesky_rng(key, 3, concentration, sample_shape=(12_000,)))(jax.random.key(8))
