@@ -91,18 +91,6 @@ def sample(
         generation inputs. Observation-shaped predictive and likelihood outputs
         inherit outcome labels. Use ``dims``, ``generated_dims``, and ``coords``
         on the model for custom axes. Inspect diagnostics before interpreting results.
-
-    Examples
-    --------
-    With a constructed ``Model``, sample and inspect its labeled draws.
-
-    .. code-block:: python
-
-        from mmmjax import sample
-
-        results = sample(model, seed=42)
-        results["posterior"]
-        results["sample_stats"]
     """
     if not isinstance(model, Model):
         raise TypeError("model must be a Model")
@@ -301,53 +289,6 @@ def sample_prior(
         Outputs selected as log likelihoods are omitted. The chain axis is for
         result compatibility, not an MCMC chain. Without generation, only prior
         draws and available model inputs are returned.
-
-    Examples
-    --------
-    Define a Normal observation model with known noise scale. Write the prior
-    and likelihood explicitly, sharing the prior mean and scale with the
-    prior-draw function.
-
-    .. ipython::
-
-        In [1]: from mmmjax import Model, Real, normal, normal_rng
-           ...: from mmmjax import sample_prior
-           ...: prior_mean = 0.0
-           ...: prior_scale = 2.0
-           ...: observation_scale = 1.0
-           ...: parameters = {"location": Real()}
-
-        In [2]: def log_density(data, location):
-           ...:     target = normal(
-           ...:         location, location=prior_mean, scale=prior_scale
-           ...:     )
-           ...:     target += normal(
-           ...:         data, location=location, scale=observation_scale
-           ...:     )
-           ...:     return target
-
-        In [3]: def prior(key):
-           ...:     location = normal_rng(
-           ...:         key, location=prior_mean, scale=prior_scale
-           ...:     )
-           ...:     return {"location": location}
-
-        In [4]: def generate(key, data, location):
-           ...:     outcome = normal_rng(
-           ...:         key, location=location, scale=observation_scale
-           ...:     )
-           ...:     return {"outcome": outcome}
-
-        In [5]: model = Model(
-           ...:     parameters=parameters,
-           ...:     log_density=log_density,
-           ...:     prior=prior,
-           ...:     generate=generate,
-           ...:     predictive=("outcome",),
-           ...: )
-
-        In [6]: results = sample_prior(model, draws=100, seed=42)
-           ...: results
     """
     if not isinstance(model, Model):
         raise TypeError("model must be a Model")
