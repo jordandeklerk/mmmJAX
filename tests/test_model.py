@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from mmmjax import Model, Positive, Real, exponential, normal, normal_rng
+from mmmjax import Model, Positive, Real, Simplex, exponential, normal, normal_rng
 
 
 def test_model_copies_and_canonicalizes_parameters() -> None:
@@ -234,7 +234,7 @@ def test_constrain_and_unconstrain_complete_parameter_mapping() -> None:
     assert jax.tree.all(jax.tree.map(jnp.allclose, round_trip, position))
 
 
-@pytest.mark.parametrize("method_name", ["constrain", "unconstrain"])
+@pytest.mark.parametrize("method_name", ["constrain", "unconstrain", "evaluate", "log_prob"])
 @pytest.mark.parametrize(
     ("values", "message"),
     [
@@ -351,34 +351,139 @@ def test_log_density_constrains_parameters_and_adds_adjustments_once() -> None:
     assert jnp.allclose(result, expected)
 
 
-def test_log_density_must_return_scalar() -> None:
+@pytest.mark.parametrize("method_name", ["log_density", "log_prob"])
+def test_log_density_must_return_scalar(method_name: str) -> None:
     def vector_density(data, a):
         return jnp.array([a, a])
 
     specification = Model({"a": Real()}, vector_density)
 
     with pytest.raises(ValueError, match=r"must return a scalar, got shape \(2,\)"):
-        specification.log_density({"a": 0.0}, {})
+        getattr(specification, method_name)({"a": 0.0}, {})
 
 
-def test_log_density_must_return_floating_point_value() -> None:
+@pytest.mark.parametrize("method_name", ["log_density", "log_prob"])
+def test_log_density_must_return_floating_point_value(method_name: str) -> None:
     def integer_density(data, a):
         return jnp.asarray(1, dtype=jnp.int32)
 
     specification = Model({"a": Real()}, integer_density)
 
     with pytest.raises(TypeError, match="must return a real floating-point value"):
-        specification.log_density({"a": 0.0}, {})
+        getattr(specification, method_name)({"a": 0.0}, {})
 
 
-def test_log_density_must_return_array_like_value() -> None:
+@pytest.mark.parametrize("method_name", ["log_density", "log_prob"])
+def test_log_density_must_return_array_like_value(method_name: str) -> None:
     def object_density(data, a):
         return object()
 
     specification = Model({"a": Real()}, object_density)
 
     with pytest.raises(TypeError, match="must return an array-like floating-point scalar, got object"):
-        specification.log_density({"a": 0.0}, {})
+        getattr(specification, method_name)({"a": 0.0}, {})
+
+
+def test_log_prob_evaluates_constrained_values_and_gradients_without_adjustments() -> None:
+    specification = _make_scalar_model()
+    parameters = {"a": jnp.array(0.5), "s": jnp.array(2.0)}
+
+    value, gradient = jax.jit(jax.value_and_grad(specification.log_prob))(parameters)
+    position = specification.unconstrain(parameters)
+
+    assert jnp.allclose(value, _scalar_log_density(None, **parameters))
+    assert jnp.allclose(specification.log_density(position, None), value + jnp.log(parameters["s"]))
+    assert jnp.allclose(gradient["a"], -parameters["a"] / 4.0)
+    assert jnp.allclose(gradient["s"], -0.5)
+
+
+def test_log_prob_passes_dynamic_data_to_plain_callbacks_under_jit_vmap() -> None:
+    specification = _make_regression_model()
+    parameters = {
+        "a": jnp.array([0.25, -0.5]),
+        "b": jnp.array([[0.5, -0.25], [1.0, 0.5]]),
+        "s": jnp.array([1.5, 0.75]),
+    }
+    data = _regression_data()
+    compiled = jax.jit(jax.vmap(specification.log_prob, in_axes=(0, None)))
+
+    for offset in (0.0, 2.0):
+        current = {"media": data["media"], "target": data["target"] + offset}
+        actual = compiled(parameters, current)
+        expected = jnp.stack(
+            [
+                specification._log_density(current, **jax.tree.map(lambda value, index=index: value[index], parameters))
+                for index in range(2)
+            ]
+        )
+        assert jnp.allclose(actual, expected)
+
+
+def test_direct_evaluation_uses_model_shapes_without_inference_transforms() -> None:
+    def unavailable(*args):
+        raise AssertionError("Inspection must not call inference transformations")
+
+    declaration = SimpleNamespace(
+        shape=(3,),
+        position_shape=(2,),
+        dtype=jnp.float32,
+        constrain=unavailable,
+        unconstrain=unavailable,
+        log_density_adjustment=unavailable,
+        initialize=unavailable,
+    )
+
+    def density(data, weights):
+        return -jnp.square(weights).sum()
+
+    specification = Model({"weights": declaration}, density)
+    parameters = {"weights": [0, 0, 1]}
+
+    assert specification.evaluate(parameters) == {}
+    value = specification.log_prob(parameters)
+    assert value == -1.0
+    assert value.dtype == jnp.float32
+
+
+def test_log_prob_preserves_simplex_boundary_values() -> None:
+    def density(data, weights):
+        return -jnp.square(weights).sum()
+
+    specification = Model({"weights": Simplex(shape=(3,))}, density)
+
+    assert jax.jit(specification.log_prob)({"weights": jnp.array([0.0, 0.0, 1.0])}) == -1.0
+
+
+@pytest.mark.parametrize("method_name", ["evaluate", "log_prob"])
+@pytest.mark.parametrize(
+    ("values", "error", "message"),
+    [
+        ([0.0, 1.0], TypeError, "parameters must be a mapping"),
+        ({1: 0.0}, TypeError, "non-string parameter name"),
+        ({"a": [0.0], "s": 1.0}, ValueError, r"parameter 'a' must have shape \(\), got \(1,\)"),
+        ({"a": object(), "s": 1.0}, TypeError, "parameter 'a' must be array-like"),
+    ],
+)
+def test_direct_evaluation_validates_values_before_callbacks(method_name, values, error, message) -> None:
+    with pytest.raises(error, match=message):
+        getattr(_make_scalar_model(), method_name)(values)
+
+
+def test_log_prob_converts_python_values_to_declaration_dtype() -> None:
+    def density(data, coefficient):
+        assert coefficient.dtype == jnp.float32
+        return normal(coefficient, 0.0, 1.0)
+
+    specification = Model({"coefficient": Real(shape=(2,), dtype=jnp.float32)}, density)
+
+    assert specification.log_prob({"coefficient": [1, 2]}).dtype == jnp.float32
+
+
+def test_direct_evaluation_supports_parameter_free_models() -> None:
+    specification = Model({}, _empty_log_density)
+
+    assert jax.jit(specification.evaluate)({}) == {}
+    assert jax.jit(specification.log_prob)({}) == 0.0
 
 
 def test_log_density_can_be_jitted() -> None:

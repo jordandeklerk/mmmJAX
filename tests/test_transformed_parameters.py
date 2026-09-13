@@ -465,3 +465,110 @@ def test_saved_outputs_follow_changed_parameters_and_scenario_shapes_under_jit_v
         np.testing.assert_allclose(generated["signal"], np.asarray(positions["beta"]) @ controls.T, rtol=2e-6)
 
     np.testing.assert_array_equal(model.data.values["controls"], original_controls)
+
+
+def test_direct_evaluation_returns_all_quantities_without_density_or_generation():
+    calls = []
+
+    def transformed(controls):
+        calls.append("transformed")
+        return {"signal": controls[:, 0] * 2, "unsaved": controls[:, 1] * 3}
+
+    def density(signal):
+        calls.append("density")
+        return signal.sum()
+
+    def generate(key, signal):
+        raise AssertionError("Direct evaluation must not generate random quantities")
+
+    model = Model(
+        {}, density, generate, data=_data(), components=[], transformed_parameters=transformed, save=("signal",)
+    )
+    assert calls == []
+
+    evaluated = model.evaluate({})
+
+    assert calls == ["transformed"]
+    assert set(evaluated) == {"signal", "unsaved"}
+    np.testing.assert_array_equal(evaluated["signal"], model.data.values["controls"][:, 0] * 2)
+    np.testing.assert_array_equal(evaluated["unsaved"], model.data.values["controls"][:, 1] * 3)
+
+    np.testing.assert_array_equal(model.log_prob({}), evaluated["signal"].sum())
+    assert calls == ["transformed", "transformed", "density"]
+
+
+@pytest.mark.parametrize("save", [(), ("signal",)])
+def test_direct_evaluation_supports_training_inputs_and_outcome_free_scenarios_under_jit_vmap(save):
+    model = _regression(save=save, include_generate=False)
+    parameters = {"beta": jnp.array([0.3, -0.2]), "scale": jnp.array(0.7), "intercept": jnp.array(0.25)}
+    training = model.evaluate(parameters)
+    compiled = jax.jit(model.evaluate)(parameters)
+
+    assert set(training) == {"signal", "spread"}
+    np.testing.assert_allclose(training["signal"], model.data.values["controls"] @ parameters["beta"], rtol=2e-6)
+    for name in training:
+        np.testing.assert_allclose(compiled[name], training[name], rtol=2e-6)
+
+    draws = jax.tree.map(lambda value: jnp.stack((value, value + 0.1)), parameters)
+    evaluate = jax.jit(jax.vmap(model.evaluate, in_axes=(0, None)))
+    original_controls = np.array(model.data.values["controls"], copy=True)
+
+    for controls in (np.array([[2.0, 0.5]]), np.array([[0.4, 1.7], [1.5, 0.2]])):
+        scenario = model.prepare_data(_data(controls, observed=False))
+        eager = model.evaluate(parameters, scenario)
+        evaluated = evaluate(draws, scenario)
+
+        assert "outcome" not in scenario.values
+        assert set(evaluated) == {"signal", "spread"}
+        np.testing.assert_allclose(eager["signal"], controls @ np.asarray(parameters["beta"]), rtol=2e-6)
+        np.testing.assert_allclose(evaluated["signal"], np.asarray(draws["beta"]) @ controls.T, rtol=2e-6)
+        np.testing.assert_allclose(evaluated["spread"], np.sqrt(np.asarray(draws["scale"]) ** 2 + 0.4), rtol=2e-6)
+
+    np.testing.assert_array_equal(model.data.values["controls"], original_controls)
+
+
+def test_direct_evaluation_includes_component_effects_and_media_totals_not_parameter_aliases():
+    model, _, position = _media_model(
+        lambda paid_media_total, annual, intercept: {"mu": intercept + paid_media_total + annual},
+        include_generate=False,
+    )
+    parameters = model.constrain(position)
+    evaluated = jax.jit(model.evaluate)(parameters)
+
+    assert set(evaluated) == {"mu", "paid_media", "paid_media_total", "annual"}
+    assert evaluated["paid_media"].shape == (3, 2)
+    assert evaluated["annual"].shape == (3,)
+    assert parameters["annual"].shape == (2,)
+    np.testing.assert_allclose(evaluated["paid_media_total"], evaluated["paid_media"].sum(axis=-1), rtol=2e-6)
+    np.testing.assert_allclose(
+        evaluated["mu"], parameters["intercept"] + evaluated["paid_media_total"] + evaluated["annual"], rtol=2e-6
+    )
+
+
+def test_direct_log_prob_matches_constrained_density_and_gradients_without_jacobian():
+    model = _regression(include_generate=False)
+    parameters = {"beta": jnp.array([0.3, -0.2]), "scale": jnp.array(0.7), "intercept": jnp.array(0.25)}
+    value, gradient = jax.jit(jax.value_and_grad(model.log_prob))(parameters)
+    controls, outcome = _data().arrays["controls"], _data().arrays["outcome"]
+    beta = np.asarray(parameters["beta"], dtype=np.float64)
+    scale, intercept = float(parameters["scale"]), float(parameters["intercept"])
+    variance = scale**2 + 0.4
+    residual = outcome - controls @ beta - intercept
+    expected = _normal(residual, np.sqrt(variance)) + _normal(beta) + _normal(intercept, 2.0)
+    expected_gradient = {
+        "beta": controls.T @ residual / variance - beta,
+        "intercept": residual.sum() / variance - intercept / 4,
+        "scale": scale / variance * (-len(outcome) + np.sum(residual**2) / variance),
+    }
+
+    np.testing.assert_allclose(value, expected, rtol=4e-6, atol=3e-6)
+    np.testing.assert_allclose(model.log_prob(parameters, model.data), value, rtol=2e-6)
+    for name in parameters:
+        np.testing.assert_allclose(gradient[name], expected_gradient[name], rtol=5e-6, atol=3e-6)
+
+    position = model.unconstrain(parameters)
+    np.testing.assert_allclose(model.log_density(position, model.data), value + position["scale"], rtol=4e-6)
+    signal_gradient = jax.jit(jax.grad(lambda values: model.evaluate(values)["signal"].sum()))(parameters)
+    np.testing.assert_allclose(signal_gradient["beta"], controls.sum(axis=0), rtol=2e-6)
+    np.testing.assert_array_equal(signal_gradient["scale"], 0)
+    np.testing.assert_array_equal(signal_gradient["intercept"], 0)

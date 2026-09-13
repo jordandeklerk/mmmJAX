@@ -17,7 +17,7 @@ from mmmjax._results import _coordinates, _dimensions, _prepared_coordinates, _s
 from mmmjax.data import PreparedData, _DataLayout, _prepare_model_frame
 from mmmjax.hsgp import HSGPEffect, _PreparedHSGP
 from mmmjax.media import MediaEffect, _PreparedMedia
-from mmmjax.parameters import Interval, LowerBound, Parameterization, Positive, Real, Simplex, UpperBound
+from mmmjax.parameters import Interval, LowerBound, Parameterization, Positive, Real, Simplex, UpperBound, _as_array
 from mmmjax.scaling import DataScaling, fit_data_scaling
 from mmmjax.seasonality import FourierSeasonality, _PreparedFourier
 
@@ -54,6 +54,10 @@ class Model:
     Built-in components are optional. Declare custom parameters and compute
     their effects in ``transformed_parameters`` while reusing prepared data,
     constraint handling, and generated quantities.
+
+    Inspect derived quantities with ``evaluate`` and the constrained log
+    density with ``log_prob`` before fitting. ``log_density`` instead accepts
+    unconstrained inference positions and adds parameterization adjustments.
 
     Parameters
     ----------
@@ -507,6 +511,95 @@ class Model:
             for (name, parameterization), parameter_key in zip(self._parameterizations, keys, strict=True)
         }
 
+    def evaluate(self, parameters: ParameterValues, data: object = None) -> dict[str, jax.Array]:
+        """Inspect deterministic model quantities at chosen parameter values.
+
+        Evaluate components and transformed parameters without sampling or
+        calling the density or generation functions. Supports JIT, automatic
+        differentiation, and batching through ``jax.vmap``.
+
+        Parameters
+        ----------
+        parameters : mapping of str to array_like
+            Constrained values for every declared parameter, matching its
+            shape and constraints. Values use the declaration's dtype.
+        data : object, optional
+            Prepared model inputs from ``model.prepare_data``. Defaults to
+            stored training inputs. Prepare new data outside JAX transformations.
+
+        Returns
+        -------
+        dict of str to jax.Array
+            Named quantities containing
+
+            - **Component contributions** with media channel axes retained.
+            - **Media totals** under ``<name>_total``.
+            - **Transformed quantities** returned by ``transformed_parameters``.
+
+            Includes all these quantities regardless of ``save``. Returns an
+            empty dictionary when the model has no components or transformations.
+        """
+        values = self._constrained_values(parameters)
+        if self._data is None:
+            return {}
+
+        inputs = self._component_data(self._data if data is None else data)
+        quantities = self._evaluate_quantities(inputs, values)
+        for name in sorted(_media_total_names(inputs.components)):
+            quantities[name] = quantities[name.removesuffix("_total")].sum(axis=-1)
+
+        return quantities
+
+    def log_prob(self, parameters: ParameterValues, data: object = None) -> jax.Array:
+        """Evaluate the scalar log density at constrained parameter values.
+
+        Includes the priors and likelihood written in the density callback,
+        without parameterization adjustments. This need not be a normalized
+        probability density. Supports JIT, gradients, and ``jax.vmap``.
+
+        Parameters
+        ----------
+        parameters : mapping of str to array_like
+            Constrained values for every declared parameter, matching its
+            shape and constraints. Values use the declaration's dtype.
+        data : object, optional
+            Defaults to stored training inputs for prepared models. For new
+            observations, pass ``model.prepare_data`` output. Otherwise, pass
+            the JAX-compatible data expected by the data-first callback.
+
+        Returns
+        -------
+        jax.Array
+            Scalar log density in model space, without constraint Jacobians
+            or other parameterization adjustments.
+        """
+        values = self._constrained_values(parameters)
+        inputs = self._data if data is None and self._data is not None else data
+        return self._constrained_log_density(values, inputs)
+
+    def _constrained_values(self, parameters: ParameterValues) -> dict[str, jax.Array]:
+        """Check declared names and shapes without transforming model-space values."""
+        _validate_value_names(parameters, self._parameterizations, name="parameters")
+        return {
+            name: _as_array(
+                parameters[name],
+                name=f"parameter {name!r}",
+                shape=parameterization.shape,
+                dtype=parameterization.dtype,
+            )
+            for name, parameterization in self._parameterizations
+        }
+
+    def _constrained_log_density(self, parameters: ParameterValues, data: object) -> jax.Array:
+        """Share the model-space density between inspection and inference."""
+        if self._data is None:
+            return _as_scalar(self._log_density(data, **parameters), name="log_density")
+
+        inputs = self._component_data(data)
+        effects = self._evaluate_quantities(inputs, parameters)
+        arguments = _callback_inputs(self._density_inputs, inputs, effects, parameters, name="log_density")
+        return _as_scalar(self._log_density(**arguments), name="log_density")
+
     def log_density(self, position: ParameterValues, data: object) -> jax.Array:
         r"""Evaluate the adjusted scalar log density in inference space.
 
@@ -538,14 +631,8 @@ class Model:
             Scalar callback log density plus parameterization adjustments.
         """
         parameters = self.constrain(position)
-        if self._data is None:
-            density = _as_scalar(self._log_density(data, **parameters), name="log_density")
-        else:
-            inputs = self._component_data(data)
-            effects = self._evaluate_quantities(inputs, parameters)
-            arguments = _callback_inputs(self._density_inputs, inputs, effects, parameters, name="log_density")
-            result = self._log_density(**arguments)
-            density = _as_scalar(result, name="log_density")
+        density = self._constrained_log_density(parameters, data)
+
         for name, parameterization in self._parameterizations:
             adjustment = _as_scalar(
                 parameterization.log_density_adjustment(position[name]),
