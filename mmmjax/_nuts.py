@@ -22,11 +22,13 @@ def _sample_nuts(
     target_accept: float,
     max_tree_depth: int,
     chain_method: str,
+    mass_matrix: str,
 ) -> _Samples:
     """Adapt each chain independently and retain positions and diagnostics."""
     adaptation = blackjax.window_adaptation(
         blackjax.nuts,
         logdensity,
+        is_mass_matrix_diagonal=mass_matrix == "diagonal",
         target_acceptance_rate=target_accept,
         max_num_doublings=max_tree_depth,
         adaptation_info_fn=_discard_adaptation,

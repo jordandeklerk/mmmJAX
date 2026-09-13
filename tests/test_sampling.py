@@ -13,6 +13,7 @@ import pytest
 import xarray as xr
 
 import mmmjax
+import mmmjax._nuts as nuts
 import mmmjax.sampling as sampling
 from mmmjax import (
     CorrelationCholesky,
@@ -48,7 +49,7 @@ def nuts_calls(monkeypatch):
     calls = []
 
     def stationary_draws(
-        logdensity, initial_positions, keys, *, draws, warmup, target_accept, max_tree_depth, chain_method
+        logdensity, initial_positions, keys, *, draws, warmup, target_accept, max_tree_depth, chain_method, mass_matrix
     ):
         calls.append(
             {
@@ -59,6 +60,7 @@ def nuts_calls(monkeypatch):
                 "target_accept": target_accept,
                 "max_tree_depth": max_tree_depth,
                 "chain_method": chain_method,
+                "mass_matrix": mass_matrix,
             }
         )
         positions = jax.tree.map(
@@ -73,6 +75,28 @@ def nuts_calls(monkeypatch):
 
     monkeypatch.setattr(sampling, "_sample_nuts", stationary_draws)
     return calls
+
+
+@pytest.fixture
+def adaptation_metrics(monkeypatch):
+    captured = {"diagonal": [], "matrices": []}
+    window_adaptation = nuts.blackjax.window_adaptation
+
+    def record_adaptation(*args, **kwargs):
+        captured["diagonal"].append(kwargs["is_mass_matrix_diagonal"])
+        adaptation = window_adaptation(*args, **kwargs)
+
+        def run(*args, **kwargs):
+            adapted, information = adaptation.run(*args, **kwargs)
+            jax.debug.callback(
+                lambda matrix: captured["matrices"].append(np.array(matrix)), adapted[1]["inverse_mass_matrix"]
+            )
+            return adapted, information
+
+        return adaptation._replace(run=run)
+
+    monkeypatch.setattr(nuts.blackjax, "window_adaptation", record_adaptation)
+    return captured
 
 
 def _prepared_model():
@@ -112,8 +136,10 @@ def test_public_sampling_replaces_manual_result_collection():
     assert not hasattr(mmmjax, "collect_results")
 
 
-@pytest.mark.parametrize("chain_method", ["sequential", "vectorized"])
-def test_normal_nuts_produces_reproducible_independent_chains(normal_model, chain_method):
+@pytest.mark.parametrize(
+    "chain_method,mass_matrix", [("sequential", "diagonal"), ("vectorized", "diagonal"), ("sequential", "dense")]
+)
+def test_normal_nuts_produces_reproducible_independent_chains(normal_model, chain_method, mass_matrix):
     options = {
         "data": 0.0,
         "draws": 200,
@@ -122,6 +148,7 @@ def test_normal_nuts_produces_reproducible_independent_chains(normal_model, chai
         "seed": 19,
         "target_accept": 0.8,
         "chain_method": chain_method,
+        "mass_matrix": mass_matrix,
     }
     first = sample(normal_model, **options)
     second = sample(normal_model, **options)
@@ -137,6 +164,7 @@ def test_normal_nuts_produces_reproducible_independent_chains(normal_model, chai
     assert first["sample_stats"]["diverging"].dtype == np.bool_
     assert first["sample_stats"]["diverging"].shape == (2, 200)
     assert first.attrs["chain_method"] == chain_method
+    assert first.attrs["mass_matrix"] == mass_matrix
     statistics = first["sample_stats"]
     assert set(statistics.data_vars) == {
         "lp",
@@ -160,6 +188,34 @@ def test_normal_nuts_produces_reproducible_independent_chains(normal_model, chai
             assert isinstance(variable.data, np.ndarray)
 
 
+def test_dense_adaptation_learns_correlation_across_parameter_names(adaptation_metrics):
+    location = np.array([-0.5, 0.7])
+    covariance = np.array([[1.0, 0.85], [0.85, 1.5]])
+    conditional_scale = np.sqrt(covariance[1, 1] - covariance[0, 1] ** 2)
+
+    def density(data, first, second):
+        conditional_mean = location[1] + covariance[0, 1] * (first - location[0])
+        return normal(first, location[0], 1.0) + normal(second, conditional_mean, conditional_scale)
+
+    model = Model({"first": Real(), "second": Real()}, density)
+    result = sample(model, draws=400, warmup=250, chains=2, seed=23, chain_method="vectorized", mass_matrix="dense")
+    values = np.stack([result["posterior"][name].values for name in ("first", "second")], axis=-1).reshape(-1, 2)
+    np.testing.assert_allclose(values.mean(axis=0), location, atol=0.2)
+    np.testing.assert_allclose(np.cov(values.T), covariance, rtol=0.25, atol=0.1)
+    assert result.attrs["mass_matrix"] == "dense"
+
+    jax.effects_barrier()
+    assert adaptation_metrics["diagonal"] == [False]
+    matrices = adaptation_metrics["matrices"]
+    assert len(matrices) == 2
+    for matrix in matrices:
+        assert matrix.shape == (2, 2)
+        np.testing.assert_allclose(matrix, matrix.T, atol=1e-6)
+        assert np.all(np.linalg.eigvalsh(matrix) > 0)
+        assert matrix[0, 1] > 0.1
+    assert not np.allclose(matrices[0], matrices[1])
+
+
 @pytest.mark.parametrize("named_axes", [False, True])
 def test_nuts_allows_parameters_named_after_sampler_diagnostics(named_axes):
     model = Model(
@@ -181,8 +237,10 @@ def test_nuts_allows_parameters_named_after_sampler_diagnostics(named_axes):
         np.testing.assert_array_equal(results["posterior"]["feature"], ["first", "second"])
 
 
-@pytest.mark.parametrize("chain_method", ["sequential", "vectorized"])
-def test_nuts_returns_positive_parameters_and_full_simplex_events(chain_method):
+@pytest.mark.parametrize(
+    "chain_method,mass_matrix", [("sequential", "diagonal"), ("vectorized", "diagonal"), ("vectorized", "dense")]
+)
+def test_nuts_returns_positive_parameters_and_full_simplex_events(chain_method, mass_matrix, adaptation_metrics):
     model = Model(
         {"scale": Positive(), "weights": Simplex((3,))},
         lambda data, scale, weights: half_normal(scale, 1.0) + dirichlet(weights, jnp.array([2.0, 3.0, 4.0])),
@@ -197,6 +255,7 @@ def test_nuts_returns_positive_parameters_and_full_simplex_events(chain_method):
         seed=5,
         initial_values={"scale": 1.0, "weights": np.array([0.2, 0.3, 0.5])},
         chain_method=chain_method,
+        mass_matrix=mass_matrix,
     )
     assert result["posterior"]["scale"].shape == (1, 40)
     assert (result["posterior"]["scale"].values > 0).all()
@@ -205,6 +264,15 @@ def test_nuts_returns_positive_parameters_and_full_simplex_events(chain_method):
     np.testing.assert_allclose(result["posterior"]["weights"].sum("category"), 1.0, rtol=2e-6)
     np.testing.assert_array_equal(result["posterior"]["category"], ["a", "b", "c"])
     assert result.attrs["chain_method"] == chain_method
+    assert result.attrs["mass_matrix"] == mass_matrix
+    jax.effects_barrier()
+    dimension = sum(int(np.prod(parameter.position_shape)) for parameter in model.parameters.values())
+    assert dimension == 3
+    assert adaptation_metrics["diagonal"] == [mass_matrix == "diagonal"]
+    assert len(adaptation_metrics["matrices"]) == 1
+    assert adaptation_metrics["matrices"][0].shape == (
+        (dimension,) if mass_matrix == "diagonal" else (dimension, dimension)
+    )
 
 
 def test_default_initialization_and_keys_are_independent_per_chain(normal_model, nuts_calls):
@@ -214,6 +282,7 @@ def test_default_initialization_and_keys_are_independent_per_chain(normal_model,
     assert len(np.unique(call["positions"]["location"])) == 3
     assert len(np.unique(call["keys"], axis=0)) == 3
     assert call["chain_method"] == "sequential"
+    assert call["mass_matrix"] == "diagonal"
 
 
 @pytest.mark.parametrize("chain_method", ["sequential", "vectorized", "parallel"])
@@ -231,6 +300,36 @@ def test_chain_methods_forward_options_without_changing_initialization_or_random
         np.testing.assert_array_equal(nuts_calls[0]["positions"][name], nuts_calls[1]["positions"][name])
     for group in expected.children:
         xr.testing.assert_identical(result[group], expected[group])
+
+
+@pytest.mark.parametrize("mass_matrix", ["diagonal", "dense"])
+def test_mass_matrix_options_preserve_keys_generation_and_labels(nuts_calls, mass_matrix):
+    model, _ = _prepared_model()
+    options = {"draws": 3, "warmup": 5, "chains": 2, "seed": 12, "batch_size": 2}
+    expected = sample(model, **options)
+    result = sample(model, **options, mass_matrix=mass_matrix)
+
+    assert nuts_calls[0]["mass_matrix"] == "diagonal"
+    assert nuts_calls[1]["mass_matrix"] == mass_matrix
+    assert result.attrs["mass_matrix"] == mass_matrix
+    np.testing.assert_array_equal(nuts_calls[0]["keys"], nuts_calls[1]["keys"])
+    for name in nuts_calls[0]["positions"]:
+        np.testing.assert_array_equal(nuts_calls[0]["positions"][name], nuts_calls[1]["positions"][name])
+    for group in expected.children:
+        xr.testing.assert_identical(result[group], expected[group])
+
+
+@pytest.mark.parametrize("mass_matrix", [None, True, 1, [], {}, "", "Dense", "block"])
+def test_invalid_mass_matrix_options_are_rejected_before_initialization(
+    normal_model, nuts_calls, monkeypatch, mass_matrix
+):
+    def forbidden_initialize(self, key):
+        raise AssertionError("Mass matrix validation must run before parameter initialization")
+
+    monkeypatch.setattr(Model, "initialize_random", forbidden_initialize)
+    with pytest.raises(ValueError, match="mass_matrix"):
+        sample(normal_model, data=0.0, draws=2, warmup=3, chains=1, mass_matrix=mass_matrix)
+    assert not nuts_calls
 
 
 @pytest.mark.parametrize("chain_method", [None, True, 1, [], {}, "", "automatic", "Parallel"])
@@ -373,6 +472,27 @@ def test_parallel_nuts_on_two_cpu_devices_preserves_targets_generation_and_label
         np.testing.assert_array_equal(simplex["posterior"]["weights"], np.ones((2, 8, 1)))
         assert np.isfinite(simplex["posterior"]["location"]).all()
         assert np.isfinite(simplex["sample_stats"]["lp"]).all()
+        dense_model = Model(
+            {"intercept": Real(), "coefficients": Real((2,))},
+            lambda data, intercept, coefficients: normal(intercept, 0.0, 1.0) + normal(coefficients, intercept, 1.0),
+            lambda key, data, intercept, coefficients: {"response": intercept + coefficients},
+        )
+        dense = sample(
+            dense_model, chains=2, draws=12, warmup=100, seed=17,
+            chain_method="parallel", mass_matrix="dense", batch_size=5,
+        )
+        assert dense.attrs["mass_matrix"] == "dense"
+        assert dense["posterior"]["coefficients"].shape == (2, 12, 2)
+        intercept = dense["posterior"]["intercept"].values
+        coefficients = dense["posterior"]["coefficients"].values
+        expected_lp = -0.5 * (
+            intercept**2 + ((coefficients - intercept[..., None])**2).sum(-1) + 3 * np.log(2 * np.pi)
+        )
+        np.testing.assert_allclose(dense["sample_stats"]["lp"], expected_lp, rtol=2e-5, atol=2e-5)
+        np.testing.assert_allclose(
+            dense["generated_quantities"]["response"], intercept[..., None] + coefficients,
+            rtol=2e-5, atol=2e-5,
+        )
         assert jax.local_device_count() == 2
         print("Two-device chain checks passed")
         """
