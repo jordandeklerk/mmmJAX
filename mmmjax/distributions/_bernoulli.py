@@ -1,5 +1,6 @@
 """Bernoulli distribution functions."""
 
+import distrax
 import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
@@ -304,8 +305,7 @@ def bernoulli_logit_logpmf(value: ArrayLike, logits: ArrayLike) -> jax.Array:
 
     is_failure = value_array == 0
     is_success = value_array == 1
-    signed_logits = jnp.where(is_success, logits_array, -logits_array)
-    supported_log_mass = jax.nn.log_sigmoid(signed_logits)
+    supported_log_mass = distrax.Bernoulli(logits=logits_array).log_prob(is_success.astype(logits_array.dtype))
 
     log_mass = jnp.where(is_failure | is_success, supported_log_mass, -jnp.inf)
     log_mass = jnp.where(jnp.isnan(value_array), jnp.nan, log_mass)
