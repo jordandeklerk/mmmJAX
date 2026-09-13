@@ -1,12 +1,105 @@
 """Tests for parameter declarations and their inference-space mappings."""
 
+from dataclasses import replace
 from functools import partial
+from inspect import Parameter, signature
 
 import jax
 import jax.numpy as jnp
 import pytest
 
 from mmmjax import Interval, LowerBound, Parameterization, Positive, Real, Simplex, UpperBound
+
+
+@pytest.fixture(
+    params=[
+        pytest.param(Real, id="real"),
+        pytest.param(Positive, id="positive"),
+        pytest.param(partial(LowerBound, lower=-2.0), id="lower"),
+        pytest.param(partial(UpperBound, upper=3.0), id="upper"),
+        pytest.param(partial(Interval, lower=-2.0, upper=3.0), id="interval"),
+        pytest.param(Simplex, id="simplex"),
+    ]
+)
+def named_parameter_factory(request):
+    return request.param
+
+
+def test_named_parameter_dimensions_are_copied_and_canonicalized(named_parameter_factory):
+    axes = ["group", "channel"]
+    declaration = named_parameter_factory(dims=axes)
+    axes.append("another")
+
+    equivalent = named_parameter_factory(dims=("group", "channel"))
+    assert declaration.dims == ("group", "channel")
+    assert declaration == equivalent
+    assert hash(declaration) == hash(equivalent)
+    assert named_parameter_factory(dims="channel") == named_parameter_factory(dims=("channel",))
+    assert signature(named_parameter_factory).parameters["dims"].kind is Parameter.KEYWORD_ONLY
+
+
+@pytest.mark.parametrize(
+    "dims,error,message",
+    [
+        (None, TypeError, "string or a sequence"),
+        (3, TypeError, "string or a sequence"),
+        ({"channel"}, TypeError, "string or a sequence"),
+        (b"channel", TypeError, "string or a sequence"),
+        ("", ValueError, "nonempty strings"),
+        (("channel", 1), ValueError, "nonempty strings"),
+        ((["channel"],), ValueError, "nonempty strings"),
+        (("channel", "channel"), ValueError, "must not repeat"),
+        ("chain", ValueError, "reserved sample dimensions"),
+        ("draw", ValueError, "reserved sample dimensions"),
+        ("sample", ValueError, "reserved sample dimensions"),
+        ("pred_id", ValueError, "reserved sample dimensions"),
+    ],
+)
+def test_named_parameter_dimensions_are_validated(named_parameter_factory, dims, error, message):
+    with pytest.raises(error, match=message):
+        named_parameter_factory(dims=dims)
+
+
+def test_named_parameter_dimensions_must_match_explicit_shape_rank(named_parameter_factory):
+    with pytest.raises(ValueError, match="must match the constrained shape"):
+        named_parameter_factory(shape=(2, 3), dims="channel")
+
+
+def test_named_parameter_shape_requires_resolution_before_numerical_use(named_parameter_factory):
+    declaration = named_parameter_factory(dims="channel")
+    assert declaration.shape == ()
+
+    with pytest.raises(ValueError, match="resolved by Model"):
+        _ = declaration.position_shape
+    for method in (declaration.constrain, declaration.unconstrain, declaration.log_density_adjustment):
+        with pytest.raises(ValueError, match="resolved by Model"):
+            method(jnp.ones(3))
+    with pytest.raises(ValueError, match="resolved by Model"):
+        declaration.initialize(jax.random.key(0))
+
+
+def test_named_parameters_preserve_transforms_when_shape_is_resolved(named_parameter_factory):
+    declaration = named_parameter_factory(dims=("group", "channel"), dtype="float32")
+    resolved = replace(declaration, shape=(2, 3))
+    explicit = named_parameter_factory(shape=(2, 3), dims=("group", "channel"), dtype=jnp.float32)
+    unnamed = named_parameter_factory(shape=(2, 3), dtype=jnp.float32)
+
+    assert resolved == explicit
+    assert declaration.shape == ()
+    assert resolved.dims == ("group", "channel")
+    assert isinstance(resolved, Parameterization)
+    assert resolved.position_shape == unnamed.position_shape
+    assert resolved.position_shape == ((2, 2) if isinstance(resolved, Simplex) else (2, 3))
+
+    key = jax.random.key(0)
+    position = resolved.initialize(key)
+    values = resolved.constrain(position)
+
+    assert values.dtype == jnp.float32
+    assert jnp.array_equal(position, unnamed.initialize(key))
+    assert jnp.array_equal(values, unnamed.constrain(position))
+    assert jnp.array_equal(resolved.unconstrain(values), unnamed.unconstrain(values))
+    assert jnp.array_equal(resolved.log_density_adjustment(position), unnamed.log_density_adjustment(position))
 
 
 @pytest.mark.parametrize(

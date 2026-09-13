@@ -350,12 +350,13 @@ def test_components_and_transformed_parameters_run_for_each_prior_draw():
     assert not np.array_equal(prediction[0, 0], prediction[0, 1])
 
 
-def test_generated_aliases_inherit_parameter_axes_without_guessing_equal_shapes():
+@pytest.mark.parametrize("declared_axes", [False, True])
+def test_generated_aliases_inherit_parameter_axes_without_guessing_equal_shapes(declared_axes):
     model = Model(
-        {"coefficient": Real((2,)), "other": Real((2,))},
+        {"coefficient": Real(dims="feature") if declared_axes else Real((2,)), "other": Real((2,))},
         lambda data, coefficient, other: jnp.nan,
         lambda key, data, coefficient, other: {"copy": coefficient, "other_copy": other, "sum": coefficient + other},
-        dims={"coefficient": ("feature",)},
+        dims=None if declared_axes else {"coefficient": ("feature",)},
         coords={"feature": ["first", "second"]},
     )
     result = sample_prior(model, lambda key: {"coefficient": jnp.ones(2), "other": jnp.zeros(2)}, draws=2)
@@ -364,6 +365,125 @@ def test_generated_aliases_inherit_parameter_axes_without_guessing_equal_shapes(
     assert generated["other_copy"].dims == ("chain", "draw", "other_dim_0")
     assert generated["sum"].dims == ("chain", "draw", "sum_dim_0")
     np.testing.assert_array_equal(generated["feature"], ["first", "second"])
+
+
+def test_prior_draws_use_resolved_simplex_axes_without_requiring_explicit_shapes():
+    model = Model(
+        {"weights": Simplex(dims=("region", "category"))},
+        lambda data, weights: jnp.nan,
+        lambda key, data, weights: {"weights_copy": weights},
+        coords={"region": ["west", "east"], "category": ["video", "search", "radio"]},
+    )
+
+    def prior(key):
+        return {"weights": jax.random.dirichlet(key, jnp.ones(model.parameters["weights"].shape))}
+
+    result = sample_prior(model, prior, draws=3, seed=12)
+    weights = result["prior"]["weights"]
+
+    assert weights.dims == ("chain", "draw", "region", "category")
+    assert weights.shape == (1, 3, 2, 3)
+    assert model.parameters["weights"].position_shape == (2, 2)
+    np.testing.assert_array_equal(weights["region"], ["west", "east"])
+    np.testing.assert_array_equal(weights["category"], ["video", "search", "radio"])
+    np.testing.assert_allclose(weights.sum("category"), 1.0, rtol=2e-6)
+    xr.testing.assert_equal(result["prior_generated_quantities"]["weights_copy"].rename("weights"), weights)
+
+
+def test_prior_saves_transformed_quantities_without_generation_callback_or_density_evaluation():
+    _, data = _prepared_model()
+
+    def forbidden_density(mean):
+        raise AssertionError("Prior saved quantities must not evaluate the model density")
+
+    def transformed(location, controls, outcome):
+        mean = location + controls[:, 0]
+        return {"mean": mean, "pointwise": -0.5 * (outcome - mean) ** 2, "total": mean.sum()}
+
+    model = Model(
+        {"location": Real()},
+        forbidden_density,
+        data=data,
+        components=[],
+        prior=_normal_prior,
+        transformed_parameters=transformed,
+        save=("mean", "pointwise", "total"),
+        predictive=("mean",),
+        log_likelihood=("pointwise",),
+    )
+    result = sample_prior(model, draws=3, seed=23)
+
+    assert set(result["prior"].data_vars) == {"location"}
+    assert set(result["prior_generated_quantities"].data_vars) == {"total"}
+    assert "log_likelihood" not in result
+    assert result["prior_predictive"]["mean"].dims == ("chain", "draw", "time")
+    np.testing.assert_array_equal(result["prior_predictive"]["time"], [10, 11, 12])
+    expected = result["prior"]["location"].values[..., None] + data.arrays["controls"][:, 0]
+    np.testing.assert_allclose(result["prior_predictive"]["mean"], expected, rtol=2e-6)
+    np.testing.assert_allclose(result["prior_generated_quantities"]["total"], expected.sum(-1), rtol=2e-6)
+
+
+def test_prior_generation_toggle_skips_saved_transforms_entirely():
+    _, data = _prepared_model()
+
+    def forbidden_transform(location):
+        raise AssertionError("Saved transforms must not execute when generation is disabled")
+
+    model = Model(
+        {"location": Real()},
+        lambda mean: jnp.nan,
+        data=data,
+        components=[],
+        prior=_normal_prior,
+        transformed_parameters=forbidden_transform,
+        save=("mean",),
+    )
+    result = sample_prior(model, draws=3, generate=False)
+
+    assert set(result["prior"].data_vars) == {"location"}
+    assert "prior_generated_quantities" not in result
+    assert "prior_predictive" not in result
+
+
+def test_prior_saves_component_only_effects_with_media_and_seasonal_axes():
+    data = prepare_data(
+        pd.DataFrame({"week": [0, 1, 2], "sales": [1.0, 2.0, 3.0], "video": [1.0, 3.0, 2.0]}),
+        time="week",
+        outcome="sales",
+        media=["video"],
+    )
+    model = Model(
+        {},
+        lambda outcome: jnp.nan,
+        data=data,
+        components=[MediaEffect(max_lag=1), FourierSeasonality(period=8, order=1, name="annual")],
+        save=("paid_media", "paid_media_total", "annual"),
+    )
+
+    def prior(key):
+        return {
+            "paid_media_coefficient": jnp.array([0.7]),
+            "paid_media_retention": jnp.array([0.2]),
+            "paid_media_half_saturation": jnp.array([1.5]),
+            "paid_media_slope": jnp.array([1.2]),
+            "annual": jax.random.normal(key, (2,)),
+        }
+
+    result = sample_prior(model, prior, draws=3, seed=25)
+    generated = result["prior_generated_quantities"]
+
+    assert set(result["prior"].data_vars) == set(model.parameters)
+    assert generated["paid_media"].dims == ("chain", "draw", "time", "channel")
+    assert generated["paid_media_total"].dims == ("chain", "draw", "time")
+    assert generated["annual"].dims == ("chain", "draw", "time")
+    assert result["prior"]["annual"].dims == ("chain", "draw", "annual_mode")
+    np.testing.assert_array_equal(generated["channel"], ["video"])
+    np.testing.assert_allclose(generated["paid_media_total"], generated["paid_media"].sum("channel"), rtol=2e-6)
+
+    for draw in range(3):
+        parameters = {name: jnp.asarray(result["prior"][name].values[0, draw]) for name in model.parameters}
+        expected = model.generate(jax.random.key(0), parameters, model.data)
+        np.testing.assert_allclose(generated["annual"].values[0, draw], expected["annual"], rtol=2e-6)
 
 
 @pytest.mark.parametrize("draws", [0, True, 1.5])
