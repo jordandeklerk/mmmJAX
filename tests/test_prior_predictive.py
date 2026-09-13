@@ -350,12 +350,13 @@ def test_components_and_transformed_parameters_run_for_each_prior_draw():
     assert not np.array_equal(prediction[0, 0], prediction[0, 1])
 
 
-def test_generated_aliases_inherit_parameter_axes_without_guessing_equal_shapes():
+@pytest.mark.parametrize("declared_axes", [False, True])
+def test_generated_aliases_inherit_parameter_axes_without_guessing_equal_shapes(declared_axes):
     model = Model(
-        {"coefficient": Real((2,)), "other": Real((2,))},
+        {"coefficient": Real(dims="feature") if declared_axes else Real((2,)), "other": Real((2,))},
         lambda data, coefficient, other: jnp.nan,
         lambda key, data, coefficient, other: {"copy": coefficient, "other_copy": other, "sum": coefficient + other},
-        dims={"coefficient": ("feature",)},
+        dims=None if declared_axes else {"coefficient": ("feature",)},
         coords={"feature": ["first", "second"]},
     )
     result = sample_prior(model, lambda key: {"coefficient": jnp.ones(2), "other": jnp.zeros(2)}, draws=2)
@@ -364,6 +365,29 @@ def test_generated_aliases_inherit_parameter_axes_without_guessing_equal_shapes(
     assert generated["other_copy"].dims == ("chain", "draw", "other_dim_0")
     assert generated["sum"].dims == ("chain", "draw", "sum_dim_0")
     np.testing.assert_array_equal(generated["feature"], ["first", "second"])
+
+
+def test_prior_draws_use_resolved_simplex_axes_without_requiring_explicit_shapes():
+    model = Model(
+        {"weights": Simplex(dims=("region", "category"))},
+        lambda data, weights: jnp.nan,
+        lambda key, data, weights: {"weights_copy": weights},
+        coords={"region": ["west", "east"], "category": ["video", "search", "radio"]},
+    )
+
+    def prior(key):
+        return {"weights": jax.random.dirichlet(key, jnp.ones(model.parameters["weights"].shape))}
+
+    result = sample_prior(model, prior, draws=3, seed=12)
+    weights = result["prior"]["weights"]
+
+    assert weights.dims == ("chain", "draw", "region", "category")
+    assert weights.shape == (1, 3, 2, 3)
+    assert model.parameters["weights"].position_shape == (2, 2)
+    np.testing.assert_array_equal(weights["region"], ["west", "east"])
+    np.testing.assert_array_equal(weights["category"], ["video", "search", "radio"])
+    np.testing.assert_allclose(weights.sum("category"), 1.0, rtol=2e-6)
+    xr.testing.assert_equal(result["prior_generated_quantities"]["weights_copy"].rename("weights"), weights)
 
 
 def test_prior_saves_transformed_quantities_without_generation_callback_or_density_evaluation():

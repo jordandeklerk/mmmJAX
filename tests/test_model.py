@@ -1,6 +1,7 @@
 """Tests for composing parameter declarations into JAX models."""
 
 from dataclasses import FrozenInstanceError
+from types import SimpleNamespace
 
 import jax
 import jax.numpy as jnp
@@ -48,6 +49,39 @@ def test_model_requires_parameter_mapping() -> None:
 def test_model_requires_parameterizations() -> None:
     with pytest.raises(TypeError, match="parameter 'a' must implement Parameterization, got object"):
         Model({"a": object()}, _one_parameter_log_density)
+
+
+def test_named_builtin_axes_do_not_change_the_custom_parameterization_contract() -> None:
+    base = Real(shape=(2,))
+    custom = SimpleNamespace(
+        **{
+            name: getattr(base, name)
+            for name in (
+                "shape",
+                "position_shape",
+                "dtype",
+                "constrain",
+                "unconstrain",
+                "log_density_adjustment",
+                "initialize",
+            )
+        }
+    )
+
+    def density(data, coefficient):
+        return normal(coefficient, 0.0, 1.0)
+
+    coordinates = {"feature": ["first", "second"]}
+    explicit = Model({"coefficient": custom}, density, dims={"coefficient": ("feature",)}, coords=coordinates)
+    named = Model({"coefficient": Real(dims="feature")}, density, coords=coordinates)
+    position = {"coefficient": jnp.array([0.2, -0.3])}
+
+    assert explicit.parameters["coefficient"] is custom
+    assert not hasattr(custom, "dims")
+    expected = jax.jit(jax.value_and_grad(explicit.log_density))(position, None)
+    actual = jax.jit(jax.value_and_grad(named.log_density))(position, None)
+    for left, right in zip(jax.tree.leaves(actual), jax.tree.leaves(expected), strict=True):
+        assert jnp.array_equal(left, right)
 
 
 def test_model_requires_callable_log_density() -> None:

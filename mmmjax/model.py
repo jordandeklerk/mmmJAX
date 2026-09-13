@@ -1,7 +1,7 @@
 """Model composition for transparent JAX probability models."""
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from inspect import Parameter as SignatureParameter
 from inspect import signature
 from keyword import iskeyword
@@ -13,11 +13,11 @@ import numpy as np
 from jax.typing import ArrayLike, DTypeLike
 from numpy.typing import NDArray
 
-from mmmjax._results import _coordinates, _dimensions
+from mmmjax._results import _coordinates, _dimensions, _prepared_coordinates, _same_labels
 from mmmjax.data import PreparedData, _DataLayout, _prepare_model_frame
 from mmmjax.hsgp import HSGPEffect, _PreparedHSGP
 from mmmjax.media import MediaEffect, _PreparedMedia
-from mmmjax.parameters import Parameterization
+from mmmjax.parameters import Interval, LowerBound, Parameterization, Positive, Real, Simplex, UpperBound
 from mmmjax.scaling import DataScaling, fit_data_scaling
 from mmmjax.seasonality import FourierSeasonality, _PreparedFourier
 
@@ -29,6 +29,7 @@ Prior: TypeAlias = Callable[[jax.Array], Mapping[str, ArrayLike]]
 TransformedParameters: TypeAlias = Callable[..., Mapping[str, ArrayLike]]
 ParameterValues: TypeAlias = Mapping[str, ArrayLike]
 _InputBindings: TypeAlias = tuple[tuple[str, str], ...]
+_BuiltinParameter: TypeAlias = Real | Positive | LowerBound | UpperBound | Interval | Simplex
 
 
 @jax.tree_util.register_dataclass
@@ -58,7 +59,9 @@ class Model:
     ----------
     parameters : mapping of str to Parameterization
         Named parameter declarations and constraints. Do not include
-        parameters declared automatically by components.
+        parameters declared automatically by components. Use declaration
+        dimensions, such as ``Real(dims="control")``, to infer shapes and
+        result labels from prepared data or ``coords``.
     log_density : callable
         Scalar log density for constrained parameters. Every user-declared
         parameter must be requested here or by ``transformed_parameters``.
@@ -103,7 +106,8 @@ class Model:
         are needed for prediction.
     dims : mapping of str to sequence of str, optional
         Named axes for constrained parameter arrays, excluding chain and draw.
-        Use for custom parameters whose axes cannot be inferred from components.
+        Use for custom parameterizations or explicit-shape declarations.
+        Must agree with any dimensions set on a declaration.
     coords : mapping of str to array_like, optional
         One-dimensional labels for named axes. Labels are copied at construction.
     generated_dims : mapping of str to sequence of str, optional
@@ -234,6 +238,17 @@ class Model:
             parameterizations = _prepare_parameterizations(declarations)
             prepared_data = _ModelData(data._to_jax(), prepared_components)
 
+        result_dims = _dimensions(dims)
+        result_coords = _coordinates(coords)
+        axis_coordinates = result_coords.copy()
+        if data is not None:
+            prepared_coords, _ = _prepared_coordinates(data)
+            for axis, labels in prepared_coords.items():
+                if axis in axis_coordinates and not _same_labels(axis_coordinates[axis], labels):
+                    raise ValueError(f"Coordinate {axis!r} conflicts with prepared data labels")
+                axis_coordinates[axis] = labels
+        parameterizations = _resolve_parameter_dimensions(parameterizations, result_dims, axis_coordinates)
+
         transform_inputs: _InputBindings = ()
         if transformed_parameters is not None:
             if prepared_data is None:
@@ -293,8 +308,6 @@ class Model:
                     source = "transformed"
                 saved_inputs.append((name, source))
 
-        result_dims = _dimensions(dims)
-        result_coords = _coordinates(coords)
         output_dims = _dimensions(generated_dims)
         predictive_names = _result_names(predictive, name="predictive")
         likelihood_names = _result_names(log_likelihood, name="log_likelihood")
@@ -303,7 +316,7 @@ class Model:
         if generate is None and not saved_inputs and (output_dims or predictive_names or likelihood_names):
             raise ValueError("Generated result metadata requires a generate callback or saved quantities")
         declarations = dict(parameterizations)
-        dimension_sizes = {axis: len(labels) for axis, labels in result_coords.items()}
+        dimension_sizes = {axis: len(labels) for axis, labels in axis_coordinates.items()}
         for name, axes in result_dims.items():
             if name not in declarations:
                 raise ValueError(f"dims refers to undeclared parameter {name!r}")
@@ -876,11 +889,41 @@ def _prepare_parameterizations(
 
     for name in parameters:
         _validate_name(name, label="parameter")
-        if not isinstance(parameters[name], Parameterization):
+        # Pending built-in dimensions are resolved before numerical protocol properties are used.
+        if not isinstance(parameters[name], _BuiltinParameter) and not isinstance(parameters[name], Parameterization):
             raise TypeError(
                 f"parameter {name!r} must implement Parameterization, got {type(parameters[name]).__name__}"
             )
     return tuple(sorted(parameters.items()))
+
+
+def _resolve_parameter_dimensions(
+    parameterizations: tuple[tuple[str, Parameterization], ...],
+    dimensions: dict[str, tuple[str, ...]],
+    coordinates: Mapping[str, NDArray[np.generic]],
+) -> tuple[tuple[str, Parameterization], ...]:
+    """Resolve named built-in shapes without changing reusable declarations."""
+    resolved = []
+    for name, parameter in parameterizations:
+        if isinstance(parameter, _BuiltinParameter) and parameter.dims:
+            axes = tuple(parameter.dims)
+            if name in dimensions and dimensions[name] != axes:
+                raise ValueError(
+                    f"Model dimensions for parameter {name!r} conflict with its declared dimensions {axes}"
+                )
+            shape = parameter.shape
+            if not shape:
+                missing = set(axes) - coordinates.keys()
+                if missing:
+                    raise ValueError(
+                        f"Unknown dimensions {sorted(missing)} for parameter {name!r}. "
+                        "Use prepared data axes or supply their labels in coords"
+                    )
+                shape = tuple(len(coordinates[axis]) for axis in axes)
+            parameter = replace(parameter, shape=shape)
+            dimensions[name] = axes
+        resolved.append((name, parameter))
+    return tuple(resolved)
 
 
 def _validate_name(name: object, *, label: str) -> None:

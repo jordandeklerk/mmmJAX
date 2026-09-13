@@ -1,4 +1,4 @@
-"""Result labels attached to model definitions without invoking a sampler."""
+"""Tests for result labels attached to model definitions without invoking a sampler."""
 
 from datetime import date
 
@@ -8,7 +8,18 @@ import numpy as np
 import polars as pl
 import pytest
 
-from mmmjax import FourierSeasonality, MediaEffect, Model, Real, Simplex, fit_data_scaling, prepare_data
+from mmmjax import (
+    FourierSeasonality,
+    MediaEffect,
+    Model,
+    Positive,
+    Real,
+    Simplex,
+    fit_data_scaling,
+    generate_quantities,
+    prepare_data,
+)
+from mmmjax._results import _collect_results
 
 
 def _plain_model(parameters=None, generate=None, **metadata):
@@ -328,3 +339,208 @@ def test_result_labels_do_not_change_density_gradients_or_generation():
     key = jax.random.key(0)
     for name, expected_array in plain.generate(key, plain.constrain(position), None).items():
         np.testing.assert_array_equal(labeled.generate(key, labeled.constrain(position), None)[name], expected_array)
+
+
+def _named_axis_data():
+    rows = [
+        {
+            "week": week,
+            "region": region,
+            "sales": 10.0 + week,
+            "video": 3.0 + week,
+            "search": 2.0 + week,
+            "temperature": 15.0 + week,
+            "holiday": float(week == 2),
+            "price": 5.0 + week,
+            "email": 4.0 + week,
+            "tv_reach": 100.0 + week,
+            "tv_frequency": 2.0,
+            "social_reach": 50.0 + week,
+            "social_frequency": 1.0,
+        }
+        for week in (1, 2, 3)
+        for region in ("west", "east")
+    ]
+    return prepare_data(
+        pl.DataFrame(rows),
+        time="week",
+        groups=["region"],
+        outcome="sales",
+        media=["video", "search"],
+        controls=["temperature", "holiday"],
+        treatments=["price"],
+        organic_media=["email"],
+        reach=["tv_reach"],
+        media_frequency=["tv_frequency"],
+        rf_channels=["tv"],
+        organic_reach=["social_reach"],
+        organic_frequency=["social_frequency"],
+        organic_rf_channels=["social"],
+    )
+
+
+@pytest.mark.parametrize(
+    "axis,labels",
+    [
+        ("channel", ["video", "search"]),
+        ("group", ["west", "east"]),
+        ("control", ["temperature", "holiday"]),
+        ("treatment", ["price"]),
+        ("organic_channel", ["email"]),
+        ("rf_channel", ["tv"]),
+        ("organic_rf_channel", ["social"]),
+    ],
+)
+def test_parameter_axes_infer_shapes_and_labels_from_prepared_data(axis, labels):
+    data = _named_axis_data()
+    model = Model(
+        {"coefficient": Real(dims=axis)},
+        lambda coefficient: -jnp.square(coefficient).sum(),
+        data=data,
+        components=[],
+    )
+
+    assert model.parameters["coefficient"].shape == (len(labels),)
+    assert model.parameters["coefficient"].position_shape == (len(labels),)
+    assert model._result_dims["coefficient"] == (axis,)
+    results = _collect_results(
+        {"coefficient": np.zeros((1, 1, len(labels)))},
+        data=data,
+        dims=model._result_dims,
+        coords=model._result_coords,
+    )
+    np.testing.assert_array_equal(results["posterior"][axis], labels)
+
+
+def test_named_simplex_axes_resolve_constrained_and_unconstrained_batch_shapes():
+    model = Model(
+        {"weights": Simplex(dims=("group", "channel"))},
+        lambda weights: jnp.log(weights).sum(),
+        data=_prepared_data(),
+        components=[],
+    )
+
+    assert model.parameters["weights"].shape == (2, 2)
+    assert model.parameters["weights"].position_shape == (2, 1)
+    assert model._result_dims["weights"] == ("group", "channel")
+    position = {"weights": jnp.zeros((2, 1))}
+    constrained = model.constrain(position)
+    np.testing.assert_allclose(constrained["weights"], np.full((2, 2), 0.5))
+    assert np.isfinite(jax.jit(model.log_density)(position, model.data))
+
+
+def test_named_declaration_can_be_reused_without_mutation_for_different_coordinate_sizes():
+    declaration = Positive(dims="feature")
+    short = _plain_model(parameters={"scale": declaration}, coords={"feature": ["price"]})
+    long = _plain_model(parameters={"scale": declaration}, coords={"feature": ["price", "promotion"]})
+
+    assert declaration.shape == ()
+    assert declaration.dims == ("feature",)
+    assert short.parameters["scale"].shape == (1,)
+    assert long.parameters["scale"].shape == (2,)
+    assert short.parameters["scale"] is not declaration
+    assert long.parameters["scale"] is not declaration
+    assert short._result_dims == long._result_dims == {"scale": ("feature",)}
+
+
+@pytest.mark.parametrize("shape", [(), (2,)])
+def test_matching_model_and_declaration_axes_are_accepted(shape):
+    model = _plain_model(
+        parameters={"coefficient": Real(shape=shape, dims="feature")},
+        dims={"coefficient": ("feature",)},
+        coords={"feature": ["price", "promotion"]},
+    )
+
+    assert model.parameters["coefficient"].shape == (2,)
+    assert model._result_dims == {"coefficient": ("feature",)}
+
+
+def test_model_dimensions_cannot_relabel_declared_axes_even_when_lengths_match():
+    with pytest.raises(ValueError, match="coefficient"):
+        _plain_model(
+            parameters={"coefficient": Real(dims="channel")},
+            dims={"coefficient": ("control",)},
+            coords={"channel": ["video", "search"], "control": ["price", "promotion"]},
+        )
+
+
+def test_explicit_parameter_shape_must_agree_with_declared_coordinate_length():
+    with pytest.raises(ValueError, match=r"channel|coefficient"):
+        Model(
+            {"coefficient": Real(shape=(3,), dims="channel")},
+            lambda coefficient: coefficient.sum(),
+            data=_prepared_data(),
+            components=[],
+        )
+
+
+@pytest.mark.parametrize("axis", ["unknown", "control", "treatment", "organic_channel"])
+def test_declared_axes_must_be_available_at_model_construction(axis):
+    with pytest.raises(ValueError, match=axis):
+        Model(
+            {"coefficient": Real(dims=axis)},
+            lambda coefficient: coefficient.sum(),
+            data=_prepared_data(),
+            components=[],
+        )
+
+
+def test_declared_custom_axis_requires_coordinates_without_prepared_data():
+    with pytest.raises(ValueError, match="feature"):
+        _plain_model(parameters={"coefficient": Real(dims="feature")})
+
+
+def test_explicit_shape_supplies_named_axis_length_without_coordinates():
+    model = _plain_model(parameters={"coefficient": Real(shape=(2,), dims="feature")})
+
+    assert model.parameters["coefficient"].shape == (2,)
+    assert model._result_dims == {"coefficient": ("feature",)}
+
+
+def test_unresolved_named_shape_cannot_borrow_another_parameters_shape():
+    with pytest.raises(ValueError, match="feature"):
+        _plain_model(parameters={"first": Real(shape=(2,), dims="feature"), "second": Real(dims="feature")})
+
+
+def test_explicit_coordinates_cannot_reorder_prepared_channel_labels():
+    with pytest.raises(ValueError, match="channel"):
+        Model(
+            {"coefficient": Real(dims="channel")},
+            lambda coefficient: coefficient.sum(),
+            data=_prepared_data(),
+            components=[],
+            coords={"channel": ["search", "video"]},
+        )
+
+
+def test_named_parameter_axes_survive_reordered_scenario_inputs():
+    data = _prepared_data()
+    model = Model(
+        {"coefficient": Real(dims=("group", "channel"))},
+        lambda coefficient: -jnp.square(coefficient).sum(),
+        lambda key, media, coefficient: {
+            "coefficient_copy": coefficient,
+            "response": media[-3:] * coefficient,
+        },
+        data=data,
+        components=[],
+        generated_dims={"response": ("time", "group", "channel")},
+    )
+    coefficient = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=jax.dtypes.canonicalize_dtype(float))
+    results = _collect_results(
+        {"coefficient": coefficient[None, None]},
+        data=data,
+        dims=model._result_dims,
+        coords=model._result_coords,
+    )
+
+    evaluated = generate_quantities(model, results, new_data=_prepared_data(reverse=True))
+    generated = evaluated["generated_quantities"]
+
+    assert generated["coefficient_copy"].dims == ("chain", "draw", "group", "channel")
+    np.testing.assert_array_equal(generated["channel"], ["video", "search"])
+    np.testing.assert_array_equal(generated["coefficient_copy"], coefficient[None, None])
+    np.testing.assert_allclose(
+        generated["response"],
+        (data.arrays["media"][-3:] * coefficient)[None, None],
+    )
