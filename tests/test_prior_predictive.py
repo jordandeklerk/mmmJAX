@@ -366,6 +366,102 @@ def test_generated_aliases_inherit_parameter_axes_without_guessing_equal_shapes(
     np.testing.assert_array_equal(generated["feature"], ["first", "second"])
 
 
+def test_prior_saves_transformed_quantities_without_generation_callback_or_density_evaluation():
+    _, data = _prepared_model()
+
+    def forbidden_density(mean):
+        raise AssertionError("Prior saved quantities must not evaluate the model density")
+
+    def transformed(location, controls, outcome):
+        mean = location + controls[:, 0]
+        return {"mean": mean, "pointwise": -0.5 * (outcome - mean) ** 2, "total": mean.sum()}
+
+    model = Model(
+        {"location": Real()},
+        forbidden_density,
+        data=data,
+        components=[],
+        prior=_normal_prior,
+        transformed_parameters=transformed,
+        save=("mean", "pointwise", "total"),
+        predictive=("mean",),
+        log_likelihood=("pointwise",),
+    )
+    result = sample_prior(model, draws=3, seed=23)
+
+    assert set(result["prior"].data_vars) == {"location"}
+    assert set(result["prior_generated_quantities"].data_vars) == {"total"}
+    assert "log_likelihood" not in result
+    assert result["prior_predictive"]["mean"].dims == ("chain", "draw", "time")
+    np.testing.assert_array_equal(result["prior_predictive"]["time"], [10, 11, 12])
+    expected = result["prior"]["location"].values[..., None] + data.arrays["controls"][:, 0]
+    np.testing.assert_allclose(result["prior_predictive"]["mean"], expected, rtol=2e-6)
+    np.testing.assert_allclose(result["prior_generated_quantities"]["total"], expected.sum(-1), rtol=2e-6)
+
+
+def test_prior_generation_toggle_skips_saved_transforms_entirely():
+    _, data = _prepared_model()
+
+    def forbidden_transform(location):
+        raise AssertionError("Saved transforms must not execute when generation is disabled")
+
+    model = Model(
+        {"location": Real()},
+        lambda mean: jnp.nan,
+        data=data,
+        components=[],
+        prior=_normal_prior,
+        transformed_parameters=forbidden_transform,
+        save=("mean",),
+    )
+    result = sample_prior(model, draws=3, generate=False)
+
+    assert set(result["prior"].data_vars) == {"location"}
+    assert "prior_generated_quantities" not in result
+    assert "prior_predictive" not in result
+
+
+def test_prior_saves_component_only_effects_with_media_and_seasonal_axes():
+    data = prepare_data(
+        pd.DataFrame({"week": [0, 1, 2], "sales": [1.0, 2.0, 3.0], "video": [1.0, 3.0, 2.0]}),
+        time="week",
+        outcome="sales",
+        media=["video"],
+    )
+    model = Model(
+        {},
+        lambda outcome: jnp.nan,
+        data=data,
+        components=[MediaEffect(max_lag=1), FourierSeasonality(period=8, order=1, name="annual")],
+        save=("paid_media", "paid_media_total", "annual"),
+    )
+
+    def prior(key):
+        return {
+            "paid_media_coefficient": jnp.array([0.7]),
+            "paid_media_retention": jnp.array([0.2]),
+            "paid_media_half_saturation": jnp.array([1.5]),
+            "paid_media_slope": jnp.array([1.2]),
+            "annual": jax.random.normal(key, (2,)),
+        }
+
+    result = sample_prior(model, prior, draws=3, seed=25)
+    generated = result["prior_generated_quantities"]
+
+    assert set(result["prior"].data_vars) == set(model.parameters)
+    assert generated["paid_media"].dims == ("chain", "draw", "time", "channel")
+    assert generated["paid_media_total"].dims == ("chain", "draw", "time")
+    assert generated["annual"].dims == ("chain", "draw", "time")
+    assert result["prior"]["annual"].dims == ("chain", "draw", "annual_mode")
+    np.testing.assert_array_equal(generated["channel"], ["video"])
+    np.testing.assert_allclose(generated["paid_media_total"], generated["paid_media"].sum("channel"), rtol=2e-6)
+
+    for draw in range(3):
+        parameters = {name: jnp.asarray(result["prior"][name].values[0, draw]) for name in model.parameters}
+        expected = model.generate(jax.random.key(0), parameters, model.data)
+        np.testing.assert_allclose(generated["annual"].values[0, draw], expected["annual"], rtol=2e-6)
+
+
 @pytest.mark.parametrize("draws", [0, True, 1.5])
 def test_invalid_draw_counts_are_rejected(scalar_model, draws):
     with pytest.raises(ValueError, match=r"draws.*positive integer"):

@@ -146,7 +146,7 @@ def test_simplex_metadata_uses_constrained_shape():
         )
 
 
-@pytest.mark.parametrize("option", ["predictive", "log_likelihood"])
+@pytest.mark.parametrize("option", ["predictive", "log_likelihood", "save"])
 @pytest.mark.parametrize(
     "value,error,message",
     [
@@ -161,6 +161,47 @@ def test_simplex_metadata_uses_constrained_shape():
 def test_generated_group_names_are_validated(option, value, error, message):
     with pytest.raises(error, match=message):
         _plain_model(generate=_generate, **{option: value})
+
+
+def test_save_requires_prepared_data():
+    with pytest.raises(ValueError, match="save requires prepared data"):
+        _plain_model(save=("mu",))
+
+
+def test_save_selection_is_copied_without_probing_callbacks():
+    def transformed():
+        raise AssertionError("Construction must not evaluate transformed quantities")
+
+    selection = ["mu"]
+    model = Model(
+        {},
+        lambda mu: mu.sum(),
+        data=_prepared_data(),
+        components=[],
+        transformed_parameters=transformed,
+        save=selection,
+        generated_dims={"mu": ("time", "group")},
+    )
+    selection.clear()
+    assert model._saved_inputs == (("mu", "transformed"),)
+
+
+@pytest.mark.parametrize("name", ["outcome", "intercept", "not a name", "class"])
+def test_save_rejects_data_parameter_and_invalid_names(name):
+    with pytest.raises(ValueError, match=r"save|saved"):
+        Model(
+            {"intercept": Real()},
+            lambda intercept: -(intercept**2),
+            data=_prepared_data(),
+            components=[],
+            transformed_parameters=lambda: {"mu": jnp.zeros(3)},
+            save=(name,),
+        )
+
+
+def test_save_rejects_unknown_component_without_transformed_parameters():
+    with pytest.raises(ValueError, match="transformed quantity or component contribution"):
+        Model({}, lambda: jnp.array(0.0), data=_prepared_data(), components=[], save=("missing",))
 
 
 def test_predictive_and_likelihood_names_cannot_overlap():

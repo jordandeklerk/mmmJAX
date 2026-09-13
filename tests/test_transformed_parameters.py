@@ -37,7 +37,7 @@ def _normal(value, scale=1.0):
     return (-0.5 * (np.asarray(value, dtype=np.float64) / scale) ** 2 - np.log(scale) - 0.5 * np.log(2 * np.pi)).sum()
 
 
-def _regression():
+def _regression(*, save=(), include_generate=True):
     def transformed(scale, controls, beta):
         return {"signal": controls @ beta, "spread": jnp.sqrt(scale**2 + 0.4)}
 
@@ -55,10 +55,11 @@ def _regression():
     return Model(
         {"beta": Real(shape=(2,)), "scale": Positive(), "intercept": Real()},
         density,
-        quantities,
+        quantities if include_generate else None,
         data=_data(),
         components=[],
         transformed_parameters=transformed,
+        save=save,
     )
 
 
@@ -106,7 +107,7 @@ def test_transformed_outputs_change_with_positions_and_outcome_free_forecasts_un
     assert set(model.parameters) == {"beta", "scale", "intercept"}
 
 
-def _media_model(transformed):
+def _media_model(transformed, *, save=(), include_generate=True):
     def density(
         *,
         outcome,
@@ -137,10 +138,11 @@ def _media_model(transformed):
     model = Model(
         {"intercept": Real(), "sigma": Positive()},
         density,
-        lambda key, *, mu: {"mu": mu},
+        (lambda key, *, mu: {"mu": mu}) if include_generate else None,
         data=data,
         components=[MediaEffect(max_lag=1), FourierSeasonality(period=8, order=1, name="annual")],
         transformed_parameters=transformed,
+        save=save,
     )
     position = {
         "intercept": jnp.array(0.2),
@@ -352,3 +354,114 @@ def test_transformed_quantities_named_data_or_effects_are_not_legacy_bundles():
     np.testing.assert_allclose(jax.jit(model.log_density)({}, model.data), expected.sum(), rtol=1e-6)
     generated = jax.jit(model.generate)(jax.random.key(0), {}, model.data)
     np.testing.assert_allclose(generated["sum"], expected, rtol=1e-6)
+
+
+def test_saved_transformed_quantities_work_without_generate_and_preserve_density_gradients():
+    original = _regression()
+    saved = _regression(save=("signal", "spread"), include_generate=False)
+    position = {"beta": jnp.array([0.3, -0.2]), "scale": jnp.log(jnp.array(0.7)), "intercept": jnp.array(0.25)}
+    original_value, original_gradient = jax.jit(jax.value_and_grad(original.log_density))(position, original.data)
+    saved_value, saved_gradient = jax.jit(jax.value_and_grad(saved.log_density))(position, saved.data)
+
+    np.testing.assert_array_equal(saved_value, original_value)
+    for name in position:
+        np.testing.assert_array_equal(saved_gradient[name], original_gradient[name])
+
+    generated = jax.jit(saved.generate)(jax.random.key(0), saved.constrain(position), saved.data)
+    assert set(generated) == {"signal", "spread"}
+    assert set(saved.parameters) == set(original.parameters)
+    np.testing.assert_allclose(generated["signal"], _data().arrays["controls"] @ np.asarray(position["beta"]))
+    np.testing.assert_allclose(generated["spread"], np.sqrt(0.7**2 + 0.4), rtol=2e-6)
+
+
+def test_saved_component_values_include_media_totals_and_fourier_effect_not_coefficients():
+    model, _, position = _media_model(
+        lambda paid_media_total, annual, intercept: {"mu": intercept + paid_media_total + annual},
+        save=("mu", "paid_media", "paid_media_total", "annual"),
+        include_generate=False,
+    )
+    generated = jax.jit(model.generate)(jax.random.key(0), model.constrain(position), model.data)
+
+    assert set(generated) == {"mu", "paid_media", "paid_media_total", "annual"}
+    assert generated["paid_media"].shape == (3, 2)
+    assert generated["paid_media_total"].shape == generated["annual"].shape == (3,)
+    assert model.parameters["annual"].shape == (2,)
+    np.testing.assert_allclose(generated["paid_media_total"], generated["paid_media"].sum(axis=-1), rtol=2e-6)
+    np.testing.assert_allclose(
+        generated["mu"], position["intercept"] + generated["paid_media_total"] + generated["annual"], rtol=2e-6
+    )
+
+
+def test_saved_outputs_merge_with_generate_and_evaluate_transform_once():
+    calls = []
+
+    def transformed(controls):
+        calls.append("transformed")
+        return {"signal": controls[:, 0] * 2, "unused": controls[:, 1] * 3}
+
+    def generate(key, signal):
+        calls.append("generate")
+        return {"prediction": signal + 1}
+
+    def density(signal):
+        raise AssertionError("Saving quantities must not evaluate density")
+
+    model = Model(
+        {}, density, generate, data=_data(), components=[], transformed_parameters=transformed, save=("signal",)
+    )
+    assert calls == []
+    result = model.generate(jax.random.key(0), {}, model.data)
+
+    assert calls == ["transformed", "generate"]
+    assert set(result) == {"signal", "prediction"}
+    np.testing.assert_array_equal(result["prediction"], result["signal"] + 1)
+
+
+def test_saved_outputs_reject_generate_name_collisions_even_for_identical_values():
+    model = _regression(save=("signal",))
+    values = {"beta": jnp.ones(2), "scale": jnp.array(1.0), "intercept": jnp.array(0.0)}
+
+    with pytest.raises(ValueError, match="signal"):
+        model.generate(jax.random.key(0), values, model.data)
+
+
+def test_saved_unknown_transformed_names_are_checked_only_at_evaluation():
+    calls = []
+
+    def transformed():
+        calls.append("transformed")
+        return {"actual": jnp.array(1.0)}
+
+    model = Model(
+        {}, lambda: jnp.array(0.0), data=_data(), components=[], transformed_parameters=transformed, save=("typo",)
+    )
+    assert calls == []
+
+    with pytest.raises(ValueError, match="typo"):
+        model.generate(jax.random.key(0), {}, model.data)
+
+
+@pytest.mark.parametrize("name", ["annual_coefficients", "paid_media_coefficient", "paid_media_retention"])
+def test_saved_names_cannot_select_component_parameter_aliases(name):
+    with pytest.raises(ValueError, match=name):
+        model, _, position = _media_model(
+            lambda paid_media_total, annual, intercept: {"mu": intercept + paid_media_total + annual},
+            save=(name,),
+            include_generate=False,
+        )
+        model.generate(jax.random.key(0), model.constrain(position), model.data)
+
+
+def test_saved_outputs_follow_changed_parameters_and_scenario_shapes_under_jit_vmap():
+    model = _regression(save=("signal",), include_generate=False)
+    positions = {"beta": jnp.array([[0.3, -0.2], [0.5, 0.1]]), "scale": jnp.ones(2), "intercept": jnp.zeros(2)}
+    keys = jax.random.split(jax.random.key(0), 2)
+    generate = jax.jit(jax.vmap(model.generate, in_axes=(0, 0, None)))
+    original_controls = np.array(model.data.values["controls"], copy=True)
+
+    for controls in (np.array([[2.0, 0.5]]), np.array([[0.4, 1.7], [1.5, 0.2]])):
+        scenario = model.prepare_data(_data(controls, observed=False))
+        generated = generate(keys, positions, scenario)
+        np.testing.assert_allclose(generated["signal"], np.asarray(positions["beta"]) @ controls.T, rtol=2e-6)
+
+    np.testing.assert_array_equal(model.data.values["controls"], original_controls)

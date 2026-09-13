@@ -67,6 +67,11 @@ class Model:
     generate : callable, optional
         Function returning a mapping of names to array-like generated quantities.
         Receives a JAX random key first, followed by the model inputs it needs.
+    save : sequence of str, default ()
+        Transformed quantities or component contributions to retain in results,
+        such as ``("mu", "paid_media", "paid_media_total")``. These are evaluated
+        for each draw without a ``generate`` callback. Names must differ from
+        outputs returned by ``generate``. Requires prepared data.
     prior : callable, optional
         JAX-compatible function ``prior(key)`` returning one constrained draw
         for every name in ``model.parameters``, with its declared shape.
@@ -102,7 +107,7 @@ class Model:
     coords : mapping of str to array_like, optional
         One-dimensional labels for named axes. Labels are copied at construction.
     generated_dims : mapping of str to sequence of str, optional
-        Axis labels for custom generated arrays, excluding chain and draw.
+        Axis labels for saved or generated arrays, excluding chain and draw.
         Overrides labels inherited from unchanged data, parameters, or component
         inputs and from observation-shaped predictive and likelihood outputs.
     predictive : sequence of str, default ()
@@ -121,6 +126,7 @@ class Model:
     _prior: Prior | None
     _transformed_parameters: TransformedParameters | None
     _transform_inputs: _InputBindings
+    _saved_inputs: _InputBindings
     _generate_parameter_names: tuple[str, ...] | None
     _density_inputs: _InputBindings
     _generation_inputs: _InputBindings
@@ -144,6 +150,7 @@ class Model:
         log_density: LogDensity,
         generate: Generate | None = None,
         *,
+        save: Sequence[str] = (),
         prior: Prior | None = None,
         data: PreparedData | None = None,
         components: Sequence[FourierSeasonality | MediaEffect | HSGPEffect] | None = None,
@@ -262,6 +269,30 @@ class Model:
                     has_transformed=transformed_parameters is not None,
                 )
 
+        saved_names = _result_names(save, name="save")
+        saved_inputs: list[tuple[str, str]] = []
+        if saved_names:
+            if prepared_data is None:
+                raise ValueError("save requires prepared data and components, which may be empty")
+            effect_names = {component.specification.name for component in prepared_data.components}
+            total_names = _media_total_names(prepared_data.components)
+            reserved = (
+                set(prepared_data.values)
+                | {name for name, _ in parameterizations}
+                | set(_component_parameter_inputs(prepared_data.components))
+            )
+            for name in saved_names:
+                _validate_name(name, label="saved quantity")
+                if name in effect_names:
+                    source = "effect"
+                elif name in total_names:
+                    source = "media_total"
+                elif name in reserved or transformed_parameters is None:
+                    raise ValueError(f"save must select a transformed quantity or component contribution, got {name!r}")
+                else:
+                    source = "transformed"
+                saved_inputs.append((name, source))
+
         result_dims = _dimensions(dims)
         result_coords = _coordinates(coords)
         output_dims = _dimensions(generated_dims)
@@ -269,8 +300,8 @@ class Model:
         likelihood_names = _result_names(log_likelihood, name="log_likelihood")
         if set(predictive_names) & set(likelihood_names):
             raise ValueError("predictive and log_likelihood must identify different generated outputs")
-        if generate is None and (output_dims or predictive_names or likelihood_names):
-            raise ValueError("Generated result metadata requires a generate callback")
+        if generate is None and not saved_inputs and (output_dims or predictive_names or likelihood_names):
+            raise ValueError("Generated result metadata requires a generate callback or saved quantities")
         declarations = dict(parameterizations)
         dimension_sizes = {axis: len(labels) for axis, labels in result_coords.items()}
         for name, axes in result_dims.items():
@@ -290,6 +321,7 @@ class Model:
         object.__setattr__(self, "_prior", prior)
         object.__setattr__(self, "_transformed_parameters", transformed_parameters)
         object.__setattr__(self, "_transform_inputs", transform_inputs)
+        object.__setattr__(self, "_saved_inputs", tuple(saved_inputs))
         object.__setattr__(self, "_generate_parameter_names", generate_parameter_names)
         object.__setattr__(self, "_density_inputs", density_inputs)
         object.__setattr__(self, "_generation_inputs", generation_inputs)
@@ -311,6 +343,11 @@ class Model:
     def parameters(self) -> dict[str, Parameterization]:
         """Return a copy of the named parameter declarations."""
         return dict(self._parameterizations)
+
+    @property
+    def _has_generated_quantities(self) -> bool:
+        """Indicate whether evaluation has saved or callback-generated outputs."""
+        return self._generate is not None or bool(self._saved_inputs)
 
     @property
     def scaling(self) -> DataScaling | None:
@@ -511,7 +548,7 @@ class Model:
         parameters: ParameterValues,
         data: object,
     ) -> dict[str, jax.Array]:
-        """Evaluate generated quantities from constrained model parameters.
+        """Evaluate saved and generated quantities from constrained model parameters.
 
         Parameters
         ----------
@@ -529,8 +566,8 @@ class Model:
         Returns
         -------
         dict of str to jax.Array
-            Dictionary mapping the names returned by the generation callback
-            to JAX arrays. The callback determines the keys and array shapes.
+            Saved transformed quantities and component contributions alongside
+            outputs from the generation callback, each mapped to a JAX array.
         """
         return self._generate_with_inputs(key, parameters, data)[0]
 
@@ -541,11 +578,15 @@ class Model:
         data: object,
     ) -> tuple[dict[str, jax.Array], dict[str, ArrayLike]]:
         """Retain callback inputs so sampling can label unchanged generated arrays."""
-        if self._generate is None:
-            raise RuntimeError("generated quantities are unavailable because this model has no generate callback")
+        if not self._has_generated_quantities:
+            raise RuntimeError(
+                "generated quantities are unavailable because this model has no generate callback or save selection"
+            )
 
         _validate_value_names(parameters, self._parameterizations, name="parameters")
+        saved: dict[str, ArrayLike] = {}
         if self._data is None:
+            assert self._generate is not None
             arguments = (
                 dict(parameters)
                 if self._generate_parameter_names is None
@@ -555,8 +596,11 @@ class Model:
         else:
             inputs = self._component_data(data)
             effects = self._evaluate_quantities(inputs, parameters)
-            arguments = _callback_inputs(self._generation_inputs, inputs, effects, parameters, name="generate")
-            generated = self._generate(key, **arguments)
+            bindings = tuple(dict((*self._generation_inputs, *self._saved_inputs)).items())
+            arguments = _callback_inputs(bindings, inputs, effects, parameters, name="generate")
+            saved = {name: arguments[name] for name, _ in self._saved_inputs}
+            callback_arguments = {name: arguments[name] for name, _ in self._generation_inputs}
+            generated = {} if self._generate is None else self._generate(key, **callback_arguments)
         if not isinstance(generated, Mapping):
             raise TypeError(
                 f"generate must return a mapping from quantity names to values, got {type(generated).__name__}"
@@ -565,8 +609,14 @@ class Model:
         for name in generated:
             _validate_name(name, label="generated quantity")
 
+        conflicts = saved.keys() & generated.keys()
+        if conflicts:
+            raise ValueError(
+                f"Saved quantities {sorted(conflicts)} are also returned by generate. Choose one place to retain them"
+            )
+
         quantities: dict[str, jax.Array] = {}
-        for name, value in sorted(generated.items()):
+        for name, value in sorted((saved | dict(generated)).items()):
             try:
                 quantities[name] = jnp.asarray(value)
             except (TypeError, ValueError) as exc:
