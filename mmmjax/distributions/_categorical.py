@@ -237,7 +237,18 @@ def categorical_logit_logpmf(
         logits_array,
         jnp.zeros_like(logits_array),
     )
-    selected_log_probability = distrax.Categorical(logits=safe_logits).log_prob(safe_index)
+    log_probabilities = distrax.Categorical(logits=safe_logits).logits
+
+    # Normalize shared logits once, then gather without a dense one-hot array.
+    log_probabilities = jnp.broadcast_to(
+        log_probabilities,
+        (*value_array.shape, logits_array.shape[-1]),
+    )
+    selected_log_probability = jnp.take_along_axis(
+        log_probabilities,
+        safe_index[..., None],
+        axis=-1,
+    )[..., 0]
 
     log_mass = jnp.where(supported, selected_log_probability, -jnp.inf)
     log_mass = jnp.where(jnp.isnan(value_array), jnp.nan, log_mass)
