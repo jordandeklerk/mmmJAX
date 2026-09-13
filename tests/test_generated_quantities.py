@@ -106,6 +106,28 @@ def test_generate_quantities_random_draws_are_reproducible_and_independent(model
     assert np.unique(predictions).size == predictions.size
 
 
+@pytest.mark.parametrize("batch_size", [1, 4, 64])
+def test_generated_batches_preserve_key_assignment_draw_order_and_labels(model, results, batch_size):
+    new_data = {"value": np.array([2.0, 3.0], dtype=np.float32)}
+    original = results.copy(deep=True)
+    evaluated = generate_quantities(model, results, new_data=new_data, seed=9, batch_size=batch_size)
+    expected = generate_quantities(model, results, new_data=new_data, seed=9, batch_size=64)
+    xr.testing.assert_allclose(evaluated, expected)
+    xr.testing.assert_identical(results, original)
+
+    generation_key, _ = jax.random.split(jax.random.key(9))
+    keys = jax.random.split(generation_key, (2, 3))
+    posterior = {"scale": jnp.asarray(results["posterior"]["scale"].values)}
+    reference = jax.jit(jax.vmap(jax.vmap(lambda key, values: model.generate(key, values, new_data))))(keys, posterior)
+    for group, name in (("generated_quantities", "mean"), ("posterior_predictive", "prediction")):
+        np.testing.assert_allclose(evaluated[group][name], reference[name], rtol=2e-6, atol=2e-6)
+        assert evaluated[group][name].dims == ("chain", "draw", "channel")
+        assert isinstance(evaluated[group][name].data, np.ndarray)
+        np.testing.assert_array_equal(evaluated[group]["chain"], [4, 8])
+        np.testing.assert_array_equal(evaluated[group]["draw"], [10, 20, 30])
+        np.testing.assert_array_equal(evaluated[group]["channel"], ["search", "video"])
+
+
 def test_generate_quantities_preserves_selected_sample_labels_and_transposed_axes(model, results):
     posterior = results["posterior"].to_dataset().isel(chain=[1], draw=[2, 0]).transpose("channel", "draw", "chain")
     selected = xr.DataTree.from_dict({"posterior": posterior})
@@ -123,6 +145,12 @@ def test_generate_quantities_preserves_selected_sample_labels_and_transposed_axe
 def test_generate_quantities_rejects_invalid_seeds(model, results, seed):
     with pytest.raises(ValueError, match="seed must be a nonnegative integer"):
         generate_quantities(model, results, seed=seed)
+
+
+@pytest.mark.parametrize("batch_size", [0, -1, True, 1.5, "4", None])
+def test_generated_batch_sizes_require_positive_integers(model, results, batch_size):
+    with pytest.raises(ValueError, match=r"batch_size.*positive integer"):
+        generate_quantities(model, results, new_data={"value": 1.0}, batch_size=batch_size)
 
 
 def test_generate_quantities_requires_model_callback_and_result_tree(model, results):
@@ -170,14 +198,16 @@ def test_generate_quantities_rejects_nonfinite_posterior(model, results, value):
         generate_quantities(model, results)
 
 
-def test_generate_quantities_does_not_silently_reduce_posterior_precision(model, results):
+@pytest.mark.parametrize("batch_size", [1, 4, 64])
+def test_generate_quantities_does_not_silently_reduce_posterior_precision(model, results, batch_size):
     posterior = results["posterior"].to_dataset().astype(np.float64)
     double = xr.DataTree.from_dict({"posterior": posterior})
     with jax.enable_x64(False), pytest.raises(ValueError, match="64-bit mode"):
-        generate_quantities(model, double, new_data={"value": 1.0})
+        generate_quantities(model, double, new_data={"value": 1.0}, batch_size=batch_size)
     with jax.enable_x64(True):
-        evaluated = generate_quantities(model, double, new_data={"value": 1.0})
+        evaluated = generate_quantities(model, double, new_data={"value": 1.0}, batch_size=batch_size)
     assert evaluated["posterior"]["scale"].dtype == np.float64
+    assert evaluated["generated_quantities"]["mean"].dtype == model.parameters["scale"].dtype
 
 
 def test_generate_quantities_keeps_custom_parameter_and_output_axes(model, results):
@@ -251,7 +281,10 @@ def _saved_model(*, generated_dims=None, predictive=(), log_likelihood=()):
     )
 
 
-def test_generate_quantities_saves_transforms_without_callback_and_recomputes_scenarios(results, monkeypatch):
+@pytest.mark.parametrize("batch_size", [1, 4, 64])
+def test_generate_quantities_saves_transforms_without_callback_and_recomputes_scenarios(
+    results, monkeypatch, batch_size
+):
     def forbidden_sampler(*args, **kwargs):
         raise AssertionError("Saving quantities must not run the sampler")
 
@@ -259,9 +292,9 @@ def test_generate_quantities_saves_transforms_without_callback_and_recomputes_sc
     model = _saved_model(generated_dims={"signal": ("time",), "pointwise": ("time",)})
     original = results.copy(deep=True)
     original_controls = np.array(model.data.values["controls"], copy=True)
-    baseline = generate_quantities(model, results)
+    baseline = generate_quantities(model, results, batch_size=batch_size)
     scenario = _saved_data(start=6, observations=2)
-    changed = generate_quantities(model, results, new_data=scenario)
+    changed = generate_quantities(model, results, new_data=scenario, batch_size=batch_size)
 
     assert set(changed["generated_quantities"].data_vars) == {"signal", "pointwise", "total"}
     assert changed["generated_quantities"]["signal"].dims == ("chain", "draw", "time")

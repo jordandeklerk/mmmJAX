@@ -154,6 +154,34 @@ def test_seeded_draws_and_generation_are_reproducible_and_independent():
     assert not np.array_equal(first["prior_predictive"]["prediction"], changed["prior_predictive"]["prediction"])
 
 
+@pytest.mark.parametrize("batch_size", [1, 4, 64])
+def test_prior_batches_preserve_seeded_draws_generated_groups_and_labels(batch_size):
+    model, _ = _prepared_model()
+    result = sample_prior(model, _normal_prior, draws=10, seed=19, batch_size=batch_size)
+    expected = sample_prior(model, _normal_prior, draws=10, seed=19, batch_size=64)
+    xr.testing.assert_allclose(result, expected)
+
+    prior_key, generation_key, _ = jax.random.split(jax.random.key(19), 3)
+    parameters = jax.jit(jax.vmap(_normal_prior))(jax.random.split(prior_key, 10))
+    generated = jax.jit(jax.vmap(lambda key, values: model.generate(key, values, model.data)))(
+        jax.random.split(generation_key, 10), parameters
+    )
+    np.testing.assert_allclose(result["prior"]["location"].values[0], parameters["location"], rtol=2e-6)
+    assert set(result.children) == {
+        "prior",
+        "prior_predictive",
+        "prior_generated_quantities",
+        "observed_data",
+        "constant_data",
+    }
+    assert "pointwise" not in result["prior_generated_quantities"]
+    for group, name in (("prior_predictive", "prediction"), ("prior_generated_quantities", "mean")):
+        np.testing.assert_allclose(result[group][name].values[0], generated[name], rtol=2e-6, atol=2e-6)
+        np.testing.assert_array_equal(result[group]["time"], [10, 11, 12])
+        assert result[group][name].dims == ("chain", "draw", "time")
+        assert isinstance(result[group][name].data, np.ndarray)
+
+
 def test_attached_prior_matches_explicit_callback_and_supports_generation_toggle():
     model = Model(
         {"location": Real()},
@@ -495,7 +523,8 @@ def test_prior_draws_use_resolved_simplex_axes_without_requiring_explicit_shapes
     xr.testing.assert_equal(result["prior_generated_quantities"]["weights_copy"].rename("weights"), weights)
 
 
-def test_prior_saves_transformed_quantities_without_generation_callback_or_density_evaluation():
+@pytest.mark.parametrize("batch_size", [1, 4, 64])
+def test_prior_saves_transformed_quantities_without_generation_callback_or_density_evaluation(batch_size):
     _, data = _prepared_model()
 
     def forbidden_density(mean):
@@ -515,7 +544,7 @@ def test_prior_saves_transformed_quantities_without_generation_callback_or_densi
         predictive=("mean",),
         log_likelihood=("pointwise",),
     )
-    result = sample_prior(model, draws=3, seed=23)
+    result = sample_prior(model, draws=6, seed=23, batch_size=batch_size)
 
     assert set(result["prior"].data_vars) == {"location"}
     assert set(result["prior_generated_quantities"].data_vars) == {"total"}
@@ -527,7 +556,8 @@ def test_prior_saves_transformed_quantities_without_generation_callback_or_densi
     np.testing.assert_allclose(result["prior_generated_quantities"]["total"], expected.sum(-1), rtol=2e-6)
 
 
-def test_prior_generation_toggle_skips_saved_transforms_entirely():
+@pytest.mark.parametrize("batch_size", [1, 4, 64])
+def test_prior_generation_toggle_skips_saved_transforms_entirely(batch_size):
     _, data = _prepared_model()
 
     def forbidden_transform(location):
@@ -541,7 +571,7 @@ def test_prior_generation_toggle_skips_saved_transforms_entirely():
         transformed_parameters=forbidden_transform,
         save=("mean",),
     )
-    result = sample_prior(model, draws=3, generate=False)
+    result = sample_prior(model, draws=6, generate=False, batch_size=batch_size)
 
     assert set(result["prior"].data_vars) == {"location"}
     assert "prior_generated_quantities" not in result
@@ -625,6 +655,15 @@ def test_invalid_draw_counts_are_rejected(scalar_model, draws):
         sample_prior(scalar_model, _normal_prior, draws=draws)
 
 
+@pytest.mark.parametrize("batch_size", [0, -1, True, 1.5, "4", None])
+def test_prior_batch_sizes_require_positive_integers_before_evaluation(scalar_model, batch_size):
+    def forbidden_prior(key):
+        raise AssertionError("Invalid batch sizes must be rejected before evaluating priors")
+
+    with pytest.raises(ValueError, match=r"batch_size.*positive integer"):
+        sample_prior(scalar_model, forbidden_prior, draws=2, batch_size=batch_size)
+
+
 @pytest.mark.parametrize("seed", [-1, True])
 def test_invalid_seeds_are_rejected(scalar_model, seed):
     with pytest.raises(ValueError, match=r"seed.*nonnegative integer"):
@@ -699,7 +738,8 @@ def test_prior_values_must_satisfy_declared_support(parameter, value):
 
 
 @pytest.mark.parametrize("invalid", [-1.0, jnp.nan])
-def test_support_validation_covers_later_draws(invalid):
+@pytest.mark.parametrize("batch_size", [1, 3, 64])
+def test_support_validation_covers_later_draws(invalid, batch_size):
     model = Model({"location": Positive()}, lambda data, location: jnp.nan)
 
     def valid_prior(key):
@@ -714,7 +754,7 @@ def test_support_validation_covers_later_draws(invalid):
         return {"location": jnp.where(value == last_value, invalid, value)}
 
     with pytest.raises(ValueError, match=r"(constraint|finite|support)"):
-        sample_prior(model, invalid_later_prior, draws=8, seed=11)
+        sample_prior(model, invalid_later_prior, draws=8, seed=11, batch_size=batch_size)
 
 
 @pytest.mark.parametrize("axis", ["chain", "draw"])
