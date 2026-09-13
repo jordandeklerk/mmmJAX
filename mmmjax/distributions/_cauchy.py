@@ -5,6 +5,7 @@ import math
 import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax.distributions._utils import _promote_inexact, _random_shape
 
@@ -93,16 +94,16 @@ def cauchy_logpdf(
     central_residual = jnp.where(central, residual, jnp.zeros_like(residual))
     central_scale = jnp.where(central, scale_array, jnp.ones_like(scale_array))
     standardized = _standardize(central_residual, central_scale)
-    central_kernel = jnp.log1p(jnp.square(standardized))
+    distribution = tfd.Cauchy(loc=jnp.zeros((), dtype=value_array.dtype), scale=jnp.ones((), dtype=value_array.dtype))
+    central_log_density = distribution.log_prob(standardized) - log_scale
 
-    # This is SciPy's reciprocal tail form written without first forming a large ratio
+    # The reciprocal form avoids first forming a ratio whose square would overflow
     tail_log_residual = jnp.where(central, log_scale, log_residual)
     tail_log_ratio = log_scale - tail_log_residual
     inverse_standardized = jnp.exp(tail_log_ratio)
-    tail_kernel = 2 * (tail_log_residual - log_scale) + jnp.log1p(jnp.square(inverse_standardized))
+    tail_log_density = distribution.log_prob(inverse_standardized) + log_scale - 2 * tail_log_residual
 
-    log_pi = jnp.asarray(math.log(math.pi), dtype=value_array.dtype)
-    log_density = -log_pi - log_scale - jnp.where(central, central_kernel, tail_kernel)
+    log_density = jnp.where(central, central_log_density, tail_log_density)
     return jnp.where(valid_location & valid_scale, log_density, jnp.nan)
 
 
@@ -298,10 +299,8 @@ def cauchy_rng(
         ("location", location),
         ("scale", scale),
     )
-    output_shape = _random_shape(sample_shape, location_array, scale_array)
-
-    standard_samples = jax.random.cauchy(key, shape=output_shape, dtype=location_array.dtype)
-    samples = location_array + scale_array * standard_samples
+    _random_shape(sample_shape, location_array, scale_array)
+    samples = tfd.Cauchy(loc=location_array, scale=scale_array).sample(seed=key, sample_shape=sample_shape)
 
     valid_parameters = jnp.isfinite(location_array) & jnp.isfinite(scale_array) & (scale_array > 0)
     return jnp.where(valid_parameters, samples, jnp.nan)
@@ -341,7 +340,8 @@ def _cauchy_logcdf_kernel(
     near_scale = jnp.where(near_location, safe_scale, jnp.ones_like(safe_scale))
     standardized_distance = _standardize(near_residual, near_scale)
     log_pi = jnp.asarray(math.log(math.pi), dtype=value.dtype)
-    near_log_tail = jnp.log(jnp.arctan2(jnp.ones_like(standardized_distance), standardized_distance)) - log_pi
+    distribution = tfd.Cauchy(loc=jnp.zeros((), dtype=value.dtype), scale=jnp.ones((), dtype=value.dtype))
+    near_log_tail = distribution.log_cdf(-standardized_distance)
 
     far_log_residual = jnp.log(
         jnp.where(
@@ -388,7 +388,7 @@ def _cauchy_logcdf_kernel(
 
     endpoint_probability = jnp.where(value > 0, jnp.zeros_like(value), -jnp.inf)
     supported_log_probability = jnp.where(infinite_value, endpoint_probability, log_probability)
-    return jnp.where(valid_parameters, supported_log_probability, jnp.nan)
+    return jnp.asarray(jnp.where(valid_parameters, supported_log_probability, jnp.nan), dtype=value.dtype)
 
 
 @jax.custom_jvp

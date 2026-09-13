@@ -5,8 +5,8 @@ from typing import cast
 import jax
 import jax.numpy as jnp
 from jax.scipy.special import gammaln
-from jax.scipy.stats import beta as beta_distribution
 from jax.typing import ArrayLike
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax.distributions._utils import (
     _asymptotic_gamma_shape_log_derivative,
@@ -157,7 +157,7 @@ def beta_rng(
            ...: beta_rng(key, alpha=2.0, beta=3.0, sample_shape=(5,))
     """
     alpha_array, beta_array = _promote_inexact(("alpha", alpha), ("beta", beta))
-    output_shape = _random_shape(sample_shape, alpha_array, beta_array)
+    _random_shape(sample_shape, alpha_array, beta_array)
 
     valid_alpha = jnp.isfinite(alpha_array) & (alpha_array > 0)
     valid_beta = jnp.isfinite(beta_array) & (beta_array > 0)
@@ -165,13 +165,7 @@ def beta_rng(
     safe_alpha = jnp.where(valid_alpha, alpha_array, jnp.ones_like(alpha_array))
     safe_beta = jnp.where(valid_beta, beta_array, jnp.ones_like(beta_array))
 
-    samples = jax.random.beta(
-        key,
-        safe_alpha,
-        safe_beta,
-        shape=output_shape,
-        dtype=alpha_array.dtype,
-    )
+    samples = tfd.Beta(safe_alpha, safe_beta).sample(sample_shape, seed=key)
 
     return jnp.where(valid_alpha & valid_beta, samples, jnp.nan)
 
@@ -294,7 +288,7 @@ def _stable_beta_logpdf(
     mixed_value = jnp.where(mixed_region, safe_value, jnp.full_like(safe_value, 0.5))
     mixed_alpha = jnp.where(mixed_region, safe_alpha, jnp.ones_like(safe_alpha))
     mixed_beta = jnp.where(mixed_region, safe_beta, jnp.ones_like(safe_beta))
-    mixed_log_density = beta_distribution.logpdf(mixed_value, mixed_alpha, mixed_beta)
+    mixed_log_density = tfd.Beta(mixed_alpha, mixed_beta).log_prob(mixed_value)
     ordinary_log_density = jnp.where(uses_standard_formula, standard_log_density, mixed_log_density)
     interior_log_density = jnp.where(centered_region, centered_log_density, ordinary_log_density)
 
@@ -460,10 +454,4 @@ def _standard_beta_logpdf(
     safe_value = jnp.where(valid_value, value, jnp.full_like(value, 0.5))
     safe_alpha = jnp.where(valid_alpha, alpha, jnp.ones_like(alpha))
     safe_beta = jnp.where(valid_beta, beta, jnp.ones_like(beta))
-    return (
-        gammaln(safe_alpha + safe_beta)
-        - gammaln(safe_alpha)
-        - gammaln(safe_beta)
-        + (safe_alpha - 1) * jnp.log(safe_value)
-        + (safe_beta - 1) * jnp.log1p(-safe_value)
-    )
+    return cast(jax.Array, tfd.Beta(safe_alpha, safe_beta).log_prob(safe_value))

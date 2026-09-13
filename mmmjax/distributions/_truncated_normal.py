@@ -7,6 +7,7 @@ import jax.numpy as jnp
 from jax.scipy.special import log_ndtr, ndtr, ndtri
 from jax.scipy.stats import truncnorm as jax_truncnorm
 from jax.typing import ArrayLike
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax.distributions._normal import (
     _normal_logcdf_kernel,
@@ -534,7 +535,15 @@ def _standard_logpdf(
     lower: jax.Array,
     upper: jax.Array,
 ) -> jax.Array:
-    return cast(jax.Array, jax_truncnorm.logpdf(value, lower, upper))
+    return cast(
+        jax.Array,
+        tfd.TruncatedNormal(
+            loc=jnp.zeros_like(value),
+            scale=jnp.ones_like(value),
+            low=lower,
+            high=upper,
+        ).log_prob(value),
+    )
 
 
 @_standard_logpdf.defjvp

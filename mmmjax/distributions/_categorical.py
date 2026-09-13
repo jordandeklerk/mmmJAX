@@ -1,9 +1,9 @@
 """Categorical distribution functions."""
 
-import distrax
 import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax.distributions._utils import _as_real_array, _is_valid_simplex, _promote_inexact, _random_shape
 
@@ -237,18 +237,7 @@ def categorical_logit_logpmf(
         logits_array,
         jnp.zeros_like(logits_array),
     )
-    log_probabilities = distrax.Categorical(logits=safe_logits).logits
-
-    # Normalize shared logits once, then gather without a dense one-hot array.
-    log_probabilities = jnp.broadcast_to(
-        log_probabilities,
-        (*value_array.shape, logits_array.shape[-1]),
-    )
-    selected_log_probability = jnp.take_along_axis(
-        log_probabilities,
-        safe_index[..., None],
-        axis=-1,
-    )[..., 0]
+    selected_log_probability = tfd.Categorical(logits=safe_logits).log_prob(safe_index)
 
     log_mass = jnp.where(supported, selected_log_probability, -jnp.inf)
     log_mass = jnp.where(jnp.isnan(value_array), jnp.nan, log_mass)
@@ -382,17 +371,12 @@ def _draw_categorical(
     logits_array: jax.Array,
     sample_shape: tuple[int, ...],
 ) -> jax.Array:
-    output_shape = _random_shape(sample_shape, logits_array[..., 0])
+    _random_shape(sample_shape, logits_array[..., 0])
 
     # Remove large common offsets before adding Gumbel noise
     centered_logits = logits_array - jnp.max(logits_array, axis=-1, keepdims=True)
-    samples = jax.random.categorical(
-        key,
-        centered_logits,
-        shape=output_shape,
-        mode="high",
-    )
-    return samples.astype(jnp.int32)
+    samples = tfd.Categorical(logits=centered_logits).sample(sample_shape, seed=key)
+    return jnp.asarray(samples, dtype=jnp.int32)
 
 
 def _validate_categorical_event_axis(parameter_array: jax.Array, *, parameter_name: str) -> None:

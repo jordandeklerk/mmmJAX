@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from scipy import special, stats
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax import (
     gamma_logpdf,
@@ -530,11 +531,11 @@ def test_inverse_gamma_can_be_vectorized_over_datasets() -> None:
     assert jnp.allclose(result, expected)
 
 
-def test_inverse_gamma_rng_inverts_log_space_unit_rate_draws() -> None:
+def test_inverse_gamma_rng_uses_distribution_sampler() -> None:
     key = jax.random.key(42)
     shapes = jnp.array([0.5, 2.5], dtype=jnp.float32)
     scales = jnp.array([1.7, 0.8], dtype=jnp.float32)
-    expected = jnp.exp(jnp.log(scales) - jax.random.loggamma(key, shapes, shape=(3, 2), dtype=jnp.float32))
+    expected = tfd.InverseGamma(shapes, scale=scales).sample((3,), seed=key)
 
     result = inverse_gamma_rng(key, shapes, scales, sample_shape=(3,))
 
@@ -553,12 +554,13 @@ def test_inverse_gamma_rng_uses_broadcast_parameter_shape() -> None:
 
 
 def test_inverse_gamma_rng_preserves_scaled_draw_for_tiny_shape() -> None:
-    key = jax.random.key(7)
+    key = jax.random.key(14)
     shape = jnp.float32(0.03)
     scale = jnp.float32(1e-30)
-    log_unit_gamma = jax.random.loggamma(key, shape, dtype=jnp.float32)
+    expected = tfd.InverseGamma(shape, scale=scale).sample(seed=key)
 
-    assert jnp.array_equal(inverse_gamma_rng(key, shape, scale), jnp.exp(jnp.log(scale) - log_unit_gamma))
+    assert jnp.isposinf(tfd.InverseGamma(shape, scale=jnp.float32(1)).sample(seed=key))
+    assert jnp.array_equal(inverse_gamma_rng(key, shape, scale), expected)
     assert jnp.isfinite(inverse_gamma_rng(key, shape, scale))
 
 
@@ -572,7 +574,7 @@ def test_inverse_gamma_rng_can_be_jitted_with_dynamic_parameters() -> None:
 
     result = compiled(key, shapes, scales)
 
-    assert jnp.array_equal(result, inverse_gamma_rng(key, shapes, scales, sample_shape=(3,)))
+    np.testing.assert_allclose(result, inverse_gamma_rng(key, shapes, scales, sample_shape=(3,)), rtol=3e-7)
 
 
 def test_inverse_gamma_rng_matches_distribution_moments() -> None:

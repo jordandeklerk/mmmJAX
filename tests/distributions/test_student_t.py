@@ -3,6 +3,7 @@
 import jax
 import jax.numpy as jnp
 import pytest
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax import (
     Positive,
@@ -260,14 +261,14 @@ def test_student_t_can_be_vectorized_over_datasets() -> None:
     assert jnp.allclose(result, expected)
 
 
-def test_student_t_rng_uses_normal_and_log_gamma_draws() -> None:
+def test_student_t_rng_uses_distribution_sampler() -> None:
     key = jax.random.key(42)
     degrees = jnp.array([3.0, 7.0], dtype=jnp.float32)
     locations = jnp.array([0.5, -1.0], dtype=jnp.float32)
     scales = jnp.array([0.75, 2.0], dtype=jnp.float32)
     normal_key, gamma_key = jax.random.split(key)
-    standard_normal = jax.random.normal(normal_key, shape=(3, 2), dtype=jnp.float32)
-    log_unit_gamma = jax.random.loggamma(gamma_key, degrees / 2, shape=(3, 2), dtype=jnp.float32)
+    standard_normal = tfd.Normal(jnp.float32(0), jnp.float32(1)).sample((3, 2), seed=normal_key)
+    log_unit_gamma = tfd.ExpGamma(degrees / 2, rate=jnp.ones_like(degrees)).sample((3,), seed=gamma_key)
     log_magnitude = (
         jnp.log(scales) + jnp.log(jnp.abs(standard_normal)) + 0.5 * (jnp.log(degrees) - jnp.log(2.0) - log_unit_gamma)
     )

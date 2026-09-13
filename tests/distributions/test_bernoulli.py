@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from jax.scipy.stats import bernoulli as jax_bernoulli_distribution
 from scipy import special, stats
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax import (
     bernoulli,
@@ -418,10 +419,10 @@ def test_bernoulli_functions_reject_complex_arguments(function, arguments, argum
         function(*arguments)
 
 
-def test_bernoulli_rng_matches_jax_high_mode_and_shape() -> None:
+def test_bernoulli_rng_matches_backend_and_shape() -> None:
     key = jax.random.key(42)
     probabilities = jnp.array([0.2, 0.8], dtype=jnp.float32)
-    expected = jax.random.bernoulli(key, probabilities, shape=(4, 2), mode="high").astype(jnp.int32)
+    expected = tfd.Bernoulli(probs=probabilities).sample((4,), seed=key)
 
     result = bernoulli_rng(key, probabilities, sample_shape=(4,))
 
@@ -447,18 +448,13 @@ def test_bernoulli_rng_matches_expected_means() -> None:
     assert jnp.allclose(jnp.mean(samples, axis=0), probabilities, rtol=0, atol=0.01)
 
 
-def test_bernoulli_logit_rng_matches_jax_categorical() -> None:
+def test_bernoulli_logit_rng_draws_the_rare_outcome_directly() -> None:
     key = jax.random.key(5)
     logits = jnp.array([-17.0, 0.0, 17.0])
-    categorical_logits = jnp.stack((jnp.zeros_like(logits), logits), axis=-1)
 
     result = bernoulli_logit_rng(key, logits, sample_shape=(8,))
-    expected = jax.random.categorical(
-        key,
-        categorical_logits,
-        shape=(8, 3),
-        mode="high",
-    ).astype(jnp.int32)
+    rare_outcomes = tfd.Bernoulli(logits=-jnp.abs(logits)).sample((8,), seed=key)
+    expected = jnp.where(logits > 0, 1 - rare_outcomes, rare_outcomes)
 
     assert jnp.array_equal(result, expected)
 

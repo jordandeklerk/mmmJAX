@@ -6,6 +6,7 @@ import jax
 import jax.numpy as jnp
 from jax.scipy.special import gammaln
 from jax.typing import ArrayLike
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax.distributions._utils import _promote_inexact, _random_shape
 
@@ -327,6 +328,7 @@ def student_t_rng(
         ("scale", scale),
     )
     output_shape = _random_shape(sample_shape, degrees_array, location_array, scale_array)
+    degrees_array, location_array, scale_array = jnp.broadcast_arrays(degrees_array, location_array, scale_array)
 
     valid_degrees = jnp.isfinite(degrees_array) & (degrees_array > 0)
     valid_location = jnp.isfinite(location_array)
@@ -335,13 +337,14 @@ def student_t_rng(
     safe_degrees = jnp.where(valid_degrees, degrees_array, jnp.ones_like(degrees_array))
 
     normal_key, gamma_key = jax.random.split(key)
-    standard_normal = jax.random.normal(normal_key, shape=output_shape, dtype=degrees_array.dtype)
-    log_unit_gamma = jax.random.loggamma(
-        gamma_key,
-        safe_degrees / 2,
-        shape=output_shape,
-        dtype=degrees_array.dtype,
-    )
+    standard_normal = tfd.Normal(
+        loc=jnp.zeros((), dtype=degrees_array.dtype),
+        scale=jnp.ones((), dtype=degrees_array.dtype),
+    ).sample(output_shape, seed=normal_key)
+    log_unit_gamma = tfd.ExpGamma(
+        concentration=safe_degrees / 2,
+        rate=jnp.ones_like(safe_degrees),
+    ).sample(sample_shape, seed=gamma_key)
 
     nonzero_normal = standard_normal != 0
     safe_absolute_normal = jnp.where(nonzero_normal, jnp.abs(standard_normal), jnp.ones_like(standard_normal))

@@ -8,6 +8,7 @@ from typing import Protocol, cast, runtime_checkable
 import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike, DTypeLike
+from tensorflow_probability.substrates.jax import bijectors as tfb
 
 __all__ = [
     "Interval",
@@ -272,7 +273,7 @@ class Positive:
             shape=self.position_shape,
             dtype=self.dtype,
         )
-        return jnp.exp(position)
+        return cast(jax.Array, tfb.Exp().forward(position))
 
     def unconstrain(self, parameter: ArrayLike) -> jax.Array:
         """Map a positive parameter to unconstrained inference space.
@@ -294,7 +295,7 @@ class Positive:
             shape=_resolved_shape(self.shape, self.dims),
             dtype=self.dtype,
         )
-        return jnp.log(parameter)
+        return cast(jax.Array, tfb.Exp().inverse(parameter))
 
     def log_density_adjustment(self, position: ArrayLike) -> jax.Array:
         """Return the log absolute Jacobian determinant of ``exp``.
@@ -316,7 +317,7 @@ class Positive:
             shape=self.position_shape,
             dtype=self.dtype,
         )
-        return jnp.sum(position)
+        return cast(jax.Array, tfb.Exp().forward_log_det_jacobian(position, event_ndims=position.ndim))
 
     def initialize(self, key: jax.Array) -> jax.Array:
         """Draw an unconstrained initial position uniformly from ``[-2, 2)``.
@@ -401,7 +402,8 @@ class LowerBound:
             dtype=self.dtype,
         )
         lower = jnp.asarray(self.lower, dtype=self.dtype)
-        return lower + jnp.exp(position)
+        transform = tfb.Chain([tfb.Shift(lower), tfb.Exp()])
+        return cast(jax.Array, transform.forward(position))
 
     def unconstrain(self, parameter: ArrayLike) -> jax.Array:
         """Map a lower-bounded parameter to unconstrained inference space.
@@ -424,7 +426,8 @@ class LowerBound:
             dtype=self.dtype,
         )
         lower = jnp.asarray(self.lower, dtype=self.dtype)
-        return jnp.log(parameter - lower)
+        transform = tfb.Chain([tfb.Shift(lower), tfb.Exp()])
+        return cast(jax.Array, transform.inverse(parameter))
 
     def log_density_adjustment(self, position: ArrayLike) -> jax.Array:
         """Return the log absolute Jacobian determinant of the transform.
@@ -446,7 +449,9 @@ class LowerBound:
             shape=self.position_shape,
             dtype=self.dtype,
         )
-        return jnp.sum(position)
+        lower = jnp.asarray(self.lower, dtype=self.dtype)
+        transform = tfb.Chain([tfb.Shift(lower), tfb.Exp()])
+        return cast(jax.Array, transform.forward_log_det_jacobian(position, event_ndims=position.ndim))
 
     def initialize(self, key: jax.Array) -> jax.Array:
         """Draw an unconstrained initial position uniformly from ``[-2, 2)``.
@@ -531,7 +536,8 @@ class UpperBound:
             dtype=self.dtype,
         )
         upper = jnp.asarray(self.upper, dtype=self.dtype)
-        return upper - jnp.exp(position)
+        transform = tfb.Chain([tfb.Shift(upper), tfb.Scale(jnp.asarray(-1, dtype=self.dtype)), tfb.Exp()])
+        return cast(jax.Array, transform.forward(position))
 
     def unconstrain(self, parameter: ArrayLike) -> jax.Array:
         """Map an upper-bounded parameter to unconstrained inference space.
@@ -554,7 +560,8 @@ class UpperBound:
             dtype=self.dtype,
         )
         upper = jnp.asarray(self.upper, dtype=self.dtype)
-        return jnp.log(upper - parameter)
+        transform = tfb.Chain([tfb.Shift(upper), tfb.Scale(jnp.asarray(-1, dtype=self.dtype)), tfb.Exp()])
+        return cast(jax.Array, transform.inverse(parameter))
 
     def log_density_adjustment(self, position: ArrayLike) -> jax.Array:
         """Return the log absolute Jacobian determinant of the transform.
@@ -576,7 +583,9 @@ class UpperBound:
             shape=self.position_shape,
             dtype=self.dtype,
         )
-        return jnp.sum(position)
+        upper = jnp.asarray(self.upper, dtype=self.dtype)
+        transform = tfb.Chain([tfb.Shift(upper), tfb.Scale(jnp.asarray(-1, dtype=self.dtype)), tfb.Exp()])
+        return cast(jax.Array, transform.forward_log_det_jacobian(position, event_ndims=position.ndim))
 
     def initialize(self, key: jax.Array) -> jax.Array:
         """Draw an unconstrained initial position uniformly from ``[-2, 2)``.
@@ -676,10 +685,8 @@ class Interval:
             dtype=self.dtype,
         )
         lower = jnp.asarray(self.lower, dtype=self.dtype)
-        width = jnp.asarray(self.upper - self.lower, dtype=self.dtype)
-        # Keep positive-tail gradients from disappearing when sigmoid rounds to one
-        unit = jax.lax.logistic(position, accuracy=jax.lax.AccuracyMode.HIGHEST)
-        return lower + width * unit
+        upper = jnp.asarray(self.upper, dtype=self.dtype)
+        return cast(jax.Array, tfb.Sigmoid(low=lower, high=upper).forward(position))
 
     def unconstrain(self, parameter: ArrayLike) -> jax.Array:
         """Map an interval-constrained parameter to inference space.
@@ -703,7 +710,7 @@ class Interval:
         )
         lower = jnp.asarray(self.lower, dtype=self.dtype)
         upper = jnp.asarray(self.upper, dtype=self.dtype)
-        return jnp.log(parameter - lower) - jnp.log(upper - parameter)
+        return cast(jax.Array, tfb.Sigmoid(low=lower, high=upper).inverse(parameter))
 
     def log_density_adjustment(self, position: ArrayLike) -> jax.Array:
         """Return the scalar log absolute Jacobian determinant.
@@ -725,9 +732,10 @@ class Interval:
             shape=self.position_shape,
             dtype=self.dtype,
         )
-        width = jnp.asarray(self.upper - self.lower, dtype=self.dtype)
-        adjustment = jnp.log(width) + jax.nn.log_sigmoid(position) + jax.nn.log_sigmoid(-position)
-        return jnp.sum(adjustment)
+        lower = jnp.asarray(self.lower, dtype=self.dtype)
+        upper = jnp.asarray(self.upper, dtype=self.dtype)
+        transform = tfb.Sigmoid(low=lower, high=upper)
+        return cast(jax.Array, transform.forward_log_det_jacobian(position, event_ndims=position.ndim))
 
     def initialize(self, key: jax.Array) -> jax.Array:
         """Draw an unconstrained initial position uniformly from ``[-2, 2)``.

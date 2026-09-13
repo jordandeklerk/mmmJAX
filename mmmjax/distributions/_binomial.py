@@ -6,6 +6,7 @@ import jax
 import jax.numpy as jnp
 from jax.scipy.special import betainc
 from jax.typing import ArrayLike, DTypeLike
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax.distributions._discrete import _binomial_interior_log_mass
 from mmmjax.distributions._utils import (
@@ -296,16 +297,13 @@ def binomial_rng(
     """
     trials_array = _as_real_array("trials", trials)
     (probability_array,) = _promote_inexact(("probability", probability))
-    output_shape = _random_shape(sample_shape, trials_array, probability_array)
+    _random_shape(sample_shape, trials_array, probability_array)
 
-    samples = jax.random.binomial(
-        key,
-        jnp.asarray(trials_array, dtype=probability_array.dtype),
-        probability_array,
-        shape=output_shape,
-        dtype=probability_array.dtype,
-    )
-    return samples.astype(jnp.int32)
+    samples = tfd.Binomial(
+        total_count=jnp.asarray(trials_array, dtype=probability_array.dtype),
+        probs=probability_array,
+    ).sample(sample_shape, seed=key)
+    return jnp.asarray(samples, dtype=jnp.int32)
 
 
 def binomial_logit_logpmf(
@@ -598,17 +596,11 @@ def binomial_logit_rng(
     """
     trials_array = _as_real_array("trials", trials)
     (logits_array,) = _promote_inexact(("logits", logits))
-    output_shape = _random_shape(sample_shape, trials_array, logits_array)
+    _random_shape(sample_shape, trials_array, logits_array)
 
     trials_float = jnp.asarray(trials_array, dtype=logits_array.dtype)
     rare_probability = jnp.exp(jax.nn.log_sigmoid(-jnp.abs(logits_array)))
-    rare_outcomes = jax.random.binomial(
-        key,
-        trials_float,
-        rare_probability,
-        shape=output_shape,
-        dtype=logits_array.dtype,
-    )
+    rare_outcomes = tfd.Binomial(total_count=trials_float, probs=rare_probability).sample(sample_shape, seed=key)
     outcomes = jnp.where(logits_array > 0, trials_float - rare_outcomes, rare_outcomes)
     return outcomes.astype(jnp.int32)
 

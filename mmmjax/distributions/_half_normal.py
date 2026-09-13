@@ -4,11 +4,11 @@ import math
 
 import jax
 import jax.numpy as jnp
-from jax.scipy.special import erf, erfc, log_ndtr
 from jax.typing import ArrayLike
+from tensorflow_probability.substrates.jax import distributions as tfd
 
-from mmmjax.distributions._normal import _normal_logpdf_kernel, _standardize, normal_rng
-from mmmjax.distributions._utils import _promote_inexact
+from mmmjax.distributions._normal import _standardize
+from mmmjax.distributions._utils import _promote_inexact, _random_shape
 
 
 def half_normal_logpdf(value: ArrayLike, scale: ArrayLike) -> jax.Array:
@@ -52,9 +52,10 @@ def half_normal_logpdf(value: ArrayLike, scale: ArrayLike) -> jax.Array:
     """
     value_array, scale_array = _promote_inexact(("value", value), ("scale", scale))
 
-    log_two = jnp.asarray(math.log(2), dtype=value_array.dtype)
-    location = jnp.asarray(0, dtype=value_array.dtype)
-    log_density = _normal_logpdf_kernel(value_array, location, scale_array) + log_two
+    standardized = _standardize(value_array, jnp.zeros_like(value_array), scale_array)
+    distribution = tfd.HalfNormal(scale=jnp.ones((), dtype=value_array.dtype))
+    log_density = distribution.log_prob(standardized) - jnp.log(scale_array)
+    log_density = jnp.where(jnp.isnan(value_array), jnp.nan, log_density)
     supported_log_density = jnp.where(value_array < 0, -jnp.inf, log_density)
 
     valid_scale = jnp.isfinite(scale_array) & (scale_array > 0)
@@ -222,7 +223,12 @@ def half_normal_rng(
            ...: key = random.key(0)
            ...: half_normal_rng(key, scale=1.0, sample_shape=(5,))
     """
-    return jnp.abs(normal_rng(key, 0, scale, sample_shape=sample_shape))
+    (scale_array,) = _promote_inexact(("scale", scale))
+    _random_shape(sample_shape, scale_array)
+    samples = tfd.HalfNormal(scale=scale_array).sample(seed=key, sample_shape=sample_shape)
+
+    valid_scale = jnp.isfinite(scale_array) & (scale_array > 0)
+    return jnp.where(valid_scale, samples, jnp.nan)
 
 
 def _half_normal_logcdf_kernel(value: jax.Array, scale: jax.Array) -> jax.Array:
@@ -238,11 +244,11 @@ def _half_normal_logcdf_kernel(value: jax.Array, scale: jax.Array) -> jax.Array:
 
     ordinary_region = (standardized >= small_threshold) & (standardized <= 1)
     ordinary_standardized = jnp.where(ordinary_region, standardized, jnp.ones_like(standardized))
-    sqrt_two = jnp.sqrt(jnp.asarray(2, dtype=value.dtype))
-    ordinary_logcdf = jnp.log(erf(ordinary_standardized / sqrt_two))
+    distribution = tfd.HalfNormal(scale=jnp.ones((), dtype=value.dtype))
+    ordinary_logcdf = distribution.log_cdf(ordinary_standardized)
 
     upper_standardized = jnp.where(standardized > 1, standardized, jnp.ones_like(standardized))
-    upper_logcdf = jnp.log1p(-erfc(upper_standardized / sqrt_two))
+    upper_logcdf = jnp.log1p(-distribution.survival_function(upper_standardized))
 
     interior_logcdf = jnp.where(
         standardized < small_threshold,
@@ -255,7 +261,7 @@ def _half_normal_logcdf_kernel(value: jax.Array, scale: jax.Array) -> jax.Array:
         jnp.where(value > 0, interior_logcdf, -jnp.inf),
     )
     supported_logcdf = jnp.where(jnp.isnan(value), jnp.nan, supported_logcdf)
-    return jnp.where(valid_scale, supported_logcdf, jnp.nan)
+    return jnp.asarray(jnp.where(valid_scale, supported_logcdf, jnp.nan), dtype=value.dtype)
 
 
 def _half_normal_logsf_kernel(value: jax.Array, scale: jax.Array) -> jax.Array:
@@ -266,12 +272,13 @@ def _half_normal_logsf_kernel(value: jax.Array, scale: jax.Array) -> jax.Array:
 
     ordinary_region = standardized <= 1
     ordinary_standardized = jnp.where(ordinary_region, standardized, jnp.ones_like(standardized))
-    sqrt_two = jnp.sqrt(jnp.asarray(2, dtype=value.dtype))
-    ordinary_logsf = jnp.log1p(-erf(ordinary_standardized / sqrt_two))
+    distribution = tfd.HalfNormal(scale=jnp.ones((), dtype=value.dtype))
+    ordinary_logsf = jnp.log1p(-distribution.cdf(ordinary_standardized))
 
     tail_standardized = jnp.where(ordinary_region, jnp.ones_like(standardized), standardized)
     log_two = jnp.asarray(math.log(2), dtype=value.dtype)
-    tail_logsf = log_two + log_ndtr(-tail_standardized)
+    normal = tfd.Normal(loc=jnp.zeros((), dtype=value.dtype), scale=jnp.ones((), dtype=value.dtype))
+    tail_logsf = log_two + normal.log_cdf(-tail_standardized)
     interior_logsf = jnp.where(ordinary_region, ordinary_logsf, tail_logsf)
 
     supported_logsf = jnp.where(
@@ -280,4 +287,4 @@ def _half_normal_logsf_kernel(value: jax.Array, scale: jax.Array) -> jax.Array:
         jnp.where(jnp.isposinf(value), -jnp.inf, interior_logsf),
     )
     supported_logsf = jnp.where(jnp.isnan(value), jnp.nan, supported_logsf)
-    return jnp.where(valid_scale, supported_logsf, jnp.nan)
+    return jnp.asarray(jnp.where(valid_scale, supported_logsf, jnp.nan), dtype=value.dtype)

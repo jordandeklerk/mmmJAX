@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from scipy import special, stats
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax import (
     bernoulli_logit_logpmf,
@@ -576,17 +577,12 @@ def test_categorical_functions_reject_complex_arguments(
         function(*arguments)
 
 
-def test_categorical_rng_matches_centered_jax_categorical_high_mode_and_shape() -> None:
+def test_categorical_rng_matches_centered_backend_and_shape() -> None:
     key = jax.random.key(42)
     probabilities = jnp.array([[0.2, 0.3, 0.5], [0.6, 0.1, 0.3]], dtype=jnp.float32)
     logits = jnp.log(probabilities)
     centered_logits = logits - jnp.max(logits, axis=-1, keepdims=True)
-    expected = jax.random.categorical(
-        key,
-        centered_logits,
-        shape=(4, 2),
-        mode="high",
-    ).astype(jnp.int32)
+    expected = tfd.Categorical(logits=centered_logits).sample((4,), seed=key)
 
     result = categorical_rng(key, probabilities, sample_shape=(4,))
 
@@ -595,11 +591,11 @@ def test_categorical_rng_matches_centered_jax_categorical_high_mode_and_shape() 
     assert jnp.array_equal(result, expected)
 
 
-def test_categorical_logit_rng_matches_centered_jax_categorical_high_mode_and_shape() -> None:
+def test_categorical_logit_rng_matches_centered_backend_and_shape() -> None:
     key = jax.random.key(5)
     logits = jnp.array([[2.0, -1.0, 0.5], [-4.0, 3.0, 1.0]])
     centered_logits = logits - jnp.max(logits, axis=-1, keepdims=True)
-    expected = jax.random.categorical(key, centered_logits, shape=(8, 2), mode="high").astype(jnp.int32)
+    expected = tfd.Categorical(logits=centered_logits).sample((8,), seed=key)
 
     result = categorical_logit_rng(key, logits, sample_shape=(8,))
 

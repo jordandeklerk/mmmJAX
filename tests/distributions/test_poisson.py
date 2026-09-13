@@ -578,6 +578,7 @@ def test_poisson_log_rate_tails_reject_complex_inputs(function, argument: str) -
         function(**arguments)
 
 
+@pytest.mark.filterwarnings("error:Explicitly requested dtype:UserWarning")
 def test_poisson_rng_matches_jax_and_uses_integer_output() -> None:
     key = jax.random.key(42)
     rates = jnp.array([0.0, 0.5, 8.0], dtype=jnp.float32)
