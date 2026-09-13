@@ -432,7 +432,7 @@ def _prepare_response(
     evaluator = _BudgetResponse(
         model=model,
         inputs=inputs,
-        posterior=posterior,
+        posterior={name: jnp.asarray(value) for name, value in posterior.items()},
         quantity=quantity,
         spend_weights=selected_spend / jnp.where(totals > 0, totals, 1),
         convert=convert,

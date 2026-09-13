@@ -1,4 +1,4 @@
-"""Private assembly of labeled posterior arrays and model inputs."""
+"""Tests for private assembly of labeled posterior arrays and model inputs."""
 
 from copy import deepcopy
 from datetime import date
@@ -282,6 +282,44 @@ def test_diagnostics_do_not_inherit_parameter_or_generated_dimensions(name):
     if expected_axes:
         np.testing.assert_array_equal(results["sample_stats"]["chain"], ["a", "b"])
         np.testing.assert_array_equal(results["sample_stats"]["draw"], [10, 20, 30])
+
+
+@pytest.mark.parametrize("copy_draws", [False, True])
+def test_collection_can_adopt_owned_draw_buffers_while_copying_model_inputs(posterior, copy_draws):
+    data = _prepared_data("national")
+    predictions = np.zeros((2, 3, 3))
+    pointwise = np.ones((2, 3, 3))
+    transformed = np.full((2, 3, 3), 2.0)
+    diagnostic = np.zeros((2, 3), dtype=bool)
+    labels = np.array(["Video", "Search"])
+    inputs = xr.Dataset({"lift": ("experiment", [1.0, 2.0])})
+    results = _collect_results(
+        posterior,
+        data=data,
+        inputs=inputs,
+        posterior_predictive={"prediction": predictions},
+        log_likelihood={"pointwise": pointwise},
+        generated_quantities={"mean": transformed},
+        sample_stats={"diverging": diagnostic},
+        dims={"coefficient": ("channel",)},
+        generated_dims={"prediction": ("time",), "pointwise": ("time",), "mean": ("time",)},
+        coords={"channel": labels},
+        copy_draws=copy_draws,
+    )
+
+    for group, name, source in (
+        ("posterior", "coefficient", posterior["coefficient"]),
+        ("posterior_predictive", "prediction", predictions),
+        ("log_likelihood", "pointwise", pointwise),
+        ("generated_quantities", "mean", transformed),
+        ("sample_stats", "diverging", diagnostic),
+    ):
+        assert np.shares_memory(results[group][name].data, source) is not copy_draws
+
+    assert not np.shares_memory(results["observed_data"]["outcome"].data, data.arrays["outcome"])
+    assert not np.shares_memory(results["constant_data"]["media"].data, data.arrays["media"])
+    assert not np.shares_memory(results["constant_data"]["lift"].data, inputs["lift"].data)
+    assert not np.shares_memory(results["posterior"].coords["channel"].data, labels)
 
 
 def test_collection_takes_snapshots_without_mutating_inputs_or_metadata(posterior):

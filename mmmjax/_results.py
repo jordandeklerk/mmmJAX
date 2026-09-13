@@ -28,8 +28,9 @@ def _collect_results(
     generated_dims: Mapping[str, Sequence[str]] | None = None,
     coords: Mapping[str, object] | None = None,
     sample_group: Literal["posterior", "prior"] = "posterior",
+    copy_draws: bool = True,
 ) -> xr.DataTree:
-    """Copy constrained draws, diagnostics, and model inputs into labeled groups."""
+    """Collect labeled groups, copying draws unless the caller transfers ownership."""
     if sample_group not in ("posterior", "prior"):
         raise ValueError("sample_group must be posterior or prior")
     if sample_group == "prior" and (log_likelihood is not None or sample_stats is not None):
@@ -76,7 +77,7 @@ def _collect_results(
                 compat="equals",
             )
 
-    parameter_dataset = _dataset(posterior, sample_group, dimensions, coordinates)
+    parameter_dataset = _dataset(posterior, sample_group, dimensions, coordinates, copy=copy_draws)
     if not parameter_dataset.data_vars:
         raise ValueError(f"{sample_group} must contain at least one variable")
     for axis in ("chain", "draw"):
@@ -101,7 +102,9 @@ def _collect_results(
             continue
         # Diagnostics do not inherit model parameter axes. Prepared datasets already have labels.
         axes = output_dimensions if name in (predictive_group, "log_likelihood", generated_group) else {}
-        dataset = _dataset(values, name, axes, coordinates)
+        dataset = _dataset(
+            values, name, axes, coordinates, copy=copy_draws or name in ("observed_data", "constant_data")
+        )
         if not dataset.data_vars:
             continue
         if name in (predictive_group, "log_likelihood", generated_group, "sample_stats"):
@@ -182,6 +185,8 @@ def _dataset(
     group: str,
     dimensions: dict[str, tuple[str, ...]],
     coordinates: _Coordinates,
+    *,
+    copy: bool = True,
 ) -> xr.Dataset:
     """Create one group without aligning its arrays or dropping labeled axes."""
     sampled = group in (
@@ -204,7 +209,7 @@ def _dataset(
             name = _name(raw_name)
             if isinstance(value, xr.DataArray):
                 raise TypeError("Result mappings must contain unlabeled arrays")
-            array = np.array(value, copy=True)
+            array = np.array(value, copy=True) if copy else np.asarray(value)
             axes = dimensions.get(name, ())
             has_samples = sampled and not (group == "sample_stats" and array.ndim == 0)
             sample_axes = ("chain", "draw") if has_samples else ()

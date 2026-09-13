@@ -1,7 +1,7 @@
 """Prior and posterior sampling with labeled model results."""
 
 import warnings
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from importlib.metadata import version
 from numbers import Integral, Real
@@ -33,6 +33,7 @@ def sample(
     max_tree_depth: int = 10,
     initial_values: Mapping[str, ArrayLike] | None = None,
     generate: bool = True,
+    batch_size: int = 64,
 ) -> xr.DataTree:
     """Sample a model with NUTS and return labeled posterior results.
 
@@ -64,11 +65,16 @@ def sample(
         Otherwise, each chain starts from a random unconstrained position.
     generate : bool, default True
         Evaluate saved quantities and outputs from the generation callback.
+    batch_size : int, default 64
+        Maximum draws evaluated together across chains when converting
+        parameters and generating quantities. Smaller batches reduce working
+        memory. This does not change NUTS or the number of retained draws.
 
     Returns
     -------
     xarray.DataTree
-        Host-side results with chain and draw dimensions.
+        Host-side results with chain and draw dimensions. The complete results
+        must fit in host memory.
 
         - **posterior** contains constrained parameter draws.
         - **sample_stats** contains sampler diagnostics, including divergences
@@ -85,21 +91,10 @@ def sample(
         generation inputs. Observation-shaped predictive and likelihood outputs
         inherit outcome labels. Use ``dims``, ``generated_dims``, and ``coords``
         on the model for custom axes. Inspect diagnostics before interpreting results.
-
-    Examples
-    --------
-    With a constructed ``Model``, sample and inspect its labeled draws.
-
-    .. code-block:: python
-
-        from mmmjax import sample
-
-        results = sample(model, seed=42)
-        results["posterior"]
-        results["sample_stats"]
     """
     if not isinstance(model, Model):
         raise TypeError("model must be a Model")
+    _validate_batch_size(batch_size)
     for name, value in (("draws", draws), ("warmup", warmup), ("chains", chains), ("max_tree_depth", max_tree_depth)):
         if isinstance(value, bool) or not isinstance(value, Integral) or value < 1:
             raise ValueError(f"{name} must be a positive integer")
@@ -154,9 +149,9 @@ def sample(
         output_dimensions = _output_dimensions(model, outputs, arguments, dimensions, prepared)
 
     def collect(
-        posterior: dict[str, jax.Array],
-        generated: dict[str, jax.Array],
-        stats: dict[str, jax.Array] | None = None,
+        posterior: Mapping[str, ArrayLike],
+        generated: Mapping[str, ArrayLike],
+        stats: Mapping[str, ArrayLike] | None = None,
     ) -> xr.DataTree:
         return _collect_results(
             posterior,
@@ -173,6 +168,7 @@ def sample(
             dims=dimensions,
             generated_dims=output_dimensions,
             coords=coordinates,
+            copy_draws=False,
         )
 
     # Validate output axes and labels before adapting any chains.
@@ -192,13 +188,20 @@ def sample(
     if not np.isfinite(np.asarray(stats["lp"])).all():
         raise RuntimeError("Sampling produced nonfinite log densities. Check the model and initial_values")
 
-    posterior = jax.jit(jax.vmap(jax.vmap(model.constrain)))(positions)
-    generated = {}
+    positions = jax.device_get(positions)
+    stats = jax.tree.map(lambda value: np.array(value, copy=True), stats)
+    posterior = _evaluate_draws(model.constrain, positions, sample_shape=(chains, draws), batch_size=batch_size)
+    del positions
+    generated: dict[str, NDArray[np.generic]] = {}
 
     if generate and model._has_generated_quantities:
         keys = jax.random.split(generation_key, (chains, draws))
-        generated = jax.jit(jax.vmap(jax.vmap(lambda key, parameters: model.generate(key, parameters, inputs))))(
-            keys, posterior
+        generated = _evaluate_draws(
+            lambda key, parameters: model.generate(key, parameters, inputs),
+            keys,
+            posterior,
+            sample_shape=(chains, draws),
+            batch_size=batch_size,
         )
 
     results = collect(posterior, generated, stats)
@@ -239,6 +242,7 @@ def sample_prior(
     draws: int = 500,
     seed: int = 0,
     generate: bool = True,
+    batch_size: int = 64,
 ) -> xr.DataTree:
     """Draw explicit priors and inspect their implied outcomes before fitting.
 
@@ -263,11 +267,15 @@ def sample_prior(
         Random seed for parameters and generated quantities.
     generate : bool, default True
         Evaluate saved quantities and outputs from the generation callback.
+    batch_size : int, default 64
+        Maximum prior draws evaluated together, including generated quantities.
+        Smaller batches reduce working memory without reducing the draw count.
 
     Returns
     -------
     xarray.DataTree
-        Labeled results with one chain axis and ``draws`` draws.
+        Labeled results with one chain axis and ``draws`` draws. The complete
+        results must fit in host memory.
 
         - **prior** contains constrained parameter draws.
         - **prior_predictive** contains outputs selected by the model's
@@ -281,56 +289,10 @@ def sample_prior(
         Outputs selected as log likelihoods are omitted. The chain axis is for
         result compatibility, not an MCMC chain. Without generation, only prior
         draws and available model inputs are returned.
-
-    Examples
-    --------
-    Define a Normal observation model with known noise scale. Write the prior
-    and likelihood explicitly, sharing the prior mean and scale with the
-    prior-draw function.
-
-    .. ipython::
-
-        In [1]: from mmmjax import Model, Real, normal, normal_rng
-           ...: from mmmjax import sample_prior
-           ...: prior_mean = 0.0
-           ...: prior_scale = 2.0
-           ...: observation_scale = 1.0
-           ...: parameters = {"location": Real()}
-
-        In [2]: def log_density(data, location):
-           ...:     target = normal(
-           ...:         location, location=prior_mean, scale=prior_scale
-           ...:     )
-           ...:     target += normal(
-           ...:         data, location=location, scale=observation_scale
-           ...:     )
-           ...:     return target
-
-        In [3]: def prior(key):
-           ...:     location = normal_rng(
-           ...:         key, location=prior_mean, scale=prior_scale
-           ...:     )
-           ...:     return {"location": location}
-
-        In [4]: def generate(key, data, location):
-           ...:     outcome = normal_rng(
-           ...:         key, location=location, scale=observation_scale
-           ...:     )
-           ...:     return {"outcome": outcome}
-
-        In [5]: model = Model(
-           ...:     parameters=parameters,
-           ...:     log_density=log_density,
-           ...:     prior=prior,
-           ...:     generate=generate,
-           ...:     predictive=("outcome",),
-           ...: )
-
-        In [6]: results = sample_prior(model, draws=100, seed=42)
-           ...: results
     """
     if not isinstance(model, Model):
         raise TypeError("model must be a Model")
+    _validate_batch_size(batch_size)
     if prior is None:
         prior = model._prior
     if prior is None:
@@ -354,8 +316,8 @@ def sample_prior(
     inputs = model.data if model._data is not None else data
     prepared = _result_data(model)
     prior_key, generation_key, preview_key = jax.random.split(jax.random.key(int(seed)), 3)
-    parameters = _prior_draws(model, prior, prior_key, int(draws))
-    generated: dict[str, jax.Array] = {}
+    parameters = _prior_draws(model, prior, prior_key, int(draws), batch_size=batch_size)
+    generated: dict[str, NDArray[np.generic]] = {}
     output_dimensions: dict[str, tuple[str, ...]] = {}
 
     if generate and model._has_generated_quantities:
@@ -363,7 +325,13 @@ def sample_prior(
         outputs, arguments = model._generate_with_inputs(preview_key, initial, inputs)
         output_dimensions = _output_dimensions(model, outputs, arguments, dimensions, prepared)
         keys = jax.random.split(generation_key, draws)
-        generated = jax.jit(jax.vmap(lambda key, values: model.generate(key, values, inputs)))(keys, parameters)
+        generated = _evaluate_draws(
+            lambda key, values: model.generate(key, values, inputs),
+            keys,
+            parameters,
+            sample_shape=(draws,),
+            batch_size=batch_size,
+        )
 
     results = _collect_results(
         {name: value[None] for name, value in parameters.items()},
@@ -381,6 +349,7 @@ def sample_prior(
         generated_dims=output_dimensions,
         coords=coordinates,
         sample_group="prior",
+        copy_draws=False,
     )
     results.attrs.update(
         sampling_method="prior",
@@ -395,7 +364,9 @@ def _prior_draws(
     prior: Prior,
     key: jax.Array,
     draws: int,
-) -> dict[str, jax.Array]:
+    *,
+    batch_size: int,
+) -> dict[str, NDArray[np.generic]]:
     """Draw and validate constrained parameters without evaluating a density."""
 
     def draw_parameters(draw_key: jax.Array) -> dict[str, jax.Array]:
@@ -427,8 +398,10 @@ def _prior_draws(
             )
         return valid
 
-    parameters: dict[str, jax.Array] = jax.jit(jax.vmap(draw_parameters))(jax.random.split(key, draws))
-    validity = jax.jit(jax.vmap(valid_support))(parameters)
+    parameters = _evaluate_draws(
+        draw_parameters, jax.random.split(key, draws), sample_shape=(draws,), batch_size=batch_size
+    )
+    validity = _evaluate_draws(valid_support, parameters, sample_shape=(draws,), batch_size=batch_size)
     for name, values in parameters.items():
         if not np.isfinite(np.asarray(values)).all():
             raise ValueError(f"Prior draws for {name!r} must be finite real numbers")
@@ -443,6 +416,7 @@ def generate_quantities(
     *,
     new_data: object = None,
     seed: int = 0,
+    batch_size: int = 64,
 ) -> xr.DataTree:
     """Evaluate generated quantities from existing posterior draws without refitting.
 
@@ -468,11 +442,15 @@ def generate_quantities(
         remain fixed across scenarios.
     seed : int, default 0
         Random seed for generated quantities, with an independent key per draw.
+    batch_size : int, default 64
+        Maximum posterior draws evaluated together across chains. Smaller
+        batches reduce working memory without changing the selected draws.
 
     Returns
     -------
     xarray.DataTree
         A new result tree. The original results and model are unchanged.
+        The complete results must fit in host memory.
 
         - **posterior** contains the reused draws and sample labels.
         - **posterior_predictive**, **log_likelihood**, and
@@ -483,6 +461,7 @@ def generate_quantities(
     """
     if not isinstance(model, Model):
         raise TypeError("model must be a Model")
+    _validate_batch_size(batch_size)
     if not model._has_generated_quantities:
         raise ValueError("The model must define a generation callback or select quantities with save")
     if isinstance(seed, bool) or not isinstance(seed, Integral) or seed < 0:
@@ -490,6 +469,8 @@ def generate_quantities(
 
     dimensions, coordinates = _parameter_metadata(model)
     posterior, coordinates = _posterior_draws(model, results, dimensions, coordinates)
+    # The new result tree owns its draws without modifying the supplied results.
+    posterior = {name: value.copy() for name, value in posterior.items()}
     prepared = _result_data(model)
     inputs = model.data if model._data is not None else new_data
     if model._data is not None and new_data is not None:
@@ -502,8 +483,12 @@ def generate_quantities(
     output_dimensions = _output_dimensions(model, outputs, arguments, dimensions, prepared)
     chains, draws = next(iter(posterior.values())).shape[:2]
     keys = jax.random.split(generation_key, (chains, draws))
-    generated = jax.jit(jax.vmap(jax.vmap(lambda key, parameters: model.generate(key, parameters, inputs))))(
-        keys, posterior
+    generated = _evaluate_draws(
+        lambda key, parameters: model.generate(key, parameters, inputs),
+        keys,
+        posterior,
+        sample_shape=(chains, draws),
+        batch_size=batch_size,
     )
     evaluated = _collect_results(
         posterior,
@@ -519,6 +504,7 @@ def generate_quantities(
         dims=dimensions,
         generated_dims=output_dimensions,
         coords=coordinates,
+        copy_draws=False,
     )
     evaluated.attrs.update(generation_seed=int(seed), data_scale="model" if model.scaling is not None else "original")
     return evaluated
@@ -529,7 +515,7 @@ def _posterior_draws(
     results: xr.DataTree,
     dimensions: dict[str, tuple[str, ...]],
     coordinates: dict[str, NDArray[np.generic]],
-) -> tuple[dict[str, jax.Array], dict[str, NDArray[np.generic]]]:
+) -> tuple[dict[str, NDArray[np.generic]], dict[str, NDArray[np.generic]]]:
     """Validate labeled constrained draws before passing them to model callbacks."""
     if not isinstance(results, xr.DataTree):
         raise TypeError("results must be an xarray.DataTree containing posterior draws")
@@ -580,13 +566,47 @@ def _posterior_draws(
             raise ValueError(f"Posterior draws for {name!r} must be finite real numbers")
         if jax.dtypes.canonicalize_dtype(array.dtype) != array.dtype:
             raise ValueError("Enable JAX 64-bit mode to evaluate these posterior draws without losing precision")
-        posterior[name] = jnp.asarray(array)
+        posterior[name] = array
 
     for axis in ("chain", "draw"):
         coordinates[axis] = np.array(
             dataset.coords[axis].values if axis in dataset.coords else np.arange(dataset.sizes[axis])
         )
     return posterior, coordinates
+
+
+def _validate_batch_size(batch_size: int) -> None:
+    """Reject invalid batch sizes before sampling or evaluating callbacks."""
+    if isinstance(batch_size, bool) or not isinstance(batch_size, Integral) or batch_size < 1:
+        raise ValueError("batch_size must be a positive integer")
+
+
+def _evaluate_draws(
+    function: Callable[..., dict[str, jax.Array]],
+    *arguments: jax.Array | Mapping[str, jax.Array | NDArray[np.generic]],
+    sample_shape: tuple[int, ...],
+    batch_size: int,
+) -> dict[str, NDArray[np.generic]]:
+    """Evaluate flattened draw batches into preallocated host-side results."""
+    total = int(np.prod(sample_shape))
+    flattened = jax.tree.map(lambda value: value.reshape((total, *value.shape[len(sample_shape) :])), arguments)
+    evaluate = jax.jit(jax.vmap(function))
+    buffers: dict[str, NDArray[np.generic]] = {}
+
+    for start in range(0, total, batch_size):
+        stop = min(start + batch_size, total)
+        batch = jax.tree.map(lambda value, start=start, stop=stop: value[start:stop], flattened)
+        outputs = jax.device_get(evaluate(*batch))
+
+        for name in outputs:
+            if name not in buffers:
+                buffers[name] = np.empty((total, *outputs[name].shape[1:]), dtype=outputs[name].dtype)
+            buffers[name][start:stop] = outputs[name]
+
+        # Release batch buffers before the next device evaluation.
+        del batch, outputs
+
+    return {name: value.reshape((*sample_shape, *value.shape[1:])) for name, value in buffers.items()}
 
 
 def _parameter_metadata(model: Model) -> tuple[dict[str, tuple[str, ...]], dict[str, NDArray[np.generic]]]:

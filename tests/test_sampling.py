@@ -229,12 +229,114 @@ def test_prepared_data_and_selected_generated_outputs_are_collected_automaticall
     assert not np.array_equal(predictions[:, 0], predictions[:, 1])
 
 
-def test_generation_can_be_disabled_without_executing_the_callback(nuts_calls):
+@pytest.mark.parametrize("batch_size", [1, 4, 64])
+def test_sampling_batches_preserve_seeded_draws_generation_and_labels(nuts_calls, batch_size):
+    model, _ = _prepared_model()
+    options = {"draws": 5, "warmup": 3, "chains": 2, "seed": 17}
+    expected = sample(model, **options, batch_size=64)
+    result = sample(model, **options, batch_size=batch_size)
+
+    xr.testing.assert_allclose(result, expected)
+    np.testing.assert_array_equal(nuts_calls[0]["keys"], nuts_calls[1]["keys"])
+    np.testing.assert_array_equal(nuts_calls[0]["positions"]["intercept"], nuts_calls[1]["positions"]["intercept"])
+    for group in ("posterior", "sample_stats", "generated_quantities", "posterior_predictive", "log_likelihood"):
+        for value in result[group].data_vars.values():
+            assert value.values.flags.writeable
+
+    generation_key = jax.random.split(jax.random.key(17), 4)[2]
+    keys = jax.random.split(generation_key, (2, 5))
+    posterior = {"intercept": jnp.asarray(result["posterior"]["intercept"].values)}
+    reference = jax.jit(jax.vmap(jax.vmap(lambda key, values: model.generate(key, values, model.data))))(
+        keys, posterior
+    )
+    for group, name in (
+        ("posterior_predictive", "prediction"),
+        ("log_likelihood", "pointwise"),
+        ("generated_quantities", "mean"),
+    ):
+        np.testing.assert_allclose(result[group][name], reference[name], rtol=2e-6, atol=2e-6)
+        np.testing.assert_array_equal(result[group]["time"], [10, 11, 12])
+        assert result[group][name].dims == ("chain", "draw", "time")
+        assert isinstance(result[group][name].data, np.ndarray)
+
+
+@pytest.mark.parametrize("batch_size", [1, 4, 64])
+def test_sampling_batches_keep_constrained_event_shapes_and_exact_draw_keys(nuts_calls, batch_size):
+    model = Model(
+        {"scale": Positive(), "weights": Simplex((3,))},
+        lambda data, scale, weights: half_normal(scale, 1.0) + dirichlet(weights, jnp.ones(3)),
+        lambda key, data, scale: {"key_words": jax.random.key_data(key), "squared_scale": scale**2},
+    )
+    result = sample(model, draws=5, warmup=3, chains=2, seed=11, batch_size=batch_size)
+    positions = jax.tree.map(
+        lambda value: jnp.repeat(jnp.asarray(value)[:, None], 5, axis=1), nuts_calls[0]["positions"]
+    )
+    reference = jax.jit(jax.vmap(jax.vmap(model.constrain)))(positions)
+
+    for name, values in reference.items():
+        np.testing.assert_allclose(result["posterior"][name], values, rtol=2e-6, atol=2e-6)
+        assert isinstance(result["posterior"][name].data, np.ndarray)
+    assert result["posterior"]["weights"].shape == (2, 5, 3)
+    np.testing.assert_allclose(result["posterior"]["weights"].sum("weights_dim_0"), 1.0, rtol=2e-6)
+
+    generation_key = jax.random.split(jax.random.key(11), 4)[2]
+    keys = jax.random.split(generation_key, (2, 5))
+    np.testing.assert_array_equal(result["generated_quantities"]["key_words"], jax.random.key_data(keys))
+    assert result["generated_quantities"]["key_words"].dtype == np.uint32
+
+
+@pytest.mark.parametrize("batch_size", [1, 4, 64])
+def test_evaluate_draws_only_transfers_bounded_batches_and_preserves_event_axes(monkeypatch, batch_size):
+    arguments = {
+        "values": np.arange(30, dtype=np.float32).reshape(2, 5, 3),
+        "empty": np.empty((2, 5, 0), dtype=np.float32),
+    }
+    original = jax.tree.map(np.copy, arguments)
+    calls = []
+    compile_function = jax.jit
+
+    def record_compile(function):
+        compiled = compile_function(function)
+
+        def evaluate(batch):
+            assert all(isinstance(value, np.ndarray) for value in batch.values())
+            size = batch["values"].shape[0]
+            assert 0 < size <= batch_size
+            assert batch["empty"].shape == (size, 0)
+            calls.append(size)
+            return compiled(batch)
+
+        return evaluate
+
+    monkeypatch.setattr(sampling.jax, "jit", record_compile)
+    result = sampling._evaluate_draws(
+        lambda values: {"values": values["values"] * 2, "empty": values["empty"], "positive": values["values"] > 0},
+        arguments,
+        sample_shape=(2, 5),
+        batch_size=batch_size,
+    )
+
+    assert calls == [min(batch_size, 10 - start) for start in range(0, 10, batch_size)]
+    np.testing.assert_array_equal(result["values"], original["values"] * 2)
+    np.testing.assert_array_equal(result["positive"], original["values"] > 0)
+    assert result["values"].dtype == np.float32
+    assert result["positive"].dtype == np.bool_
+    assert result["empty"].shape == (2, 5, 0)
+    for name in ("values", "empty"):
+        assert isinstance(result[name], np.ndarray)
+        assert not np.shares_memory(result[name], arguments[name])
+        np.testing.assert_array_equal(arguments[name], original[name])
+    result["values"][...] = -1
+    np.testing.assert_array_equal(arguments["values"], original["values"])
+
+
+@pytest.mark.parametrize("batch_size", [1, 4, 64])
+def test_generation_can_be_disabled_without_executing_the_callback(nuts_calls, batch_size):
     def forbidden_generate(key, data, location):
         raise AssertionError("Generation was disabled")
 
     model = Model({"location": Real()}, lambda data, location: normal(location, 0.0, 1.0), forbidden_generate)
-    result = sample(model, draws=2, warmup=3, chains=1, generate=False)
+    result = sample(model, draws=3, warmup=3, chains=2, generate=False, batch_size=batch_size)
     assert set(result.children) == {"posterior", "sample_stats"}
 
 
@@ -585,7 +687,7 @@ def test_nonfinite_sampled_log_density_raises_instead_of_returning_results(norma
         sample(normal_model, data=0.0, draws=3, warmup=4, chains=1)
 
 
-@pytest.mark.parametrize("option", ["draws", "warmup", "chains", "max_tree_depth"])
+@pytest.mark.parametrize("option", ["draws", "warmup", "chains", "max_tree_depth", "batch_size"])
 @pytest.mark.parametrize("value", [0, -1, True, 1.5])
 def test_counts_require_positive_integers_before_sampling(normal_model, nuts_calls, option, value):
     arguments = {"draws": 2, "warmup": 3, "chains": 1, option: value}
@@ -717,11 +819,12 @@ def _saved_model(**options):
     )
 
 
-def test_sampling_collects_selected_transformed_quantities_without_callback(nuts_calls):
+@pytest.mark.parametrize("batch_size", [1, 4, 64])
+def test_sampling_collects_selected_transformed_quantities_without_callback(nuts_calls, batch_size):
     model = _saved_model()
     options = {"draws": 3, "warmup": 4, "chains": 2, "seed": 9, "initial_values": {"intercept": 2.0}}
-    results = sample(model, **options)
-    disabled = sample(model, **options, generate=False)
+    results = sample(model, **options, batch_size=batch_size)
+    disabled = sample(model, **options, generate=False, batch_size=batch_size)
 
     assert set(results["posterior"].data_vars) == {"intercept"}
     assert set(results["generated_quantities"].data_vars) == {"mu"}
