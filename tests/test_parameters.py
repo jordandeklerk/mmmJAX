@@ -120,6 +120,28 @@ def test_parameterization_round_trip(parameterization: Parameterization) -> None
     assert jnp.allclose(result, position)
 
 
+@pytest.mark.parametrize("shape", [(3,), (2, 3)])
+def test_parameterization_operations_do_not_retain_tracers(named_parameter_factory, shape):
+    parameterization = named_parameter_factory(shape=shape)
+    position = jnp.full(parameterization.position_shape, 0.3, dtype=parameterization.dtype)
+    parameter = parameterization.constrain(position)
+    target = partial(_target, parameterization)
+
+    with jax.check_tracer_leaks():
+        constrained = jax.jit(parameterization.constrain)(position)
+        unconstrained = jax.jit(parameterization.unconstrain)(parameter)
+        adjustment = jax.jit(parameterization.log_density_adjustment)(position)
+        gradient = jax.jit(jax.grad(parameterization.log_density_adjustment))(position)
+        target_value, target_gradient = jax.jit(jax.value_and_grad(target))(position)
+
+    assert jnp.allclose(constrained, parameter)
+    assert jnp.allclose(unconstrained, position, atol=1e-6)
+    assert jnp.allclose(adjustment, parameterization.log_density_adjustment(position))
+    assert jnp.all(jnp.isfinite(gradient))
+    assert jnp.isfinite(target_value)
+    assert jnp.all(jnp.isfinite(target_gradient))
+
+
 def test_real_is_identity() -> None:
     parameterization = Real(shape=(3,))
     position = jnp.array([-1.0, 0.0, 2.0])

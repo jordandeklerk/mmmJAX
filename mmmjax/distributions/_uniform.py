@@ -372,7 +372,7 @@ def _uniform_interior_log_probability(
             complement_distance,
         )
         distribution = tfd.Uniform(low=jnp.zeros_like(safe_width), high=safe_width)
-        direct_log_probability = distribution.log_cdf(safe_direct_distance)
+        direct_log_probability = jnp.log(safe_direct_distance) - jnp.log(safe_width)
         complement_log_probability = jnp.log1p(-distribution.cdf(safe_complement_distance))
         return jnp.where(
             use_direct_probability,

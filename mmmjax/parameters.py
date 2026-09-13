@@ -317,7 +317,8 @@ class Positive:
             shape=self.position_shape,
             dtype=self.dtype,
         )
-        return cast(jax.Array, tfb.Exp().forward_log_det_jacobian(position, event_ndims=position.ndim))
+        # Evaluate the Jacobian directly without caching traced intermediates.
+        return jnp.sum(position)
 
     def initialize(self, key: jax.Array) -> jax.Array:
         """Draw an unconstrained initial position uniformly from ``[-2, 2)``.
@@ -449,9 +450,7 @@ class LowerBound:
             shape=self.position_shape,
             dtype=self.dtype,
         )
-        lower = jnp.asarray(self.lower, dtype=self.dtype)
-        transform = tfb.Chain([tfb.Shift(lower), tfb.Exp()])
-        return cast(jax.Array, transform.forward_log_det_jacobian(position, event_ndims=position.ndim))
+        return jnp.sum(position)
 
     def initialize(self, key: jax.Array) -> jax.Array:
         """Draw an unconstrained initial position uniformly from ``[-2, 2)``.
@@ -583,9 +582,7 @@ class UpperBound:
             shape=self.position_shape,
             dtype=self.dtype,
         )
-        upper = jnp.asarray(self.upper, dtype=self.dtype)
-        transform = tfb.Chain([tfb.Shift(upper), tfb.Scale(jnp.asarray(-1, dtype=self.dtype)), tfb.Exp()])
-        return cast(jax.Array, transform.forward_log_det_jacobian(position, event_ndims=position.ndim))
+        return jnp.sum(position)
 
     def initialize(self, key: jax.Array) -> jax.Array:
         """Draw an unconstrained initial position uniformly from ``[-2, 2)``.
@@ -732,10 +729,9 @@ class Interval:
             shape=self.position_shape,
             dtype=self.dtype,
         )
-        lower = jnp.asarray(self.lower, dtype=self.dtype)
-        upper = jnp.asarray(self.upper, dtype=self.dtype)
-        transform = tfb.Sigmoid(low=lower, high=upper)
-        return cast(jax.Array, transform.forward_log_det_jacobian(position, event_ndims=position.ndim))
+        width = jnp.asarray(self.upper - self.lower, dtype=self.dtype)
+        adjustment = jnp.log(width) + jax.nn.log_sigmoid(position) + jax.nn.log_sigmoid(-position)
+        return jnp.sum(adjustment)
 
     def initialize(self, key: jax.Array) -> jax.Array:
         """Draw an unconstrained initial position uniformly from ``[-2, 2)``.

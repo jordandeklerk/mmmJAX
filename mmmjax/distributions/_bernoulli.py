@@ -259,10 +259,15 @@ def bernoulli_rng(
            ...: bernoulli_rng(key, probability=0.7, sample_shape=(5,))
     """
     (probability_array,) = _promote_inexact(("probability", probability))
-    _random_shape(sample_shape, probability_array)
+    output_shape = _random_shape(sample_shape, probability_array)
 
-    samples = tfd.Bernoulli(probs=probability_array).sample(sample_shape, seed=key)
-    return jnp.asarray(samples, dtype=jnp.int32)
+    samples = jax.random.bernoulli(
+        key,
+        probability_array,
+        shape=output_shape,
+        mode="high",
+    )
+    return samples.astype(jnp.int32)
 
 
 def bernoulli_logit_logpmf(value: ArrayLike, logits: ArrayLike) -> jax.Array:
@@ -496,9 +501,15 @@ def bernoulli_logit_rng(
            ...: bernoulli_logit_rng(key, logits=0.8, sample_shape=(5,))
     """
     (logits_array,) = _promote_inexact(("logits", logits))
-    _random_shape(sample_shape, logits_array)
+    output_shape = _random_shape(sample_shape, logits_array)
 
     # Draw the less likely outcome directly instead of rounding a probability to one.
-    samples = tfd.Bernoulli(logits=-jnp.abs(logits_array)).sample(sample_shape, seed=key)
-    samples = jnp.where(logits_array > 0, 1 - samples, samples)
+    rare_probability = jax.nn.sigmoid(-jnp.abs(logits_array))
+    samples = jax.random.bernoulli(
+        key,
+        rare_probability,
+        shape=output_shape,
+        mode="high",
+    )
+    samples = jnp.where(logits_array > 0, ~samples, samples)
     return samples.astype(jnp.int32)

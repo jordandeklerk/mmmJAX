@@ -10,7 +10,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from mmmjax import Model, Positive, Real, Simplex, exponential, normal, normal_rng, prepare_data
+from mmmjax import Model, Positive, Real, Simplex, exponential, lognormal, normal, normal_rng, prepare_data
 
 
 @pytest.mark.parametrize("dated", [False, True], ids=["numeric", "dates"])
@@ -94,6 +94,23 @@ def test_model_copies_and_canonicalizes_parameters() -> None:
 
     assert isinstance(specification, Model)
     assert list(specification.parameters) == ["a", "s"]
+
+
+def test_model_density_and_gradient_do_not_retain_tracers():
+    def density(data, scale):
+        return lognormal(scale, 0.0, 1.0) + normal(data, 0.0, scale)
+
+    model = Model({"scale": Positive()}, density)
+    position = {"scale": jnp.array(0.3, dtype=jnp.float32)}
+    observations = jnp.array([-0.5, 1.2], dtype=jnp.float32)
+
+    with jax.check_tracer_leaks():
+        compiled_density = jax.jit(model.log_density)(position, observations)
+        value, gradient = jax.jit(jax.value_and_grad(model.log_density))(position, observations)
+
+    assert jnp.allclose(compiled_density, value)
+    assert jnp.allclose(value, model.log_density(position, observations))
+    assert jnp.isfinite(gradient["scale"])
 
 
 def test_model_is_immutable() -> None:

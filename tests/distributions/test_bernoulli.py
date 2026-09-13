@@ -6,7 +6,6 @@ import numpy as np
 import pytest
 from jax.scipy.stats import bernoulli as jax_bernoulli_distribution
 from scipy import special, stats
-from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax import (
     bernoulli,
@@ -419,10 +418,10 @@ def test_bernoulli_functions_reject_complex_arguments(function, arguments, argum
         function(*arguments)
 
 
-def test_bernoulli_rng_matches_backend_and_shape() -> None:
+def test_bernoulli_rng_matches_high_precision_draws_and_shape() -> None:
     key = jax.random.key(42)
     probabilities = jnp.array([0.2, 0.8], dtype=jnp.float32)
-    expected = tfd.Bernoulli(probs=probabilities).sample((4,), seed=key)
+    expected = jax.random.bernoulli(key, probabilities, shape=(4, 2), mode="high")
 
     result = bernoulli_rng(key, probabilities, sample_shape=(4,))
 
@@ -453,10 +452,26 @@ def test_bernoulli_logit_rng_draws_the_rare_outcome_directly() -> None:
     logits = jnp.array([-17.0, 0.0, 17.0])
 
     result = bernoulli_logit_rng(key, logits, sample_shape=(8,))
-    rare_outcomes = tfd.Bernoulli(logits=-jnp.abs(logits)).sample((8,), seed=key)
-    expected = jnp.where(logits > 0, 1 - rare_outcomes, rare_outcomes)
+    rare_outcomes = jax.random.bernoulli(key, jax.nn.sigmoid(-jnp.abs(logits)), shape=(8, 3), mode="high")
+    expected = jnp.where(logits > 0, ~rare_outcomes, rare_outcomes)
 
     assert jnp.array_equal(result, expected)
+
+
+@pytest.mark.parametrize(
+    ("function", "parameter", "expected"),
+    [
+        (bernoulli_rng, jnp.float32(1e-12), 0),
+        (bernoulli_logit_rng, jnp.float32(-30), 0),
+        (bernoulli_logit_rng, jnp.float32(30), 1),
+    ],
+)
+def test_bernoulli_rngs_resolve_probabilities_below_float32_uniform_spacing(function, parameter, expected) -> None:
+    key = jax.random.key(780233)
+
+    assert jax.random.uniform(key, dtype=jnp.float32) == 0
+    assert function(key, parameter) == expected
+    assert jax.jit(function)(key, parameter) == expected
 
 
 def test_bernoulli_logit_rng_handles_deterministic_logits() -> None:

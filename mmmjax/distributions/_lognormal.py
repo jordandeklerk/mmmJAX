@@ -5,6 +5,7 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 from tensorflow_probability.substrates.jax import distributions as tfd
 
+from mmmjax.distributions._normal import normal_logcdf, normal_logpdf, normal_logsf
 from mmmjax.distributions._utils import _promote_inexact, _random_shape
 
 
@@ -66,7 +67,8 @@ def lognormal_logpdf(
     outside_support = value_array <= 0
     # Avoid an indeterminate expression at zero without changing NaN inputs
     safe_value = jnp.where(outside_support, jnp.ones_like(value_array), value_array)
-    log_density = tfd.LogNormal(loc=location_array, scale=scale_array).log_prob(safe_value)
+    log_value = jnp.log(safe_value)
+    log_density = normal_logpdf(log_value, location_array, scale_array) - log_value
     supported_log_density = jnp.where(outside_support, -jnp.inf, log_density)
 
     valid_parameters = jnp.isfinite(location_array) & jnp.isfinite(scale_array) & (scale_array > 0)
@@ -294,9 +296,11 @@ def _lognormal_log_probability(
     safe_value = jnp.where(supported_boundary, jnp.ones_like(value), value)
     safe_location = jnp.where(supported_boundary, jnp.zeros_like(location), location)
     safe_scale = jnp.where(supported_boundary, jnp.ones_like(scale), scale)
-    distribution = tfd.LogNormal(loc=safe_location, scale=safe_scale)
+    log_value = jnp.log(safe_value)
     log_probability = (
-        distribution.log_cdf(safe_value) if direction == 1 else distribution.log_survival_function(safe_value)
+        normal_logcdf(log_value, safe_location, safe_scale)
+        if direction == 1
+        else normal_logsf(log_value, safe_location, safe_scale)
     )
     boundary_probability = jnp.where(value <= 0, -jnp.inf, 0) if direction == 1 else jnp.where(value <= 0, 0, -jnp.inf)
     supported_log_probability = jnp.where(supported_boundary, boundary_probability, log_probability)
