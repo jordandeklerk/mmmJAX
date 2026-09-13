@@ -10,8 +10,7 @@ import xarray as xr
 import mmmjax
 import mmmjax.sampling as sampling
 from mmmjax import (
-    FourierSeasonality,
-    MediaEffect,
+    Interval,
     Model,
     Positive,
     Real,
@@ -19,7 +18,10 @@ from mmmjax import (
     beta,
     dirichlet,
     fit_data_scaling,
+    fourier_features,
+    geometric_adstock,
     half_normal,
+    hill_saturation,
     lognormal,
     normal,
     normal_logpdf,
@@ -87,7 +89,6 @@ def _prepared_model():
         density,
         generate,
         data=data,
-        components=[],
         generated_dims={"mean": ("time",)},
         predictive=("prediction",),
         log_likelihood=("pointwise",),
@@ -283,7 +284,6 @@ def test_custom_generation_does_not_infer_axes_from_names_or_equal_lengths(nuts_
         lambda coefficient: normal(coefficient, 0.0, 1.0),
         generate,
         data=data,
-        components=[],
         predictive=("prediction",),
     )
     result = sample(model, draws=2, warmup=3, chains=1)
@@ -304,7 +304,6 @@ def test_generated_dimension_overrides_take_precedence(nuts_calls):
         lambda intercept: normal(intercept, 0.0, 1.0),
         lambda key, outcome, intercept: {"copy": outcome, "prediction": outcome + intercept},
         data=data,
-        components=[],
         generated_dims={"copy": ("custom",), "prediction": ("custom",)},
         coords={"custom": ["early", "late"]},
         predictive=("prediction",),
@@ -322,7 +321,6 @@ def test_predictive_outputs_use_declared_observation_order(nuts_calls):
         lambda levels: normal(levels, 0.0, 1.0),
         lambda key, levels: {"prediction": levels, "copy": levels},
         data=data,
-        components=[],
         predictive=("prediction",),
     )
     result = sample(model, draws=2, warmup=3, chains=1)
@@ -342,7 +340,7 @@ def test_missing_selected_generated_output_is_reported(nuts_calls):
 
 
 @pytest.mark.parametrize("group_specific", [False, True])
-def test_media_and_fourier_parameters_receive_component_axes_automatically(nuts_calls, group_specific):
+def test_explicit_media_and_fourier_parameters_retain_declared_axes(nuts_calls, group_specific):
     data = prepare_data(
         pd.DataFrame(
             {
@@ -394,15 +392,43 @@ def test_media_and_fourier_parameters_receive_component_axes_automatically(nuts_
             "exposure": media,
         }
 
+    def transformed(
+        media,
+        time,
+        paid_coefficient,
+        paid_retention,
+        paid_half_saturation,
+        paid_slope,
+        annual_coefficients,
+    ):
+        carried = geometric_adstock(media, alpha=paid_retention, max_lag=1)
+        response = hill_saturation(carried, half_saturation=paid_half_saturation, slope=paid_slope)[-time.shape[0] :]
+        paid = response * paid_coefficient
+        annual = fourier_features(time, period=52, order=2) @ annual_coefficients
+        if not group_specific:
+            annual = jnp.broadcast_to(annual[:, None], paid.shape[:2])
+        return {"paid": paid, "paid_total": paid.sum(-1), "annual": annual}
+
+    coefficient_axes = ("group", "channel") if group_specific else ("channel",)
+    annual_axes = ("annual_mode", "group") if group_specific else ("annual_mode",)
     model = Model(
-        {},
+        {
+            "paid_coefficient": Positive(dims=coefficient_axes),
+            "paid_retention": Interval(0.0, 1.0, dims="channel"),
+            "paid_half_saturation": Positive(dims="channel"),
+            "paid_slope": Positive(dims="channel"),
+            "annual_coefficients": Real(dims=annual_axes),
+        },
         density,
         generate,
         data=data,
-        components=[
-            MediaEffect(max_lag=1, name="paid", group_specific_coefficients=group_specific),
-            FourierSeasonality(period=52, order=2, name="annual", group_specific_coefficients=group_specific),
-        ],
+        transformed_parameters=transformed,
+        coords={"annual_mode": ["sin_1", "sin_2", "cos_1", "cos_2"]},
+        generated_dims={
+            "contribution": ("time", "group", "channel"),
+            "total": ("time", "group"),
+            "seasonal": ("time", "group"),
+        },
         predictive=("prediction",),
         log_likelihood=("pointwise",),
     )
@@ -413,10 +439,10 @@ def test_media_and_fourier_parameters_receive_component_axes_automatically(nuts_
     for name in ("paid_retention", "paid_half_saturation", "paid_slope"):
         assert posterior[name].dims == ("chain", "draw", "channel")
     np.testing.assert_array_equal(posterior["channel"], ["Video", "Search"])
-    modes = posterior["annual"].dims[2]
+    modes = posterior["annual_coefficients"].dims[2]
     np.testing.assert_array_equal(posterior[modes], ["sin_1", "sin_2", "cos_1", "cos_2"])
     annual_axes = (modes, "group") if group_specific else (modes,)
-    assert posterior["annual"].dims == ("chain", "draw", *annual_axes)
+    assert posterior["annual_coefficients"].dims == ("chain", "draw", *annual_axes)
     if group_specific:
         np.testing.assert_array_equal(posterior["group"], ["west", "east"])
     generated = result["generated_quantities"]
@@ -453,7 +479,6 @@ def test_collected_data_uses_model_scaling_and_does_not_rescale_draws_or_generat
         density,
         generate,
         data=data,
-        components=[],
         scaling=scaling,
         generated_dims={"mean": ("time",)},
     )
@@ -600,7 +625,6 @@ def _saved_model(**options):
         {"intercept": Real()},
         density,
         data=data,
-        components=[],
         transformed_parameters=transformed,
         **settings,
     )

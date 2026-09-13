@@ -11,7 +11,17 @@ import pytest
 import xarray as xr
 
 import mmmjax
-from mmmjax import MediaEffect, Model, Real, fit_data_scaling, prepare_data, response_curves
+from mmmjax import (
+    Interval,
+    Model,
+    Positive,
+    Real,
+    fit_data_scaling,
+    geometric_adstock,
+    hill_saturation,
+    prepare_data,
+    response_curves,
+)
 from mmmjax._results import _collect_results
 from mmmjax.response import _BudgetResponse, _prepare_response
 
@@ -76,7 +86,6 @@ def _model(data, *, scaling=None):
         density,
         generated,
         data=data,
-        components=[],
         transformed_parameters=transformed,
         scaling=scaling,
         dims={"coefficient": ("channel",)},
@@ -102,7 +111,6 @@ def integer_media_model():
         {"coefficient": Real()},
         lambda coefficient: -(coefficient**2),
         data=data,
-        components=[],
         transformed_parameters=lambda media, coefficient: {"expected": media[:, 0] * coefficient},
     )
 
@@ -242,14 +250,29 @@ def test_response_curves_average_responses_not_parameters():
 def test_response_curves_recompute_adstock_and_saturation_without_a_generation_callback():
     data = _data()
 
-    def transformed(paid_media_total):
-        return {"expected": jnp.exp(paid_media_total)}
+    def transformed(
+        media,
+        spend,
+        paid_media_coefficient,
+        paid_media_retention,
+        paid_media_half_saturation,
+        paid_media_slope,
+    ):
+        carried = geometric_adstock(media, alpha=paid_media_retention, max_lag=1, normalize=False)
+        response = hill_saturation(carried, half_saturation=paid_media_half_saturation, slope=paid_media_slope)[
+            -spend.shape[0] :
+        ]
+        return {"expected": jnp.exp(response @ paid_media_coefficient)}
 
     model = Model(
-        {},
+        {
+            "paid_media_coefficient": Positive(dims="channel"),
+            "paid_media_retention": Interval(0.0, 1.0, dims="channel"),
+            "paid_media_half_saturation": Positive(dims="channel"),
+            "paid_media_slope": Positive(dims="channel"),
+        },
         lambda expected: expected.sum(),
         data=data,
-        components=[MediaEffect(max_lag=1, normalize=False)],
         transformed_parameters=transformed,
     )
     parameters = {
@@ -430,7 +453,6 @@ def test_response_curves_subtract_paired_observations_before_aggregation():
         {"coefficient": Real()},
         lambda expected: expected.sum(),
         data=data,
-        components=[],
         transformed_parameters=transformed,
     )
     results = _collect_results({"coefficient": np.ones((1, 1), dtype=np.float32)}, data=data)
@@ -518,7 +540,6 @@ def test_response_curves_require_paid_media_and_spend():
         {"coefficient": Real((2,))},
         lambda expected: expected.sum(),
         data=no_spend,
-        components=[],
         transformed_parameters=transformed,
         dims={"coefficient": ("channel",)},
     )
@@ -559,7 +580,6 @@ def test_response_curves_accept_dataframes_and_evaluate_the_supplied_periods_onl
         {"coefficient": Real()},
         lambda coefficient: -(coefficient**2),
         data=data,
-        components=[],
         transformed_parameters=lambda media, coefficient: {"expected": media[:, 0] * coefficient},
         scaling="auto",
     )
@@ -654,7 +674,6 @@ def test_response_curves_measure_carryover_after_spending_has_ended():
         {"coefficient": Real((2,))},
         lambda expected: expected.sum(),
         data=data,
-        components=[],
         transformed_parameters=transformed,
         dims={"coefficient": ("channel",)},
     )
@@ -734,7 +753,6 @@ def test_response_curves_accept_iso_selections_for_native_datetime_labels(time_t
         {"coefficient": Real()},
         lambda coefficient: -(coefficient**2),
         data=data,
-        components=[],
         transformed_parameters=lambda media, coefficient: {"expected": media[:, 0] * coefficient},
     )
     results = _collect_results({"coefficient": jnp.ones((1, 1))})
@@ -757,7 +775,6 @@ def test_response_curves_resolve_period_labels_from_new_data():
         {"coefficient": Real()},
         lambda coefficient: -(coefficient**2),
         data=data,
-        components=[],
         transformed_parameters=lambda media, coefficient: {"expected": media[:, 0] * coefficient},
         scaling="auto",
     )
@@ -855,7 +872,6 @@ def test_budget_response_differentiates_carryover_with_a_separate_response_windo
         {"coefficient": Real((2,))},
         lambda expected: expected.sum(),
         data=data,
-        components=[],
         transformed_parameters=transformed,
         dims={"coefficient": ("channel",)},
     )

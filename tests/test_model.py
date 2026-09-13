@@ -1,13 +1,87 @@
 """Tests for composing parameter declarations into JAX models."""
 
 from dataclasses import FrozenInstanceError
+from datetime import date, timedelta
 from types import SimpleNamespace
 
 import jax
 import jax.numpy as jnp
+import numpy as np
+import polars as pl
 import pytest
 
-from mmmjax import Model, Positive, Real, Simplex, exponential, normal, normal_rng
+from mmmjax import Model, Positive, Real, Simplex, exponential, normal, normal_rng, prepare_data
+
+
+@pytest.mark.parametrize("dated", [False, True], ids=["numeric", "dates"])
+def test_model_time_inputs_keep_the_training_origin_for_scenarios(dated):
+    def labels(offsets):
+        return [date(2026, 1, 1) + timedelta(days=offset) if dated else 100 + offset for offset in offsets]
+
+    frame = pl.DataFrame({"date": labels([0, 7, 14]), "sales": [2.0, 3.0, 4.0], "search": [4.0, 5.0, 6.0]})
+    history = pl.DataFrame({"date": labels([-14, -7]), "search": [1.0, 2.0]})
+    data = prepare_data(frame, time="date", outcome="sales", media=["search"], media_history=history)
+
+    def quantities(time, media_time, slope):
+        return {"curve": slope * time, "history_curve": slope * media_time}
+
+    def density(outcome, curve, slope):
+        return normal(slope, 0.0, 1.0) + normal(outcome, curve, 1.0)
+
+    model = Model({"slope": Real()}, density, data=data, transformed_parameters=quantities)
+    values = {"slope": jnp.asarray(2.0)}
+    actual = jax.jit(model.evaluate)(values)
+    np.testing.assert_array_equal(actual["curve"], [0.0, 14.0, 28.0])
+    np.testing.assert_array_equal(actual["history_curve"], [-28.0, -14.0, 0.0, 14.0, 28.0])
+
+    scenario = pl.DataFrame({"date": labels([7, 14]), "sales": [3.0, 4.0], "search": [5.0, 6.0]})
+    scenario_inputs = model.prepare_data(scenario)
+    changed = jax.jit(model.evaluate)(values, scenario_inputs)
+    np.testing.assert_array_equal(changed["curve"], [14.0, 28.0])
+    np.testing.assert_array_equal(changed["history_curve"], [14.0, 28.0])
+    np.testing.assert_array_equal(model.evaluate(values)["curve"], actual["curve"])
+    gradient = jax.jit(jax.grad(model.log_density))(values, scenario_inputs)
+    assert jnp.isfinite(gradient["slope"])
+
+
+def test_model_does_not_interpret_time_labels_unless_requested():
+    data = prepare_data(
+        pl.DataFrame({"period": ["early", "late"], "sales": [1.0, 2.0]}),
+        time="period",
+        outcome="sales",
+        frequency=None,
+    )
+    model = Model({"level": Real()}, lambda outcome, level: normal(outcome, level, 1.0), data=data)
+    assert jnp.isfinite(model.log_prob({"level": 0.0}))
+    assert set(model.data.values) == {"outcome"}
+
+    with pytest.raises(ValueError, match="Invalid observation date"):
+        Model({"level": Real()}, lambda time, level: normal(time, level, 1.0), data=data)
+
+
+def test_model_time_and_declared_parameter_names_must_be_distinct():
+    data = prepare_data(pl.DataFrame({"period": [1, 2]}), time="period")
+    with pytest.raises(ValueError, match="ambiguous"):
+        Model({"time": Real()}, lambda time: normal(time, 0.0, 1.0), data=data)
+
+
+def test_model_media_time_requires_exposure_periods():
+    data = prepare_data(pl.DataFrame({"period": [1, 2]}), time="period")
+    with pytest.raises(ValueError, match="unknown input 'media_time'"):
+        Model({}, lambda media_time: jnp.sum(media_time), data=data)
+
+
+def test_generation_key_name_does_not_request_time_coordinates():
+    data = prepare_data(pl.DataFrame({"period": [1, 2]}), time="period")
+
+    def generate(time):
+        return {"draw": jax.random.normal(time)}
+
+    model = Model({}, lambda: jnp.array(0.0), generate, data=data)
+    key = jax.random.key(10)
+    assert model._time_inputs == ()
+    actual = jax.jit(model.generate)(key, {}, model.data)
+    np.testing.assert_array_equal(actual["draw"], jax.random.normal(key))
 
 
 def test_model_copies_and_canonicalizes_parameters() -> None:

@@ -982,9 +982,9 @@ def _calendar_dates(labels: Sequence[object], *, time: str, frequency: str) -> l
 def _time_positions(
     labels: tuple[object, ...], *, origin: float | datetime | None = None
 ) -> tuple[NDArray[np.float64], float | datetime]:
-    """Convert component time labels to fixed-origin positions, using days for dates."""
+    """Convert time labels to fixed-origin positions, using days for dates."""
     if not labels:
-        raise ValueError("Time components require at least one observation time")
+        raise ValueError("Time positions require at least one observation time")
     numeric = all(
         isinstance(label, (int, float, np.integer, np.floating)) and not isinstance(label, (bool, np.bool_))
         for label in labels
