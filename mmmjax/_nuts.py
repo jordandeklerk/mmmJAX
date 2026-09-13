@@ -81,19 +81,20 @@ def _sample_nuts(
             return cast(_Samples, jax.tree.map(lambda value: value[None], samples))
 
         chain_spec = PartitionSpec("chain")  # type: ignore[no-untyped-call]
-        initial_positions, keys = jax.device_put((initial_positions, keys), NamedSharding(mesh, chain_spec))
-        run_parallel = jax.jit(
-            jax.shard_map(
-                run_device,
-                mesh=mesh,
-                in_specs=chain_spec,
-                out_specs=chain_spec,
-                # Chain-local control flow mixes constant and varying state.
-                # Every output is sharded, with no replication assertions.
-                check_vma=False,
+        with jax.set_mesh(mesh):
+            initial_positions, keys = jax.device_put((initial_positions, keys), NamedSharding(mesh, chain_spec))
+            run_parallel = jax.jit(
+                jax.shard_map(
+                    run_device,
+                    mesh=mesh,
+                    in_specs=chain_spec,
+                    out_specs=chain_spec,
+                    # Chain-local control flow mixes constant and varying state.
+                    # Every output is sharded, with no replication assertions.
+                    check_vma=False,
+                )
             )
-        )
-        return cast(_Samples, run_parallel(initial_positions, keys))
+            return cast(_Samples, run_parallel(initial_positions, keys))
 
     chains = [
         run_chain({name: values[index] for name, values in initial_positions.items()}, keys[index])

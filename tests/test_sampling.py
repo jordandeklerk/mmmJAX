@@ -346,6 +346,21 @@ def test_parallel_nuts_on_two_cpu_devices_preserves_targets_generation_and_label
             -0.5 * (single["posterior"]["location"].values**2 + np.log(2 * np.pi)),
             rtol=2e-5, atol=2e-5,
         )
+        original_mesh = jax.sharding.get_abstract_mesh()
+        outer_mesh = jax.make_mesh(
+            (2,), ("user_axis",), axis_types=(jax.sharding.AxisType.Explicit,),
+        )
+        nested_options = single_options | {"data": 0.0, "initial_values": {"location": 0.25}}
+        with jax.set_mesh(outer_mesh):
+            caller_mesh = jax.sharding.get_abstract_mesh()
+            nested = sample(model, **nested_options, chain_method="parallel")
+            assert jax.sharding.get_abstract_mesh() == caller_mesh
+        assert jax.sharding.get_abstract_mesh() == original_mesh
+        xr.testing.assert_allclose(nested["posterior"], single["posterior"])
+        assert nested["posterior_predictive"]["prediction"].shape == (1, 8)
+        np.testing.assert_array_equal(
+            nested["generated_quantities"]["location_copy"], nested["posterior"]["location"],
+        )
         simplex_model = Model(
             {"location": Real(), "weights": Simplex((1,))},
             lambda data, location, weights: normal(location, 0.0, 1.0) + 0.0 * weights.sum(),
