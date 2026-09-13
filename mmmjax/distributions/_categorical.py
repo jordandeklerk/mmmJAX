@@ -1,5 +1,6 @@
 """Categorical distribution functions."""
 
+import distrax
 import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
@@ -236,15 +237,13 @@ def categorical_logit_logpmf(
         logits_array,
         jnp.zeros_like(logits_array),
     )
-    log_probabilities = jax.nn.log_softmax(safe_logits, axis=-1)
+    log_probabilities = distrax.Categorical(logits=safe_logits).logits
 
-    # Normalize before broadcasting so shared logits are not recomputed for every observation
+    # Normalize shared logits once, then gather without a dense one-hot array.
     log_probabilities = jnp.broadcast_to(
         log_probabilities,
         (*value_array.shape, logits_array.shape[-1]),
     )
-    valid_logits = jnp.broadcast_to(valid_logits, value_array.shape)
-
     selected_log_probability = jnp.take_along_axis(
         log_probabilities,
         safe_index[..., None],

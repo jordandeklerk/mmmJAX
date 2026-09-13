@@ -1,7 +1,6 @@
 """Laplace distribution functions."""
 
-import math
-
+import distrax
 import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
@@ -64,15 +63,18 @@ def laplace_logpdf(
     valid_scale = jnp.isfinite(scale_array) & (scale_array > 0)
 
     standardized = _standardize(value_array, location_array, scale_array)
-    # The constant branch gives the same symmetric subgradient Stan uses at the cusp
+    # The constant branch gives a symmetric zero subgradient at the cusp
     standardized_distance = jnp.where(
         value_array == location_array,
         jnp.zeros_like(standardized),
         jnp.where(value_array < location_array, -standardized, standardized),
     )
 
-    log_two = jnp.asarray(math.log(2), dtype=value_array.dtype)
-    log_density = -log_two - jnp.log(scale_array) - standardized_distance
+    distribution = distrax.Laplace(
+        loc=jnp.zeros((), dtype=value_array.dtype),
+        scale=jnp.ones((), dtype=value_array.dtype),
+    )
+    log_density = distribution.log_prob(standardized_distance) - jnp.log(scale_array)
     return jnp.where(valid_location & valid_scale, log_density, jnp.nan)
 
 
@@ -280,10 +282,11 @@ def laplace_rng(
         ("location", location),
         ("scale", scale),
     )
-    output_shape = _random_shape(sample_shape, location_array, scale_array)
-
-    standard_samples = jax.random.laplace(key, shape=output_shape, dtype=location_array.dtype)
-    samples = location_array + scale_array * standard_samples
+    _random_shape(sample_shape, location_array, scale_array)
+    samples = distrax.Laplace(location_array, scale_array).sample(
+        seed=key,
+        sample_shape=sample_shape,
+    )
 
     valid_parameters = jnp.isfinite(location_array) & jnp.isfinite(scale_array) & (scale_array > 0)
     return jnp.where(valid_parameters, samples, jnp.nan)
@@ -298,30 +301,12 @@ def _laplace_log_probability(
 ) -> jax.Array:
     valid_parameters = jnp.isfinite(location) & jnp.isfinite(scale) & (scale > 0)
     standardized = _standardize(value, location, scale)
-    below_location = value < location
-
-    log_two = jnp.asarray(math.log(2), dtype=value.dtype)
-    if survival:
-        safe_lower_standardized = jnp.where(
-            below_location,
-            standardized,
-            jnp.zeros_like(standardized),
-        )
-        lower_log_probability = jnp.log1p(-0.5 * jnp.exp(safe_lower_standardized))
-        upper_log_probability = -log_two - standardized
-    else:
-        lower_log_probability = standardized - log_two
-        safe_upper_standardized = jnp.where(
-            below_location,
-            jnp.zeros_like(standardized),
-            standardized,
-        )
-        upper_log_probability = jnp.log1p(-0.5 * jnp.exp(-safe_upper_standardized))
-
-    log_probability = jnp.where(
-        below_location,
-        lower_log_probability,
-        upper_log_probability,
+    distribution = distrax.Laplace(
+        loc=jnp.zeros((), dtype=value.dtype),
+        scale=jnp.ones((), dtype=value.dtype),
+    )
+    log_probability = (
+        distribution.log_survival_function(standardized) if survival else distribution.log_cdf(standardized)
     )
     return jnp.where(valid_parameters, log_probability, jnp.nan)
 
