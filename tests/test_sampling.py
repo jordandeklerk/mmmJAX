@@ -1563,6 +1563,36 @@ def test_continuation_preserves_generated_streams_saved_quantities_and_prepared_
         assert "draw" not in combined[group].dims
 
 
+def test_continuation_preserves_prepared_inputs_in_wrapped_models():
+    data = prepare_data(
+        pd.DataFrame({"week": [10, 11, 12], "sales": [1.0, 2.0, 3.0]}),
+        time="week",
+        outcome="sales",
+    )
+    prepared_model = Model(
+        {"location": Real()},
+        lambda outcome, location: normal(outcome, location, 1.0) + normal(location, 0.0, 2.0),
+        lambda key, outcome, location: {"prediction": normal_rng(key, location, 1.0, sample_shape=outcome.shape)},
+        data=data,
+    )
+    model = Model(
+        prepared_model.parameters,
+        lambda data, location: prepared_model.log_prob({"location": location}, data=data),
+        lambda key, data, location: prepared_model.generate(key, {"location": location}, data),
+        predictive=("prediction",),
+    )
+    options = {"data": prepared_model.data, "warmup": 60, "chains": 1, "seed": 29, "progress": False}
+
+    full = sample(model, draws=7, **options)
+    first, state = sample(model, draws=3, return_state=True, **options)
+    continued, next_state = continue_sampling(state, draws=4, batch_size=2, progress=False)
+
+    xr.testing.assert_identical(continued, full)
+    xr.testing.assert_identical(first["posterior"], full["posterior"].isel(draw=slice(0, 3)))
+    assert state.draws == 3
+    assert next_state.draws == 7
+
+
 def test_continuation_snapshots_mutable_data_and_results_and_leaves_old_state_reusable():
     inputs = {"center": np.array([0.0, 0.5])}
     model = Model(

@@ -260,7 +260,9 @@ def sample(
 
     inputs = model.data if model._data is not None else data
     if return_state and model._data is None:
-        inputs = deepcopy(inputs)
+        # Preserve static PyTree metadata while copying mutable input values.
+        memo: dict[int, object] = {}
+        inputs = jax.tree.map(lambda value: deepcopy(value, memo), inputs)
     initialization_key, sampling_key, generation_key, preview_key = jax.random.split(jax.random.key(int(seed)), 4)
     if initial_values is None:
         positions = jax.vmap(model.initialize_random)(jax.random.split(initialization_key, chains))
