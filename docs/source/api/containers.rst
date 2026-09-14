@@ -15,3 +15,4 @@ Data, fitted transformations, and model configuration objects.
    Scaling
    HSGPConfig
    SpendConstraint
+   SamplingState

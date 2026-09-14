@@ -2,9 +2,11 @@
 
 import warnings
 from collections.abc import Callable, Mapping
-from dataclasses import replace
+from copy import deepcopy
+from dataclasses import dataclass, field, replace
 from importlib.metadata import version
 from numbers import Integral, Real
+from typing import Literal, cast, overload
 
 import jax
 import jax.numpy as jnp
@@ -13,12 +15,111 @@ import xarray as xr
 from jax.typing import ArrayLike
 from numpy.typing import NDArray
 
-from mmmjax._nuts import _sample_nuts
+from mmmjax._nuts import _NUTSContinuation, _sample_nuts
 from mmmjax._results import _collect_results, _data_dimensions, _prepared_groups, _same_labels
 from mmmjax.data import PreparedData
 from mmmjax.model import Model, Prior
 
-__all__ = ["generate_quantities", "sample", "sample_prior"]
+__all__ = ["SamplingState", "continue_sampling", "generate_quantities", "sample", "sample_prior"]
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class SamplingState:
+    """Retain an adapted run for additional draws from the same posterior.
+
+    Created by ``sample(return_state=True)`` or ``continue_sampling``.
+    Keeps the original model, inputs, tuning, random stream, and an independent
+    copy of the results in memory. Do not change values captured by model
+    callbacks before continuing. This object is not a disk checkpoint.
+
+    Inspect ``draws`` for the retained draws per chain and ``chains`` for
+    the number of chains in the run.
+    """
+
+    _model: Model = field(repr=False)
+    _data: object = field(repr=False)
+    _nuts: _NUTSContinuation = field(repr=False)
+    _results: xr.DataTree = field(repr=False)
+    _generation_key: jax.Array = field(repr=False)
+    _generate: bool = field(repr=False)
+    _output_dimensions: dict[str, tuple[str, ...]] = field(repr=False)
+    _x64: bool = field(repr=False)
+
+    @property
+    def draws(self) -> int:
+        """Number of retained draws per chain."""
+        return self._nuts.completed_draws
+
+    @property
+    def chains(self) -> int:
+        """Number of independently adapted chains."""
+        return int(self._nuts.sampling_keys.shape[0])
+
+
+@overload
+def sample(
+    model: Model,
+    *,
+    data: object = None,
+    draws: int = 1000,
+    warmup: int = 1000,
+    chains: int = 4,
+    chain_method: str = "sequential",
+    seed: int = 0,
+    target_accept: float = 0.8,
+    mass_matrix: str = "diagonal",
+    max_tree_depth: int = 10,
+    initial_values: Mapping[str, ArrayLike] | None = None,
+    generate: bool = True,
+    chunk_size: int = 100,
+    batch_size: int = 64,
+    progress: bool = True,
+    return_state: Literal[False] = False,
+) -> xr.DataTree: ...
+
+
+@overload
+def sample(
+    model: Model,
+    *,
+    data: object = None,
+    draws: int = 1000,
+    warmup: int = 1000,
+    chains: int = 4,
+    chain_method: str = "sequential",
+    seed: int = 0,
+    target_accept: float = 0.8,
+    mass_matrix: str = "diagonal",
+    max_tree_depth: int = 10,
+    initial_values: Mapping[str, ArrayLike] | None = None,
+    generate: bool = True,
+    chunk_size: int = 100,
+    batch_size: int = 64,
+    progress: bool = True,
+    return_state: Literal[True],
+) -> tuple[xr.DataTree, SamplingState]: ...
+
+
+@overload
+def sample(
+    model: Model,
+    *,
+    data: object = None,
+    draws: int = 1000,
+    warmup: int = 1000,
+    chains: int = 4,
+    chain_method: str = "sequential",
+    seed: int = 0,
+    target_accept: float = 0.8,
+    mass_matrix: str = "diagonal",
+    max_tree_depth: int = 10,
+    initial_values: Mapping[str, ArrayLike] | None = None,
+    generate: bool = True,
+    chunk_size: int = 100,
+    batch_size: int = 64,
+    progress: bool = True,
+    return_state: bool,
+) -> xr.DataTree | tuple[xr.DataTree, SamplingState]: ...
 
 
 def sample(
@@ -38,7 +139,8 @@ def sample(
     chunk_size: int = 100,
     batch_size: int = 64,
     progress: bool = True,
-) -> xr.DataTree:
+    return_state: bool = False,
+) -> xr.DataTree | tuple[xr.DataTree, SamplingState]:
     """Sample a model with NUTS and return labeled posterior results.
 
     Warmup tunes each chain's step size and, when long enough, its selected
@@ -91,10 +193,13 @@ def sample(
         Show warmup and sampling progress bars. Sampling bars restart for each
         chunk. Parallel counters reflect individual devices, not completion
         of all chains.
+    return_state : bool, default False
+        Also return a state for :func:`continue_sampling` without repeating
+        warmup. Retaining the state keeps an extra copy of results in memory.
 
     Returns
     -------
-    xarray.DataTree
+    xarray.DataTree or tuple of xarray.DataTree and SamplingState
         Host-side results with chain and draw dimensions. The complete results
         must fit in host memory.
 
@@ -113,6 +218,7 @@ def sample(
         generation inputs. Observation-shaped predictive and likelihood outputs
         inherit outcome labels. Use ``dims``, ``generated_dims``, and ``coords``
         on the model for custom axes. Inspect diagnostics before interpreting results.
+        With ``return_state=True``, returns ``(results, state)`` instead.
     """
     if not isinstance(model, Model):
         raise TypeError("model must be a Model")
@@ -145,12 +251,16 @@ def sample(
         raise TypeError("generate must be a bool")
     if not isinstance(progress, bool):
         raise TypeError("progress must be a bool")
+    if not isinstance(return_state, bool):
+        raise TypeError("return_state must be a bool")
     if model._data is not None and data is not None:
         raise ValueError("Prepared models use their stored data. Omit data when sampling")
     if not any(np.prod(parameter.position_shape) > 0 for parameter in model.parameters.values()):
         raise ValueError("Sampling requires at least one free parameter")
 
     inputs = model.data if model._data is not None else data
+    if return_state and model._data is None:
+        inputs = deepcopy(inputs)
     initialization_key, sampling_key, generation_key, preview_key = jax.random.split(jax.random.key(int(seed)), 4)
     if initial_values is None:
         positions = jax.vmap(model.initialize_random)(jax.random.split(initialization_key, chains))
@@ -175,7 +285,6 @@ def sample(
         )
 
     prepared = _result_data(model)
-    constant_inputs = _result_inputs(model)
     dimensions, coordinates = _parameter_metadata(model)
 
     if set(coordinates) & {"chain", "draw"}:
@@ -194,30 +303,15 @@ def sample(
         generated: Mapping[str, ArrayLike],
         stats: Mapping[str, ArrayLike] | None = None,
     ) -> xr.DataTree:
-        return _collect_results(
-            posterior,
-            data=prepared,
-            inputs=constant_inputs,
-            posterior_predictive={name: value for name, value in generated.items() if name in model._predictive_names},
-            log_likelihood={name: value for name, value in generated.items() if name in model._likelihood_names},
-            generated_quantities={
-                name: value
-                for name, value in generated.items()
-                if name not in (*model._predictive_names, *model._likelihood_names)
-            },
-            sample_stats=stats,
-            dims=dimensions,
-            generated_dims=output_dimensions,
-            coords=coordinates,
-            copy_draws=False,
-        )
+        return _collect_sampling_results(model, posterior, generated, stats, output_dimensions)
 
     # Validate output axes and labels before adapting any chains.
     collect(
         {name: value[None, None] for name, value in initial_parameters.items()},
         {name: value[None, None] for name, value in outputs.items()},
     )
-    unconstrained, stats = _sample_nuts(
+    options = {"return_state": True} if return_state else {}
+    sampled = _sample_nuts(
         logdensity,
         positions,
         jax.random.split(sampling_key, chains),
@@ -229,7 +323,13 @@ def sample(
         mass_matrix=mass_matrix,
         chunk_size=chunk_size,
         progress=progress,
+        **options,
     )
+    continuation = None
+    if return_state:
+        (unconstrained, stats), continuation = sampled
+    else:
+        unconstrained, stats = sampled
     if not np.isfinite(np.asarray(stats["lp"])).all():
         raise RuntimeError("Sampling produced nonfinite log densities. Check the model and initial_values")
 
@@ -243,7 +343,7 @@ def sample(
     generated: dict[str, NDArray[np.generic]] = {}
 
     if generate and model._has_generated_quantities:
-        keys = jax.random.split(generation_key, (chains, draws))
+        keys = _generation_keys(generation_key, chains, 0, int(draws))
         generated = _evaluate_draws(
             lambda key, parameters: model.generate(key, parameters, inputs),
             keys,
@@ -265,13 +365,193 @@ def sample(
         seed=int(seed),
         data_scale="model" if model.scaling is not None else "original",
     )
+    _warn_sampling(stats)
+    if return_state:
+        assert continuation is not None
+        state = SamplingState(
+            model,
+            inputs,
+            continuation,
+            results.copy(deep=True),
+            generation_key,
+            generate,
+            output_dimensions,
+            bool(jax.config.values["jax_enable_x64"]),
+        )
+        return results, state
+    return results
+
+
+def continue_sampling(
+    state: SamplingState,
+    *,
+    draws: int = 1000,
+    chunk_size: int = 100,
+    batch_size: int = 64,
+    progress: bool = True,
+) -> tuple[xr.DataTree, SamplingState]:
+    """Add posterior draws to an adapted run without repeating warmup.
+
+    Reuses the original model, observations, chain method, tuning, and
+    generation settings. Results and the supplied state are not modified.
+    For a different model or dataset, start a new run with :func:`sample`.
+
+    Parameters
+    ----------
+    state : SamplingState
+        State returned by ``sample(return_state=True)`` or this function.
+        Keep model callbacks and their captured values unchanged.
+    draws : int, default 1000
+        Additional retained draws per chain.
+    chunk_size : int, default 100
+        Maximum additional draws per chain in each device sampling chunk.
+    batch_size : int, default 64
+        Maximum draws evaluated together when generating results.
+    progress : bool, default True
+        Show sampling progress bars for the additional draws.
+
+    Returns
+    -------
+    tuple of xarray.DataTree and SamplingState
+        - **results** contains original and additional draws in every sampled
+          group, with continuous draw numbering and unchanged observation labels.
+        - **state** retains the extended run for further sampling. Keeps an
+          independent copy of the combined results in host memory.
+    """
+    if not isinstance(state, SamplingState):
+        raise TypeError("state must be a SamplingState returned by sample or continue_sampling")
+    _validate_batch_size(batch_size)
+    for name, value in (("draws", draws), ("chunk_size", chunk_size)):
+        if isinstance(value, bool) or not isinstance(value, Integral) or value < 1:
+            raise ValueError(f"{name} must be a positive integer")
+    if not isinstance(progress, bool):
+        raise TypeError("progress must be a bool")
+    if bool(jax.config.values["jax_enable_x64"]) != state._x64:
+        raise ValueError("Continue sampling with the same JAX precision setting as the original run")
+
+    model = state._model
+    inputs = state._data
+    settings = state._results.attrs
+    chain_method = str(settings["chain_method"])
+    if chain_method == "parallel" and state.chains > jax.local_device_count():
+        raise ValueError("Continuing parallel sampling requires the original number of local JAX devices")
+    stop = state.draws + int(draws)
+    if stop > np.iinfo(np.uint32).max:
+        raise ValueError("The continued run exceeds the supported number of draws")
+
+    def logdensity(position: dict[str, jax.Array]) -> jax.Array:
+        return model.log_density(position, inputs)
+
+    (unconstrained, stats), continuation = _sample_nuts(
+        logdensity,
+        cast(dict[str, jax.Array], state._nuts.state.position),
+        state._nuts.sampling_keys,
+        draws=int(draws),
+        warmup=int(settings["warmup_steps"]),
+        target_accept=float(settings["target_accept"]),
+        max_tree_depth=int(settings["max_tree_depth"]),
+        chain_method=chain_method,
+        mass_matrix=str(settings["mass_matrix"]),
+        chunk_size=int(chunk_size),
+        progress=progress,
+        return_state=True,
+        continuation=state._nuts,
+    )
+    if not np.isfinite(np.asarray(stats["lp"])).all():
+        raise RuntimeError("Sampling produced nonfinite log densities. The previous state has not been changed")
+
+    posterior = _evaluate_draws(
+        model.constrain,
+        unconstrained,
+        sample_shape=(state.chains, int(draws)),
+        batch_size=batch_size,
+    )
+    del unconstrained
+    generated: dict[str, NDArray[np.generic]] = {}
+    if state._generate and model._has_generated_quantities:
+        keys = _generation_keys(state._generation_key, state.chains, state.draws, stop)
+        generated = _evaluate_draws(
+            lambda key, parameters: model.generate(key, parameters, inputs),
+            keys,
+            posterior,
+            sample_shape=(state.chains, int(draws)),
+            batch_size=batch_size,
+        )
+
+    additional = _collect_sampling_results(model, posterior, generated, stats, state._output_dimensions)
+    combined = {}
+    for name, original in state._results.children.items():
+        previous = original.to_dataset()
+        current = additional[name].to_dataset()
+        if "draw" in previous.dims:
+            current = current.assign_coords(draw=np.arange(state.draws, stop))
+            joined = xr.concat(
+                (previous, current),
+                dim="draw",
+                data_vars="minimal",
+                coords="minimal",
+                compat="equals",
+                join="exact",
+                combine_attrs="identical",
+            )
+            # Concatenation can share unchanged labels with the previous state.
+            combined[name] = joined.assign_coords(
+                {axis: coord.copy(deep=True) for axis, coord in joined.coords.items()}
+            )
+        else:
+            combined[name] = previous.copy(deep=True)
+
+    results = xr.DataTree.from_dict(combined, name=state._results.name)
+    results.attrs = dict(settings)
+    next_state = replace(state, _nuts=continuation, _results=results.copy(deep=True))
+    _warn_sampling(stats)
+    return results, next_state
+
+
+def _generation_keys(key: jax.Array, chains: int, start: int, stop: int) -> jax.Array:
+    """Assign random draws by chain and absolute draw index."""
+    indices = jnp.arange(start, stop, dtype=jnp.uint32)
+    chain_keys = jax.random.split(key, chains)
+    return jax.vmap(lambda chain_key: jax.vmap(lambda index: jax.random.fold_in(chain_key, index))(indices))(chain_keys)
+
+
+def _collect_sampling_results(
+    model: Model,
+    posterior: Mapping[str, ArrayLike],
+    generated: Mapping[str, ArrayLike],
+    stats: Mapping[str, ArrayLike] | None,
+    output_dimensions: dict[str, tuple[str, ...]],
+) -> xr.DataTree:
+    """Use the same result groups and labels for initial and continued draws."""
+    dimensions, coordinates = _parameter_metadata(model)
+    return _collect_results(
+        posterior,
+        data=_result_data(model),
+        inputs=_result_inputs(model),
+        posterior_predictive={name: value for name, value in generated.items() if name in model._predictive_names},
+        log_likelihood={name: value for name, value in generated.items() if name in model._likelihood_names},
+        generated_quantities={
+            name: value
+            for name, value in generated.items()
+            if name not in (*model._predictive_names, *model._likelihood_names)
+        },
+        sample_stats=stats,
+        dims=dimensions,
+        generated_dims=output_dimensions,
+        coords=coordinates,
+        copy_draws=False,
+    )
+
+
+def _warn_sampling(stats: Mapping[str, ArrayLike]) -> None:
+    """Report diagnostics for newly sampled transitions."""
     divergences = int(np.asarray(stats["diverging"]).sum())
     if divergences:
         warnings.warn(
             f"Sampling encountered {divergences} divergent transitions after warmup. "
             "Inspect the model parameterization and consider a higher target_accept",
             RuntimeWarning,
-            stacklevel=2,
+            stacklevel=3,
         )
     limited = int(np.asarray(stats["reached_max_treedepth"]).sum())
     if limited:
@@ -279,9 +559,8 @@ def sample(
             f"Sampling reached max_tree_depth on {limited} draws. "
             "Inspect mixing and consider increasing max_tree_depth",
             RuntimeWarning,
-            stacklevel=2,
+            stacklevel=3,
         )
-    return results
 
 
 def sample_prior(
