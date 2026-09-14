@@ -942,3 +942,416 @@ def test_budget_response_differentiates_carryover_with_a_separate_response_windo
     np.testing.assert_allclose(value, expected_value, rtol=1e-6)
     np.testing.assert_allclose(gradient, expected_gradient, rtol=1e-6)
     assert np.all(np.asarray(gradient) > 0)
+
+
+def _rf_data(*, mixed=False, grouped=False):
+    rows = []
+    for week in range(4):
+        for group in range(2 if grouped else 1):
+            rows.append(
+                {
+                    "week": week,
+                    "region": ("east", "west")[group],
+                    "audience_video": (3.0 + week) * (group + 1),
+                    "audience_audio": (8.0 - week) * (group + 1),
+                    "frequency_video": 1.0 + week,
+                    "frequency_audio": 2.0 + 0.5 * week,
+                    "cost_video": (2.0 + week) * (group + 1),
+                    "cost_audio": (4.0 + week) * (group + 1),
+                    "search": (2.0 + week) * (group + 1),
+                    "cost_search": (1.0 + week) * (group + 1),
+                    "population": 100.0 + 200 * group,
+                    "sales": 100.0 + 10 * week,
+                }
+            )
+    frame = pl.DataFrame(rows)
+    options = {"media": ["search"], "spend": ["cost_search"], "channels": ["Search"]} if mixed else {}
+    return prepare_data(
+        frame.filter(pl.col("week") > 0),
+        time="week",
+        groups=["region"] if grouped else (),
+        outcome="sales",
+        population="population",
+        reach=["audience_video", "audience_audio"],
+        media_frequency=["frequency_video", "frequency_audio"],
+        rf_spend=["cost_video", "cost_audio"],
+        rf_channels=["Video", "Audio"],
+        media_history=frame.filter(pl.col("week") == 0),
+        **options,
+    )
+
+
+def _rf_model(data, *, scaling=None):
+    def expected(reach, media_frequency, coefficient, rf_spend=None, media=None, spend=None):
+        exposure = reach * media_frequency / (1.0 + media_frequency)
+        carried = (exposure[1:] + 0.5 * exposure[:-1]) @ jnp.array([1.0, 2.0])
+        expected = 5.0 + coefficient**2 * carried
+        if rf_spend is not None:
+            expected = expected + 0.1 * rf_spend.sum(axis=-1)
+        if media is not None:
+            expected = expected + coefficient * media[1:, ..., 0] * (1.0 + 0.1 * carried)
+        if spend is not None:
+            expected = expected + 0.2 * spend.sum(axis=-1)
+        return {"expected": expected}
+
+    if "media" not in data.arrays:
+
+        def transformed(reach, media_frequency, rf_spend, coefficient):
+            return expected(reach, media_frequency, coefficient, rf_spend=rf_spend)
+
+    elif "spend" not in data.arrays:
+
+        def transformed(reach, media_frequency, rf_spend, media, coefficient):
+            return expected(reach, media_frequency, coefficient, rf_spend=rf_spend, media=media)
+
+    elif "rf_spend" not in data.arrays:
+
+        def transformed(reach, media_frequency, media, spend, coefficient):
+            return expected(reach, media_frequency, coefficient, media=media, spend=spend)
+
+    else:
+
+        def transformed(reach, media_frequency, rf_spend, media, spend, coefficient):
+            return expected(reach, media_frequency, coefficient, rf_spend=rf_spend, media=media, spend=spend)
+
+    def density(expected):
+        raise AssertionError("Response curves must only evaluate transformed quantities")
+
+    return Model({"coefficient": Real()}, density, data=data, transformed_parameters=transformed, scaling=scaling)
+
+
+def _rf_results():
+    return _collect_results(
+        {"coefficient": np.array([[0.5, 1.0], [1.5, 2.0]], dtype=np.float32)},
+        coords={"chain": [4, 8], "draw": [10, 30]},
+    )
+
+
+def _rf_expected(data, coefficient, *, scaling=None, response_periods=(1, 2, 3)):
+    values = (scaling.transform(data) if scaling is not None else data).arrays
+    exposure = values["reach"] * values["media_frequency"] / (1.0 + values["media_frequency"])
+    carried = (exposure[1:] + 0.5 * exposure[:-1]) @ np.array([1.0, 2.0])
+    expected = 5.0 + coefficient**2 * carried
+    if "rf_spend" in values:
+        expected = expected + 0.1 * values["rf_spend"].sum(axis=-1)
+    if "media" in values:
+        expected = expected + coefficient * values["media"][1:, ..., 0] * (1.0 + 0.1 * carried)
+    if "spend" in values:
+        expected = expected + 0.2 * values["spend"].sum(axis=-1)
+    return expected[[data.time_values.index(period) for period in response_periods]].sum()
+
+
+def _rf_scenario(data, channel, multiplier, *, mode="reach", spend_periods=(1, 2, 3), media_conversion=None):
+    arrays = {name: value.copy() for name, value in data.arrays.items()}
+    periods = np.array([data.time_values.index(period) for period in spend_periods])
+    if channel in data.rf_channels:
+        index = data.rf_channels.index(channel)
+        arrays["rf_spend"][periods, ..., index] *= multiplier
+        if not callable(mode):
+            role = "reach" if mode == "reach" else "media_frequency"
+            arrays[role][1 + periods, ..., index] *= multiplier
+    elif channel is not None:
+        index = data.channels.index(channel)
+        arrays["spend"][periods, ..., index] *= multiplier
+        if media_conversion is None:
+            arrays["media"][1 + periods, ..., index] *= multiplier
+    if callable(mode):
+        reach, frequency = mode(arrays["rf_spend"])
+        arrays["reach"][1 + periods] = np.asarray(reach)[periods]
+        arrays["media_frequency"][1 + periods] = np.asarray(frequency)[periods]
+    if media_conversion is not None:
+        arrays["media"][1 + periods] = np.asarray(media_conversion(arrays["spend"]))[periods]
+    return replace(data, arrays=arrays)
+
+
+@pytest.mark.parametrize("mixed", [False, True])
+@pytest.mark.parametrize("grouped", [False, True])
+@pytest.mark.parametrize("mode", ["reach", "frequency"])
+def test_response_curves_support_rf_channels_with_explicit_spending_assumptions(mixed, grouped, mode):
+    data = _rf_data(mixed=mixed, grouped=grouped)
+    model, results = _rf_model(data), _rf_results()
+    original = {name: np.asarray(value).copy() for name, value in model.data.values.items()}
+    curves = response_curves(
+        model, results, quantity="expected", multipliers=[0.0, 1.0, 2.0], spend_to_rf=mode, batch_size=3
+    )
+    labels = [*data.channels, *data.rf_channels]
+    np.testing.assert_array_equal(curves.channel, labels)
+    np.testing.assert_array_equal(curves.channel_type, (["media"] if mixed else []) + ["reach_frequency"] * 2)
+    np.testing.assert_array_equal(curves.chain, [4, 8])
+    np.testing.assert_array_equal(curves.draw, [10, 30])
+    assert curves.attrs["spend_to_rf"] == mode
+    for chain, draw in np.ndindex(2, 2):
+        coefficient = results["posterior"]["coefficient"].values[chain, draw]
+        np.testing.assert_allclose(
+            curves["reference_response"][chain, draw], _rf_expected(data, coefficient), rtol=2e-6
+        )
+        for channel in labels:
+            zero = _rf_expected(_rf_scenario(data, channel, 0.0, mode=mode), coefficient)
+            for multiplier in [0.0, 1.0, 2.0]:
+                expected = _rf_expected(_rf_scenario(data, channel, multiplier, mode=mode), coefficient)
+                actual = curves.sel(channel=channel, multiplier=multiplier).isel(chain=chain, draw=draw)
+                np.testing.assert_allclose(actual["response"], expected, rtol=2e-6)
+                np.testing.assert_allclose(actual["incremental_response"], expected - zero, rtol=3e-6, atol=3e-5)
+    for name, value in original.items():
+        np.testing.assert_array_equal(model.data.values[name], value)
+
+
+def test_response_curves_default_rf_assumption_and_channel_order():
+    data = _rf_data(mixed=True)
+    model, results = _rf_model(data), _rf_results()
+    default = response_curves(model, results, quantity="expected", multipliers=[0.0, 1.0])
+    explicit = response_curves(model, results, quantity="expected", multipliers=[0.0, 1.0], spend_to_rf="reach")
+    xr.testing.assert_identical(default, explicit)
+    selected = response_curves(
+        model, results, quantity="expected", multipliers=[0.0, 1.0], channels=["Audio", "Search", "Video"]
+    )
+    xr.testing.assert_allclose(selected, default.sel(channel=["Audio", "Search", "Video"]))
+    single = response_curves(model, results, quantity="expected", multipliers=[0.0, 1.0], channels=["Video"])
+    xr.testing.assert_allclose(single, default.sel(channel=["Video"]))
+
+
+@pytest.mark.parametrize("already_scaled", [False, True])
+def test_response_curves_rf_reuse_population_scaling_and_fixed_history_windows(already_scaled):
+    data = _rf_data(mixed=True, grouped=True)
+    scaling = fit_data_scaling(data, adjust_population=True, scale_outcome=True)
+    model = _rf_model(scaling.transform(data) if already_scaled else data, scaling=scaling)
+    results = _rf_results()
+    options = {"spend_periods": [1], "response_periods": [2, 3], "spend_to_rf": "frequency"}
+    curves = response_curves(model, results, quantity="expected", multipliers=[0.0, 1.0, 2.0], **options)
+    np.testing.assert_allclose(
+        curves["reference_spend"], np.concatenate((data.arrays["spend"][0].sum(0), data.arrays["rf_spend"][0].sum(0)))
+    )
+    for channel in curves.channel.values:
+        scenario = _rf_scenario(data, channel, 2.0, mode="frequency", spend_periods=[1])
+        for chain, draw in np.ndindex(2, 2):
+            expected = _rf_expected(
+                scenario,
+                results["posterior"]["coefficient"].values[chain, draw],
+                scaling=scaling,
+                response_periods=[2, 3],
+            )
+            np.testing.assert_allclose(
+                curves["response"].sel(channel=channel, multiplier=2).isel(chain=chain, draw=draw), expected, rtol=3e-6
+            )
+    assert np.all(curves["incremental_response"].sel(channel=["Video", "Audio"], multiplier=1) > 0)
+    context = _prepare_response(model, results, quantity="expected", spend_to_media="proportional", **options)
+    scenario, valid = jax.jit(context.evaluator._scenario_inputs)(context.reference_spend * 2)
+    assert valid
+    for name in ["media", "reach", "media_frequency"]:
+        np.testing.assert_array_equal(
+            np.asarray(scenario.values[name])[[0, 2, 3]], np.asarray(model.data.values[name])[[0, 2, 3]]
+        )
+    for name in ["spend", "rf_spend"]:
+        np.testing.assert_array_equal(scenario.values[name][1:], model.data.values[name][1:])
+
+
+def test_response_curves_custom_rf_conversion_receives_raw_family_spend_and_preserves_windows():
+    data = _rf_data(mixed=True, grouped=True)
+    model = _rf_model(data, scaling="auto")
+    results = _rf_results()
+
+    def rf_conversion(spend):
+        assert spend.shape == data.arrays["rf_spend"].shape
+        return spend * jnp.array([3.0, 4.0]), jnp.ones_like(spend) * jnp.array([2.0, 3.0])
+
+    def media_conversion(spend):
+        assert spend.shape == data.arrays["spend"].shape
+        return 2.5 * spend
+
+    curves = response_curves(
+        model,
+        results,
+        quantity="expected",
+        multipliers=[0.0, 1.0, 2.0],
+        channels=["Audio", "Search"],
+        spend_to_media=media_conversion,
+        spend_to_rf=rf_conversion,
+        spend_periods=[3, 1],
+        response_periods=[2, 3],
+    )
+    assert curves.attrs["spend_to_rf"] == "custom"
+    for channel in curves.channel.values:
+        for multiplier in [0.0, 1.0, 2.0]:
+            scenario = _rf_scenario(
+                data, channel, multiplier, mode=rf_conversion, media_conversion=media_conversion, spend_periods=[1, 3]
+            )
+            expected = _rf_expected(scenario, 0.5, scaling=model.scaling, response_periods=[2, 3])
+            np.testing.assert_allclose(
+                curves["response"].sel(channel=channel, multiplier=multiplier).isel(chain=0, draw=0),
+                expected,
+                rtol=3e-6,
+            )
+
+
+@pytest.mark.parametrize(
+    "conversion",
+    [
+        "automatic",
+        lambda spend: spend,
+        lambda spend: (spend.sum(), spend),
+        lambda spend: (spend, spend[..., :1]),
+        lambda spend: (-spend, jnp.ones_like(spend)),
+        lambda spend: (spend, -jnp.ones_like(spend)),
+        lambda spend: (spend * jnp.nan, jnp.ones_like(spend)),
+        lambda spend: (spend, jnp.full_like(spend, jnp.inf)),
+    ],
+)
+def test_response_curves_reject_invalid_rf_conversions(conversion):
+    data = _rf_data()
+    with pytest.raises((TypeError, ValueError), match=r"reach|frequency|shape|finite|invalid"):
+        response_curves(_rf_model(data), _rf_results(), quantity="expected", multipliers=[1.0], spend_to_rf=conversion)
+
+
+@pytest.mark.parametrize("mode", ["reach", "frequency"])
+@pytest.mark.parametrize("scaled", [False, True])
+@pytest.mark.parametrize(
+    "channel, unchanged_spend", [("Search", "rf_spend"), ("Audio", "rf_spend"), ("Audio", "spend")]
+)
+def test_response_curves_preserve_unselected_exposures_with_zero_spend(channel, unchanged_spend, scaled, mode):
+    data = _rf_data(mixed=True, grouped=True)
+    data.arrays[unchanged_spend][0, ..., 0] = 0.0
+    scaling = fit_data_scaling(data, adjust_population=True) if scaled else None
+    model, results = _rf_model(data, scaling=scaling), _rf_results()
+    curves = response_curves(
+        model, results, quantity="expected", multipliers=[0.0, 1.0, 2.0], channels=[channel], spend_to_rf=mode
+    )
+
+    for multiplier in [0.0, 1.0, 2.0]:
+        scenario = _rf_scenario(data, channel, multiplier, mode=mode)
+        expected = _rf_expected(scenario, 0.5, scaling=scaling)
+        np.testing.assert_allclose(
+            curves["response"].sel(channel=channel, multiplier=multiplier).isel(chain=0, draw=0),
+            expected,
+            rtol=3e-6,
+        )
+
+    context = _prepare_response(
+        model, results, quantity="expected", channels=[channel], spend_to_media="proportional", spend_to_rf=mode
+    )
+    budgets = context.reference_spend.at[context.indices].multiply(2.0)
+    scenario, valid = jax.jit(context.evaluator._scenario_inputs)(budgets)
+    assert valid
+    for roles, labels in [
+        (("media", "spend"), data.channels),
+        (("reach", "media_frequency", "rf_spend"), data.rf_channels),
+    ]:
+        unchanged = [index for index, name in enumerate(labels) if name != channel]
+        for role in roles:
+            np.testing.assert_array_equal(
+                scenario.values[role][..., unchanged], model.data.values[role][..., unchanged]
+            )
+
+
+@pytest.mark.parametrize("mode", ["reach", "frequency"])
+def test_response_curves_rf_positive_exposure_at_zero_spend_needs_custom_conversion(mode):
+    data = _rf_data()
+    data.arrays["rf_spend"][0, 0] = 0.0
+    model, results = _rf_model(data), _rf_results()
+    with pytest.raises(ValueError, match="zero spend"):
+        response_curves(model, results, quantity="expected", multipliers=[1.0], spend_to_rf=mode)
+    curves = response_curves(
+        model,
+        results,
+        quantity="expected",
+        multipliers=[0.0, 1.0],
+        spend_to_rf=lambda spend: (2.0 * spend, jnp.ones_like(spend)),
+    )
+    assert np.isfinite(curves["response"]).all()
+    outside = response_curves(
+        model, results, quantity="expected", multipliers=[1.0], spend_periods=[3], spend_to_rf=mode
+    )
+    assert np.isfinite(outside["response"]).all()
+
+
+def test_response_curves_rf_zero_spend_cells_and_unselected_zero_budget_channels():
+    data = _rf_data()
+    data.arrays["rf_spend"][:, 0] = 0.0
+    data.arrays["reach"][1:, 0] = 0.0
+    data.arrays["rf_spend"][0, 1] = 0.0
+    data.arrays["reach"][1, 1] = 0.0
+    model, results = _rf_model(data), _rf_results()
+    with pytest.raises(ValueError, match="positive reference spending"):
+        response_curves(model, results, quantity="expected", multipliers=[1.0])
+    curves = response_curves(model, results, quantity="expected", multipliers=[0.0, 1.0, 2.0], channels=["Audio"])
+    np.testing.assert_allclose(curves["reference_spend"], [13.0])
+    assert np.isfinite(curves["response"]).all()
+
+
+@pytest.mark.parametrize("unpriced", ["spend", "rf_spend"])
+def test_response_curves_keep_unpriced_input_families_fixed(unpriced):
+    data = _rf_data(mixed=True)
+    data = replace(data, arrays={name: value for name, value in data.arrays.items() if name != unpriced})
+    model, results = _rf_model(data), _rf_results()
+    curves = response_curves(model, results, quantity="expected", multipliers=[0.0, 1.0, 2.0])
+    labels = ["Video", "Audio"] if unpriced == "spend" else ["Search"]
+    np.testing.assert_array_equal(curves.channel, labels)
+    for channel in labels:
+        expected = _rf_expected(_rf_scenario(data, channel, 2.0), 0.5)
+        np.testing.assert_allclose(
+            curves["response"].sel(channel=channel, multiplier=2).isel(chain=0, draw=0), expected
+        )
+
+
+def test_response_curves_reject_ambiguous_labels_across_priced_input_families():
+    data = replace(_rf_data(mixed=True), channels=("Video",))
+    with pytest.raises(ValueError, match=r"channel|unique|ambiguous|duplicate"):
+        response_curves(_rf_model(data), _rf_results(), quantity="expected", multipliers=[1.0])
+
+
+def test_response_curves_rf_new_data_uses_training_scales_and_raw_reference_spend():
+    training = _rf_data(grouped=True)
+    model, results = _rf_model(training, scaling="auto"), _rf_results()
+    arrays = {name: value.copy() for name, value in training.arrays.items()}
+    arrays["reach"][1:] *= 3.0
+    arrays["rf_spend"] *= 2.0
+    new_data = replace(training, arrays=arrays)
+    curves = response_curves(
+        model, results, quantity="expected", multipliers=[0.0, 1.0, 2.0], new_data=new_data, channels=["Audio"]
+    )
+    np.testing.assert_allclose(curves["reference_spend"], [new_data.arrays["rf_spend"][..., 1].sum()])
+    for multiplier in [0.0, 1.0, 2.0]:
+        scenario = _rf_scenario(new_data, "Audio", multiplier)
+        expected = _rf_expected(scenario, 0.5, scaling=model.scaling)
+        np.testing.assert_allclose(
+            curves["response"].sel(channel="Audio", multiplier=multiplier).isel(chain=0, draw=0), expected, rtol=3e-6
+        )
+    np.testing.assert_array_equal(model.data.values["rf_spend"], training.arrays["rf_spend"])
+
+
+@pytest.mark.parametrize("mode", ["reach", "frequency"])
+def test_response_curves_rf_integer_inputs_preserve_fractional_scenarios_and_gradients(mode):
+    data = prepare_data(
+        pl.DataFrame({"week": [0, 1], "audience": [2, 6], "frequency": [1, 3], "cost": [1.0, 3.0]}),
+        time="week",
+        reach=["audience"],
+        media_frequency=["frequency"],
+        rf_spend=["cost"],
+    )
+
+    def transformed(reach, media_frequency, coefficient):
+        return {"expected": coefficient * reach[:, 0] * media_frequency[:, 0] / (1.0 + media_frequency[:, 0])}
+
+    model = Model(
+        {"coefficient": Real()}, lambda expected: expected.sum(), data=data, transformed_parameters=transformed
+    )
+    results = _collect_results({"coefficient": np.ones((1, 1), dtype=np.float32)})
+    context = _prepare_response(model, results, quantity="expected", spend_to_media="proportional", spend_to_rf=mode)
+    value, gradient = jax.jit(jax.value_and_grad(lambda budget: context.evaluator(budget).mean()))(
+        context.reference_spend * 0.5
+    )
+    reach = np.array([2.0, 6.0]) * (0.5 if mode == "reach" else 1.0)
+    frequency = np.array([1.0, 3.0]) * (0.5 if mode == "frequency" else 1.0)
+    expected = (reach * frequency / (1.0 + frequency)).sum()
+    derivative = (
+        np.array([2.0, 6.0]) / 4.0 * frequency / (1.0 + frequency)
+        if mode == "reach"
+        else reach / (1.0 + frequency) ** 2 * np.array([1.0, 3.0]) / 4.0
+    ).sum()
+    np.testing.assert_allclose(value, expected, rtol=2e-6)
+    np.testing.assert_allclose(gradient, [derivative], rtol=2e-6)
+    scenario, valid = jax.jit(context.evaluator._scenario_inputs)(context.reference_spend * 0.5)
+    assert valid
+    np.testing.assert_allclose(scenario.values["reach"][:, 0], reach)
+    np.testing.assert_allclose(scenario.values["media_frequency"][:, 0], frequency)
+    np.testing.assert_array_equal(model.data.values["reach"][:, 0], [2, 6])
+    np.testing.assert_array_equal(model.data.values["media_frequency"][:, 0], [1, 3])

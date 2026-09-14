@@ -14,7 +14,7 @@ from numpy.typing import NDArray
 from scipy.optimize import LinearConstraint, approx_fprime, linprog, minimize
 
 from mmmjax.model import Model
-from mmmjax.response import _allocation_metrics, _prepare_response
+from mmmjax.response import _allocation_metrics, _prepare_response, _ReachFrequencyConversion
 
 __all__ = ["SpendConstraint", "optimize_budget"]
 
@@ -97,6 +97,7 @@ def optimize_budget(
     quantity: str,
     utility_function: Callable[[jax.Array], ArrayLike] | None = None,
     spend_to_media: Literal["proportional"] | Callable[[jax.Array], ArrayLike] = "proportional",
+    spend_to_rf: _ReachFrequencyConversion = "reach",
     bounds: tuple[float, float] | Mapping[str, tuple[float, float]] | None = None,
     spend_constraint_lower: float | Sequence[float] | None = None,
     spend_constraint_upper: float | Sequence[float] | None = None,
@@ -123,7 +124,8 @@ def optimize_budget(
     Parameters
     ----------
     model : Model
-        Prepared model with paired media and spend inputs.
+        Prepared model with ordinary media and spend, reach/frequency and
+        ``rf_spend``, or both. Media without paired spending stay fixed.
     results : xarray.DataTree
         Results containing the model's constrained posterior draws.
     budget : float, optional
@@ -145,8 +147,14 @@ def optimize_budget(
     spend_to_media : {"proportional"} or callable, default "proportional"
         By default, exposure scales with spending at each period and group,
         retaining reference exposure per unit spend. A differentiable JAX
-        callable instead receives raw spending in model channel order and
-        returns exposures of the same shape.
+        callable instead receives only ordinary-media spending in original
+        channel order and returns raw exposures of the same shape.
+    spend_to_rf : {"reach", "frequency"} or callable, default "reach"
+        Scale reach at fixed frequency, or frequency at fixed reach, assuming
+        constant cost per impression. A differentiable JAX callable instead
+        receives raw RF spending in original ``rf_channels`` order and returns
+        ``(reach, frequency)`` arrays of the same shape. Conversion covers
+        supplied modeling periods. Earlier history stays fixed.
     bounds : tuple of float or mapping of str to tuple of float, optional
         Finite nonnegative lower and upper spending limits in original units.
         Supply one pair for all selected channels or one pair per channel name.
@@ -167,8 +175,10 @@ def optimize_budget(
         alongside the total budget and individual channel limits. Overlapping
         groups are allowed. Omit for individual limits only.
     channels : sequence of str, optional
-        Paid-media channels to optimize. Defaults to all. Each needs positive
-        reference spending to define its allocation across periods and groups.
+        Paid channels to optimize. Defaults to ordinary-media channels followed
+        by reach/frequency channels with paired spending. Names must be unique
+        across both types. Each selected channel needs positive reference
+        spending to define its allocation across periods and groups.
     new_data : dataframe-like or PreparedData, optional
         Reference observations. Omit to use stored observations. The model's
         fitted scales are reused.
@@ -205,6 +215,7 @@ def optimize_budget(
         - **lower_bound**, **upper_bound**, and **initial_spend** record constraints
           and the starting allocation.
         - **spend_period** and **response_period** record selected dates.
+        - **channel_type** identifies ordinary media or reach/frequency channels.
 
         When group constraints are supplied, **constraint_spend** and
         **constraint_satisfied** describe both allocations. **constraint_lower_bound**
@@ -254,6 +265,7 @@ def optimize_budget(
         results,
         quantity=quantity,
         spend_to_media=spend_to_media,
+        spend_to_rf=spend_to_rf,
         channels=channels,
         new_data=new_data,
         spend_periods=spend_periods,
@@ -455,7 +467,11 @@ def optimize_budget(
             "upper_bound": ("channel", limits[:, 1]),
             "initial_spend": ("channel", start * budget),
         },
-        coords={**context.coords, "allocation": ["reference", "optimized"]},
+        coords={
+            **context.coords,
+            "channel_type": ("channel", context.channel_types),
+            "allocation": ["reference", "optimized"],
+        },
         attrs={
             **context.attrs,
             "budget": budget,

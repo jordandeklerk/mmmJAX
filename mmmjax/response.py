@@ -3,7 +3,7 @@
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from numbers import Integral, Real
-from typing import Literal, cast
+from typing import Literal, TypeAlias, cast
 
 import jax
 import jax.numpy as jnp
@@ -19,6 +19,10 @@ from mmmjax.sampling import _parameter_metadata, _posterior_draws, _result_data
 
 __all__ = ["media_metrics", "response_curves"]
 
+_ReachFrequencyConversion: TypeAlias = (
+    Literal["reach", "frequency"] | Callable[[jax.Array], tuple[ArrayLike, ArrayLike]]
+)
+
 
 def response_curves(
     model: Model,
@@ -27,6 +31,7 @@ def response_curves(
     quantity: str,
     multipliers: Sequence[float] | ArrayLike,
     spend_to_media: Literal["proportional"] | Callable[[jax.Array], ArrayLike] = "proportional",
+    spend_to_rf: _ReachFrequencyConversion = "reach",
     channels: Sequence[str] | None = None,
     new_data: object = None,
     spend_periods: Sequence[object] | None = None,
@@ -44,8 +49,8 @@ def response_curves(
     Parameters
     ----------
     model : Model
-        Prepared model with paired media and spend inputs. Reach/frequency
-        inputs, if present, stay fixed.
+        Prepared model with media and spend, reach/frequency and their spend,
+        or both. Input families without spending stay fixed.
     results : xarray.DataTree
         Results containing the model's constrained posterior draws.
     quantity : str
@@ -60,13 +65,21 @@ def response_curves(
     spend_to_media : {"proportional"} or callable, default "proportional"
         By default, exposure scales with spend at each period and group,
         retaining reference exposure per unit spend. A JAX-compatible function
-        instead receives current spend in original units and model channel
+        instead receives ordinary media spend in original units and its channel
         order, then returns nonnegative exposures of the same shape. Only
         exposures during ``spend_periods`` are replaced. Earlier history is
         excluded from the conversion.
+    spend_to_rf : {"reach", "frequency"} or callable, default "reach"
+        Scale reach with spending while keeping frequency fixed, or choose
+        ``"frequency"`` to scale frequency at fixed reach. Both assume constant
+        cost per impression. A JAX-compatible callable receives raw RF spending
+        in ``rf_channels`` order and returns ``(reach, frequency)`` in original
+        units, each with the same shape. Only spending periods are changed.
     channels : sequence of str, optional
         Channel labels to evaluate, in the desired order. Defaults to all
-        paid-media channels. Each needs positive reference spending.
+        paid channels with spending, ordinary media first and RF second.
+        Names must be unique across both families. Each selected channel needs
+        positive reference spending.
     new_data : dataframe-like or PreparedData, optional
         Reference observations using the model's columns and fitted scales.
         Omit to use stored observations. Supply ``PreparedData`` with
@@ -94,6 +107,7 @@ def response_curves(
         - **reference_response** evaluates reference spending under the
           selected spend-to-media conversion.
         - **spend_period** and **response_period** record the selected dates.
+        - **channel_type** identifies ordinary media and reach/frequency channels.
 
         Incremental curves need not add up when channels interact. Zero
         spending in selected periods can retain carryover from earlier exposures.
@@ -110,6 +124,7 @@ def response_curves(
         results,
         quantity=quantity,
         spend_to_media=spend_to_media,
+        spend_to_rf=spend_to_rf,
         channels=channels,
         new_data=new_data,
         spend_periods=spend_periods,
@@ -150,7 +165,7 @@ def response_curves(
             "reference_spend": ("channel", np.asarray(totals)[indices]),
             "reference_response": (("chain", "draw"), reference),
         },
-        coords={**context.coords, "multiplier": grid},
+        coords={**context.coords, "channel_type": ("channel", context.channel_types), "multiplier": grid},
         attrs=context.attrs,
     )
 
@@ -162,6 +177,7 @@ def media_metrics(
     quantity: str,
     incremental_increase: float = 0.01,
     spend_to_media: Literal["proportional"] | Callable[[jax.Array], ArrayLike] = "proportional",
+    spend_to_rf: _ReachFrequencyConversion = "reach",
     channels: Sequence[str] | None = None,
     new_data: object = None,
     spend_periods: Sequence[object] | None = None,
@@ -178,8 +194,8 @@ def media_metrics(
     Parameters
     ----------
     model : Model
-        Prepared model with paired media and spend inputs. Reach/frequency
-        inputs, if present, stay fixed.
+        Prepared model with media and spend, reach/frequency and their spend,
+        or both. Input families without spending stay fixed.
     results : xarray.DataTree
         Results containing the model's constrained posterior draws.
     quantity : str
@@ -192,10 +208,17 @@ def media_metrics(
         measures return on a 1% increase, not an exact derivative.
     spend_to_media : {"proportional"} or callable, default "proportional"
         Scale exposures with spending at their reference ratios. Alternatively,
-        supply a JAX-compatible function mapping raw spending in model channel
-        order to nonnegative exposures of the same shape.
+        supply a JAX-compatible function mapping ordinary media spending in
+        its channel order to nonnegative exposures of the same shape.
+    spend_to_rf : {"reach", "frequency"} or callable, default "reach"
+        Scale reach at fixed frequency, or frequency at fixed reach, assuming
+        constant cost per impression. A JAX-compatible callable instead maps
+        raw RF spending in ``rf_channels`` order to ``(reach, frequency)`` in
+        original units, each with the same shape. Marginal ROI follows this
+        selected spending change.
     channels : sequence of str, optional
-        Paid-media channels to report, in the desired order. Defaults to all.
+        Paid channels to report, in the desired order. Defaults to all channels
+        with spending, ordinary media first and RF second. Names must be unique.
         Each needs positive reference spending during ``spend_periods``.
     new_data : dataframe-like or PreparedData, optional
         Reference observations. Omit to use stored observations. Fitted scales
@@ -223,6 +246,7 @@ def media_metrics(
           the additional spending used for the comparison.
         - **reference_response** contains the full response at reference spending.
         - **spend_period** and **response_period** record the selected dates.
+        - **channel_type** identifies ordinary media and reach/frequency channels.
 
         Zero spending can retain carryover from earlier exposures. Returns
         reflect the model and intervention assumptions, not new causal evidence.
@@ -240,6 +264,7 @@ def media_metrics(
         results,
         quantity=quantity,
         spend_to_media=spend_to_media,
+        spend_to_rf=spend_to_rf,
         channels=channels,
         new_data=new_data,
         spend_periods=spend_periods,
@@ -265,6 +290,7 @@ class _ResponseContext:
     evaluator: "_BudgetResponse"
     reference_spend: jax.Array
     indices: NDArray[np.intp]
+    channel_types: NDArray[np.str_]
     coords: dict[str, NDArray[np.generic]]
     attrs: dict[str, str]
 
@@ -328,7 +354,11 @@ def _allocation_metrics(
             "incremental_spend": (("allocation", "channel"), incremental_spend),
             "response": (("chain", "draw", "allocation"), responses[:, 0].transpose(1, 2, 0)),
         },
-        coords={**context.coords, "allocation": list(allocation_labels)},
+        coords={
+            **context.coords,
+            "channel_type": ("channel", context.channel_types),
+            "allocation": list(allocation_labels),
+        },
         attrs={**context.attrs, "incremental_increase": incremental_increase},
     )
 
@@ -355,6 +385,7 @@ def _prepare_response(
     *,
     quantity: str,
     spend_to_media: Literal["proportional"] | Callable[[jax.Array], ArrayLike],
+    spend_to_rf: _ReachFrequencyConversion = "reach",
     channels: Sequence[str] | None = None,
     new_data: object = None,
     spend_periods: Sequence[object] | None = None,
@@ -374,6 +405,8 @@ def _prepare_response(
         raise ValueError("batch_size must be a positive integer")
     if not callable(spend_to_media) and not (isinstance(spend_to_media, str) and spend_to_media == "proportional"):
         raise ValueError("spend_to_media must be 'proportional' or a JAX-compatible callable")
+    if not callable(spend_to_rf) and not (isinstance(spend_to_rf, str) and spend_to_rf in ("reach", "frequency")):
+        raise ValueError("spend_to_rf must be 'reach', 'frequency', or a JAX-compatible callable")
 
     dimensions, coordinates = _parameter_metadata(model)
     posterior, coordinates = _posterior_draws(model, results, dimensions, coordinates)
@@ -385,8 +418,12 @@ def _prepare_response(
         inputs, aligned = model._prepare_data(new_data)
         prepared = replace(aligned, arrays={name: np.array(inputs.values[name], copy=True) for name in aligned.arrays})
 
-    if not {"media", "spend"}.issubset(inputs.values):
-        raise ValueError("Response evaluation requires paired media and spend columns")
+    has_media = {"media", "spend"}.issubset(inputs.values)
+    has_rf = {"reach", "media_frequency", "rf_spend"}.issubset(inputs.values)
+    if not (has_media or has_rf):
+        raise ValueError(
+            "Response evaluation requires paired media and spend or reach, frequency, and rf_spend columns"
+        )
 
     time_labels = _coordinates({"time": prepared.time_values})["time"]
     spend_indices = _period_indices(time_labels, spend_periods, name="spend_periods")
@@ -394,7 +431,13 @@ def _prepare_response(
     spend_mask = np.zeros(len(time_labels), dtype=bool)
     spend_mask[spend_indices] = True
 
-    labels = prepared.channels
+    media_labels = prepared.channels if has_media else ()
+    rf_labels = prepared.rf_channels if has_rf else ()
+    labels = media_labels + rf_labels
+    if len(set(labels)) != len(labels):
+        raise ValueError(
+            "Paid channel names must be unique across media and reach/frequency. Rename overlapping channels"
+        )
     selected = labels if channels is None else channels
     if isinstance(selected, (str, bytes)) or not isinstance(selected, Sequence) or not selected:
         raise ValueError("channels must be a nonempty sequence of channel labels")
@@ -402,12 +445,22 @@ def _prepare_response(
         raise ValueError("channels must contain distinct labels from the model's paid-media channels")
     indices = np.array([labels.index(name) for name in selected], dtype=np.intp)
 
+    # Default conversions affect selected channels. Custom mappings cover their full input family.
+    conversion_mask = np.zeros(len(labels), dtype=bool)
+    conversion_mask[indices] = True
+
     # Recover original input units once. Candidate evaluation reuses the fitted factors.
     if model.scaling is not None:
         prepared = model.scaling.inverse_transform(prepared)
 
-    spend = jnp.asarray(prepared.arrays["spend"], dtype=model._dtype)
-    media = jnp.asarray(prepared.arrays["media"], dtype=model._dtype)
+    spend = jnp.concatenate(
+        [
+            jnp.asarray(prepared.arrays[name], dtype=model._dtype)
+            for name, included in (("spend", has_media), ("rf_spend", has_rf))
+            if included
+        ],
+        axis=-1,
+    )
     observation_shape = spend.shape[:-1]
     periods = spend.shape[0]
 
@@ -419,15 +472,45 @@ def _prepare_response(
             "Selected channels need positive reference spending during spend_periods to define their allocation"
         )
 
-    if isinstance(spend_to_media, str):
-        if np.any(np.asarray(mask) & (np.asarray(spend) == 0) & (np.asarray(media[-periods:]) > 0)):
-            raise ValueError("Positive media with zero spend needs an explicit spend_to_media function")
+    convert: Callable[[jax.Array], ArrayLike] | None = None
+    if has_media:
+        media_spend = spend[..., : len(media_labels)]
+        media = jnp.asarray(prepared.arrays["media"][-periods:], dtype=model._dtype)
+        if isinstance(spend_to_media, str):
+            changed = np.asarray(mask) & conversion_mask[: len(media_labels)]
+            if np.any(changed & (np.asarray(media_spend) == 0) & (np.asarray(media) > 0)):
+                raise ValueError("Positive media with zero spend needs an explicit spend_to_media function")
 
-        def convert(candidate_spend: jax.Array) -> jax.Array:
-            return media[-periods:] * (candidate_spend / jnp.where(spend > 0, spend, 1))
+            def convert_media(candidate_spend: jax.Array) -> jax.Array:
+                return media * (candidate_spend / jnp.where(media_spend > 0, media_spend, 1))
 
-    else:
-        convert = spend_to_media
+            convert = convert_media
+        else:
+            convert = spend_to_media
+            conversion_mask[: len(media_labels)] = True
+
+    convert_reach_frequency: Callable[[jax.Array], tuple[ArrayLike, ArrayLike]] | None = None
+    if has_rf:
+        rf_spend = spend[..., len(media_labels) :]
+        reach = jnp.asarray(prepared.arrays["reach"][-periods:], dtype=model._dtype)
+        frequency = jnp.asarray(prepared.arrays["media_frequency"][-periods:], dtype=model._dtype)
+        if isinstance(spend_to_rf, str):
+            positive_exposure = (np.asarray(reach) > 0) & (np.asarray(frequency) > 0)
+            changed = np.asarray(mask) & conversion_mask[len(media_labels) :]
+            if np.any(changed & (np.asarray(rf_spend) == 0) & positive_exposure):
+                raise ValueError("Positive reach and frequency with zero spend need an explicit spend_to_rf function")
+
+            def convert_rf(candidate_spend: jax.Array) -> tuple[jax.Array, jax.Array]:
+                ratio = candidate_spend / jnp.where(rf_spend > 0, rf_spend, 1)
+                # Change one exposure dimension so impressions scale once with spend.
+                if spend_to_rf == "reach":
+                    return reach * ratio, frequency
+                return reach, frequency * ratio
+
+            convert_reach_frequency = convert_rf
+        else:
+            convert_reach_frequency = spend_to_rf
+            conversion_mask[len(media_labels) :] = True
 
     evaluator = _BudgetResponse(
         model=model,
@@ -436,17 +519,20 @@ def _prepare_response(
         quantity=quantity,
         spend_weights=selected_spend / jnp.where(totals > 0, totals, 1),
         convert=convert,
+        convert_reach_frequency=convert_reach_frequency,
         observation_shape=observation_shape,
         batch_size=int(batch_size),
         spend_mask=jnp.asarray(spend_mask),
         reference_spend=spend,
         response_indices=jnp.asarray(response_indices),
+        conversion_mask=jnp.asarray(conversion_mask),
     )
 
     return _ResponseContext(
         evaluator=evaluator,
         reference_spend=totals,
         indices=indices,
+        channel_types=np.asarray(["media"] * len(media_labels) + ["reach_frequency"] * len(rf_labels))[indices],
         coords={
             "chain": coordinates["chain"],
             "draw": coordinates["draw"],
@@ -457,6 +543,7 @@ def _prepare_response(
         attrs={
             "quantity": quantity,
             "spend_to_media": "proportional" if isinstance(spend_to_media, str) else "custom",
+            "spend_to_rf": (spend_to_rf if isinstance(spend_to_rf, str) else "custom"),
             "allocation": "reference spending proportions across selected spending periods and groups",
             "history": "fixed",
             "response_window": "selected supplied modeling periods only",
@@ -503,19 +590,21 @@ class _BudgetResponse:
     posterior: dict[str, jax.Array]
     quantity: str
     spend_weights: jax.Array
-    convert: Callable[[jax.Array], ArrayLike]
+    convert: Callable[[jax.Array], ArrayLike] | None
     observation_shape: tuple[int, ...]
     batch_size: int
     spend_mask: jax.Array | None = None
     reference_spend: jax.Array | None = None
     response_indices: jax.Array | None = None
+    convert_reach_frequency: Callable[[jax.Array], tuple[ArrayLike, ArrayLike]] | None = None
+    conversion_mask: jax.Array | None = None
 
     def __call__(self, budgets: jax.Array) -> jax.Array:
         """Return one total response per posterior draw for a joint allocation."""
         return self.paired_evaluation(budgets)[0]
 
     def _scenario_inputs(self, budgets: jax.Array) -> tuple[_ModelData, jax.Array]:
-        """Replace current media and spend while preserving other model inputs."""
+        """Replace paid exposures and spending while preserving other model inputs."""
         spend = self.spend_weights * budgets
         mask = jnp.asarray(True)
         if self.spend_mask is not None:
@@ -523,29 +612,54 @@ class _BudgetResponse:
             mask = self.spend_mask.reshape((-1,) + (1,) * (spend.ndim - 1))
             spend = jnp.where(mask, spend, self.reference_spend)
 
-        media = jnp.asarray(self.convert(spend))
-        if media.shape != spend.shape or not (
-            jnp.issubdtype(media.dtype, jnp.floating) or jnp.issubdtype(media.dtype, jnp.integer)
-        ):
-            raise ValueError("spend_to_media must return real media values with the current spend shape")
-
-        media = media.astype(self.model._dtype)
-        valid = jnp.all(jnp.where(mask, jnp.isfinite(media) & (media >= 0), True))
-
         values = dict(self.inputs.values)
         scaling = self.model.scaling
         transformations = {} if scaling is None else scaling.transformations
-        if "media" in transformations:
-            media = transformations["media"].transform(media)
-        if "spend" in transformations:
-            spend = transformations["spend"].transform(spend)
-
-        # Retain exact stored values outside the intervention, including fitted scaling.
         periods = self.observation_shape[0]
-        media = jnp.where(mask, media, values["media"][-periods:])
-        spend = jnp.where(mask, spend, values["spend"])
-        values["media"] = jnp.concatenate((values["media"][:-periods], media), axis=0)
-        values["spend"] = spend
+        n_media = 0 if self.convert is None else values["media"].shape[-1]
+        valid = jnp.asarray(True)
+
+        def update(name: str, value: ArrayLike, shape: tuple[int, ...], conversion: str) -> None:
+            nonlocal valid
+            current = jnp.asarray(value)
+            if current.shape != shape or not (
+                jnp.issubdtype(current.dtype, jnp.floating) or jnp.issubdtype(current.dtype, jnp.integer)
+            ):
+                raise ValueError(f"{conversion} must return real {name} values with the current spend shape")
+
+            current_mask = mask
+            if self.conversion_mask is not None:
+                channels = (
+                    self.conversion_mask[:n_media] if name in ("media", "spend") else self.conversion_mask[n_media:]
+                )
+                current_mask = mask & channels
+
+            current = current.astype(self.model._dtype)
+            valid = valid & jnp.all(jnp.where(current_mask, jnp.isfinite(current) & (current >= 0), True))
+            if name in transformations:
+                current = transformations[name].transform(current)
+
+            # Preserve exact inputs for unselected channels, excluded periods, and history.
+            if name in ("spend", "rf_spend"):
+                values[name] = jnp.where(current_mask, current, values[name])
+            else:
+                current = jnp.where(current_mask, current, values[name][-periods:])
+                values[name] = jnp.concatenate((values[name][:-periods], current), axis=0)
+
+        if self.convert is not None:
+            media_spend = spend[..., :n_media]
+            update("media", self.convert(media_spend), media_spend.shape, "spend_to_media")
+            update("spend", media_spend, media_spend.shape, "spend_to_media")
+
+        if self.convert_reach_frequency is not None:
+            rf_spend = spend[..., n_media:]
+            exposures = self.convert_reach_frequency(rf_spend)
+            if not isinstance(exposures, (tuple, list)) or len(exposures) != 2:
+                raise ValueError("spend_to_rf must return a pair of reach and frequency arrays")
+            reach, frequency = exposures
+            update("reach", reach, rf_spend.shape, "spend_to_rf")
+            update("media_frequency", frequency, rf_spend.shape, "spend_to_rf")
+            update("rf_spend", rf_spend, rf_spend.shape, "spend_to_rf")
 
         return replace(self.inputs, values=values), valid
 
