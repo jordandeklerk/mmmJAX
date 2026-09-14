@@ -27,18 +27,19 @@ from mmmjax._results import _collect_results
 from mmmjax.response import _BudgetResponse, _prepare_response
 
 
-def _data(*, grouped=False, multiplier=1.0):
+def _data(*, grouped=False, multiplier=1.0, compound=False, reverse=False):
     rows = []
     media = np.array([[8.0, 12.0], [2.0, 3.0], [0.0, 5.0], [7.0, 2.0]])
     for time, exposure in enumerate(media):
-        for group in range(2 if grouped else 1):
+        for group in range(3 if compound else 2 if grouped else 1):
             exposure = media[time] * (group + 1)
             if time:
                 exposure = exposure * multiplier
             rows.append(
                 {
                     "week": time,
-                    "region": ("east", "west")[group],
+                    "region": ("east", "west", "east")[group],
+                    "store": ("retail", "online", "online")[group],
                     "video": exposure[0],
                     "search": exposure[1],
                     "video_spend": exposure[0] / 2,
@@ -49,21 +50,23 @@ def _data(*, grouped=False, multiplier=1.0):
                 }
             )
     frame = pl.DataFrame(rows)
+    if reverse:
+        frame = frame.reverse()
     return prepare_data(
         frame.filter(pl.col("week") > 0),
         time="week",
-        groups=["region"] if grouped else (),
+        groups=["region", "store"] if compound else ["region"] if grouped else (),
         population="residents",
         outcome="sales",
-        media=["video", "search"],
-        spend=["video_spend", "search_spend"],
-        channels=["Online video", "Paid search"],
+        media=["search", "video"] if reverse else ["video", "search"],
+        spend=["search_spend", "video_spend"] if reverse else ["video_spend", "search_spend"],
+        channels=["Paid search", "Online video"] if reverse else ["Online video", "Paid search"],
         controls=["temperature"],
         media_history=frame.filter(pl.col("week") == 0),
     )
 
 
-def _model(data, *, scaling=None):
+def _model(data, *, scaling=None, cross_group=False):
     def transformed(media, spend, controls, coefficient):
         carried = media[1:] + 0.5 * media[:-1]
         predictor = (
@@ -73,6 +76,8 @@ def _model(data, *, scaling=None):
             + 0.03 * carried[..., 0] * carried[..., 1]
             + 0.2 * spend.sum(axis=-1)
         )
+        if cross_group:
+            predictor = predictor + 0.04 * carried[..., 0].sum(axis=1, keepdims=True) * carried[..., 1]
         expected = jnp.exp(0.01 * predictor)
         return {"expected": expected, "aggregate": expected.sum(), "exposure": media}
 
@@ -150,6 +155,10 @@ def test_response_curves_default_to_proportional_media():
     )
 
     xr.testing.assert_identical(curves, explicit)
+    for by in (None, (), []):
+        xr.testing.assert_identical(
+            curves, response_curves(model, results, quantity="expected", multipliers=[0.0, 1.0, 2.0], by=by)
+        )
 
 
 @pytest.mark.parametrize("new_data", [False, True])
@@ -649,7 +658,7 @@ def _window_scenario(data, channel, multiplier, periods, *, conversion=None):
     return replace(data, arrays=arrays)
 
 
-def _window_expected(data, coefficient, periods, *, scaling=None):
+def _window_expected(data, coefficient, periods, *, scaling=None, by=(), cross_group=False):
     values = (scaling.transform(data) if scaling is not None else data).arrays
     carried = values["media"][1:] + 0.5 * values["media"][:-1]
     predictor = (
@@ -659,8 +668,12 @@ def _window_expected(data, coefficient, periods, *, scaling=None):
         + 0.03 * carried[..., 0] * carried[..., 1]
         + 0.2 * values["spend"].sum(axis=-1)
     )
+    if cross_group:
+        predictor = predictor + 0.04 * carried[..., 0].sum(axis=1, keepdims=True) * carried[..., 1]
     indices = [data.time_values.index(period) for period in periods]
-    return np.exp(0.01 * predictor)[indices].sum()
+    expected = np.exp(0.01 * predictor)[indices]
+    axes = tuple(index for index in range(expected.ndim) if ("time", "group")[index] not in by)
+    return expected.sum(axis=axes)
 
 
 @pytest.mark.parametrize("grouped", [False, True])
@@ -707,6 +720,164 @@ def test_response_curves_use_separate_noncontiguous_spend_and_response_periods(g
         np.testing.assert_array_equal(model.data.values[name], value)
 
 
+@pytest.mark.parametrize("by", ["time", "group", ("time", "group"), ["group", "time"]])
+def test_response_curves_breakdowns_preserve_global_interventions_and_posterior_draws(by):
+    data = _data(grouped=True)
+    scaling = fit_data_scaling(data, adjust_population=True, scale_outcome=True)
+    model = _model(data, scaling=scaling, cross_group=True)
+    results = _results(model, data)
+    options = {
+        "quantity": "expected",
+        "multipliers": [0.0, 0.5, 1.0, 2.0],
+        "spend_periods": [3, 1],
+        "response_periods": [3, 2],
+    }
+    detailed = response_curves(model, results, by=by, batch_size=4, **options)
+    aggregate = response_curves(model, results, **options)
+    retained = tuple(name for name in ("time", "group") if name in by)
+
+    assert detailed["response"].dims == ("chain", "draw", *retained, "channel", "multiplier")
+    assert detailed["incremental_response"].dims == detailed["response"].dims
+    assert detailed["reference_response"].dims == ("chain", "draw", *retained)
+    assert detailed["spend"].dims == ("channel", "multiplier")
+    assert detailed["reference_spend"].dims == ("channel",)
+    np.testing.assert_array_equal(detailed.chain, [4, 8])
+    np.testing.assert_array_equal(detailed.draw, [10, 20, 30])
+    np.testing.assert_array_equal(detailed.spend_period, [1, 3])
+    np.testing.assert_array_equal(detailed.response_period, [2, 3])
+    if "time" in retained:
+        np.testing.assert_array_equal(detailed.time, [2, 3])
+    if "group" in retained:
+        np.testing.assert_array_equal(detailed.group, ["east", "west"])
+
+    for name in ("response", "incremental_response", "reference_response"):
+        xr.testing.assert_allclose(detailed[name].sum(retained), aggregate[name], rtol=3e-5, atol=2e-6)
+    for name in ("spend", "reference_spend"):
+        xr.testing.assert_identical(detailed[name], aggregate[name])
+
+    for chain, draw in np.ndindex(2, 3):
+        coefficient = results["posterior"]["coefficient"].values[chain, draw]
+        expected_reference = _window_expected(data, coefficient, [2, 3], scaling=scaling, by=retained, cross_group=True)
+        np.testing.assert_allclose(detailed["reference_response"][chain, draw], expected_reference, rtol=3e-6)
+        for channel in range(2):
+            zero = _window_expected(
+                _window_scenario(data, channel, 0.0, [1, 3]),
+                coefficient,
+                [2, 3],
+                scaling=scaling,
+                by=retained,
+                cross_group=True,
+            )
+            for multiplier in options["multipliers"]:
+                expected = _window_expected(
+                    _window_scenario(data, channel, multiplier, [1, 3]),
+                    coefficient,
+                    [2, 3],
+                    scaling=scaling,
+                    by=retained,
+                    cross_group=True,
+                )
+                actual = detailed.sel(multiplier=multiplier).isel(chain=chain, draw=draw, channel=channel)
+                np.testing.assert_allclose(actual["response"], expected, rtol=3e-6)
+                np.testing.assert_allclose(actual["incremental_response"], expected - zero, atol=2e-6)
+
+    if by == "time":
+        unbatched = response_curves(model, results, by=by, **options)
+        xr.testing.assert_allclose(detailed, unbatched, rtol=3e-5, atol=2e-6)
+
+
+def test_response_curves_national_time_breakdown_preserves_selected_labels():
+    data = _data()
+    model = _model(data)
+    results = _results(model, data).isel(chain=[1], draw=[2, 0])
+    results = xr.DataTree.from_dict({"posterior": results["posterior"].to_dataset().assign_coords(group=["unrelated"])})
+    curves = response_curves(
+        model,
+        results,
+        quantity="expected",
+        by="time",
+        multipliers=[2.0, 0.0, 1.0],
+        channels=["Paid search", "Online video"],
+        response_periods=[3, 1],
+        batch_size=3,
+    )
+
+    assert curves["response"].dims == ("chain", "draw", "time", "channel", "multiplier")
+    assert "group" not in curves.coords
+    np.testing.assert_array_equal(curves.chain, [8])
+    np.testing.assert_array_equal(curves.draw, [30, 10])
+    np.testing.assert_array_equal(curves.time, [1, 3])
+    np.testing.assert_array_equal(curves.channel, ["Paid search", "Online video"])
+    np.testing.assert_array_equal(curves.multiplier, [2.0, 0.0, 1.0])
+    for channel, label in enumerate(data.channels):
+        for draw in range(2):
+            coefficient = results["posterior"]["coefficient"].values[0, draw]
+            expected = _window_expected(_scenario(data, channel, 2.0), coefficient, [1, 3], by=("time",))
+            actual = curves["response"].sel(channel=label, multiplier=2).isel(chain=0, draw=draw)
+            np.testing.assert_allclose(actual, expected, rtol=3e-6)
+
+    with pytest.raises(ValueError, match="group"):
+        response_curves(model, results, quantity="expected", multipliers=[1.0], by="group")
+
+
+@pytest.mark.parametrize("compound", [False, True])
+def test_response_curves_breakdown_aligns_new_data_groups_and_channels_with_fitted_scaling(compound):
+    data = _data(grouped=True, compound=compound)
+    scaling = fit_data_scaling(data, adjust_population=True)
+    model = _model(data, scaling=scaling, cross_group=True)
+    results = _results(model, data)
+    new_data = _data(grouped=True, compound=compound, multiplier=2.0, reverse=True)
+    expected_data = _data(grouped=True, compound=compound, multiplier=2.0)
+    assert new_data.group_values == data.group_values[::-1]
+    assert new_data.channels == data.channels[::-1]
+
+    curves = response_curves(
+        model,
+        results,
+        quantity="expected",
+        multipliers=[0.0, 1.0, 2.0],
+        by=("group", "time"),
+        new_data=new_data,
+        batch_size=4,
+    )
+    assert curves["response"].dims == ("chain", "draw", "time", "group", "channel", "multiplier")
+    np.testing.assert_array_equal(curves.time, expected_data.time_values)
+    np.testing.assert_array_equal(curves.channel, expected_data.channels)
+    if compound:
+        np.testing.assert_array_equal(curves.group, [0, 1, 2])
+        np.testing.assert_array_equal(curves.group_region, ["east", "west", "east"])
+        np.testing.assert_array_equal(curves.group_store, ["retail", "online", "online"])
+        assert curves.group_region.dims == curves.group_store.dims == ("group",)
+    else:
+        np.testing.assert_array_equal(curves.group, ["east", "west"])
+        assert "group_region" not in curves.coords
+
+    for channel in range(2):
+        coefficient = results["posterior"]["coefficient"].values[0, 0]
+        expected = _window_expected(
+            _scenario(expected_data, channel, 2.0),
+            coefficient,
+            [1, 2, 3],
+            scaling=scaling,
+            by=("time", "group"),
+            cross_group=True,
+        )
+        actual = curves["response"].sel(multiplier=2).isel(chain=0, draw=0, channel=channel)
+        np.testing.assert_allclose(actual, expected, rtol=3e-6)
+    np.testing.assert_allclose(curves["reference_spend"], expected_data.arrays["spend"].sum(axis=(0, 1)), rtol=2e-6)
+
+
+@pytest.mark.parametrize(
+    "by",
+    ["region", "", ("time", "time"), ("time", 1), ("time", ["group"]), 1, b"time", {"time"}, {"time": True}],
+)
+def test_response_curves_reject_invalid_breakdown_axes(by):
+    data = _data(grouped=True)
+    model = _model(data)
+    with pytest.raises(ValueError, match="by"):
+        response_curves(model, _results(model, data), quantity="expected", multipliers=[1.0], by=by)
+
+
 def test_response_curves_measure_carryover_after_spending_has_ended():
     data = _data()
 
@@ -739,6 +910,11 @@ def test_response_curves_measure_carryover_after_spending_has_ended():
 
     after_carryover = response_curves(model, results, response_periods=[3], **options)
     np.testing.assert_array_equal(after_carryover["incremental_response"], 0.0)
+
+    detailed = response_curves(model, results, response_periods=[2, 3], by="time", **options)
+    np.testing.assert_allclose(detailed["incremental_response"].sel(time=2), curves["incremental_response"], rtol=1e-6)
+    np.testing.assert_array_equal(detailed["incremental_response"].sel(time=3), 0.0)
+    assert data.arrays["spend"][1, 0] == 0.0
 
 
 def test_response_curves_confine_custom_conversion_to_selected_spending_periods():
@@ -1028,7 +1204,7 @@ def _rf_results():
     )
 
 
-def _rf_expected(data, coefficient, *, scaling=None, response_periods=(1, 2, 3)):
+def _rf_expected(data, coefficient, *, scaling=None, response_periods=(1, 2, 3), by=()):
     values = (scaling.transform(data) if scaling is not None else data).arrays
     exposure = values["reach"] * values["media_frequency"] / (1.0 + values["media_frequency"])
     carried = (exposure[1:] + 0.5 * exposure[:-1]) @ np.array([1.0, 2.0])
@@ -1039,7 +1215,9 @@ def _rf_expected(data, coefficient, *, scaling=None, response_periods=(1, 2, 3))
         expected = expected + coefficient * values["media"][1:, ..., 0] * (1.0 + 0.1 * carried)
     if "spend" in values:
         expected = expected + 0.2 * values["spend"].sum(axis=-1)
-    return expected[[data.time_values.index(period) for period in response_periods]].sum()
+    expected = expected[[data.time_values.index(period) for period in response_periods]]
+    axes = tuple(index for index in range(expected.ndim) if ("time", "group")[index] not in by)
+    return expected.sum(axis=axes)
 
 
 def _rf_scenario(data, channel, multiplier, *, mode="reach", spend_periods=(1, 2, 3), media_conversion=None):
@@ -1109,6 +1287,52 @@ def test_response_curves_default_rf_assumption_and_channel_order():
     xr.testing.assert_allclose(selected, default.sel(channel=["Audio", "Search", "Video"]))
     single = response_curves(model, results, quantity="expected", multipliers=[0.0, 1.0], channels=["Video"])
     xr.testing.assert_allclose(single, default.sel(channel=["Video"]))
+
+
+@pytest.mark.parametrize("mode", ["reach", "frequency"])
+def test_response_curves_breakdown_preserves_mixed_rf_channel_order_and_spending_windows(mode):
+    data = _rf_data(mixed=True, grouped=True)
+    model, results = _rf_model(data), _rf_results()
+    options = {
+        "quantity": "expected",
+        "multipliers": [0.0, 1.0, 2.0],
+        "channels": ["Audio", "Search", "Video"],
+        "spend_to_rf": mode,
+        "spend_periods": [1],
+        "response_periods": [2, 3],
+    }
+    curves = response_curves(model, results, by=("time", "group"), batch_size=3, **options)
+    aggregate = response_curves(model, results, **options)
+
+    np.testing.assert_array_equal(curves.channel, ["Audio", "Search", "Video"])
+    np.testing.assert_array_equal(curves.channel_type, ["reach_frequency", "media", "reach_frequency"])
+    np.testing.assert_array_equal(curves.time, [2, 3])
+    np.testing.assert_array_equal(curves.group, ["east", "west"])
+    for name in ("response", "incremental_response", "reference_response"):
+        xr.testing.assert_allclose(curves[name].sum(("time", "group")), aggregate[name], rtol=3e-6, atol=3e-5)
+    for name in ("spend", "reference_spend"):
+        xr.testing.assert_identical(curves[name], aggregate[name])
+
+    for chain, draw in np.ndindex(2, 2):
+        coefficient = results["posterior"]["coefficient"].values[chain, draw]
+        for channel in curves.channel.values:
+            zero = _rf_expected(
+                _rf_scenario(data, channel, 0.0, mode=mode, spend_periods=[1]),
+                coefficient,
+                response_periods=[2, 3],
+                by=("time", "group"),
+            )
+            for multiplier in options["multipliers"]:
+                expected = _rf_expected(
+                    _rf_scenario(data, channel, multiplier, mode=mode, spend_periods=[1]),
+                    coefficient,
+                    response_periods=[2, 3],
+                    by=("time", "group"),
+                )
+                actual = curves.sel(channel=channel, multiplier=multiplier).isel(chain=chain, draw=draw)
+                np.testing.assert_allclose(actual["response"], expected, rtol=3e-6)
+                np.testing.assert_allclose(actual["incremental_response"], expected - zero, rtol=3e-6, atol=3e-5)
+    np.testing.assert_array_equal(curves["incremental_response"].sel(time=3), 0.0)
 
 
 @pytest.mark.parametrize("already_scaled", [False, True])

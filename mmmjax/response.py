@@ -13,7 +13,7 @@ import xarray as xr
 from jax.typing import ArrayLike
 from numpy.typing import NDArray
 
-from mmmjax._results import _coordinates
+from mmmjax._results import _coordinates, _prepared_coordinates
 from mmmjax.data import PreparedData
 from mmmjax.model import Model, _ModelData
 from mmmjax.sampling import _parameter_metadata, _posterior_draws, _result_data
@@ -37,15 +37,16 @@ def response_curves(
     new_data: object = None,
     spend_periods: Sequence[object] | None = None,
     response_periods: Sequence[object] | None = None,
+    by: str | Sequence[str] | None = None,
     batch_size: int = 64,
 ) -> xr.Dataset:
     """Evaluate paid-media spending curves using existing posterior draws.
 
     Vary one channel's spending at a time, retaining its allocation across
     selected periods and groups. Spending and exposures outside those periods
-    stay fixed. Evaluate the full model for every draw, then sum responses
-    over the measurement periods and groups. Include later measurement dates
-    to count carryover. No observations are added automatically.
+    stay fixed. Evaluate the full model for every draw, summing responses
+    by default or retaining time and group breakdowns. Include later
+    measurement dates to count carryover. No observations are added automatically.
 
     Parameters
     ----------
@@ -91,6 +92,10 @@ def response_curves(
     response_periods : sequence, optional
         Time labels whose outcomes count. Defaults to all supplied modeling
         periods. May include dates after spending ends to measure carryover.
+    by : str or sequence of str, optional
+        Retain ``"time"``, ``"group"``, or both in responses. Group labels
+        come from ``prepare_data`` and require grouped data. Omit for totals.
+        Retained axes follow time then group order.
     batch_size : int, default 64
         Maximum posterior draws evaluated together. Scenarios run sequentially.
 
@@ -99,7 +104,7 @@ def response_curves(
     xarray.Dataset
         Labeled curves preserving chain and draw coordinates.
 
-        - **response** contains total responses by channel and multiplier.
+        - **response** contains responses by channel and multiplier.
         - **incremental_response** subtracts the same channel's response
           with zero spending during ``spend_periods`` and other inputs fixed.
         - **spend** contains candidate totals during the spending periods
@@ -109,6 +114,11 @@ def response_curves(
           selected spend-to-media conversion.
         - **spend_period** and **response_period** record the selected dates.
         - **channel_type** identifies ordinary media and reach/frequency channels.
+
+        With ``by``, response fields retain the requested observation axes.
+        Spending remains totaled over the selected periods and groups.
+        Breakdowns show where and when each overall spending change has an
+        effect, not independent spending changes within each period or group.
 
         Incremental curves need not add up when channels interact. Zero
         spending in selected periods can retain carryover from earlier exposures.
@@ -132,6 +142,7 @@ def response_curves(
         response_periods=response_periods,
         batch_size=batch_size,
     )
+    retained, retain_axes, response_coords = _response_breakdown(context, by)
     totals = context.reference_spend
     indices = context.indices
     selected_count = len(indices)
@@ -149,11 +160,12 @@ def response_curves(
             "Candidate spending is too large for the model precision. Reduce the multipliers or change units"
         )
 
-    responses, increments = _evaluate_response_pairs(context, allocation, comparison)
+    responses, increments = _evaluate_response_pairs(context, allocation, comparison, retain_axes=retain_axes)
     reference = responses[0]
-    response = responses[1:].reshape(selected_count, len(grid), *reference.shape).transpose(2, 3, 0, 1)
-    incremental = increments[1:].reshape(selected_count, len(grid), *reference.shape).transpose(2, 3, 0, 1)
-    curve_axes = ("chain", "draw", "channel", "multiplier")
+    shape = (selected_count, len(grid), *reference.shape)
+    response = np.moveaxis(responses[1:].reshape(shape), (0, 1), (-2, -1))
+    incremental = np.moveaxis(increments[1:].reshape(shape), (0, 1), (-2, -1))
+    curve_axes = ("chain", "draw", *retained, "channel", "multiplier")
 
     return xr.Dataset(
         {
@@ -164,9 +176,14 @@ def response_curves(
                 allocation[1:].reshape(selected_count, len(grid), -1)[np.arange(selected_count), :, indices],
             ),
             "reference_spend": ("channel", np.asarray(totals)[indices]),
-            "reference_response": (("chain", "draw"), reference),
+            "reference_response": (("chain", "draw", *retained), reference),
         },
-        coords={**context.coords, "channel_type": ("channel", context.channel_types), "multiplier": grid},
+        coords={
+            **context.coords,
+            **response_coords,
+            "channel_type": ("channel", context.channel_types),
+            "multiplier": grid,
+        },
         attrs=context.attrs,
     )
 
@@ -392,6 +409,7 @@ def media_metrics(
     new_data: object = None,
     spend_periods: Sequence[object] | None = None,
     response_periods: Sequence[object] | None = None,
+    by: str | Sequence[str] | None = None,
     batch_size: int = 64,
 ) -> xr.Dataset:
     """Calculate incremental response, ROI, and marginal ROI by paid-media channel.
@@ -437,8 +455,12 @@ def media_metrics(
         Time labels whose spending changes and enters the return denominators.
         Defaults to all supplied modeling periods.
     response_periods : sequence, optional
-        Time labels whose responses count, summed across periods and groups.
+        Time labels whose responses count.
         Defaults to all supplied periods. Include later dates to count carryover.
+    by : str or sequence of str, optional
+        Retain ``"time"``, ``"group"``, or both in response effects. Groups use
+        the labels from ``prepare_data`` and require grouped data. Omit to
+        sum over both. Retained axes follow time then group order.
     batch_size : int, default 64
         Maximum posterior draws evaluated together. Scenarios run sequentially.
 
@@ -449,14 +471,20 @@ def media_metrics(
 
         - **incremental_response** is reference response minus response with
           that channel's spending removed during ``spend_periods``.
-        - **roi** divides incremental response by **reference_spend**. It does
+        - **roi** divides total incremental response by **reference_spend**. It does
           not subtract spending from the numerator to calculate profit.
         - **marginal_response** is increased-spend response minus reference response.
-        - **marginal_roi** divides marginal response by **incremental_spend**,
+        - **marginal_roi** divides total marginal response by **incremental_spend**,
           the additional spending used for the comparison.
         - **reference_response** contains the full response at reference spending.
         - **spend_period** and **response_period** record the selected dates.
         - **channel_type** identifies ordinary media and reach/frequency channels.
+
+        With ``by``, response fields retain the requested observation axes.
+        ROI, marginal ROI, and spending still aggregate all selected periods
+        and groups. Sum effects within each draw before computing intervals.
+        Breakdowns report where and when the same intervention changes outcomes,
+        not separate interventions for each period or group.
 
         Zero spending can retain carryover from earlier exposures. Returns
         reflect the model and intervention assumptions, not new causal evidence.
@@ -486,6 +514,7 @@ def media_metrics(
         np.asarray(context.reference_spend)[None, :],
         allocation_labels=["reference"],
         incremental_increase=float(incremental_increase),
+        by=by,
     )
 
     return metrics.sel(allocation="reference", drop=True).rename(
@@ -502,7 +531,38 @@ class _ResponseContext:
     indices: NDArray[np.intp]
     channel_types: NDArray[np.str_]
     coords: dict[str, NDArray[np.generic]]
+    response_coords: dict[str, NDArray[np.generic] | tuple[str, NDArray[np.generic]]]
     attrs: dict[str, str]
+
+
+def _response_breakdown(
+    context: _ResponseContext,
+    by: str | Sequence[str] | None,
+) -> tuple[
+    tuple[str, ...],
+    tuple[int, ...],
+    dict[str, NDArray[np.generic] | tuple[str, NDArray[np.generic]]],
+]:
+    """Resolve retained observation axes and their prepared data labels."""
+    requested = () if by is None else (by,) if isinstance(by, str) else by
+    if not isinstance(requested, Sequence) or any(
+        not isinstance(name, str) or name not in ("time", "group") for name in requested
+    ):
+        raise ValueError("by must contain only time or group dimension names")
+    if len(set(requested)) != len(requested):
+        raise ValueError("by must contain distinct dimension names")
+    if "group" in requested and "group" not in context.response_coords:
+        raise ValueError("Retaining group requires grouped data from prepare_data")
+
+    retained = tuple(name for name in ("time", "group") if name in requested)
+    retain_axes = tuple(("time", "group").index(name) for name in retained)
+    response_coords = {name: context.response_coords[name] for name in retained}
+    if "group" in retained:
+        response_coords.update(
+            {name: value for name, value in context.response_coords.items() if isinstance(value, tuple)}
+        )
+
+    return retained, retain_axes, response_coords
 
 
 def _allocation_metrics(
@@ -511,8 +571,10 @@ def _allocation_metrics(
     *,
     allocation_labels: Sequence[str],
     incremental_increase: float,
+    by: str | Sequence[str] | None = None,
 ) -> xr.Dataset:
     """Evaluate channel interventions around each joint spending allocation."""
+    retained, retain_axes, response_coords = _response_breakdown(context, by)
     indices = context.indices
     count = len(indices)
 
@@ -535,37 +597,50 @@ def _allocation_metrics(
         raise ValueError("incremental_increase is too small for the model precision. Use a larger increase")
 
     responses, differences = _evaluate_response_pairs(
-        context, allocation.reshape(-1, totals.shape[1]), comparison.reshape(-1, totals.shape[1])
+        context,
+        allocation.reshape(-1, totals.shape[1]),
+        comparison.reshape(-1, totals.shape[1]),
+        retain_axes=retain_axes,
     )
 
     shape = (len(totals), 1 + 2 * count, *responses.shape[1:])
     responses, differences = responses.reshape(shape), differences.reshape(shape)
-    incremental = differences[:, 1 : 1 + count].transpose(2, 3, 0, 1)
-    marginal = differences[:, 1 + count :].transpose(2, 3, 0, 1)
+
+    # Place allocation after chain and draw, and channels after retained observation axes.
+    incremental = np.moveaxis(differences[:, 1 : 1 + count], (0, 1), (2, -1))
+    marginal = np.moveaxis(differences[:, 1 + count :], (0, 1), (2, -1))
+    response = np.moveaxis(responses[:, 0], 0, 2)
 
     # Removing or proportionally increasing zero spending is unchanged, but
     # neither ratio is defined. Preserve missing values rather than zero returns.
     with np.errstate(over="ignore", invalid="ignore"):
-        roi = np.divide(incremental, spend, out=np.full_like(incremental, np.nan), where=positive)
-        marginal_roi = np.divide(marginal, incremental_spend, out=np.full_like(marginal, np.nan), where=positive)
+        observation_axes = tuple(range(3, 3 + len(retained)))
+        total_incremental = incremental.sum(axis=observation_axes)
+        total_marginal = marginal.sum(axis=observation_axes)
+        roi = np.divide(total_incremental, spend, out=np.full_like(total_incremental, np.nan), where=positive)
+        marginal_roi = np.divide(
+            total_marginal, incremental_spend, out=np.full_like(total_marginal, np.nan), where=positive
+        )
 
     if not np.all(np.isfinite(roi) | ~positive) or not np.all(np.isfinite(marginal_roi) | ~positive):
         raise ValueError("Channel returns are nonfinite. Check the response and spending units")
 
-    axes = ("chain", "draw", "allocation", "channel")
+    axes = ("chain", "draw", "allocation", *retained, "channel")
+    ratio_axes = ("chain", "draw", "allocation", "channel")
 
     return xr.Dataset(
         {
             "incremental_response": (axes, incremental),
-            "roi": (axes, roi),
+            "roi": (ratio_axes, roi),
             "marginal_response": (axes, marginal),
-            "marginal_roi": (axes, marginal_roi),
+            "marginal_roi": (ratio_axes, marginal_roi),
             "spend": (("allocation", "channel"), spend),
             "incremental_spend": (("allocation", "channel"), incremental_spend),
-            "response": (("chain", "draw", "allocation"), responses[:, 0].transpose(1, 2, 0)),
+            "response": (("chain", "draw", "allocation", *retained), response),
         },
         coords={
             **context.coords,
+            **response_coords,
             "channel_type": ("channel", context.channel_types),
             "allocation": list(allocation_labels),
         },
@@ -574,10 +649,18 @@ def _allocation_metrics(
 
 
 def _evaluate_response_pairs(
-    context: _ResponseContext, allocation: NDArray[np.generic], comparison: NDArray[np.generic]
+    context: _ResponseContext,
+    allocation: NDArray[np.generic],
+    comparison: NDArray[np.generic],
+    *,
+    retain_axes: tuple[int, ...] = (),
 ) -> tuple[NDArray[np.generic], NDArray[np.generic]]:
     """Evaluate paired scenarios sequentially while batching posterior draws."""
-    evaluate = jax.jit(lambda budgets: jax.lax.map(lambda pair: context.evaluator.paired_evaluation(*pair), budgets))
+    evaluate = jax.jit(
+        lambda budgets: jax.lax.map(
+            lambda pair: context.evaluator.paired_evaluation(*pair, retain_axes=retain_axes), budgets
+        )
+    )
 
     responses, differences = map(np.asarray, evaluate((jnp.asarray(allocation), jnp.asarray(comparison))))
     if not np.isfinite(responses).all() or not np.isfinite(differences).all():
@@ -652,9 +735,17 @@ def _prepare_response(
             "Response evaluation requires paired media and spend or reach, frequency, and rf_spend columns"
         )
 
-    time_labels = _coordinates({"time": prepared.time_values})["time"]
+    prepared_coords, group_coords = _prepared_coordinates(prepared)
+    time_labels = prepared_coords["time"]
     spend_indices = _period_indices(time_labels, spend_periods, name="spend_periods")
     response_indices = _period_indices(time_labels, response_periods, name="response_periods")
+    response_coords: dict[str, NDArray[np.generic] | tuple[str, NDArray[np.generic]]] = {
+        "time": time_labels[response_indices]
+    }
+    if "group" in prepared_coords:
+        response_coords["group"] = prepared_coords["group"]
+        response_coords.update(group_coords)
+
     spend_mask = np.zeros(len(time_labels), dtype=bool)
     spend_mask[spend_indices] = True
 
@@ -763,6 +854,7 @@ def _prepare_response(
             "spend_period": time_labels[spend_indices],
             "response_period": time_labels[response_indices],
         },
+        response_coords=response_coords,
         attrs={
             "quantity": quantity,
             "spend_to_media": "proportional" if isinstance(spend_to_media, str) else "custom",
@@ -785,8 +877,10 @@ def _posterior_response(
     observation_shape: tuple[int, ...],
     response_indices: jax.Array | None,
     batch_size: int,
+    retain_axes: tuple[int, ...] = (),
 ) -> tuple[jax.Array, jax.Array]:
     """Evaluate paired observation responses in bounded posterior batches."""
+    reduction_axes = tuple(axis for axis in range(len(observation_shape)) if axis not in retain_axes)
 
     def evaluate_quantity(data: _ModelData, parameters: dict[str, jax.Array]) -> jax.Array:
         quantities = model._evaluate_quantities(data, parameters)
@@ -801,12 +895,12 @@ def _posterior_response(
 
     def response(parameters: dict[str, jax.Array]) -> tuple[jax.Array, jax.Array]:
         value = evaluate_quantity(inputs, parameters)
-        difference = jnp.zeros((), dtype=value.dtype)
+        difference = jnp.zeros_like(value)
         if reference_inputs is not None:
             # Subtract per observation before a large baseline can hide changes in the sum.
-            difference = jnp.sum(value - evaluate_quantity(reference_inputs, parameters))
+            difference = value - evaluate_quantity(reference_inputs, parameters)
 
-        return jnp.sum(value), difference
+        return jnp.sum(value, axis=reduction_axes), jnp.sum(difference, axis=reduction_axes)
 
     chains, draws = next(iter(posterior.values())).shape[:2]
     flattened = {name: value.reshape((-1, *value.shape[2:])) for name, value in posterior.items()}
@@ -815,7 +909,10 @@ def _posterior_response(
         jax.lax.map(response, flattened, batch_size=min(int(batch_size), chains * draws)),
     )
 
-    return totals.reshape(chains, draws), differences.reshape(chains, draws)
+    return (
+        totals.reshape(chains, draws, *totals.shape[1:]),
+        differences.reshape(chains, draws, *differences.shape[1:]),
+    )
 
 
 def _period_indices(labels: NDArray[np.generic], selected: Sequence[object] | None, *, name: str) -> NDArray[np.intp]:
@@ -929,8 +1026,14 @@ class _BudgetResponse:
 
         return replace(self.inputs, values=values), valid
 
-    def paired_evaluation(self, budgets: jax.Array, reference: jax.Array | None = None) -> tuple[jax.Array, jax.Array]:
-        """Sum paired observation differences before a large baseline can hide them."""
+    def paired_evaluation(
+        self,
+        budgets: jax.Array,
+        reference: jax.Array | None = None,
+        *,
+        retain_axes: tuple[int, ...] = (),
+    ) -> tuple[jax.Array, jax.Array]:
+        """Evaluate paired differences while retaining selected observation axes."""
         inputs, valid = self._scenario_inputs(budgets)
         reference_inputs = None
         if reference is not None:
@@ -946,6 +1049,7 @@ class _BudgetResponse:
             observation_shape=self.observation_shape,
             response_indices=self.response_indices,
             batch_size=self.batch_size,
+            retain_axes=retain_axes,
         )
 
         return jnp.where(valid, totals, jnp.nan), jnp.where(valid, differences, jnp.nan)
