@@ -17,6 +17,7 @@ from mmmjax import (
     Model,
     Positive,
     Real,
+    SpendConstraint,
     fit_data_scaling,
     geometric_adstock,
     hill_saturation,
@@ -113,6 +114,61 @@ def _uncertain_linear_problem():
     )
     results = _collect_results({"gain": np.array([[0.0, 1.0], [2.0, 3.0]], dtype=np.float32)}, data=data)
     return model, results
+
+
+def _mixed_reach_frequency_problem():
+    portions = np.array([0.4, 0.6])
+    data = prepare_data(
+        pl.DataFrame(
+            {
+                "week": [1, 2],
+                "search": 6.0 * portions,
+                "search_cost": 6.0 * portions,
+                "video_reach": 4.5 * portions,
+                "video_frequency": [2.0, 2.0],
+                "video_cost": 9.0 * portions,
+                "audio_reach": 1.25 * portions,
+                "audio_frequency": [4.0, 4.0],
+                "audio_cost": 5.0 * portions,
+            }
+        ),
+        time="week",
+        media=["search"],
+        spend=["search_cost"],
+        reach=["video_reach", "audio_reach"],
+        media_frequency=["video_frequency", "audio_frequency"],
+        rf_spend=["video_cost", "audio_cost"],
+        rf_channels=["video", "audio"],
+    )
+    curvature = np.array([[2.0, 0.6, 0.2], [0.6, 1.5, 0.3], [0.2, 0.3, 1.0]])
+
+    def transformed(media, reach, media_frequency, coefficient):
+        exposure = jnp.concatenate((media, reach * media_frequency), axis=-1).sum(axis=0)
+        difference = exposure - coefficient**2
+        response = 1000.0 - 0.5 * difference @ jnp.asarray(curvature) @ difference
+        return {"expected": jnp.full(media.shape[0], response / media.shape[0])}
+
+    dims = {"coefficient": ("effect",)}
+    labels = ["search", "video", "audio"]
+    model = Model(
+        {"coefficient": Real((3,))},
+        lambda expected: expected.sum(),
+        data=data,
+        transformed_parameters=transformed,
+        dims=dims,
+        coords={"effect": labels},
+    )
+    coefficients = np.array(
+        [[[3.0, 4.0, 2.0], [2.0, 3.0, 3.0]], [[4.0, 2.0, 3.0], [3.0, 3.0, 2.0]]],
+        dtype=np.float32,
+    )
+    results = _collect_results(
+        {"coefficient": coefficients},
+        data=data,
+        dims=dims,
+        coords={"chain": [3, 9], "draw": [10, 30], "effect": labels},
+    )
+    return model, results, curvature
 
 
 @pytest.mark.parametrize("batch_size", [1, 3])
@@ -498,6 +554,213 @@ def test_optimize_budget_preserves_selection_order_and_fixed_channels():
     expected = _response(results, curvature, [optimized[1], optimized[0], 5.0])
     np.testing.assert_allclose(allocation["response"].sel(allocation="optimized"), expected, atol=1e-4)
     assert allocation.attrs["reference_budget"] == pytest.approx(15.0)
+
+
+@pytest.mark.parametrize("conversion", [None, "reach", "frequency"], ids=["default", "reach", "frequency"])
+def test_optimize_budget_rf_only_distinguishes_reach_and_frequency_response(conversion):
+    data = prepare_data(
+        pl.DataFrame(
+            {
+                "week": [1],
+                "video_reach": [2.0],
+                "audio_reach": [3.0],
+                "video_frequency": [2.0],
+                "audio_frequency": [1.0],
+                "video_cost": [4.0],
+                "audio_cost": [3.0],
+            }
+        ),
+        time="week",
+        reach=["video_reach", "audio_reach"],
+        media_frequency=["video_frequency", "audio_frequency"],
+        rf_spend=["video_cost", "audio_cost"],
+        rf_channels=["video", "audio"],
+    )
+
+    def transformed(reach, media_frequency, gain):
+        return {"expected": (reach * jnp.log1p(media_frequency)) @ gain}
+
+    model = Model(
+        {"gain": Positive(dims="rf_channel")},
+        lambda expected: expected.sum(),
+        data=data,
+        transformed_parameters=transformed,
+    )
+    gains = np.array([[[2.0, 1.0], [4.0, 2.0]]], dtype=np.float32)
+    results = _collect_results({"gain": gains}, data=data, dims={"gain": ("rf_channel",)})
+    options = {} if conversion is None else {"spend_to_rf": conversion}
+    allocation = optimize_budget(model, results, quantity="expected", tolerance=1e-7, **options)
+
+    # Scaling reach gives linear returns; scaling frequency saturates and has
+    # the interior solution 4 / (2 + video) = 3 / (10 - video).
+    expected = np.array([34.0 / 7, 15.0 / 7] if conversion == "frequency" else [7.0, 0.0])
+    optimized = allocation["spend"].sel(allocation="optimized").values
+    np.testing.assert_allclose(optimized, expected, atol=2e-4)
+    np.testing.assert_array_equal(allocation.channel, ["video", "audio"])
+    np.testing.assert_array_equal(allocation.channel_type, ["reach_frequency", "reach_frequency"])
+    np.testing.assert_allclose(allocation["spend"].sel(allocation="reference"), [4.0, 3.0])
+    assert allocation.attrs["budget"] == pytest.approx(7.0)
+    for label, spend in [("reference", np.array([4.0, 3.0])), ("optimized", optimized)]:
+        if conversion == "frequency":
+            effect = np.array([2.0, 3.0]) * np.log1p(spend / [2.0, 3.0])
+        else:
+            effect = spend / [2.0, 1.0] * np.log1p([2.0, 1.0])
+        np.testing.assert_allclose(allocation["response"].sel(allocation=label), gains @ effect, atol=2e-5)
+
+
+@pytest.mark.parametrize("conversion", ["reach", "frequency"])
+def test_optimize_budget_mixed_media_and_rf_maximizes_joint_posterior_response(conversion):
+    model, results, curvature = _mixed_reach_frequency_problem()
+    original_inputs = {name: np.asarray(value).copy() for name, value in model.data.values.items()}
+    allocation = optimize_budget(model, results, quantity="expected", spend_to_rf=conversion, batch_size=3)
+
+    target = (results["posterior"]["coefficient"].values.astype(float) ** 2).mean(axis=(0, 1))
+    direction = np.linalg.solve(curvature, np.ones(3))
+    expected = target - direction * (target.sum() - 20.0) / direction.sum()
+    optimized = allocation["spend"].sel(allocation="optimized").values
+    np.testing.assert_allclose(optimized, expected, atol=3e-4)
+    np.testing.assert_array_equal(allocation.channel, ["search", "video", "audio"])
+    np.testing.assert_array_equal(allocation.channel_type, ["media", "reach_frequency", "reach_frequency"])
+    np.testing.assert_array_equal(allocation.chain, [3, 9])
+    np.testing.assert_array_equal(allocation.draw, [10, 30])
+    np.testing.assert_allclose(allocation["spend"].sel(allocation="reference"), [6.0, 9.0, 5.0])
+    np.testing.assert_allclose(
+        allocation["response"].sel(allocation="optimized"), _response(results, curvature, optimized), atol=2e-4
+    )
+    assert allocation.attrs["reference_budget"] == pytest.approx(20.0)
+    for name, original in original_inputs.items():
+        np.testing.assert_array_equal(model.data.values[name], original)
+
+
+def test_optimize_budget_mixed_rf_selection_keeps_unselected_frequency_channel_fixed():
+    model, results, curvature = _mixed_reach_frequency_problem()
+    allocation = optimize_budget(
+        model,
+        results,
+        quantity="expected",
+        channels=["audio", "search"],
+        bounds={"search": (0.0, 11.0), "audio": (0.0, 2.0)},
+        spend_to_rf="frequency",
+    )
+
+    np.testing.assert_array_equal(allocation.channel, ["audio", "search"])
+    np.testing.assert_array_equal(allocation.channel_type, ["reach_frequency", "media"])
+    np.testing.assert_allclose(allocation["spend"].sel(allocation="reference"), [5.0, 6.0])
+    np.testing.assert_allclose(allocation["spend"].sel(allocation="optimized"), [2.0, 9.0], atol=2e-4)
+    np.testing.assert_allclose(
+        allocation["response"].sel(allocation="optimized"), _response(results, curvature, [9.0, 9.0, 2.0]), atol=2e-4
+    )
+    assert allocation.attrs["budget"] == pytest.approx(11.0)
+
+
+def test_optimize_budget_mixed_rf_bounds_and_group_constraints_follow_selected_order():
+    model, results, curvature = _mixed_reach_frequency_problem()
+    allocation = optimize_budget(
+        model,
+        results,
+        quantity="expected",
+        channels=["audio", "search", "video"],
+        bounds={"search": (9.0, 12.0), "video": (0.0, 20.0), "audio": (3.0, 8.0)},
+        constraints=[SpendConstraint("search_and_video", ["search", "video"], upper=0.7, units="share")],
+    )
+
+    np.testing.assert_array_equal(allocation.channel, ["audio", "search", "video"])
+    np.testing.assert_array_equal(allocation.channel_type, ["reach_frequency", "media", "reach_frequency"])
+    np.testing.assert_allclose(allocation["spend"].sel(allocation="optimized"), [6.0, 9.0, 5.0], atol=2e-4)
+    np.testing.assert_array_equal(allocation["lower_bound"], [3.0, 9.0, 0.0])
+    np.testing.assert_array_equal(allocation["upper_bound"], [8.0, 12.0, 20.0])
+    np.testing.assert_array_equal(allocation["constraint_channels"], [[False, True, True]])
+    np.testing.assert_allclose(allocation["constraint_spend"], [[15.0], [14.0]], atol=2e-4)
+    np.testing.assert_array_equal(allocation["constraint_satisfied"], [[False], [True]])
+    np.testing.assert_allclose(
+        allocation["response"].sel(allocation="optimized"), _response(results, curvature, [9.0, 5.0, 6.0]), atol=2e-4
+    )
+
+
+def test_optimize_budget_mixed_rf_reports_paired_metrics_for_each_family():
+    model, results, curvature = _mixed_reach_frequency_problem()
+    allocation = optimize_budget(
+        model,
+        results,
+        quantity="expected",
+        include_metrics=True,
+        incremental_increase=0.2,
+        spend_to_rf="frequency",
+        batch_size=3,
+    )
+    target = results["posterior"]["coefficient"].values.astype(float) ** 2
+
+    for label in ["reference", "optimized"]:
+        metrics = allocation.sel(allocation=label)
+        spend = metrics["spend"].values
+        increase = metrics["incremental_spend"].values
+        np.testing.assert_allclose(increase, 0.2 * spend, rtol=2e-6)
+        gradient = -np.einsum("ij,...j->...i", curvature, spend - target)
+        incremental = spend * gradient + 0.5 * spend**2 * np.diag(curvature)
+        marginal = increase * gradient - 0.5 * increase**2 * np.diag(curvature)
+        expected = {
+            "incremental_response": incremental,
+            "roi": incremental / spend,
+            "marginal_response": marginal,
+            "marginal_roi": marginal / increase,
+        }
+        for name, values in expected.items():
+            assert allocation[name].dims == ("chain", "draw", "allocation", "channel")
+            np.testing.assert_allclose(metrics[name], values, rtol=1e-5, atol=2e-4)
+
+
+def test_optimize_budget_mixed_rf_custom_converters_receive_family_arrays_and_supply_gradients(monkeypatch):
+    model, results, curvature = _mixed_reach_frequency_problem()
+
+    @jax.jit
+    def convert_media(spend):
+        assert spend.shape == (2, 1)
+        return 1.5 * spend
+
+    @jax.jit
+    def convert_reach_frequency(spend):
+        assert spend.shape == (2, 2)
+        frequency = 1.0 + spend / 10.0
+        return 2.0 * spend / frequency, frequency
+
+    minimize = optimization.minimize
+    gradients_checked = []
+
+    def checked_minimize(objective, initial, **kwargs):
+        value, gradient = objective(initial)
+        offsets = 1e-3 * np.eye(len(initial))
+        numerical = np.array(
+            [(objective(initial + offset)[0] - objective(initial - offset)[0]) / 2e-3 for offset in offsets]
+        )
+        assert np.isfinite(value)
+        np.testing.assert_allclose(gradient, numerical, atol=2e-3, rtol=2e-3)
+        gradients_checked.append(True)
+        return minimize(objective, initial, **kwargs)
+
+    monkeypatch.setattr(optimization, "minimize", checked_minimize)
+    allocation = optimize_budget(
+        model,
+        results,
+        quantity="expected",
+        spend_to_media=convert_media,
+        spend_to_rf=convert_reach_frequency,
+        batch_size=3,
+    )
+
+    exposure_per_spend = np.array([1.5, 2.0, 2.0])
+    target = (results["posterior"]["coefficient"].values.astype(float) ** 2).mean(axis=(0, 1))
+    hessian = exposure_per_spend[:, None] * curvature * exposure_per_spend
+    center = target / exposure_per_spend
+    direction = np.linalg.solve(hessian, np.ones(3))
+    expected = center - direction * (center.sum() - 20.0) / direction.sum()
+    optimized = allocation["spend"].sel(allocation="optimized").values
+    assert gradients_checked == [True]
+    np.testing.assert_allclose(optimized, expected, atol=4e-4)
+    np.testing.assert_allclose(
+        allocation["response"].sel(allocation="optimized"),
+        _response(results, curvature, exposure_per_spend * optimized),
+        atol=2e-4,
+    )
 
 
 @pytest.mark.parametrize(
