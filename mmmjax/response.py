@@ -1,4 +1,4 @@
-"""Posterior response curves and channel returns for explicit spending scenarios."""
+"""Posterior response curves and channel returns for spending and frequency scenarios."""
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
@@ -14,10 +14,11 @@ from jax.typing import ArrayLike
 from numpy.typing import NDArray
 
 from mmmjax._results import _coordinates
+from mmmjax.data import PreparedData
 from mmmjax.model import Model, _ModelData
 from mmmjax.sampling import _parameter_metadata, _posterior_draws, _result_data
 
-__all__ = ["media_metrics", "response_curves"]
+__all__ = ["frequency_curves", "media_metrics", "response_curves"]
 
 _ReachFrequencyConversion: TypeAlias = (
     Literal["reach", "frequency"] | Callable[[jax.Array], tuple[ArrayLike, ArrayLike]]
@@ -167,6 +168,192 @@ def response_curves(
         },
         coords={**context.coords, "channel_type": ("channel", context.channel_types), "multiplier": grid},
         attrs=context.attrs,
+    )
+
+
+def frequency_curves(
+    model: Model,
+    results: xr.DataTree,
+    *,
+    quantity: str,
+    frequencies: Sequence[float] | ArrayLike,
+    channels: Sequence[str] | None = None,
+    new_data: object = None,
+    periods: Sequence[object] | None = None,
+    response_periods: Sequence[object] | None = None,
+    batch_size: int = 64,
+) -> xr.Dataset:
+    r"""Compare advertising frequencies while keeping spending and impressions fixed.
+
+    Change one RF channel at a time. For candidate frequency :math:`f`,
+    reach becomes :math:`r' = r f_{\mathrm{reference}} / f`. Other channels,
+    earlier history, and cells without impressions stay unchanged. This assumes
+    constant cost per impression. Choose frequencies feasible for your audience.
+
+    Select each channel's best tested frequency using posterior mean response.
+    These choices are conditional on the other channels' reference inputs,
+    not a jointly optimized plan when channels interact.
+
+    Parameters
+    ----------
+    model : Model
+        Prepared model with reach, media frequency, and paired RF spending.
+    results : xarray.DataTree
+        Results containing the model's constrained posterior draws.
+    quantity : str
+        Key returned by ``transformed_parameters`` with one expected response
+        per observation in reporting units. Recomputed for each scenario.
+    frequencies : array_like
+        Distinct finite positive average exposures per reached person to test.
+        These are levels, not multipliers. Each applies across the selected
+        periods and groups wherever impressions are positive.
+    channels : sequence of str, optional
+        RF channel labels in the desired order. Defaults to all RF channels.
+        Each needs positive spending and impressions during ``periods``.
+    new_data : dataframe-like or PreparedData, optional
+        Reference observations. Omit to use stored observations. Fitted scales
+        are reused. Supply ``PreparedData`` to include earlier media history.
+    periods : sequence, optional
+        Time labels whose frequency changes. Defaults to all modeling periods.
+    response_periods : sequence, optional
+        Time labels whose responses count, summed across groups. Defaults to
+        all modeling periods. Include later supplied dates to measure carryover.
+    batch_size : int, default 64
+        Maximum posterior draws evaluated together. Scenarios run sequentially.
+
+    Returns
+    -------
+    xarray.Dataset
+        Labeled frequency comparisons retaining posterior uncertainty.
+
+        - **response** contains total responses by chain, draw, channel, and frequency.
+        - **response_change** contains paired changes from the reference inputs.
+        - **reference_response** contains the full reference response for each draw.
+        - **reference_spend** records fixed spending for the selected periods.
+        - **best_frequency** maximizes the posterior mean change within the supplied
+          grid. Exact ties select the first supplied value.
+        - **frequency_period** and **response_period** record the selected dates.
+
+        Responses retain the quantity's units without inverse scaling. No
+        audience cap is inferred, and the model is not refitted.
+    """
+    grid = np.asarray(frequencies)
+    if grid.ndim != 1 or grid.size == 0 or grid.dtype.kind not in "fiu":
+        raise ValueError("frequencies must be a nonempty one-dimensional sequence of real numbers")
+    if not np.isfinite(grid).all() or np.any(grid <= 0) or len(np.unique(grid)) != len(grid):
+        raise ValueError("frequencies must be distinct finite positive numbers")
+
+    inputs, prepared, posterior, coordinates = _response_inputs(model, results, quantity, new_data, batch_size)
+    if not {"reach", "media_frequency", "rf_spend"}.issubset(prepared.arrays):
+        raise ValueError("Frequency evaluation requires reach, media_frequency, and paired rf_spend columns")
+
+    labels = prepared.rf_channels
+    selected = labels if channels is None else channels
+    if isinstance(selected, (str, bytes)) or not isinstance(selected, Sequence) or not selected:
+        raise ValueError("channels must be a nonempty sequence of RF channel labels")
+    if any(not isinstance(name, str) or name not in labels for name in selected) or len(set(selected)) != len(selected):
+        raise ValueError("channels must contain distinct labels from the model's RF channels")
+
+    indices = np.array([labels.index(name) for name in selected], dtype=np.intp)
+
+    time_labels = _coordinates({"time": prepared.time_values})["time"]
+    period_indices = _period_indices(time_labels, periods, name="periods")
+    response_indices = jnp.asarray(_period_indices(time_labels, response_periods, name="response_periods"))
+    n_periods = len(time_labels)
+
+    spend = jnp.asarray(prepared.arrays["rf_spend"], dtype=model._dtype)
+    reach = jnp.asarray(prepared.arrays["reach"][-n_periods:], dtype=model._dtype)
+    frequency = jnp.asarray(prepared.arrays["media_frequency"][-n_periods:], dtype=model._dtype)
+    impressions = reach * frequency
+
+    period_mask = np.zeros(n_periods, dtype=bool)
+    period_mask[period_indices] = True
+    mask = jnp.asarray(period_mask.reshape((-1,) + (1,) * (spend.ndim - 1)))
+    changed_impressions = np.asarray(impressions)[period_indices][..., indices]
+
+    if not np.isfinite(changed_impressions).all():
+        raise ValueError("Impressions are too large for the model precision. Change exposure units")
+    if np.any(~np.any(changed_impressions > 0, axis=tuple(range(spend.ndim - 1)))):
+        raise ValueError("Selected channels need positive impressions during periods")
+
+    totals = np.asarray(jnp.sum(jnp.where(mask, spend, 0), axis=tuple(range(spend.ndim - 1))))[indices]
+    if not np.isfinite(totals).all() or np.any(totals <= 0):
+        raise ValueError("Selected channels need finite positive reference spending during periods")
+
+    candidate_grid = np.asarray(jnp.asarray(grid, dtype=model._dtype))
+    if (
+        not np.isfinite(candidate_grid).all()
+        or np.any(candidate_grid <= 0)
+        or len(np.unique(candidate_grid)) != len(grid)
+    ):
+        raise ValueError("frequencies must remain distinct finite positive values in the model precision")
+
+    transformations = {} if model.scaling is None else model.scaling.transformations
+
+    def evaluate(candidate: tuple[jax.Array, jax.Array]) -> tuple[jax.Array, jax.Array]:
+        channel, level = candidate
+        changed = mask & (jnp.arange(len(labels)) == channel) & (impressions > 0)
+        values = dict(inputs.values)
+        valid = jnp.asarray(True)
+
+        for role, raw in (("reach", impressions / level), ("media_frequency", jnp.full_like(frequency, level))):
+            valid = valid & jnp.all(jnp.where(changed, jnp.isfinite(raw) & (raw > 0), True))
+            transformed = transformations[role].transform(raw) if role in transformations else raw
+            valid = valid & jnp.all(jnp.where(changed, jnp.isfinite(transformed), True))
+            current = jnp.where(changed, transformed, inputs.values[role][-n_periods:])
+            values[role] = jnp.concatenate((inputs.values[role][:-n_periods], current), axis=0)
+
+        response, change = _posterior_response(
+            model,
+            posterior,
+            replace(inputs, values=values),
+            inputs,
+            quantity=quantity,
+            observation_shape=spend.shape[:-1],
+            response_indices=response_indices,
+            batch_size=batch_size,
+        )
+        return jnp.where(valid, response, jnp.nan), jnp.where(valid, change, jnp.nan)
+
+    # The initial scenario selects no channel and retains the reference inputs.
+    scenario_channels = jnp.asarray(np.concatenate(([-1], np.repeat(indices, len(grid)))))
+    scenario_levels = jnp.asarray(np.concatenate((candidate_grid[:1], np.tile(candidate_grid, len(indices)))))
+    responses, changes = map(
+        np.asarray, jax.jit(lambda candidates: jax.lax.map(evaluate, candidates))((scenario_channels, scenario_levels))
+    )
+    if not np.isfinite(responses).all() or not np.isfinite(changes).all():
+        raise ValueError("A frequency scenario produced invalid exposures or a nonfinite response")
+
+    shape = (len(indices), len(grid), *responses.shape[1:])
+    response = responses[1:].reshape(shape).transpose(2, 3, 0, 1)
+    change = changes[1:].reshape(shape).transpose(2, 3, 0, 1)
+    best = np.argmax(change.mean(axis=(0, 1), dtype=np.float64), axis=-1)
+    axes = ("chain", "draw", "channel", "frequency")
+
+    return xr.Dataset(
+        {
+            "response": (axes, response),
+            "response_change": (axes, change),
+            "reference_response": (("chain", "draw"), responses[0]),
+            "reference_spend": ("channel", totals),
+            "best_frequency": ("channel", grid[best]),
+        },
+        coords={
+            "chain": coordinates["chain"],
+            "draw": coordinates["draw"],
+            "channel": np.asarray(selected),
+            "channel_type": ("channel", ["reach_frequency"] * len(indices)),
+            "frequency": grid,
+            "frequency_period": time_labels[period_indices],
+            "response_period": time_labels[np.asarray(response_indices)],
+        },
+        attrs={
+            "quantity": quantity,
+            "intervention": "fixed impressions and spending",
+            "history": "fixed",
+            "selection": "highest posterior mean response among supplied frequencies with other channels fixed",
+            "response_units": "as returned by the transformed quantity",
+        },
     )
 
 
@@ -379,6 +566,42 @@ def _evaluate_response_pairs(
     return responses, differences
 
 
+def _response_inputs(
+    model: Model,
+    results: xr.DataTree,
+    quantity: str,
+    new_data: object,
+    batch_size: int,
+) -> tuple[_ModelData, PreparedData, dict[str, jax.Array], dict[str, NDArray[np.generic]]]:
+    """Recover raw reference data while retaining fitted inputs and posterior labels."""
+    if not isinstance(model, Model):
+        raise TypeError("model must be a Model")
+    if model._data is None:
+        raise ValueError("Response evaluation requires a model with prepared data")
+    if not isinstance(quantity, str) or not quantity:
+        raise ValueError("quantity must name an observation-shaped transformed output")
+    if model._transformed_parameters is None:
+        raise ValueError("The model must define transformed_parameters for its expected response")
+    if isinstance(batch_size, bool) or not isinstance(batch_size, Integral) or batch_size <= 0:
+        raise ValueError("batch_size must be a positive integer")
+
+    dimensions, coordinates = _parameter_metadata(model)
+    posterior, coordinates = _posterior_draws(model, results, dimensions, coordinates)
+    inputs = model._data
+    prepared = _result_data(model)
+    assert prepared is not None
+
+    if new_data is not None:
+        inputs, aligned = model._prepare_data(new_data)
+        prepared = replace(aligned, arrays={name: np.array(inputs.values[name], copy=True) for name in aligned.arrays})
+
+    # Recover original input units once. Candidate evaluation reuses the fitted factors.
+    if model.scaling is not None:
+        prepared = model.scaling.inverse_transform(prepared)
+
+    return inputs, prepared, {name: jnp.asarray(value) for name, value in posterior.items()}, coordinates
+
+
 def _prepare_response(
     model: Model,
     results: xr.DataTree,
@@ -393,30 +616,11 @@ def _prepare_response(
     batch_size: int = 64,
 ) -> _ResponseContext:
     """Prepare fixed model inputs and labels before numerical budget evaluation."""
-    if not isinstance(model, Model):
-        raise TypeError("model must be a Model")
-    if model._data is None:
-        raise ValueError("Response evaluation requires a model with prepared data")
-    if not isinstance(quantity, str) or not quantity:
-        raise ValueError("quantity must name an observation-shaped transformed output")
-    if model._transformed_parameters is None:
-        raise ValueError("The model must define transformed_parameters for its expected response")
-    if isinstance(batch_size, bool) or not isinstance(batch_size, Integral) or batch_size <= 0:
-        raise ValueError("batch_size must be a positive integer")
+    inputs, prepared, posterior, coordinates = _response_inputs(model, results, quantity, new_data, batch_size)
     if not callable(spend_to_media) and not (isinstance(spend_to_media, str) and spend_to_media == "proportional"):
         raise ValueError("spend_to_media must be 'proportional' or a JAX-compatible callable")
     if not callable(spend_to_rf) and not (isinstance(spend_to_rf, str) and spend_to_rf in ("reach", "frequency")):
         raise ValueError("spend_to_rf must be 'reach', 'frequency', or a JAX-compatible callable")
-
-    dimensions, coordinates = _parameter_metadata(model)
-    posterior, coordinates = _posterior_draws(model, results, dimensions, coordinates)
-    inputs = model._data
-    prepared = _result_data(model)
-    assert prepared is not None
-
-    if new_data is not None:
-        inputs, aligned = model._prepare_data(new_data)
-        prepared = replace(aligned, arrays={name: np.array(inputs.values[name], copy=True) for name in aligned.arrays})
 
     has_media = {"media", "spend"}.issubset(inputs.values)
     has_rf = {"reach", "media_frequency", "rf_spend"}.issubset(inputs.values)
@@ -448,10 +652,6 @@ def _prepare_response(
     # Default conversions affect selected channels. Custom mappings cover their full input family.
     conversion_mask = np.zeros(len(labels), dtype=bool)
     conversion_mask[indices] = True
-
-    # Recover original input units once. Candidate evaluation reuses the fitted factors.
-    if model.scaling is not None:
-        prepared = model.scaling.inverse_transform(prepared)
 
     spend = jnp.concatenate(
         [
@@ -515,7 +715,7 @@ def _prepare_response(
     evaluator = _BudgetResponse(
         model=model,
         inputs=inputs,
-        posterior={name: jnp.asarray(value) for name, value in posterior.items()},
+        posterior=posterior,
         quantity=quantity,
         spend_weights=selected_spend / jnp.where(totals > 0, totals, 1),
         convert=convert,
@@ -550,6 +750,49 @@ def _prepare_response(
             "response_units": "as returned by the transformed quantity",
         },
     )
+
+
+def _posterior_response(
+    model: Model,
+    posterior: dict[str, jax.Array],
+    inputs: _ModelData,
+    reference_inputs: _ModelData | None,
+    *,
+    quantity: str,
+    observation_shape: tuple[int, ...],
+    response_indices: jax.Array | None,
+    batch_size: int,
+) -> tuple[jax.Array, jax.Array]:
+    """Evaluate paired observation responses in bounded posterior batches."""
+
+    def evaluate_quantity(data: _ModelData, parameters: dict[str, jax.Array]) -> jax.Array:
+        quantities = model._evaluate_quantities(data, parameters)
+        if quantity not in quantities:
+            raise ValueError(f"Transformed quantity {quantity!r} is not available")
+
+        value = quantities[quantity]
+        if value.shape != observation_shape or not jnp.issubdtype(value.dtype, jnp.floating):
+            raise ValueError("The response quantity must be floating-point with the observation shape")
+
+        return value if response_indices is None else value[response_indices]
+
+    def response(parameters: dict[str, jax.Array]) -> tuple[jax.Array, jax.Array]:
+        value = evaluate_quantity(inputs, parameters)
+        difference = jnp.zeros((), dtype=value.dtype)
+        if reference_inputs is not None:
+            # Subtract per observation before a large baseline can hide changes in the sum.
+            difference = jnp.sum(value - evaluate_quantity(reference_inputs, parameters))
+
+        return jnp.sum(value), difference
+
+    chains, draws = next(iter(posterior.values())).shape[:2]
+    flattened = {name: value.reshape((-1, *value.shape[2:])) for name, value in posterior.items()}
+    totals, differences = cast(
+        tuple[jax.Array, jax.Array],
+        jax.lax.map(response, flattened, batch_size=min(int(batch_size), chains * draws)),
+    )
+
+    return totals.reshape(chains, draws), differences.reshape(chains, draws)
 
 
 def _period_indices(labels: NDArray[np.generic], selected: Sequence[object] | None, *, name: str) -> NDArray[np.intp]:
@@ -663,18 +906,6 @@ class _BudgetResponse:
 
         return replace(self.inputs, values=values), valid
 
-    def _quantity(self, inputs: _ModelData, parameters: dict[str, jax.Array]) -> jax.Array:
-        """Select the observation-shaped deterministic response before aggregation."""
-        quantities = self.model._evaluate_quantities(inputs, parameters)
-        if self.quantity not in quantities:
-            raise ValueError(f"Transformed quantity {self.quantity!r} is not available")
-
-        value = quantities[self.quantity]
-        if value.shape != self.observation_shape or not jnp.issubdtype(value.dtype, jnp.floating):
-            raise ValueError("The response quantity must be floating-point with the observation shape")
-
-        return value if self.response_indices is None else value[self.response_indices]
-
     def paired_evaluation(self, budgets: jax.Array, reference: jax.Array | None = None) -> tuple[jax.Array, jax.Array]:
         """Sum paired observation differences before a large baseline can hide them."""
         inputs, valid = self._scenario_inputs(budgets)
@@ -683,20 +914,15 @@ class _BudgetResponse:
             reference_inputs, reference_valid = self._scenario_inputs(reference)
             valid = valid & reference_valid
 
-        def response(parameters: dict[str, jax.Array]) -> tuple[jax.Array, jax.Array]:
-            value = self._quantity(inputs, parameters)
-            difference = jnp.zeros((), dtype=value.dtype)
-            if reference_inputs is not None:
-                difference = jnp.sum(value - self._quantity(reference_inputs, parameters))
-
-            return jnp.where(valid, jnp.sum(value), jnp.nan), jnp.where(valid, difference, jnp.nan)
-
-        chains, draws = next(iter(self.posterior.values())).shape[:2]
-        flattened = {name: value.reshape((-1, *value.shape[2:])) for name, value in self.posterior.items()}
-
-        totals, differences = cast(
-            tuple[jax.Array, jax.Array],
-            jax.lax.map(response, flattened, batch_size=min(self.batch_size, chains * draws)),
+        totals, differences = _posterior_response(
+            self.model,
+            self.posterior,
+            inputs,
+            reference_inputs,
+            quantity=self.quantity,
+            observation_shape=self.observation_shape,
+            response_indices=self.response_indices,
+            batch_size=self.batch_size,
         )
 
-        return totals.reshape(chains, draws), differences.reshape(chains, draws)
+        return jnp.where(valid, totals, jnp.nan), jnp.where(valid, differences, jnp.nan)
