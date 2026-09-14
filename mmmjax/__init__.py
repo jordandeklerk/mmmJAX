@@ -135,7 +135,7 @@ from mmmjax.parameters import (
     Simplex,
     UpperBound,
 )
-from mmmjax.response import media_metrics, response_curves
+from mmmjax.response import frequency_curves, media_metrics, response_curves
 from mmmjax.saturation import hill_saturation, log_saturation, logistic_saturation, root_saturation
 from mmmjax.scaling import DataScaling, Scaling, fit_data_scaling, fit_media_scaling, fit_scaling
 from mmmjax.seasonality import fourier_features
@@ -209,6 +209,7 @@ __all__ = [
     "fit_media_scaling",
     "fit_scaling",
     "fourier_features",
+    "frequency_curves",
     "gamma",
     "gamma_logcdf",
     "gamma_logpdf",

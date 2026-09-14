@@ -17,6 +17,7 @@ from mmmjax import (
     Positive,
     Real,
     fit_data_scaling,
+    frequency_curves,
     geometric_adstock,
     hill_saturation,
     prepare_data,
@@ -1355,3 +1356,489 @@ def test_response_curves_rf_integer_inputs_preserve_fractional_scenarios_and_gra
     np.testing.assert_allclose(scenario.values["media_frequency"][:, 0], frequency)
     np.testing.assert_array_equal(model.data.values["reach"][:, 0], [2, 6])
     np.testing.assert_array_equal(model.data.values["media_frequency"][:, 0], [1, 3])
+
+
+def _frequency_scenario(data, channel, frequency, *, periods=(1, 2, 3)):
+    scenario = _rf_scenario(data, None, 1.0)
+    index = data.rf_channels.index(channel)
+    history = len(data.media_time_values) - len(data.time_values)
+    for period in periods:
+        row = history + data.time_values.index(period)
+        reach = data.arrays["reach"][row, ..., index]
+        original_frequency = data.arrays["media_frequency"][row, ..., index]
+        impressions = reach * original_frequency
+        scenario.arrays["reach"][row, ..., index] = np.where(impressions > 0, impressions / frequency, reach)
+        scenario.arrays["media_frequency"][row, ..., index] = np.where(impressions > 0, frequency, original_frequency)
+    return scenario
+
+
+def test_frequency_curves_are_public_and_evaluate_conditional_responses_per_draw():
+    assert mmmjax.frequency_curves is frequency_curves
+    data = _rf_data(mixed=True)
+    model, results = _rf_model(data), _rf_results()
+    frequencies = [4.0, 0.5, 2.0]
+    curves = frequency_curves(model, results, quantity="expected", frequencies=frequencies)
+
+    assert set(curves.data_vars) == {
+        "response",
+        "response_change",
+        "reference_response",
+        "reference_spend",
+        "best_frequency",
+    }
+    assert curves["response"].dims == ("chain", "draw", "channel", "frequency")
+    assert curves["response_change"].dims == curves["response"].dims
+    assert curves["reference_response"].dims == ("chain", "draw")
+    assert curves["reference_spend"].dims == curves["best_frequency"].dims == ("channel",)
+    for coordinate, expected in {
+        "chain": [4, 8],
+        "draw": [10, 30],
+        "channel": ["Video", "Audio"],
+        "frequency": frequencies,
+        "channel_type": ["reach_frequency"] * 2,
+        "frequency_period": [1, 2, 3],
+        "response_period": [1, 2, 3],
+    }.items():
+        np.testing.assert_array_equal(curves[coordinate], expected)
+    np.testing.assert_allclose(curves["reference_spend"], data.arrays["rf_spend"].sum(axis=0))
+    for chain, draw in np.ndindex(2, 2):
+        coefficient = results["posterior"]["coefficient"].values[chain, draw]
+        reference = _rf_expected(data, coefficient)
+        np.testing.assert_allclose(curves["reference_response"][chain, draw], reference, rtol=2e-6)
+        for channel in data.rf_channels:
+            for frequency in frequencies:
+                expected = _rf_expected(_frequency_scenario(data, channel, frequency), coefficient)
+                actual = curves.sel(channel=channel, frequency=frequency).isel(chain=chain, draw=draw)
+                np.testing.assert_allclose(actual["response"], expected, rtol=3e-6)
+                np.testing.assert_allclose(actual["response_change"], expected - reference, rtol=3e-6, atol=3e-5)
+    selected = frequency_curves(
+        model, results, quantity="expected", frequencies=frequencies, channels=["Audio", "Video"]
+    )
+    xr.testing.assert_allclose(selected, curves.sel(channel=["Audio", "Video"]))
+
+
+@pytest.mark.parametrize("reference_kind", ["raw", "scaled", "new_data"])
+def test_frequency_curves_reuse_fitted_population_scales_and_separate_windows(reference_kind):
+    training = _rf_data(mixed=True, grouped=True)
+    scaling = fit_data_scaling(training, adjust_population=True, scale_outcome=True)
+    model = _rf_model(scaling.transform(training) if reference_kind == "scaled" else training, scaling=scaling)
+    reference = training
+    if reference_kind == "new_data":
+        arrays = {name: value.copy() for name, value in training.arrays.items()}
+        arrays["reach"][1:] *= 3.0
+        arrays["rf_spend"] *= 2.0
+        reference = replace(training, arrays=arrays)
+    original = {name: np.asarray(value).copy() for name, value in model.data.values.items()}
+    results = _rf_results()
+    curves = frequency_curves(
+        model,
+        results,
+        quantity="expected",
+        frequencies=[0.25, 3.0],
+        channels=["Audio"],
+        periods=[1],
+        response_periods=[3, 2],
+        new_data=reference if reference_kind == "new_data" else None,
+    )
+    np.testing.assert_array_equal(curves["frequency_period"], [1])
+    np.testing.assert_array_equal(curves["response_period"], [2, 3])
+    np.testing.assert_allclose(curves["reference_spend"], [reference.arrays["rf_spend"][0, ..., 1].sum()])
+    for chain, draw in np.ndindex(2, 2):
+        coefficient = results["posterior"]["coefficient"].values[chain, draw]
+        expected_reference = _rf_expected(reference, coefficient, scaling=scaling, response_periods=[2, 3])
+        np.testing.assert_allclose(curves["reference_response"][chain, draw], expected_reference, rtol=3e-6)
+        for frequency in [0.25, 3.0]:
+            scenario = _frequency_scenario(reference, "Audio", frequency, periods=[1])
+            expected = _rf_expected(scenario, coefficient, scaling=scaling, response_periods=[2, 3])
+            actual = curves.sel(channel="Audio", frequency=frequency).isel(chain=chain, draw=draw)
+            np.testing.assert_allclose(actual["response"], expected, rtol=3e-6)
+            # The paired change can be much smaller than the observations evaluated in model precision.
+            rounding = np.finfo(curves["response"].dtype).eps * abs(expected_reference)
+            np.testing.assert_allclose(
+                actual["response_change"], expected - expected_reference, rtol=3e-6, atol=rounding
+            )
+    for name, value in original.items():
+        np.testing.assert_array_equal(model.data.values[name], value)
+
+
+@pytest.mark.parametrize("half_saturation, best", [([[2.0, 2.0]], 2.0), ([[1.0, 7.0]], 1.0)])
+def test_frequency_curves_recover_hill_optimum_and_average_posterior_responses(half_saturation, best):
+    data = _rf_data()
+
+    def transformed(reach, media_frequency, half_saturation):
+        return {"expected": (reach * hill_saturation(media_frequency, half_saturation, 2.0))[1:, 0]}
+
+    def density(expected):
+        raise AssertionError("Frequency curves must not evaluate the density")
+
+    def generated(key, expected):
+        raise AssertionError("Frequency curves must not evaluate generated observations")
+
+    model = Model({"half_saturation": Positive()}, density, generated, data=data, transformed_parameters=transformed)
+    results = _collect_results({"half_saturation": np.asarray(half_saturation, dtype=np.float32)})
+    frequencies = np.array([4.0, 1.0, 2.0, 7.0])
+    curves = frequency_curves(model, results, quantity="expected", frequencies=frequencies, channels=["Video"])
+    impressions = (data.arrays["reach"][1:, 0] * data.arrays["media_frequency"][1:, 0]).sum()
+    # Holding I = reach * frequency fixed gives I*f/(f**2 + half**2), with optimum f = half.
+    expected = impressions * frequencies / (frequencies**2 + np.asarray(half_saturation)[..., None] ** 2)
+    np.testing.assert_allclose(curves["response"].sel(channel="Video"), expected, rtol=2e-6)
+    assert curves["best_frequency"].sel(channel="Video").item() == best
+    if best == 1.0:
+        at_mean_parameters = impressions * frequencies / (frequencies**2 + np.mean(half_saturation) ** 2)
+        assert frequencies[np.argmax(at_mean_parameters)] == 4.0
+        assert not np.allclose(curves["response"].mean(("chain", "draw")), at_mean_parameters[None, :])
+
+
+def test_frequency_curves_preserve_zero_impression_cells_and_all_fixed_inputs_exactly():
+    data = _rf_data(mixed=True, grouped=True)
+    arrays = {name: value.copy() for name, value in data.arrays.items()}
+    arrays["reach"][1, 0, 0] = 0.0
+    arrays["media_frequency"][2, 1, 0] = 0.0
+    arrays["rf_spend"][0, 1, 0] = 0.0  # Positive impressions at a zero-spend cell are valid here.
+    arrays.update(
+        organic_media=arrays["media"].copy(),
+        organic_reach=arrays["reach"][..., :1].copy(),
+        organic_frequency=arrays["media_frequency"][..., :1].copy(),
+        controls=arrays["spend"].copy(),
+    )
+    data = replace(
+        data,
+        arrays=arrays,
+        organic_channels=("Email",),
+        organic_rf_channels=("Social",),
+        columns={
+            **data.columns,
+            "organic_media": ("email",),
+            "organic_reach": ("social_reach",),
+            "organic_frequency": ("social_frequency",),
+            "controls": ("temperature",),
+        },
+    )
+    mutable = np.zeros_like(arrays["reach"], dtype=bool)
+    mutable[1:3, ..., 0] = (arrays["reach"] * arrays["media_frequency"])[1:3, ..., 0] > 0
+    fixed_names = ("rf_spend", "spend", "media", "organic_media", "organic_reach", "organic_frequency", "controls")
+
+    def transformed(
+        reach,
+        media_frequency,
+        rf_spend,
+        spend,
+        media,
+        organic_media,
+        organic_reach,
+        organic_frequency,
+        controls,
+        coefficient,
+    ):
+        values = locals()
+        valid = jnp.all(jnp.where(mutable, True, reach == arrays["reach"]))
+        valid &= jnp.all(jnp.where(mutable, True, media_frequency == arrays["media_frequency"]))
+        valid &= jnp.allclose(reach * media_frequency, arrays["reach"] * arrays["media_frequency"])
+        for name in fixed_names:
+            valid &= jnp.all(values[name] == arrays[name])
+        exposure = reach * media_frequency / (1.0 + media_frequency)
+        # The cross-channel interaction distinguishes conditional curves from joint interventions.
+        expected = coefficient * exposure[1:, ..., 0] * exposure[1:, ..., 1]
+        return {"expected": jnp.where(valid, expected, jnp.nan)}
+
+    model = Model(
+        {"coefficient": Real()}, lambda expected: expected.sum(), data=data, transformed_parameters=transformed
+    )
+    curves = frequency_curves(
+        model, _rf_results(), quantity="expected", frequencies=[0.125, 2.5], channels=["Video"], periods=[1, 2]
+    )
+    for frequency in [0.125, 2.5]:
+        scenario = _frequency_scenario(data, "Video", frequency, periods=[1, 2])
+        exposure = (
+            scenario.arrays["reach"] * scenario.arrays["media_frequency"] / (1 + scenario.arrays["media_frequency"])
+        )
+        expected = 0.5 * (exposure[1:, ..., 0] * exposure[1:, ..., 1]).sum()
+        np.testing.assert_allclose(
+            curves["response"].sel(channel="Video", frequency=frequency).isel(chain=0, draw=0), expected, rtol=2e-6
+        )
+    for name, original in arrays.items():
+        np.testing.assert_array_equal(model.data.values[name], original)
+
+
+def test_frequency_curves_constant_frequency_reference_and_batching():
+    data = _rf_data(mixed=True)
+    data.arrays["media_frequency"][1:, 0] = 2.0
+    model, results = _rf_model(data), _rf_results()
+    options = {"quantity": "expected", "frequencies": [4.0, 2.0, 1.0], "channels": ["Video"]}
+    single = frequency_curves(model, results, batch_size=1, **options)
+    for batch_size in [3, 64]:
+        batched = frequency_curves(model, results, batch_size=batch_size, **options)
+        xr.testing.assert_allclose(single, batched, rtol=2e-6, atol=2e-5)
+    rounding = np.finfo(single["response"].dtype).eps * float(abs(single["reference_response"]).max())
+    np.testing.assert_allclose(single["response_change"].sel(frequency=2.0), 0.0, rtol=0, atol=rounding)
+    np.testing.assert_allclose(
+        single["response"].sel(channel="Video", frequency=2.0), single["reference_response"], rtol=0, atol=rounding
+    )
+
+
+def test_frequency_curves_exact_ties_choose_first_supplied_frequency():
+    data = _rf_data()
+    model = Model(
+        {"coefficient": Real()},
+        lambda coefficient: -(coefficient**2),
+        data=data,
+        transformed_parameters=lambda rf_spend, coefficient: {"expected": coefficient * rf_spend.sum(axis=-1)},
+    )
+    curves = frequency_curves(model, _rf_results(), quantity="expected", frequencies=[7.0, 1.0, 3.0])
+    np.testing.assert_array_equal(curves["response_change"], 0.0)
+    np.testing.assert_array_equal(curves["best_frequency"], [7.0, 7.0])
+
+
+def test_frequency_curves_subtract_paired_observations_before_aggregation():
+    data = prepare_data(
+        pl.DataFrame({"week": np.arange(100), "reach": np.ones(100), "frequency": np.ones(100), "cost": np.ones(100)}),
+        time="week",
+        reach=["reach"],
+        media_frequency=["frequency"],
+        rf_spend=["cost"],
+    )
+    model = Model(
+        {"coefficient": Real()},
+        lambda coefficient: -(coefficient**2),
+        data=data,
+        transformed_parameters=lambda media_frequency, coefficient: {
+            "expected": 1_000_000.0 + coefficient * media_frequency[:, 0]
+        },
+    )
+    curves = frequency_curves(
+        model,
+        _collect_results({"coefficient": np.ones((1, 1), dtype=np.float32)}),
+        quantity="expected",
+        frequencies=[1.0, 2.0, 3.0],
+    )
+    np.testing.assert_allclose(curves["response_change"][0, 0, 0], [0.0, 100.0, 200.0], rtol=1e-6)
+
+
+def test_frequency_curves_preserve_date_labels_and_fractional_reach_from_integer_inputs():
+    dates = [date(2026, 1, day) for day in [1, 2, 3]]
+    data = prepare_data(
+        pl.DataFrame({"week": dates, "reach": [2, 6, 10], "frequency": [1, 3, 5], "cost": [1.0, 3.0, 5.0]}),
+        time="week",
+        reach=["reach"],
+        media_frequency=["frequency"],
+        rf_spend=["cost"],
+    )
+    model = Model(
+        {"coefficient": Real()},
+        lambda coefficient: -(coefficient**2),
+        data=data,
+        transformed_parameters=lambda reach, media_frequency, coefficient: {
+            "expected": coefficient * (reach * media_frequency / (1 + media_frequency))[:, 0]
+        },
+    )
+    curves = frequency_curves(
+        model,
+        _collect_results({"coefficient": np.ones((1, 1), dtype=np.float32)}),
+        quantity="expected",
+        frequencies=[4.0, 2.0],
+        periods=[dates[1]],
+        response_periods=[dates[2], dates[1]],
+    )
+    np.testing.assert_array_equal(curves["frequency_period"], np.asarray(dates[1:2], dtype="datetime64[D]"))
+    np.testing.assert_array_equal(curves["response_period"], np.asarray(dates[1:], dtype="datetime64[D]"))
+    np.testing.assert_allclose(curves["reference_spend"], [3.0])
+    np.testing.assert_allclose(curves["response"][0, 0, 0], 18.0 / np.array([5.0, 3.0]) + 50.0 / 6.0)
+    np.testing.assert_array_equal(model.data.values["reach"][:, 0], [2, 6, 10])
+
+
+@pytest.fixture
+def integer_frequency_data():
+    data = _rf_data()
+    for role in ("reach", "media_frequency"):
+        data.arrays[role] = data.arrays[role].astype(np.int64)
+    return data
+
+
+def _integer_frequency_model(data):
+    return Model(
+        {"coefficient": Real()},
+        lambda coefficient: -(coefficient**2),
+        data=data,
+        transformed_parameters=lambda reach, media_frequency, coefficient: {
+            "expected": coefficient * reach[1:, 1] + coefficient * media_frequency[1:, 1]
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "role, location, new_data",
+    [
+        ("reach", "selected", False),
+        ("media_frequency", "selected", False),
+        ("reach", "unselected", False),
+        ("media_frequency", "history", False),
+        ("reach", "outside_periods", False),
+        ("reach", "zero_impressions", False),
+        ("media_frequency", "zero_impressions", False),
+        ("reach", "history", True),
+        ("media_frequency", "unselected", True),
+    ],
+)
+def test_frequency_curves_reject_integer_precision_loss(integer_frequency_data, role, location, new_data):
+    data = integer_frequency_data
+    with jax.enable_x64(False):
+        training_model = _integer_frequency_model(data) if new_data else None
+        row, channel = {"history": (0, 0), "unselected": (1, 1), "outside_periods": (3, 0)}.get(location, (1, 0))
+        data.arrays[role][row, channel] = 2**24 + 1
+        if location == "zero_impressions":
+            other_role = "media_frequency" if role == "reach" else "reach"
+            data.arrays[other_role][row, channel] = 0
+        model = training_model if new_data else _integer_frequency_model(data)
+        with pytest.raises(ValueError, match=r"precision|64-bit"):
+            frequency_curves(
+                model,
+                _rf_results(),
+                quantity="expected",
+                frequencies=[2.0, 4.0],
+                channels=["Video"],
+                periods=[1, 2],
+                response_periods=[1, 2],
+                new_data=data if new_data else None,
+            )
+
+
+@pytest.mark.parametrize("role", ["reach", "media_frequency"])
+def test_frequency_curves_preserve_large_integer_inputs_with_x64(integer_frequency_data, role):
+    data = integer_frequency_data
+    data.arrays[role][:, 1] = 2**24 + 1
+    with jax.enable_x64(True):
+        model = _integer_frequency_model(data)
+        results = _collect_results({"coefficient": np.array([[0.5, 1.0], [1.5, 2.0]], dtype=np.float64)})
+        curves = frequency_curves(model, results, quantity="expected", frequencies=[2.0, 4.0], channels=["Video"])
+        expected = results["posterior"]["coefficient"].values.astype(np.float64) * (
+            data.arrays["reach"][1:, 1].sum() + data.arrays["media_frequency"][1:, 1].sum()
+        )
+        np.testing.assert_array_equal(curves["reference_response"], expected)
+        np.testing.assert_array_equal(curves["response_change"], 0.0)
+        for frequency in [2.0, 4.0]:
+            np.testing.assert_array_equal(curves["response"].sel(channel="Video", frequency=frequency), expected)
+        np.testing.assert_array_equal(model.data.values[role], data.arrays[role])
+
+
+@pytest.mark.parametrize("dtype", [np.int64, np.uint64])
+def test_frequency_curves_reject_integer_boundaries_rounded_out_of_range(integer_frequency_data, dtype):
+    data = integer_frequency_data
+    data.arrays["reach"] = data.arrays["reach"].astype(dtype)
+    data.arrays["reach"][0, 1] = np.iinfo(dtype).max
+    with jax.enable_x64(True):
+        model = _integer_frequency_model(data)
+        with pytest.raises(ValueError, match=r"precision|64-bit"):
+            frequency_curves(model, _rf_results(), quantity="expected", frequencies=[2.0], channels=["Video"])
+
+
+def test_frequency_curves_evaluate_reference_with_original_integer_arithmetic(integer_frequency_data):
+    data = integer_frequency_data
+    data.arrays["reach"][:, 1] = 2**24
+    data.arrays["media_frequency"][:, 1] = 1
+    with jax.enable_x64(False):
+        model = Model(
+            {"coefficient": Real()},
+            lambda coefficient: -(coefficient**2),
+            data=data,
+            transformed_parameters=lambda reach, media_frequency, coefficient: {
+                "expected": coefficient * ((reach[1:, 1] + media_frequency[1:, 1]) % 3)
+            },
+        )
+        results = _collect_results({"coefficient": np.ones((1, 1), dtype=np.float32)})
+        curves = frequency_curves(model, results, quantity="expected", frequencies=[2.0], channels=["Video"])
+    # Every input is exactly representable, but converting before the addition changes the remainder.
+    np.testing.assert_array_equal(curves["reference_response"], [[6.0]])
+
+
+@pytest.mark.parametrize(
+    "frequencies", [[], [0.0], [-1.0], [np.nan], [np.inf], [[1.0, 2.0]], [True], [1.0, 1.0], [1j], ["2"]]
+)
+def test_frequency_curves_reject_invalid_frequency_grids(frequencies):
+    data = _rf_data()
+    with pytest.raises((TypeError, ValueError), match="frequenc"):
+        frequency_curves(_rf_model(data), _rf_results(), quantity="expected", frequencies=frequencies)
+
+
+@pytest.mark.parametrize("channels", [[], ["Search"], ["Unknown"], ["Video", "Video"], "Video"])
+def test_frequency_curves_reject_invalid_or_non_rf_channel_selections(channels):
+    data = _rf_data(mixed=True)
+    with pytest.raises((TypeError, ValueError), match=r"channel|reach.frequency"):
+        frequency_curves(_rf_model(data), _rf_results(), quantity="expected", frequencies=[1.0], channels=channels)
+
+
+@pytest.mark.parametrize("batch_size", [0, -1, True, 1.5])
+def test_frequency_curves_reject_invalid_batch_sizes(batch_size):
+    data = _rf_data()
+    with pytest.raises((TypeError, ValueError), match="batch_size"):
+        frequency_curves(_rf_model(data), _rf_results(), quantity="expected", frequencies=[1.0], batch_size=batch_size)
+
+
+@pytest.mark.parametrize("quantity", [None, "", "missing", "aggregate", "exposure"])
+def test_frequency_curves_require_an_observation_shaped_transformed_quantity(quantity):
+    data = _rf_data()
+
+    def transformed(reach, coefficient):
+        return {"expected": coefficient * reach[1:, 0], "aggregate": reach.sum(), "exposure": reach}
+
+    model = Model(
+        {"coefficient": Real()}, lambda expected: expected.sum(), data=data, transformed_parameters=transformed
+    )
+    with pytest.raises((TypeError, ValueError), match=r"quantity|shape"):
+        frequency_curves(model, _rf_results(), quantity=quantity, frequencies=[1.0])
+
+
+@pytest.mark.parametrize("missing", ["rf_spend", "impressions", "selected_spend"])
+def test_frequency_curves_require_paired_spend_and_positive_selected_totals(missing):
+    data = _rf_data(mixed=True)
+    if missing == "rf_spend":
+        data = replace(data, arrays={name: value for name, value in data.arrays.items() if name != "rf_spend"})
+    elif missing == "impressions":
+        data.arrays["reach"][1, 0] = 0.0
+    else:
+        data.arrays["rf_spend"][0, 0] = 0.0
+    model = _rf_model(data)
+    with pytest.raises(ValueError, match=r"spend|impression|positive"):
+        frequency_curves(model, _rf_results(), quantity="expected", frequencies=[1.0], channels=["Video"], periods=[1])
+    if missing != "rf_spend":
+        curves = frequency_curves(
+            model, _rf_results(), quantity="expected", frequencies=[1.0], channels=["Audio"], periods=[1]
+        )
+        assert np.isfinite(curves["response"]).all()
+
+
+def test_frequency_curves_require_reach_frequency_inputs():
+    data = _data()
+    model = _model(data)
+    with pytest.raises(ValueError, match=r"reach|frequency|channel"):
+        frequency_curves(model, _results(model, data), quantity="expected", frequencies=[1.0])
+
+
+@pytest.mark.parametrize("scenario", ["raw_underflow", "scaled_overflow"])
+def test_frequency_curves_reject_unrepresentable_exposures(scenario):
+    precision = np.finfo(np.float64 if jax.config.jax_enable_x64 else np.float32)
+    reach = 10 * float(precision.tiny) if scenario == "raw_underflow" else 1e-5
+    frequency = 1.0 if scenario == "raw_underflow" else 1e10
+    candidate = float(precision.max) / 2 if scenario == "raw_underflow" else float(precision.tiny) * 1e8
+    data = prepare_data(
+        pl.DataFrame({"time": [0], "reach": [reach], "frequency": [frequency], "cost": [1.0]}),
+        time="time",
+        reach=["reach"],
+        media_frequency=["frequency"],
+        rf_spend=["cost"],
+    )
+    model = Model(
+        {"coefficient": Real()},
+        lambda coefficient: -(coefficient**2),
+        data=data,
+        scaling=fit_data_scaling(data) if scenario == "scaled_overflow" else None,
+        transformed_parameters=lambda reach, media_frequency, coefficient: {
+            "expected": coefficient * (jnp.tanh(reach) * media_frequency)[:, 0]
+        },
+    )
+    with pytest.raises(ValueError, match="invalid exposures"):
+        frequency_curves(
+            model,
+            _collect_results({"coefficient": np.ones((1, 1), dtype=precision.dtype)}),
+            quantity="expected",
+            frequencies=[candidate],
+        )
