@@ -1,7 +1,7 @@
 Data
 ====
 
-Functions for preparing and generating modeling data.
+Functions for preparing, inspecting, and generating modeling data.
 
 .. currentmodule:: mmmjax
 
@@ -10,5 +10,6 @@ Functions for preparing and generating modeling data.
    :nosignatures:
 
    prepare_data
+   check_data
    select_channels
    simulate_data
