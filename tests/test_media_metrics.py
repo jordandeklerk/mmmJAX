@@ -13,15 +13,16 @@ from mmmjax import Model, Real, fit_data_scaling, media_metrics, prepare_data
 from mmmjax._results import _collect_results
 
 
-def _data(*, grouped=False, multiplier=1.0):
+def _data(*, grouped=False, multiplier=1.0, compound=False, reverse=False):
     rows = []
     for week, exposure in enumerate([[4.0, 2.0], [1.0, 2.0], [3.0, 4.0], [5.0, 1.0]]):
-        for group in range(2 if grouped else 1):
+        for group in range(3 if compound else 2 if grouped else 1):
             video, search = np.asarray(exposure) * (group + 1) * (multiplier if week else 1)
             rows.append(
                 {
                     "week": week,
-                    "region": ("east", "west")[group],
+                    "region": ("east", "west", "east")[group],
+                    "store": ("retail", "online", "online")[group],
                     "video": video,
                     "search": search,
                     "video_cost": video / 2,
@@ -32,21 +33,23 @@ def _data(*, grouped=False, multiplier=1.0):
                 }
             )
     frame = pl.DataFrame(rows)
+    if reverse:
+        frame = frame.reverse()
     return prepare_data(
         frame.filter(pl.col("week") > 0),
         time="week",
-        groups=["region"] if grouped else (),
+        groups=["region", "store"] if compound else ["region"] if grouped else (),
         outcome="outcome",
         population="population",
-        media=["video", "search"],
-        spend=["video_cost", "search_cost"],
-        channels=["Online video", "Paid search"],
+        media=["search", "video"] if reverse else ["video", "search"],
+        spend=["search_cost", "video_cost"] if reverse else ["video_cost", "search_cost"],
+        channels=["Paid search", "Online video"] if reverse else ["Online video", "Paid search"],
         controls=["control"],
         media_history=frame.filter(pl.col("week") == 0),
     )
 
 
-def _model(data, *, scaling=None):
+def _model(data, *, scaling=None, cross_group=False):
     def transformed(media, spend, controls, coefficient):
         carried = media[1:] + 0.5 * media[:-1]
         expected = (
@@ -56,6 +59,8 @@ def _model(data, *, scaling=None):
             + 0.7 * carried[..., 0] * carried[..., 1]
             + 0.25 * spend.sum(axis=-1)
         )
+        if cross_group:
+            expected = expected + 0.2 * carried[..., 0].sum(axis=1, keepdims=True) ** 2
         return {"expected_users": expected, "aggregate": expected.sum(), "exposure": media}
 
     def density(expected_users):
@@ -95,16 +100,27 @@ def case():
 
 
 def _expected(
-    data, coefficient, *, channel=None, multiplier=1.0, spend_periods=None, response_periods=None, scaling=None
+    data,
+    coefficient,
+    *,
+    channel=None,
+    multiplier=1.0,
+    spend_periods=None,
+    response_periods=None,
+    scaling=None,
+    by=(),
+    cross_group=False,
 ):
     arrays = {name: value.copy() for name, value in data.arrays.items()}
     spending = (
-        np.array([data.time_values.index(t) for t in spend_periods]) if spend_periods is not None else np.arange(3)
+        np.array([data.time_values.index(t) for t in spend_periods])
+        if spend_periods is not None
+        else np.arange(len(data.time_values))
     )
     measurement = (
-        np.array([data.time_values.index(t) for t in response_periods])
+        np.array(sorted(data.time_values.index(t) for t in response_periods))
         if response_periods is not None
-        else np.arange(3)
+        else np.arange(len(data.time_values))
     )
     if channel is not None:
         arrays["spend"][spending, ..., channel] *= multiplier
@@ -119,28 +135,36 @@ def _expected(
         + 0.7 * carried[..., 0] * carried[..., 1]
         + 0.25 * values["spend"].sum(axis=-1)
     )
-    return response[measurement].sum()
+    if cross_group:
+        response = response + 0.2 * carried[..., 0].sum(axis=1, keepdims=True) ** 2
+    axes = ("time", "group") if data.group_columns else ("time",)
+    return response[measurement].sum(axis=tuple(index for index, axis in enumerate(axes) if axis not in by))
 
 
 def _assert_closed_form(metrics, data, results, **options):
+    by = metrics["reference_response"].dims[2:]
     for chain in range(metrics.sizes["chain"]):
         for draw in range(metrics.sizes["draw"]):
             coefficient = results["posterior"]["coefficient"].values[chain, draw]
-            reference = _expected(data, coefficient, **options)
+            reference = _expected(data, coefficient, by=by, **options)
             np.testing.assert_allclose(metrics["reference_response"][chain, draw], reference, rtol=3e-6)
             for index, label in enumerate(metrics.channel.values):
                 channel = data.channels.index(label)
                 spend = metrics["reference_spend"].values[index]
                 increase = metrics["incremental_spend"].values[index]
-                zero = _expected(data, coefficient, channel=channel, multiplier=0.0, **options)
-                boosted = _expected(data, coefficient, channel=channel, multiplier=1.0 + increase / spend, **options)
+                zero = _expected(data, coefficient, channel=channel, multiplier=0.0, by=by, **options)
+                boosted = _expected(
+                    data, coefficient, channel=channel, multiplier=1.0 + increase / spend, by=by, **options
+                )
                 for name, expected in {
                     "incremental_response": reference - zero,
-                    "roi": (reference - zero) / spend,
+                    "roi": (reference - zero).sum() / spend,
                     "marginal_response": boosted - reference,
-                    "marginal_roi": (boosted - reference) / increase,
+                    "marginal_roi": (boosted - reference).sum() / increase,
                 }.items():
-                    np.testing.assert_allclose(metrics[name][chain, draw, index], expected, rtol=3e-5, atol=3e-5)
+                    np.testing.assert_allclose(
+                        metrics[name].isel(chain=chain, draw=draw, channel=index), expected, rtol=3e-5, atol=3e-5
+                    )
 
 
 @pytest.mark.parametrize("grouped", [False, True])
@@ -189,6 +213,124 @@ def test_media_metrics_evaluate_full_nonlinear_model_for_every_paired_draw(group
     xr.testing.assert_identical(results, original_results)
     for name, original in original_inputs.items():
         np.testing.assert_array_equal(model.data.values[name], original)
+
+
+@pytest.mark.parametrize("by", ["time", "group", ("time", "group"), ["group", "time"]])
+def test_media_metrics_breakdowns_preserve_full_model_interactions_and_aggregate_roi(by):
+    data = _data(grouped=True)
+    model, results = _model(data, cross_group=True), _results(data)
+    options = {"quantity": "expected_users", "incremental_increase": 0.25}
+    aggregate = media_metrics(model, results, **options)
+    detailed = media_metrics(model, results, by=by, batch_size=4, **options)
+    axes = tuple(axis for axis in ("time", "group") if axis in by)
+
+    assert detailed["reference_response"].dims == ("chain", "draw", *axes)
+    for name in ("incremental_response", "marginal_response"):
+        assert detailed[name].dims == ("chain", "draw", *axes, "channel")
+    for name in ("reference_response", "incremental_response", "marginal_response"):
+        xr.testing.assert_allclose(detailed[name].sum(axes), aggregate[name], rtol=3e-6, atol=3e-5)
+    for name in ("roi", "marginal_roi", "reference_spend", "incremental_spend"):
+        xr.testing.assert_allclose(detailed[name], aggregate[name], rtol=3e-6, atol=3e-5)
+    if "time" in axes:
+        np.testing.assert_array_equal(detailed.time, [1, 2, 3])
+    if "group" in axes:
+        np.testing.assert_array_equal(detailed.group, ["east", "west"])
+    np.testing.assert_array_equal(detailed.chain, [4, 8])
+    np.testing.assert_array_equal(detailed.draw, [10, 20, 30])
+    _assert_closed_form(detailed, data, results, cross_group=True)
+    if by == ("time", "group"):
+        unbatched = media_metrics(model, results, by=by, **options)
+        xr.testing.assert_allclose(detailed, unbatched, rtol=3e-6, atol=3e-5)
+
+
+def test_media_metrics_national_time_breakdown_preserves_posterior_and_channel_selection(case):
+    data, model, results = case
+    selected = results.isel(chain=[1], draw=[2, 0])
+    metrics = media_metrics(
+        model,
+        selected,
+        quantity="expected_users",
+        by="time",
+        channels=["Paid search", "Online video"],
+        response_periods=[3, 1],
+        incremental_increase=0.25,
+        batch_size=3,
+    )
+    assert metrics["incremental_response"].dims == ("chain", "draw", "time", "channel")
+    assert metrics["reference_response"].dims == ("chain", "draw", "time")
+    assert "group" not in metrics.coords
+    np.testing.assert_array_equal(metrics.time, [1, 3])
+    np.testing.assert_array_equal(metrics.response_period, [1, 3])
+    np.testing.assert_array_equal(metrics.channel, ["Paid search", "Online video"])
+    np.testing.assert_array_equal(metrics.chain, [8])
+    np.testing.assert_array_equal(metrics.draw, [30, 10])
+    _assert_closed_form(metrics, data, selected, response_periods=[3, 1])
+
+
+@pytest.mark.parametrize("compound", [False, True])
+def test_media_metrics_breakdown_new_data_aligns_group_and_channel_labels_with_fitted_scales(compound):
+    data = _data(grouped=True, compound=compound)
+    scaling = fit_data_scaling(data, scale_outcome=True, adjust_population=True)
+    model, results = _model(data, scaling=scaling, cross_group=True), _results(data)
+    original = {name: np.asarray(value).copy() for name, value in model.data.values.items()}
+    new_data = _data(grouped=True, compound=compound, multiplier=2.0, reverse=True)
+    expected_data = _data(grouped=True, compound=compound, multiplier=2.0)
+    assert new_data.group_values == data.group_values[::-1]
+    assert new_data.channels == data.channels[::-1]
+
+    metrics = media_metrics(
+        model,
+        results,
+        quantity="expected_users",
+        new_data=new_data,
+        by=("group", "time"),
+        incremental_increase=0.25,
+        batch_size=4,
+    )
+
+    assert metrics["incremental_response"].dims == ("chain", "draw", "time", "group", "channel")
+    np.testing.assert_array_equal(metrics.channel, data.channels)
+    np.testing.assert_array_equal(metrics.time, expected_data.time_values)
+    if compound:
+        np.testing.assert_array_equal(metrics.group, [0, 1, 2])
+        np.testing.assert_array_equal(metrics.group_region, ["east", "west", "east"])
+        np.testing.assert_array_equal(metrics.group_store, ["retail", "online", "online"])
+        assert metrics.group_region.dims == metrics.group_store.dims == ("group",)
+    else:
+        np.testing.assert_array_equal(metrics.group, ["east", "west"])
+        assert "group_region" not in metrics.coords
+    np.testing.assert_allclose(metrics["reference_spend"], expected_data.arrays["spend"].sum(axis=(0, 1)), rtol=2e-6)
+    _assert_closed_form(metrics, expected_data, results, scaling=scaling, cross_group=True)
+    for name, value in original.items():
+        np.testing.assert_array_equal(model.data.values[name], value)
+
+
+def test_media_metrics_breakdown_reports_carryover_on_zero_spend_response_dates():
+    data = _data(grouped=True)
+    data.arrays["spend"][1] = 0.0
+    data.arrays["media"][2] = 0.0
+    model, results = _model(data, cross_group=True), _results(data)
+    windows = {"spend_periods": [1], "response_periods": [3, 2]}
+    metrics = media_metrics(
+        model,
+        results,
+        quantity="expected_users",
+        by=("time", "group"),
+        incremental_increase=0.25,
+        **windows,
+    )
+
+    np.testing.assert_array_equal(metrics.time, [2, 3])
+    np.testing.assert_array_equal(metrics.spend_period, [1])
+    np.testing.assert_array_equal(metrics.response_period, [2, 3])
+    np.testing.assert_allclose(metrics["reference_spend"], data.arrays["spend"][0].sum(axis=0))
+    for name in ("incremental_response", "marginal_response"):
+        assert np.all(metrics[name].sel(time=2).values > 0)
+        np.testing.assert_array_equal(metrics[name].sel(time=3), 0.0)
+    assert metrics["roi"].dims == metrics["marginal_roi"].dims == ("chain", "draw", "channel")
+    assert np.isfinite(metrics["roi"]).all()
+    assert np.isfinite(metrics["marginal_roi"]).all()
+    _assert_closed_form(metrics, data, results, cross_group=True, **windows)
 
 
 def test_media_metrics_preserve_posterior_labels_and_requested_channel_order(case):
@@ -307,6 +449,9 @@ def test_media_metrics_subtract_paired_observations_before_summing_large_baselin
     np.testing.assert_allclose(metrics["marginal_response"][0, :, 0], [50.0, 100.0])
     np.testing.assert_allclose(metrics["roi"][0, :, 0], [1.0, 2.0])
     np.testing.assert_allclose(metrics["marginal_roi"][0, :, 0], [1.0, 2.0])
+    detailed = media_metrics(model, results, quantity="expected_users", incremental_increase=0.5, by="time")
+    for name in ("incremental_response", "marginal_response"):
+        xr.testing.assert_allclose(detailed[name].sum("time"), metrics[name])
 
 
 def test_media_metrics_use_actual_representable_spend_increment():
@@ -327,9 +472,28 @@ def test_media_metrics_defaults_and_batches_preserve_values(case):
         model, results, quantity="expected_users", incremental_increase=0.01, spend_to_media="proportional"
     )
     xr.testing.assert_identical(default, explicit)
+    for by in (None, (), []):
+        xr.testing.assert_identical(default, media_metrics(model, results, quantity="expected_users", by=by))
     for batch_size in (1, 4):
         batched = media_metrics(model, results, quantity="expected_users", batch_size=batch_size)
         xr.testing.assert_allclose(default, batched, rtol=5e-5, atol=2e-5)
+
+
+@pytest.mark.parametrize(
+    "by",
+    ["region", "", ("time", "time"), ("time", 1), ("time", ["group"]), 1, b"time", {"time"}, {"time": True}],
+)
+def test_media_metrics_reject_invalid_breakdown_axes(case, by):
+    _, model, results = case
+    with pytest.raises(ValueError, match="by"):
+        media_metrics(model, results, quantity="expected_users", by=by)
+
+
+@pytest.mark.parametrize("by", ["group", ("time", "group")])
+def test_media_metrics_reject_group_breakdown_for_national_data(case, by):
+    _, model, results = case
+    with pytest.raises(ValueError, match="group"):
+        media_metrics(model, results, quantity="expected_users", by=by)
 
 
 @pytest.mark.parametrize("increase", [0, -0.1, np.nan, np.inf, True, "0.01", [0.01], np.array(0.01), 0.01j])
@@ -517,6 +681,52 @@ def test_media_metrics_rf_roi_and_marginal_roi_follow_paired_nonlinear_scenarios
     assert np.all(metrics["roi"].sel(channel="Video") > 0)
     for name, value in original.items():
         np.testing.assert_array_equal(model.data.values[name], value)
+
+
+def test_media_metrics_time_breakdown_preserves_mixed_rf_channel_scenarios():
+    data, model, results = _rf_case(mixed=True, scaled=True)
+    metrics = media_metrics(
+        model,
+        results,
+        quantity="expected_users",
+        by="time",
+        channels=["Video", "Search"],
+        spend_to_rf="frequency",
+        spend_periods=[1],
+        response_periods=[2],
+        incremental_increase=0.25,
+        batch_size=3,
+    )
+    np.testing.assert_array_equal(metrics.channel, ["Video", "Search"])
+    np.testing.assert_array_equal(metrics.channel_type, ["reach_frequency", "media"])
+    np.testing.assert_array_equal(metrics.time, [2])
+    assert metrics["reference_response"].dims == ("chain", "draw", "time")
+    for name in ("incremental_response", "marginal_response"):
+        assert metrics[name].dims == ("chain", "draw", "time", "channel")
+    for name in ("roi", "marginal_roi"):
+        assert metrics[name].dims == ("chain", "draw", "channel")
+    for name in ("reference_spend", "incremental_spend"):
+        assert metrics[name].dims == ("channel",)
+    np.testing.assert_allclose(metrics["reference_spend"], [2.0, 1.0])
+    np.testing.assert_allclose(metrics["incremental_spend"], [0.5, 0.25])
+    for chain, draw in np.ndindex(2, 2):
+        coefficient = results["posterior"]["coefficient"].values[chain, draw]
+        options = {"mode": "frequency", "scaling": model.scaling}
+        reference = _rf_response(data, coefficient, **options)
+        np.testing.assert_allclose(metrics["reference_response"][chain, draw, 0], reference, rtol=2e-6)
+        for channel, spend in (("Video", 2.0), ("Search", 1.0)):
+            zero = _rf_response(data, coefficient, channel=channel, multiplier=0.0, **options)
+            increased = _rf_response(data, coefficient, channel=channel, multiplier=1.25, **options)
+            for name, expected in {
+                "incremental_response": reference - zero,
+                "marginal_response": increased - reference,
+                "roi": (reference - zero) / spend,
+                "marginal_roi": (increased - reference) / (0.25 * spend),
+            }.items():
+                actual = metrics[name].sel(channel=channel).isel(chain=chain, draw=draw)
+                if "time" in actual.dims:
+                    actual = actual.isel(time=0)
+                np.testing.assert_allclose(actual, expected, rtol=2e-5, atol=2e-5)
 
 
 def test_media_metrics_rf_default_reach_and_selected_channels_match_full_result():
