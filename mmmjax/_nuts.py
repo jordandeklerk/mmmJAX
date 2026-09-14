@@ -2,7 +2,8 @@
 
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from typing import TypeAlias, cast
+from dataclasses import dataclass
+from typing import Literal, TypeAlias, cast, overload
 
 import blackjax  # type: ignore[import-untyped]
 import jax
@@ -19,6 +20,18 @@ _Parameters: TypeAlias = dict[str, jax.Array]
 _Adapted: TypeAlias = tuple[_State, _Parameters, jax.Array]
 
 
+@dataclass(frozen=True)
+class _NUTSContinuation:
+    """Retain each chain's sampler state, tuning, and sampling-key position."""
+
+    state: _State
+    step_size: jax.Array
+    inverse_mass_matrix: jax.Array
+    sampling_keys: jax.Array
+    completed_draws: int
+
+
+@overload
 def _sample_nuts(
     logdensity: Callable[[_Position], jax.Array],
     initial_positions: _Position,
@@ -32,28 +45,104 @@ def _sample_nuts(
     mass_matrix: str,
     chunk_size: int,
     progress: bool = True,
-) -> _Samples:
-    """Adapt independently, then copy bounded sampling chunks into host arrays."""
-    adaptation = blackjax.window_adaptation(
-        blackjax.nuts,
-        logdensity,
-        is_mass_matrix_diagonal=mass_matrix == "diagonal",
-        target_acceptance_rate=target_accept,
-        max_num_doublings=max_tree_depth,
-        adaptation_info_fn=_discard_adaptation,
-    )
-    run_warmup = cast(
-        Callable[..., tuple[tuple[blackjax.mcmc.hmc.HMCState, dict[str, jax.Array | int]], object]],
-        adaptation.run,
-    )
+    return_state: Literal[False] = False,
+    continuation: _NUTSContinuation | None = None,
+) -> _Samples: ...
 
-    def adapt_chain(position: _Position, key: jax.Array) -> _Adapted:
-        warmup_key, sampling_key = jax.random.split(key)
-        (state, parameters), _ = run_warmup(warmup_key, position, num_steps=warmup)
-        # Only adapted arrays cross the compilation boundary. The tree-depth
-        # limit remains a static Python value when constructing the sampler.
-        adapted = {name: jnp.asarray(parameters[name]) for name in ("step_size", "inverse_mass_matrix")}
-        return state, adapted, jax.random.split(sampling_key, draws)
+
+@overload
+def _sample_nuts(
+    logdensity: Callable[[_Position], jax.Array],
+    initial_positions: _Position,
+    keys: jax.Array,
+    *,
+    draws: int,
+    warmup: int,
+    target_accept: float,
+    max_tree_depth: int,
+    chain_method: str,
+    mass_matrix: str,
+    chunk_size: int,
+    progress: bool = True,
+    return_state: Literal[True],
+    continuation: _NUTSContinuation | None = None,
+) -> tuple[_Samples, _NUTSContinuation]: ...
+
+
+@overload
+def _sample_nuts(
+    logdensity: Callable[[_Position], jax.Array],
+    initial_positions: _Position,
+    keys: jax.Array,
+    *,
+    draws: int,
+    warmup: int,
+    target_accept: float,
+    max_tree_depth: int,
+    chain_method: str,
+    mass_matrix: str,
+    chunk_size: int,
+    progress: bool = True,
+    return_state: bool,
+    continuation: _NUTSContinuation | None = None,
+) -> _Samples | tuple[_Samples, _NUTSContinuation]: ...
+
+
+def _sample_nuts(
+    logdensity: Callable[[_Position], jax.Array],
+    initial_positions: _Position,
+    keys: jax.Array,
+    *,
+    draws: int,
+    warmup: int,
+    target_accept: float,
+    max_tree_depth: int,
+    chain_method: str,
+    mass_matrix: str,
+    chunk_size: int,
+    progress: bool = True,
+    return_state: bool = False,
+    continuation: _NUTSContinuation | None = None,
+) -> _Samples | tuple[_Samples, _NUTSContinuation]:
+    """Adapt or continue chains, copying bounded sampling chunks into host arrays."""
+    adapt_chain: Callable[[_Position, jax.Array], _Adapted] | None = None
+    retained: _Adapted | None = None
+    completed_draws = 0
+
+    if continuation is None:
+        adaptation = blackjax.window_adaptation(
+            blackjax.nuts,
+            logdensity,
+            is_mass_matrix_diagonal=mass_matrix == "diagonal",
+            target_acceptance_rate=target_accept,
+            max_num_doublings=max_tree_depth,
+            adaptation_info_fn=_discard_adaptation,
+        )
+        run_warmup = cast(
+            Callable[..., tuple[tuple[blackjax.mcmc.hmc.HMCState, dict[str, jax.Array | int]], object]],
+            adaptation.run,
+        )
+
+        def adapt_position(position: _Position, key: jax.Array) -> _Adapted:
+            warmup_key, sampling_key = jax.random.split(key)
+            (state, parameters), _ = run_warmup(warmup_key, position, num_steps=warmup)
+            # Only adapted arrays cross the compilation boundary. The tree-depth
+            # limit remains a static Python value when constructing the sampler.
+            adapted = {name: jnp.asarray(parameters[name]) for name in ("step_size", "inverse_mass_matrix")}
+            return state, adapted, sampling_key
+
+        adapt_chain = adapt_position
+    else:
+        retained = (
+            continuation.state,
+            {"step_size": continuation.step_size, "inverse_mass_matrix": continuation.inverse_mass_matrix},
+            continuation.sampling_keys,
+        )
+        completed_draws = continuation.completed_draws
+
+    def draw_keys(sampling_key: jax.Array, start: int, stop: int) -> jax.Array:
+        indices = jnp.arange(completed_draws + start, completed_draws + stop, dtype=jnp.uint32)
+        return jax.vmap(jax.random.fold_in, in_axes=(None, 0))(sampling_key, indices)
 
     def sample_chunk(state: _State, parameters: _Parameters, step_keys: jax.Array) -> tuple[_State, _DeviceSamples]:
         sampler = blackjax.nuts(logdensity, **parameters, max_num_doublings=max_tree_depth)
@@ -74,7 +163,7 @@ def _sample_nuts(
 
         return jax.lax.scan(step, state, step_keys)
 
-    chains = keys.shape[0]
+    chains = keys.shape[0] if continuation is None else continuation.sampling_keys.shape[0]
     samples: _Samples | None = None
 
     def transfer(chunk: _DeviceSamples, start: int, stop: int, chain: int | None = None) -> None:
@@ -91,25 +180,34 @@ def _sample_nuts(
             destination[chain_slice, start:stop] = value
 
     def run_batched(
-        adapt: Callable[[_Position, jax.Array], _Adapted],
+        adapt: Callable[[_Position, jax.Array], _Adapted] | None,
         sample: Callable[[_State, _Parameters, jax.Array], tuple[_State, _DeviceSamples]],
         positions: _Position,
         chain_keys: jax.Array,
-    ) -> None:
+        retained: _Adapted | None,
+    ) -> _Adapted:
         counter = " per device" if chain_method == "parallel" else ""
-        with _progress(progress, f"Warmup{counter} ({chains} chains)"):
-            state, parameters, step_keys = jax.tree.map(
-                lambda value: value.block_until_ready(), adapt(positions, chain_keys)
-            )
+        if retained is None:
+            assert adapt is not None
+            with _progress(progress, f"Warmup{counter} ({chains} chains)"):
+                state, parameters, sampling_keys = jax.tree.map(
+                    lambda value: value.block_until_ready(), adapt(positions, chain_keys)
+                )
+        else:
+            state, parameters, sampling_keys = retained
+
         for start in range(0, draws, chunk_size):
             stop = min(start + chunk_size, draws)
+            step_keys = jax.vmap(draw_keys, in_axes=(0, None, None))(sampling_keys, start, stop)
             with _progress(progress, f"Sampling{counter} ({chains} chains) draws {start + 1}-{stop}/{draws}"):
-                state, chunk = sample(state, parameters, step_keys[:, start:stop])
+                state, chunk = sample(state, parameters, step_keys)
                 transfer(chunk, start, stop)
                 del chunk
+        return state, parameters, sampling_keys
 
     if chain_method == "vectorized":
-        run_batched(jax.jit(jax.vmap(adapt_chain)), jax.jit(jax.vmap(sample_chunk)), initial_positions, keys)
+        adapt_batched = None if adapt_chain is None else jax.jit(jax.vmap(adapt_chain))
+        final = run_batched(adapt_batched, jax.jit(jax.vmap(sample_chunk)), initial_positions, keys, retained)
 
     elif chain_method == "parallel":
         mesh = jax.make_mesh(
@@ -120,6 +218,7 @@ def _sample_nuts(
         )
 
         def adapt_device(positions: _Position, keys: jax.Array) -> _Adapted:
+            assert adapt_chain is not None
             position = jax.tree.map(lambda value: value[0], positions)
             adapted = adapt_chain(position, keys[0])
             return cast(_Adapted, jax.tree.map(lambda value: value[None], adapted))
@@ -133,18 +232,24 @@ def _sample_nuts(
 
         chain_spec = PartitionSpec("chain")  # type: ignore[no-untyped-call]
         with jax.set_mesh(mesh):
-            initial_positions, keys = jax.device_put((initial_positions, keys), NamedSharding(mesh, chain_spec))
-            adapt_parallel = jax.jit(
-                jax.shard_map(
-                    adapt_device,
-                    mesh=mesh,
-                    in_specs=chain_spec,
-                    out_specs=chain_spec,
-                    # Chain-local control flow mixes constant and varying state.
-                    # Every output is sharded, with no replication assertions.
-                    check_vma=False,
+            sharding = NamedSharding(mesh, chain_spec)
+            adapt_parallel = None
+            if retained is None:
+                initial_positions, keys = jax.device_put((initial_positions, keys), sharding)
+                adapt_parallel = jax.jit(
+                    jax.shard_map(
+                        adapt_device,
+                        mesh=mesh,
+                        in_specs=chain_spec,
+                        out_specs=chain_spec,
+                        # Chain-local control flow mixes constant and varying state.
+                        # Every output is sharded, with no replication assertions.
+                        check_vma=False,
+                    )
                 )
-            )
+            else:
+                retained = jax.device_put(retained, sharding)
+
             sample_parallel = jax.jit(
                 jax.shard_map(
                     sample_device,
@@ -154,26 +259,46 @@ def _sample_nuts(
                     check_vma=False,
                 )
             )
-            run_batched(adapt_parallel, sample_parallel, initial_positions, keys)
+            final = run_batched(adapt_parallel, sample_parallel, initial_positions, keys, retained)
 
     else:
-        adapt = jax.jit(adapt_chain)
+        adapt = None if adapt_chain is None else jax.jit(adapt_chain)
         sample = jax.jit(sample_chunk)
+        final_chains: list[_Adapted] = []
         for chain in range(chains):
-            position = {name: values[chain] for name, values in initial_positions.items()}
-            with _progress(progress, f"Warmup chain {chain + 1}/{chains}"):
-                state, parameters, step_keys = jax.tree.map(
-                    lambda value: value.block_until_ready(), adapt(position, keys[chain])
-                )
+            if retained is None:
+                assert adapt is not None
+                position = {name: values[chain] for name, values in initial_positions.items()}
+                with _progress(progress, f"Warmup chain {chain + 1}/{chains}"):
+                    state, parameters, sampling_key = jax.tree.map(
+                        lambda value: value.block_until_ready(), adapt(position, keys[chain])
+                    )
+            else:
+                state, parameters, sampling_key = jax.tree.map(lambda value, chain=chain: value[chain], retained)
+
             for start in range(0, draws, chunk_size):
                 stop = min(start + chunk_size, draws)
+                step_keys = draw_keys(sampling_key, start, stop)
                 with _progress(progress, f"Sampling chain {chain + 1}/{chains} draws {start + 1}-{stop}/{draws}"):
-                    state, chunk = sample(state, parameters, step_keys[start:stop])
+                    state, chunk = sample(state, parameters, step_keys)
                     transfer(chunk, start, stop, chain)
                     del chunk
-            del state, parameters, step_keys
+            if return_state:
+                final_chains.append((state, parameters, sampling_key))
+
+        if return_state:
+            final = jax.tree.map(lambda *values: jnp.stack(values), *final_chains)
 
     assert samples is not None
+    if return_state:
+        state, parameters, sampling_keys = final
+        return samples, _NUTSContinuation(
+            state=state,
+            step_size=parameters["step_size"],
+            inverse_mass_matrix=parameters["inverse_mass_matrix"],
+            sampling_keys=sampling_keys,
+            completed_draws=completed_draws + draws,
+        )
     return samples
 
 

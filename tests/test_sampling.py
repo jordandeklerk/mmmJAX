@@ -22,8 +22,10 @@ from mmmjax import (
     Model,
     Positive,
     Real,
+    SamplingState,
     Simplex,
     beta,
+    continue_sampling,
     dirichlet,
     fit_data_scaling,
     fourier_features,
@@ -420,7 +422,9 @@ def test_nuts_chunks_preserve_draw_keys_warmup_counts_and_bounded_host_transfers
     jax.effects_barrier()
 
     assert adaptation_metrics["steps"] == [40, 40]
-    expected_keys = jax.vmap(lambda key: jax.random.split(jax.random.split(key)[1], 7))(keys)
+    expected_keys = jax.vmap(
+        lambda key: jax.vmap(lambda draw: jax.random.fold_in(jax.random.split(key)[1], draw))(jnp.arange(7))
+    )(keys)
     expected_words = np.asarray(jax.random.key_data(expected_keys)).reshape(-1, 2)
     assert sorted(draw_keys) == sorted(tuple(words) for words in expected_words)
     expected_shapes = [(3,), (3,), (1,)] * 2 if chain_method == "sequential" else [(2, 3), (2, 3), (2, 1)]
@@ -554,7 +558,7 @@ def test_parallel_nuts_on_two_cpu_devices_preserves_targets_generation_and_label
         import numpy as np
         import xarray as xr
         import mmmjax.sampling as sampling
-        from mmmjax import Model, Real, Simplex, normal, sample
+        from mmmjax import Model, Real, Simplex, continue_sampling, normal, sample
 
         assert jax.local_device_count() == 2
         assert all(device.platform == "cpu" for device in jax.local_devices())
@@ -636,7 +640,9 @@ def test_parallel_nuts_on_two_cpu_devices_preserves_targets_generation_and_label
         )
         options = dict(data=observed_location, draws=160, warmup=120, chains=2, seed=19, batch_size=17, chunk_size=37)
         generation_key = jax.random.split(jax.random.key(19), 4)[2]
-        keys = jax.random.split(generation_key, (2, 160))
+        keys = jax.vmap(lambda key: jax.vmap(lambda draw: jax.random.fold_in(key, draw))(jnp.arange(160)))(
+            jax.random.split(generation_key, 2)
+        )
         noise = jax.jit(jax.vmap(jax.vmap(jax.random.normal)))(keys)
 
         parallel = None
@@ -736,6 +742,25 @@ def test_parallel_nuts_on_two_cpu_devices_preserves_targets_generation_and_label
             dense["generated_quantities"]["response"], intercept[..., None] + coefficients,
             rtol=2e-5, atol=2e-5,
         )
+
+        sampling._sample_nuts = run_nuts
+        continuation_options = dict(
+            data=observed_location, warmup=60, chains=2, seed=31, chain_method="parallel",
+            mass_matrix="dense", chunk_size=3, batch_size=3, progress=False,
+        )
+        full = sample(model, draws=9, **continuation_options)
+        first, state = sample(model, draws=4, return_state=True, **continuation_options)
+        context_start = len(progress_contexts)
+        transfer_start = len(parallel_chunks)
+        active_method = "parallel"
+        continued, next_state = continue_sampling(state, draws=5, chunk_size=3, batch_size=3, progress=True)
+        active_method = None
+        xr.testing.assert_identical(continued, full)
+        assert state.draws == 4 and next_state.draws == 9
+        assert first["posterior"].sizes["draw"] == 4
+        assert [state.n_steps for state in progress_contexts[context_start:]] == [3, 2]
+        assert parallel_chunks[transfer_start:] == [(2, 3), (2, 2)]
+        assert jax.sharding.get_abstract_mesh() == original_mesh
         assert jax.local_device_count() == 2
         print("Two-device chain checks passed")
         """
@@ -817,7 +842,9 @@ def test_sampling_batches_preserve_seeded_draws_generation_and_labels(nuts_calls
             assert value.values.flags.writeable
 
     generation_key = jax.random.split(jax.random.key(17), 4)[2]
-    keys = jax.random.split(generation_key, (2, 5))
+    keys = jax.vmap(lambda key: jax.vmap(lambda draw: jax.random.fold_in(key, draw))(jnp.arange(5)))(
+        jax.random.split(generation_key, 2)
+    )
     posterior = {"intercept": jnp.asarray(result["posterior"]["intercept"].values)}
     reference = jax.jit(jax.vmap(jax.vmap(lambda key, values: model.generate(key, values, model.data))))(
         keys, posterior
@@ -853,7 +880,9 @@ def test_sampling_batches_keep_constrained_event_shapes_and_exact_draw_keys(nuts
     np.testing.assert_allclose(result["posterior"]["weights"].sum("weights_dim_0"), 1.0, rtol=2e-6)
 
     generation_key = jax.random.split(jax.random.key(11), 4)[2]
-    keys = jax.random.split(generation_key, (2, 5))
+    keys = jax.vmap(lambda key: jax.vmap(lambda draw: jax.random.fold_in(key, draw))(jnp.arange(5)))(
+        jax.random.split(generation_key, 2)
+    )
     np.testing.assert_array_equal(result["generated_quantities"]["key_words"], jax.random.key_data(keys))
     assert result["generated_quantities"]["key_words"].dtype == np.uint32
 
@@ -1429,3 +1458,274 @@ def test_saved_quantities_are_validated_before_chain_adaptation(nuts_calls, prob
     with pytest.raises(ValueError, match=message):
         sample(model, draws=2, warmup=3, chains=1)
     assert not nuts_calls
+
+
+@pytest.mark.parametrize(
+    "chain_method,mass_matrix",
+    [("sequential", "diagonal"), ("vectorized", "diagonal"), ("sequential", "dense"), ("vectorized", "dense")],
+)
+def test_continuation_matches_one_run_without_reinitializing_or_adapting(monkeypatch, chain_method, mass_matrix):
+    model = Model(
+        {"location": Real((2,))},
+        lambda data, location: normal(location[0], 0.0, 1.0) + normal(location[1], 0.5 * location[0], 0.8),
+    )
+    options = {
+        "warmup": 60,
+        "chains": 2,
+        "seed": 91,
+        "target_accept": 0.85,
+        "chain_method": chain_method,
+        "mass_matrix": mass_matrix,
+        "initial_values": {"location": np.zeros(2)},
+        "generate": False,
+        "progress": False,
+    }
+    full = sample(model, draws=9, chunk_size=9, **options)
+    first, state = sample(model, draws=4, chunk_size=3, return_state=True, **options)
+    first_snapshot = first.copy(deep=True)
+
+    def forbidden_restart(*args, **kwargs):
+        raise AssertionError("Continuation must reuse the adapted chain state")
+
+    monkeypatch.setattr(nuts.blackjax, "window_adaptation", forbidden_restart)
+    monkeypatch.setattr(Model, "initialize_random", forbidden_restart)
+    second, second_state = continue_sampling(state, draws=3, chunk_size=2, batch_size=2, progress=False)
+    final, final_state = continue_sampling(second_state, draws=2, chunk_size=1, batch_size=1, progress=False)
+
+    xr.testing.assert_identical(final, full)
+    xr.testing.assert_identical(first, first_snapshot)
+    xr.testing.assert_identical(second["posterior"], full["posterior"].isel(draw=slice(0, 7)))
+    assert isinstance(state, SamplingState)
+    assert (state.draws, second_state.draws, final_state.draws) == (4, 7, 9)
+    assert state.chains == second_state.chains == final_state.chains == 2
+    np.testing.assert_array_equal(final["posterior"].coords["draw"], np.arange(9))
+    for group in final.children.values():
+        for value in group.data_vars.values():
+            assert isinstance(value.data, np.ndarray)
+            assert value.data.flags.writeable
+    for name in ("draws", "chains"):
+        with pytest.raises((AttributeError, TypeError)):
+            setattr(state, name, 100)
+
+
+def test_continuation_preserves_generated_streams_saved_quantities_and_prepared_labels():
+    data = prepare_data(
+        pd.DataFrame({"week": [10, 11, 12], "sales": [1.0, 2.0, 3.0], "price": [0.1, 0.2, 0.3]}),
+        time="week",
+        outcome="sales",
+        controls=["price"],
+    )
+
+    def transformed(controls, location):
+        return {"mu": location + controls[:, 0]}
+
+    def density(outcome, mu, location):
+        return normal(outcome, mu, 1.0) + normal(location, 0.0, 2.0)
+
+    def generate(key, outcome, mu):
+        return {
+            "prediction": normal_rng(key, mu, 1.0),
+            "pointwise": normal_logpdf(outcome, mu, 1.0),
+            "key_words": jax.random.key_data(key),
+        }
+
+    model = Model(
+        {"location": Real()},
+        density,
+        generate,
+        data=data,
+        transformed_parameters=transformed,
+        save=("mu",),
+        predictive=("prediction",),
+        log_likelihood=("pointwise",),
+        generated_dims={"mu": ("time",), "key_words": ("word",)},
+        coords={"word": ["first", "second"]},
+    )
+    options = {"warmup": 60, "chains": 2, "seed": 17, "progress": False, "batch_size": 3}
+    full = sample(model, draws=7, **options)
+    first, state = sample(model, draws=3, return_state=True, **options)
+    combined, next_state = continue_sampling(state, draws=4, batch_size=3, progress=False)
+
+    xr.testing.assert_identical(combined, full)
+    assert next_state.draws == 7
+    assert combined.attrs == first.attrs
+    assert combined.attrs["warmup_steps"] == 60
+    assert combined.attrs["seed"] == 17
+    for group in ("posterior_predictive", "log_likelihood", "generated_quantities"):
+        np.testing.assert_array_equal(combined[group].coords["draw"], np.arange(7))
+        np.testing.assert_array_equal(combined[group].coords["time"], [10, 11, 12])
+    assert combined["generated_quantities"]["mu"].dims == ("chain", "draw", "time")
+    assert combined["generated_quantities"]["key_words"].dims == ("chain", "draw", "word")
+    words = combined["generated_quantities"]["key_words"].values.reshape(-1, 2)
+    assert np.unique(words, axis=0).shape[0] == 14
+    for group in ("observed_data", "constant_data"):
+        xr.testing.assert_identical(combined[group], first[group])
+        assert "draw" not in combined[group].dims
+
+
+def test_continuation_preserves_prepared_inputs_in_wrapped_models():
+    data = prepare_data(
+        pd.DataFrame({"week": [10, 11, 12], "sales": [1.0, 2.0, 3.0]}),
+        time="week",
+        outcome="sales",
+    )
+    prepared_model = Model(
+        {"location": Real()},
+        lambda outcome, location: normal(outcome, location, 1.0) + normal(location, 0.0, 2.0),
+        lambda key, outcome, location: {"prediction": normal_rng(key, location, 1.0, sample_shape=outcome.shape)},
+        data=data,
+    )
+    model = Model(
+        prepared_model.parameters,
+        lambda data, location: prepared_model.log_prob({"location": location}, data=data),
+        lambda key, data, location: prepared_model.generate(key, {"location": location}, data),
+        predictive=("prediction",),
+    )
+    options = {"data": prepared_model.data, "warmup": 60, "chains": 1, "seed": 29, "progress": False}
+
+    full = sample(model, draws=7, **options)
+    first, state = sample(model, draws=3, return_state=True, **options)
+    continued, next_state = continue_sampling(state, draws=4, batch_size=2, progress=False)
+
+    xr.testing.assert_identical(continued, full)
+    xr.testing.assert_identical(first["posterior"], full["posterior"].isel(draw=slice(0, 3)))
+    assert state.draws == 3
+    assert next_state.draws == 7
+
+
+def test_continuation_snapshots_mutable_data_and_results_and_leaves_old_state_reusable():
+    inputs = {"center": np.array([0.0, 0.5])}
+    model = Model(
+        {"location": Real((2,))},
+        lambda data, location: normal(location, data["center"], 1.0),
+        lambda key, data, location: {"center": data["center"], "noise": jax.random.normal(key, (2,))},
+    )
+    options = {"data": inputs, "warmup": 60, "chains": 1, "seed": 23, "progress": False}
+    full = sample(model, draws=7, **options)
+    first, state = sample(model, draws=3, return_state=True, **options)
+    inputs["center"][:] = 500.0
+    inputs["center"] = np.array([-500.0, -500.0])
+    first["posterior"]["location"].values[:] = -99.0
+    first["sample_stats"]["lp"].values[:] = -99.0
+    first["generated_quantities"]["center"].values[:] = -99.0
+    first.attrs["seed"] = -99
+
+    continued, next_state = continue_sampling(state, draws=4, chunk_size=2, progress=False)
+    xr.testing.assert_identical(continued, full)
+    continued["posterior"]["location"].values[:] = 99.0
+    continued.attrs["seed"] = 99
+    repeated, repeated_state = continue_sampling(state, draws=4, chunk_size=3, progress=False)
+    xr.testing.assert_identical(repeated, full)
+    extended, extended_state = continue_sampling(next_state, draws=1, progress=False)
+    xr.testing.assert_identical(extended["posterior"].isel(draw=slice(0, 7)), full["posterior"])
+    assert (state.draws, next_state.draws, repeated_state.draws, extended_state.draws) == (3, 7, 7, 8)
+
+
+def test_continuation_coordinate_edits_do_not_change_previous_or_next_state():
+    data = prepare_data(
+        pd.DataFrame(
+            {
+                "week": [10, 11, 10, 11],
+                "country": ["US", "US", "CA", "CA"],
+                "market": ["east", "east", "west", "west"],
+                "sales": [1.0, 2.0, 2.0, 3.0],
+            }
+        ),
+        time="week",
+        outcome="sales",
+        groups=["country", "market"],
+    )
+    model = Model(
+        {"location": Real(dims="group")},
+        lambda outcome, location: normal(outcome, location, 1.0) + normal(location, 0.0, 2.0),
+        lambda key, outcome, location: {"prediction": normal_rng(key, jnp.broadcast_to(location, outcome.shape), 1.0)},
+        data=data,
+        predictive=("prediction",),
+    )
+    options = {"warmup": 60, "chains": 2, "seed": 27, "progress": False}
+    full = sample(model, draws=7, **options)
+    first, state = sample(model, draws=2, return_state=True, **options)
+    first_snapshot = first.copy(deep=True)
+    combined, next_state = continue_sampling(state, draws=3, progress=False)
+    combined_snapshot = combined.copy(deep=True)
+
+    for name, group in combined.children.items():
+        for coordinate, replacement in (("chain", 99), ("group", 99), ("group_market", "edit")):
+            if coordinate in group.coords:
+                values = group.coords[coordinate].values
+                for saved_state in (state, next_state):
+                    assert not np.shares_memory(values, saved_state._results[name].coords[coordinate].values)
+                # Some pandas versions expose index arrays through read-only views.
+                if coordinate == "group_market":
+                    assert values.flags.writeable
+                if values.flags.writeable:
+                    values[0] = replacement
+
+    repeated, _ = continue_sampling(state, draws=3, progress=False)
+    extended, _ = continue_sampling(next_state, draws=2, progress=False)
+    xr.testing.assert_identical(first, first_snapshot)
+    xr.testing.assert_identical(repeated, combined_snapshot)
+    xr.testing.assert_identical(extended, full)
+    assert state.draws == 2
+    assert next_state.draws == 5
+
+
+def test_continuation_keeps_generation_disabled_and_only_shows_retained_progress(progress_contexts):
+    def forbidden_generate(key, data, location):
+        raise AssertionError("Disabled generation must remain disabled during continuation")
+
+    model = Model({"location": Real()}, lambda data, location: normal(location, 0.0, 1.0), forbidden_generate)
+    _, state = sample(model, draws=2, warmup=60, chains=2, seed=13, return_state=True, generate=False, progress=False)
+    result, _ = continue_sampling(state, draws=3, chunk_size=2, progress=True)
+    assert set(result.children) == {"posterior", "sample_stats"}
+    assert [context.n_steps for context in progress_contexts] == [2, 1, 2, 1]
+    assert all(context.closed for context in progress_contexts)
+
+
+@pytest.mark.parametrize("return_state", [None, 0, 1, "true", [], {}, np.bool_(True)])
+def test_return_state_requires_a_bool_before_initialization(normal_model, nuts_calls, monkeypatch, return_state):
+    def forbidden_initialize(self, key):
+        raise AssertionError("Return-state validation must run before parameter initialization")
+
+    monkeypatch.setattr(Model, "initialize_random", forbidden_initialize)
+    with pytest.raises(TypeError, match="return_state"):
+        sample(normal_model, data=0.0, draws=2, warmup=3, chains=1, return_state=return_state)
+    assert not nuts_calls
+
+
+def test_continuation_rejects_invalid_state_counts_and_sampling_changes_before_execution(normal_model, monkeypatch):
+    result, state = sample(
+        normal_model, data=0.0, draws=2, warmup=60, chains=1, seed=11, return_state=True, progress=False
+    )
+
+    def forbidden_sampling(*args, **kwargs):
+        raise AssertionError("Continuation validation must run before sampling")
+
+    monkeypatch.setattr(nuts.blackjax, "nuts", forbidden_sampling)
+    with jax.enable_x64(not jax.config.x64_enabled), pytest.raises(ValueError, match="precision"):
+        continue_sampling(state, draws=2, progress=False)
+    for invalid_state in (None, result, normal_model, object()):
+        with pytest.raises(TypeError, match=r"SamplingState|state"):
+            continue_sampling(invalid_state, draws=2, progress=False)
+    for name in ("draws", "chunk_size", "batch_size"):
+        for value in (0, -1, True, 1.5, None, "2", np.nan, np.bool_(True)):
+            with pytest.raises(ValueError, match=name):
+                continue_sampling(state, **({"draws": 2, "progress": False} | {name: value}))
+    for value in (None, 0, 1, "true", [], {}, np.bool_(True)):
+        with pytest.raises(TypeError, match="progress"):
+            continue_sampling(state, draws=2, progress=value)
+    for name in (
+        "model",
+        "data",
+        "seed",
+        "warmup",
+        "target_accept",
+        "mass_matrix",
+        "max_tree_depth",
+        "chains",
+        "chain_method",
+        "generate",
+        "initial_values",
+    ):
+        with pytest.raises(TypeError, match=name):
+            continue_sampling(state, draws=2, progress=False, **{name: None})

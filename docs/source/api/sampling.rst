@@ -10,5 +10,6 @@ Draw priors, fit a model, or evaluate generated quantities from posterior draws.
    :nosignatures:
 
    sample
+   continue_sampling
    sample_prior
    generate_quantities
