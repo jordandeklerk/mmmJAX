@@ -135,6 +135,7 @@ from mmmjax.parameters import (
     Simplex,
     UpperBound,
 )
+from mmmjax.readiness import check_data
 from mmmjax.response import frequency_curves, media_metrics, response_curves
 from mmmjax.saturation import hill_saturation, log_saturation, logistic_saturation, root_saturation
 from mmmjax.scaling import DataScaling, Scaling, fit_data_scaling, fit_media_scaling, fit_scaling
@@ -195,6 +196,7 @@ __all__ = [
     "cauchy_logpdf",
     "cauchy_logsf",
     "cauchy_rng",
+    "check_data",
     "continue_sampling",
     "delayed_adstock",
     "dirichlet",
