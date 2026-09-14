@@ -1,6 +1,7 @@
 """Exploratory data analysis for marketing inputs before model specification."""
 
 from numbers import Real
+from typing import cast
 
 import numpy as np
 import xarray as xr
@@ -9,7 +10,138 @@ from numpy.typing import NDArray
 from mmmjax._results import _prepared_coordinates
 from mmmjax.data import PreparedData
 
-__all__ = ["check_data"]
+__all__ = ["check_data", "check_prior"]
+
+
+def check_prior(
+    draws: xr.DataArray,
+    *,
+    lower: float | xr.DataArray | None = None,
+    upper: float | xr.DataArray | None = None,
+) -> xr.Dataset:
+    """Inspect prior probability outside a range meaningful to the modeler.
+
+    Use existing prior predictions, parameters, or calculated quantities such
+    as channel ROI. Limits must use the same units as the selected quantity.
+    No sampling, model changes, or automatic pass/fail decisions are performed.
+
+    Parameters
+    ----------
+    draws : xarray.DataArray
+        Prior draws with a ``draw`` axis and an optional ``chain`` axis.
+        Other axes are retained. Aggregate within each draw first when checking
+        a total rather than individual periods, geographies, or channels.
+    lower, upper : float or xarray.DataArray, optional
+        Inclusive plausible limits. Supply at least one. Labeled limits may
+        vary across the retained axes and must match their coordinate labels.
+        Omit a limit to leave that side unbounded.
+
+    Returns
+    -------
+    xarray.Dataset
+        Labeled checks over the retained axes containing
+
+        - **finite_draws** counts usable draws at each location.
+        - **nonfinite_fraction** reports the fraction that are NaN or infinite.
+        - **probability_below** and **probability_above** report probabilities
+          beyond the corresponding supplied limits.
+        - **probability_outside** reports probability outside either limit.
+        - **lower** and **upper** record supplied limits in the evaluated order.
+
+        Probabilities are conditional on finite draws and are NaN where none
+        are finite. Inspect ``nonfinite_fraction`` before interpreting them.
+        Limits are not inferred from observed data or distribution supports.
+    """
+    if not isinstance(draws, xr.DataArray):
+        raise TypeError("draws must be an xarray.DataArray selected from prior results")
+    if "draw" not in draws.dims:
+        raise ValueError("draws must include a draw dimension")
+    sample_dims = [dim for dim in ("chain", "draw") if dim in draws.dims]
+    if any(draws.sizes[dim] == 0 for dim in sample_dims):
+        raise ValueError("draws must contain at least one draw in each sampling dimension")
+    if draws.dtype.kind not in "biuf":
+        raise TypeError("draws must contain real numeric values")
+    if lower is None and upper is None:
+        raise ValueError("Supply lower or upper to define a plausible range")
+
+    # A sampling-free template keeps geographic and channel labels attached
+    # while checking limits, without allocating another copy of every draw.
+    template = draws.isel({dim: 0 for dim in sample_dims}, drop=True)
+    bounds = {
+        name: _prior_bound(value, template, name)
+        for name, value in (("lower", lower), ("upper", upper))
+        if value is not None
+    }
+    if "lower" in bounds and "upper" in bounds and bool((bounds["lower"] > bounds["upper"]).any()):
+        raise ValueError("lower must not exceed upper at any location")
+
+    finite = cast(xr.DataArray, np.isfinite(draws))
+    count = finite.sum(dim=sample_dims)
+    denominator = count.where(count > 0)
+    variables = {
+        "finite_draws": count,
+        "nonfinite_fraction": (~finite).mean(dim=sample_dims),
+    }
+    outside = xr.zeros_like(finite)
+    for name, bound in bounds.items():
+        exceeds = finite & ((draws < bound) if name == "lower" else (draws > bound))
+        tail = "below" if name == "lower" else "above"
+        variables[f"probability_{tail}"] = exceeds.sum(dim=sample_dims) / denominator
+        variables[name] = bound
+        outside = outside | exceeds
+
+    variables["probability_outside"] = outside.sum(dim=sample_dims) / denominator
+    if set(variables) & (set(template.coords) | set(template.dims)):
+        raise ValueError(
+            "Draw coordinates must not use names reserved for the reported checks. Rename those coordinates"
+        )
+
+    result = xr.Dataset(
+        variables,
+        attrs={
+            "quantity": str(draws.name) if draws.name is not None else "unnamed",
+            "sample_count": int(np.prod([draws.sizes[dim] for dim in sample_dims])),
+            "probability_scope": "finite draws only",
+        },
+    )
+    if "units" in draws.attrs:
+        result.attrs["units"] = draws.attrs["units"]
+    return result.copy(deep=True)
+
+
+def _prior_bound(value: float | xr.DataArray, template: xr.DataArray, name: str) -> xr.DataArray:
+    """Align nonsampling limits without dropping or introducing observations."""
+    if isinstance(value, xr.DataArray):
+        if value.dtype.kind not in "iuf":
+            raise TypeError(f"{name} must contain real numeric limits")
+        if not np.isfinite(value).all():
+            raise ValueError(f"{name} must contain finite real limits")
+        if any(dim not in template.dims for dim in value.dims):
+            raise ValueError(f"{name} dimensions must be retained quantity axes, not sampling axes")
+
+        # Bounds may be supplied in a different label order. Require exactly
+        # the same labels so alignment cannot silently remove observations.
+        for dim in value.dims:
+            if value.sizes[dim] != template.sizes[dim]:
+                raise ValueError(f"{name} must match the quantity's {dim!r} size and labels")
+            if dim not in value.coords or dim not in template.coords:
+                raise ValueError(f"{name} and the quantity must both label the {dim!r} axis")
+            index, target = value.get_index(dim), template.get_index(dim)
+            if not index.is_unique or not target.is_unique or np.any(index.get_indexer(target) < 0):
+                raise ValueError(f"{name} must match the quantity's {dim!r} labels without duplicates")
+            value = value.isel({dim: index.get_indexer(target)})
+
+        # Retain the quantity's auxiliary labels, not incidental coordinates
+        # attached to a limit array by a previous calculation.
+        bound = xr.DataArray(value.data, dims=value.dims, coords={dim: template.coords[dim] for dim in value.dims})
+    else:
+        if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
+            raise TypeError(f"{name} must be a finite real number or labeled xarray.DataArray")
+        if not np.isfinite(value):
+            raise ValueError(f"{name} must be finite. Omit it to leave that side unbounded")
+        bound = xr.DataArray(float(value))
+
+    return bound.broadcast_like(template).transpose(*template.dims)
 
 
 def check_data(
