@@ -14,7 +14,7 @@ from numpy.typing import NDArray
 from scipy.optimize import LinearConstraint, approx_fprime, linprog, minimize
 
 from mmmjax.model import Model
-from mmmjax.response import _allocation_metrics, _prepare_response, _ReachFrequencyConversion
+from mmmjax.response import _allocation_metrics, _prepare_response, _ReachFrequencyConversion, _response_breakdown
 
 __all__ = ["SpendConstraint", "optimize_budget"]
 
@@ -106,6 +106,7 @@ def optimize_budget(
     new_data: object = None,
     spend_periods: Sequence[object] | None = None,
     response_periods: Sequence[object] | None = None,
+    by: str | Sequence[str] | None = None,
     initial_spend: Mapping[str, float] | None = None,
     include_metrics: bool = False,
     incremental_increase: float = 0.01,
@@ -137,7 +138,7 @@ def optimize_budget(
         ``"expected_revenue"``. Its value must contain one expected response
         per observation in the desired reporting units. It is recomputed for
         each allocation and posterior draw and need not be stored in ``results``.
-        Responses are totaled over selected measurement periods and groups.
+        The objective totals responses over selected measurement periods and groups.
     utility_function : callable, optional
         Differentiable JAX function receiving total expected responses with
         shape ``(chain, draw)`` and returning a floating-point scalar to
@@ -187,6 +188,11 @@ def optimize_budget(
     response_periods : sequence, optional
         Time labels whose responses count. Defaults to all supplied periods.
         Include later dates to measure carryover. No periods are added.
+    by : str or sequence of str, optional
+        Retain ``"time"``, ``"group"``, or both in reported response effects.
+        Group breakdowns require grouped data. Axes follow time then group.
+        Omit to report totals. The objective, utility inputs, spending, and
+        ROI remain aggregated across periods and groups.
     initial_spend : mapping of str to float, optional
         Feasible starting spend for each selected channel. Defaults to
         reference proportions adjusted to the budget, bounds, and constraints.
@@ -209,7 +215,7 @@ def optimize_budget(
         Labeled allocations and responses, retaining posterior uncertainty.
 
         - **spend** contains reference and optimized channel budgets.
-        - **response** contains their total responses for every chain and draw.
+        - **response** contains their responses for every chain and draw.
         - **response_change** contains paired optimized-minus-reference responses.
         - **utility** contains the objective value for each allocation.
         - **lower_bound**, **upper_bound**, and **initial_spend** record constraints
@@ -227,7 +233,8 @@ def optimize_budget(
         response lost by removing a channel's spending, and **roi** divides
         it by that spending. **marginal_response** and **marginal_roi** measure
         an increase using **incremental_spend**. Response and ROI arrays retain
-        chain, draw, allocation, and channel axes. Ratios use the quantity's units
+        chain, draw, allocation, and channel axes. Response effects additionally
+        retain axes selected with ``by``. Ratios use the quantity's units
         per unit spend and are undefined (``NaN``) at zero spending.
         Channel removal and increase scenarios hold other channels at the
         allocation being evaluated and are not restricted by optimization
@@ -237,6 +244,8 @@ def optimize_budget(
         draws. If the reference total differs from ``budget``, the
         comparison also reflects the change in total spending. Responses
         retain the quantity's units and receive no inverse scaling.
+        Breakdowns show where and when the joint allocation changes responses,
+        not independently optimized allocations for each period or group.
 
     Raises
     ------
@@ -272,6 +281,7 @@ def optimize_budget(
         response_periods=response_periods,
         batch_size=batch_size,
     )
+    retained, retain_axes, response_coords = _response_breakdown(context, by)
 
     reference = np.asarray(context.reference_spend, dtype=np.float64)[context.indices]
     if not np.isfinite(reference).all():
@@ -457,11 +467,24 @@ def optimize_budget(
     if not np.isfinite(utilities).all():
         raise ValueError("An allocation produced a nonfinite utility. Check utility_function and the response units")
 
+    if retained:
+        evaluate_details = jax.jit(
+            lambda current: context.evaluator.paired_evaluation(current, baseline, retain_axes=retain_axes)
+        )
+        reference_response, _ = evaluate_details(baseline)
+        response, change = evaluate_details(allocation)
+        reference_response, response, change = map(np.asarray, (reference_response, response, change))
+        if not all(np.isfinite(value).all() for value in (reference_response, response, change)):
+            raise ValueError("An allocation produced a nonfinite response breakdown. Check the model and conversion")
+
     report = xr.Dataset(
         {
             "spend": (("allocation", "channel"), np.stack((reference, optimized * budget))),
-            "response": (("chain", "draw", "allocation"), np.stack((reference_response, response), axis=-1)),
-            "response_change": (("chain", "draw"), change),
+            "response": (
+                ("chain", "draw", "allocation", *retained),
+                np.stack((reference_response, response), axis=2),
+            ),
+            "response_change": (("chain", "draw", *retained), change),
             "utility": ("allocation", utilities),
             "lower_bound": ("channel", limits[:, 0]),
             "upper_bound": ("channel", limits[:, 1]),
@@ -469,6 +492,7 @@ def optimize_budget(
         },
         coords={
             **context.coords,
+            **response_coords,
             "channel_type": ("channel", context.channel_types),
             "allocation": ["reference", "optimized"],
         },
@@ -502,6 +526,7 @@ def optimize_budget(
             np.stack((np.asarray(baseline), np.asarray(allocation))),
             allocation_labels=["reference", "optimized"],
             incremental_increase=incremental_increase,
+            by=by,
         )
         for name in ("incremental_response", "roi", "marginal_response", "marginal_roi", "incremental_spend"):
             report[name] = metrics[name]

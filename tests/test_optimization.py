@@ -1323,6 +1323,166 @@ def test_optimize_budget_recomputes_media_transformations_with_fitted_group_scal
             )
 
 
+def _breakdown_problem(*, compound_groups=False):
+    media = np.arange(1.0, 19.0).reshape(3, 2, 3) / 4
+    frame = pl.DataFrame(
+        {
+            "week": np.repeat([1, 2, 3], 2),
+            "region": ["east", "west"] * 3,
+            "store": ["large", "small"] * 3,
+            **{channel: media[..., index].ravel() for index, channel in enumerate(["video", "search", "email"])},
+        }
+    )
+    data = prepare_data(
+        frame,
+        time="week",
+        groups=["region", "store"] if compound_groups else ["region"],
+        media=["video", "search", "email"],
+        spend=["video", "search", "email"],
+    )
+
+    def transformed(media, coefficient):
+        carried = media + 0.3 * jnp.concatenate((jnp.zeros_like(media[:1]), media[:-1]))
+        local = jnp.log1p(carried) @ coefficient
+        spillover = (jnp.log1p(carried.sum(axis=1)) @ coefficient)[:, None]
+        return {"expected": local + 0.1 * spillover}
+
+    model = Model(
+        {"coefficient": Real(dims="channel")},
+        lambda expected: expected.sum(),
+        data=data,
+        transformed_parameters=transformed,
+    )
+    coefficient = np.array(
+        [[[1.0, 2.0, 3.0], [1.5, 1.0, 2.5], [2.0, 1.5, 2.0]], [[2.5, 2.0, 1.0], [1.0, 2.5, 3.0], [2.0, 1.0, 3.0]]],
+        dtype=np.float32,
+    )
+    results = _collect_results(
+        {"coefficient": coefficient},
+        data=data,
+        dims={"coefficient": ("channel",)},
+        coords={"chain": [3, 9], "draw": [10, 20, 30]},
+    )
+    return model, results, media, coefficient
+
+
+@pytest.mark.parametrize("by", ["time", "group", ("group", "time")])
+@pytest.mark.parametrize("include_metrics", [False, True])
+def test_optimize_budget_breakdowns_preserve_joint_allocation_and_aggregate_utility(by, include_metrics):
+    model, results, media, coefficient = _breakdown_problem()
+
+    def utility(response):
+        assert response.shape == (2, 3)
+        return response.mean() - 0.01 * response.var()
+
+    options = {
+        "quantity": "expected",
+        "channels": ["email", "video"],
+        "spend_periods": [1, 2],
+        "response_periods": [2, 3],
+        "constraints": [SpendConstraint("video_cap", ["video"], upper=0.7, units="share")],
+        "utility_function": utility,
+        "include_metrics": include_metrics,
+        "incremental_increase": 0.2,
+        "batch_size": 4,
+    }
+    aggregate = optimize_budget(model, results, **options)
+    detailed = optimize_budget(model, results, by=by, **options)
+    retained = tuple(name for name in ("time", "group") if name in by)
+
+    assert detailed["response"].dims == ("chain", "draw", "allocation", *retained)
+    assert detailed["response_change"].dims == ("chain", "draw", *retained)
+    assert detailed.attrs == aggregate.attrs
+    np.testing.assert_array_equal(detailed.chain, [3, 9])
+    np.testing.assert_array_equal(detailed.draw, [10, 20, 30])
+    np.testing.assert_array_equal(detailed.channel, ["email", "video"])
+    np.testing.assert_array_equal(detailed.spend_period, [1, 2])
+    np.testing.assert_array_equal(detailed.response_period, [2, 3])
+    if "time" in retained:
+        np.testing.assert_array_equal(detailed.time, [2, 3])
+    if "group" in retained:
+        np.testing.assert_array_equal(detailed.group, ["east", "west"])
+
+    detailed_variables = {"response", "response_change", "incremental_response", "marginal_response"}
+    for name in aggregate.data_vars:
+        if name in detailed_variables:
+            xr.testing.assert_allclose(detailed[name].sum(retained), aggregate[name], rtol=2e-5, atol=2e-5)
+        else:
+            xr.testing.assert_allclose(detailed[name], aggregate[name], rtol=2e-5, atol=2e-5)
+    xr.testing.assert_equal(detailed["spend"], aggregate["spend"])
+    xr.testing.assert_equal(detailed["utility"], aggregate["utility"])
+    if include_metrics:
+        for name in ("incremental_response", "marginal_response"):
+            assert detailed[name].dims == ("chain", "draw", "allocation", *retained, "channel")
+        for name in ("roi", "marginal_roi"):
+            assert detailed[name].dims == ("chain", "draw", "allocation", "channel")
+    else:
+        assert "incremental_response" not in detailed
+
+    expected = []
+    for label in ["reference", "optimized"]:
+        scenario = media.copy()
+        reference_spend = media[:2].sum(axis=(0, 1))
+        allocation = detailed["spend"].sel(allocation=label).values
+        for index, spend in zip([2, 0], allocation, strict=True):
+            scenario[:2, :, index] *= spend / reference_spend[index]
+        np.testing.assert_array_equal(scenario[..., 1], media[..., 1])
+
+        # Retain the joint intervention and its cross-region spillover before
+        # selecting measurement dates or summing observation axes.
+        carried = scenario.copy()
+        carried[1:] += 0.3 * scenario[:-1]
+        local = np.einsum("tgc,abc->abtg", np.log1p(carried), coefficient)
+        spillover = np.einsum("tc,abc->abt", np.log1p(carried.sum(axis=1)), coefficient)
+        response = (local + 0.1 * spillover[..., None])[:, :, 1:]
+        axes = tuple(axis for axis, name in [(2, "time"), (3, "group")] if name not in retained)
+        expected.append(response.sum(axis=axes))
+
+    np.testing.assert_allclose(detailed["response"], np.stack(expected, axis=2), rtol=2e-6)
+    np.testing.assert_allclose(detailed["response_change"], expected[1] - expected[0], atol=2e-6)
+
+
+def test_optimize_budget_breakdowns_retain_compound_group_coordinates():
+    model, results, _, _ = _breakdown_problem(compound_groups=True)
+    detailed = optimize_budget(
+        model,
+        results,
+        quantity="expected",
+        by=("time", "group"),
+        spend_constraint_lower=0.0,
+        spend_constraint_upper=0.0,
+    )
+
+    np.testing.assert_array_equal(detailed.group, [0, 1])
+    np.testing.assert_array_equal(detailed.group_region, ["east", "west"])
+    np.testing.assert_array_equal(detailed.group_store, ["large", "small"])
+    assert detailed.group_region.dims == ("group",)
+    assert detailed.group_store.dims == ("group",)
+    np.testing.assert_allclose(detailed["response_change"], np.zeros((2, 3, 3, 2)), atol=1e-6)
+
+
+@pytest.mark.parametrize("by", [None, [], ()])
+def test_optimize_budget_empty_breakdown_preserves_default_results(by):
+    model, results, _ = _problem()
+    options = {"spend_constraint_lower": 0.0, "spend_constraint_upper": 0.0, "bounds": None}
+    expected = _optimize(model, results, **options)
+    actual = _optimize(model, results, by=by, **options)
+
+    xr.testing.assert_identical(actual, expected)
+
+
+@pytest.mark.parametrize("by", ["region", ["time", "time"], ["time", 1], 1, True, {"time"}, "group"])
+def test_optimize_budget_rejects_invalid_breakdown_before_solver(monkeypatch, by):
+    model, results, _ = _problem()
+
+    def unexpected_solver(*args, **kwargs):
+        raise AssertionError("Invalid breakdowns must fail before optimization")
+
+    monkeypatch.setattr(optimization, "minimize", unexpected_solver)
+    with pytest.raises(ValueError, match=r"by|group"):
+        _optimize(model, results, by=by)
+
+
 @pytest.mark.parametrize("channels", [None, ["email", "video"]])
 @pytest.mark.parametrize("exposure_per_spend", [1.0, 2.0])
 def test_optimize_budget_reports_paired_channel_metrics_at_each_joint_allocation(channels, exposure_per_spend):

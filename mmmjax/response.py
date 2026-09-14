@@ -37,15 +37,16 @@ def response_curves(
     new_data: object = None,
     spend_periods: Sequence[object] | None = None,
     response_periods: Sequence[object] | None = None,
+    by: str | Sequence[str] | None = None,
     batch_size: int = 64,
 ) -> xr.Dataset:
     """Evaluate paid-media spending curves using existing posterior draws.
 
     Vary one channel's spending at a time, retaining its allocation across
     selected periods and groups. Spending and exposures outside those periods
-    stay fixed. Evaluate the full model for every draw, then sum responses
-    over the measurement periods and groups. Include later measurement dates
-    to count carryover. No observations are added automatically.
+    stay fixed. Evaluate the full model for every draw, summing responses
+    by default or retaining time and group breakdowns. Include later
+    measurement dates to count carryover. No observations are added automatically.
 
     Parameters
     ----------
@@ -91,6 +92,10 @@ def response_curves(
     response_periods : sequence, optional
         Time labels whose outcomes count. Defaults to all supplied modeling
         periods. May include dates after spending ends to measure carryover.
+    by : str or sequence of str, optional
+        Retain ``"time"``, ``"group"``, or both in responses. Group labels
+        come from ``prepare_data`` and require grouped data. Omit for totals.
+        Retained axes follow time then group order.
     batch_size : int, default 64
         Maximum posterior draws evaluated together. Scenarios run sequentially.
 
@@ -99,7 +104,7 @@ def response_curves(
     xarray.Dataset
         Labeled curves preserving chain and draw coordinates.
 
-        - **response** contains total responses by channel and multiplier.
+        - **response** contains responses by channel and multiplier.
         - **incremental_response** subtracts the same channel's response
           with zero spending during ``spend_periods`` and other inputs fixed.
         - **spend** contains candidate totals during the spending periods
@@ -109,6 +114,11 @@ def response_curves(
           selected spend-to-media conversion.
         - **spend_period** and **response_period** record the selected dates.
         - **channel_type** identifies ordinary media and reach/frequency channels.
+
+        With ``by``, response fields retain the requested observation axes.
+        Spending remains totaled over the selected periods and groups.
+        Breakdowns show where and when each overall spending change has an
+        effect, not independent spending changes within each period or group.
 
         Incremental curves need not add up when channels interact. Zero
         spending in selected periods can retain carryover from earlier exposures.
@@ -132,6 +142,7 @@ def response_curves(
         response_periods=response_periods,
         batch_size=batch_size,
     )
+    retained, retain_axes, response_coords = _response_breakdown(context, by)
     totals = context.reference_spend
     indices = context.indices
     selected_count = len(indices)
@@ -149,11 +160,12 @@ def response_curves(
             "Candidate spending is too large for the model precision. Reduce the multipliers or change units"
         )
 
-    responses, increments = _evaluate_response_pairs(context, allocation, comparison)
+    responses, increments = _evaluate_response_pairs(context, allocation, comparison, retain_axes=retain_axes)
     reference = responses[0]
-    response = responses[1:].reshape(selected_count, len(grid), *reference.shape).transpose(2, 3, 0, 1)
-    incremental = increments[1:].reshape(selected_count, len(grid), *reference.shape).transpose(2, 3, 0, 1)
-    curve_axes = ("chain", "draw", "channel", "multiplier")
+    shape = (selected_count, len(grid), *reference.shape)
+    response = np.moveaxis(responses[1:].reshape(shape), (0, 1), (-2, -1))
+    incremental = np.moveaxis(increments[1:].reshape(shape), (0, 1), (-2, -1))
+    curve_axes = ("chain", "draw", *retained, "channel", "multiplier")
 
     return xr.Dataset(
         {
@@ -164,9 +176,14 @@ def response_curves(
                 allocation[1:].reshape(selected_count, len(grid), -1)[np.arange(selected_count), :, indices],
             ),
             "reference_spend": ("channel", np.asarray(totals)[indices]),
-            "reference_response": (("chain", "draw"), reference),
+            "reference_response": (("chain", "draw", *retained), reference),
         },
-        coords={**context.coords, "channel_type": ("channel", context.channel_types), "multiplier": grid},
+        coords={
+            **context.coords,
+            **response_coords,
+            "channel_type": ("channel", context.channel_types),
+            "multiplier": grid,
+        },
         attrs=context.attrs,
     )
 
@@ -518,15 +535,15 @@ class _ResponseContext:
     attrs: dict[str, str]
 
 
-def _allocation_metrics(
+def _response_breakdown(
     context: _ResponseContext,
-    totals: NDArray[np.float32 | np.float64],
-    *,
-    allocation_labels: Sequence[str],
-    incremental_increase: float,
-    by: str | Sequence[str] | None = None,
-) -> xr.Dataset:
-    """Evaluate channel interventions around each joint spending allocation."""
+    by: str | Sequence[str] | None,
+) -> tuple[
+    tuple[str, ...],
+    tuple[int, ...],
+    dict[str, NDArray[np.generic] | tuple[str, NDArray[np.generic]]],
+]:
+    """Resolve retained observation axes and their prepared data labels."""
     requested = () if by is None else (by,) if isinstance(by, str) else by
     if not isinstance(requested, Sequence) or any(
         not isinstance(name, str) or name not in ("time", "group") for name in requested
@@ -545,6 +562,19 @@ def _allocation_metrics(
             {name: value for name, value in context.response_coords.items() if isinstance(value, tuple)}
         )
 
+    return retained, retain_axes, response_coords
+
+
+def _allocation_metrics(
+    context: _ResponseContext,
+    totals: NDArray[np.float32 | np.float64],
+    *,
+    allocation_labels: Sequence[str],
+    incremental_increase: float,
+    by: str | Sequence[str] | None = None,
+) -> xr.Dataset:
+    """Evaluate channel interventions around each joint spending allocation."""
+    retained, retain_axes, response_coords = _response_breakdown(context, by)
     indices = context.indices
     count = len(indices)
 
