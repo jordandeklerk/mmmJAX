@@ -1,4 +1,4 @@
-"""Posterior response curves and channel returns for spending and frequency scenarios."""
+"""Prior and posterior media responses for spending and frequency scenarios."""
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
@@ -16,7 +16,7 @@ from numpy.typing import NDArray
 from mmmjax._results import _coordinates, _prepared_coordinates
 from mmmjax.data import PreparedData
 from mmmjax.model import Model, _ModelData
-from mmmjax.sampling import _parameter_metadata, _posterior_draws, _result_data
+from mmmjax.sampling import _parameter_draws, _parameter_metadata, _result_data
 
 __all__ = ["frequency_curves", "media_metrics", "response_curves"]
 
@@ -31,6 +31,7 @@ def response_curves(
     *,
     quantity: str,
     multipliers: Sequence[float] | ArrayLike,
+    group: Literal["prior", "posterior"] = "posterior",
     spend_to_media: Literal["proportional"] | Callable[[jax.Array], ArrayLike] = "proportional",
     spend_to_rf: _ReachFrequencyConversion = "reach",
     channels: Sequence[str] | None = None,
@@ -40,7 +41,7 @@ def response_curves(
     by: str | Sequence[str] | None = None,
     batch_size: int = 64,
 ) -> xr.Dataset:
-    """Evaluate paid-media spending curves using existing posterior draws.
+    """Evaluate paid-media spending curves using prior or posterior draws.
 
     Vary one channel's spending at a time, retaining its allocation across
     selected periods and groups. Spending and exposures outside those periods
@@ -54,16 +55,20 @@ def response_curves(
         Prepared model with media and spend, reach/frequency and their spend,
         or both. Input families without spending stay fixed.
     results : xarray.DataTree
-        Results containing the model's constrained posterior draws.
+        Results containing the model's constrained draws in the selected group.
     quantity : str
         Key in the mapping returned by ``transformed_parameters``, such as
         ``"expected_revenue"``. Its value must contain one expected response
         per observation in the desired reporting units. It is recomputed for
-        each scenario and posterior draw and need not be stored in ``results``.
+        each scenario and draw and need not be stored in ``results``.
         No inverse scaling is applied to this output.
     multipliers : array_like
         Distinct nonnegative spending multipliers. One retains reference
         spending and zero removes the channel's spending during ``spend_periods``.
+    group : {"prior", "posterior"}, default "posterior"
+        Parameter draws to use. Choose ``"prior"`` with results from
+        ``sample_prior`` to inspect responses implied by the priors.
+        No sampling is performed. Compare groups using separate calls.
     spend_to_media : {"proportional"} or callable, default "proportional"
         By default, exposure scales with spend at each period and group,
         retaining reference exposure per unit spend. A JAX-compatible function
@@ -97,12 +102,13 @@ def response_curves(
         come from ``prepare_data`` and require grouped data. Omit for totals.
         Retained axes follow time then group order.
     batch_size : int, default 64
-        Maximum posterior draws evaluated together. Scenarios run sequentially.
+        Maximum parameter draws evaluated together. Scenarios run sequentially.
 
     Returns
     -------
     xarray.Dataset
-        Labeled curves preserving chain and draw coordinates.
+        Labeled curves preserving chain and draw coordinates. The ``group``
+        attribute records which parameter draws were used.
 
         - **response** contains responses by channel and multiplier.
         - **incremental_response** subtracts the same channel's response
@@ -134,6 +140,7 @@ def response_curves(
         model,
         results,
         quantity=quantity,
+        group=group,
         spend_to_media=spend_to_media,
         spend_to_rf=spend_to_rf,
         channels=channels,
@@ -194,6 +201,7 @@ def frequency_curves(
     *,
     quantity: str,
     frequencies: Sequence[float] | ArrayLike,
+    group: Literal["prior", "posterior"] = "posterior",
     channels: Sequence[str] | None = None,
     new_data: object = None,
     periods: Sequence[object] | None = None,
@@ -207,16 +215,16 @@ def frequency_curves(
     earlier history, and cells without impressions stay unchanged. This assumes
     constant cost per impression. Choose frequencies feasible for your audience.
 
-    Select each channel's best tested frequency using posterior mean response.
-    These choices are conditional on the other channels' reference inputs,
-    not a jointly optimized plan when channels interact.
+    Select each channel's best tested frequency using mean response across
+    the selected parameter draws. These choices are conditional on the other channels'
+    reference inputs, not a jointly optimized plan when channels interact.
 
     Parameters
     ----------
     model : Model
         Prepared model with reach, media frequency, and paired RF spending.
     results : xarray.DataTree
-        Results containing the model's constrained posterior draws.
+        Results containing the model's constrained draws in the selected group.
     quantity : str
         Key returned by ``transformed_parameters`` with one expected response
         per observation in reporting units. Recomputed for each scenario.
@@ -224,6 +232,10 @@ def frequency_curves(
         Distinct finite positive average exposures per reached person to test.
         These are levels, not multipliers. Each applies across the selected
         periods and groups wherever impressions are positive.
+    group : {"prior", "posterior"}, default "posterior"
+        Parameter draws to use. Choose ``"prior"`` with results from
+        ``sample_prior`` to inspect responses implied by the priors.
+        No sampling is performed. Compare groups using separate calls.
     channels : sequence of str, optional
         RF channel labels in the desired order. Defaults to all RF channels.
         Each needs positive spending and impressions during ``periods``.
@@ -236,19 +248,20 @@ def frequency_curves(
         Time labels whose responses count, summed across groups. Defaults to
         all modeling periods. Include later supplied dates to measure carryover.
     batch_size : int, default 64
-        Maximum posterior draws evaluated together. Scenarios run sequentially.
+        Maximum parameter draws evaluated together. Scenarios run sequentially.
 
     Returns
     -------
     xarray.Dataset
-        Labeled frequency comparisons retaining posterior uncertainty.
+        Labeled frequency comparisons retaining draw-level uncertainty. The
+        ``group`` attribute records which parameter draws were used.
 
         - **response** contains total responses by chain, draw, channel, and frequency.
         - **response_change** contains paired changes from the reference inputs.
         - **reference_response** contains the full reference response for each draw.
         - **reference_spend** records fixed spending for the selected periods.
-        - **best_frequency** maximizes the posterior mean change within the supplied
-          grid. Exact ties select the first supplied value.
+        - **best_frequency** maximizes mean change across the selected draws
+          within the supplied grid. Exact ties select the first supplied value.
         - **frequency_period** and **response_period** record the selected dates.
 
         Responses retain the quantity's units without inverse scaling. No
@@ -260,7 +273,9 @@ def frequency_curves(
     if not np.isfinite(grid).all() or np.any(grid <= 0) or len(np.unique(grid)) != len(grid):
         raise ValueError("frequencies must be distinct finite positive numbers")
 
-    inputs, prepared, posterior, coordinates = _response_inputs(model, results, quantity, new_data, batch_size)
+    inputs, prepared, samples, coordinates = _response_inputs(
+        model, results, quantity, new_data, batch_size, group=group
+    )
     if not {"reach", "media_frequency", "rf_spend"}.issubset(prepared.arrays):
         raise ValueError("Frequency evaluation requires reach, media_frequency, and paired rf_spend columns")
 
@@ -332,9 +347,9 @@ def frequency_curves(
             current = jnp.where(changed, transformed, inputs.values[role][-n_periods:])
             values[role] = jnp.concatenate((inputs.values[role][:-n_periods], current), axis=0)
 
-        response, change = _posterior_response(
+        response, change = _sample_response(
             model,
-            posterior,
+            samples,
             replace(inputs, values=values),
             inputs,
             quantity=quantity,
@@ -345,9 +360,9 @@ def frequency_curves(
         return jnp.where(valid, response, jnp.nan), jnp.where(valid, change, jnp.nan)
 
     def evaluate_grid(candidates: tuple[jax.Array, jax.Array]) -> tuple[jax.Array, jax.Array, jax.Array]:
-        reference, _ = _posterior_response(
+        reference, _ = _sample_response(
             model,
-            posterior,
+            samples,
             inputs,
             None,
             quantity=quantity,
@@ -389,9 +404,10 @@ def frequency_curves(
         },
         attrs={
             "quantity": quantity,
+            "group": group,
             "intervention": "fixed impressions and spending",
             "history": "fixed",
-            "selection": "highest posterior mean response among supplied frequencies with other channels fixed",
+            "selection": f"highest {group} mean response among supplied frequencies with other channels fixed",
             "response_units": "as returned by the transformed quantity",
         },
     )
@@ -402,6 +418,7 @@ def media_metrics(
     results: xr.DataTree,
     *,
     quantity: str,
+    group: Literal["prior", "posterior"] = "posterior",
     incremental_increase: float = 0.01,
     spend_to_media: Literal["proportional"] | Callable[[jax.Array], ArrayLike] = "proportional",
     spend_to_rf: _ReachFrequencyConversion = "reach",
@@ -415,7 +432,7 @@ def media_metrics(
     """Calculate incremental response, ROI, and marginal ROI by paid-media channel.
 
     Compare reference spending with removing or increasing one channel's
-    spending at a time. Evaluate the full model for each posterior draw,
+    spending at a time. Evaluate the full model for each selected parameter draw,
     keeping other spending and earlier history fixed. Channel effects need
     not add up when channels interact.
 
@@ -425,12 +442,16 @@ def media_metrics(
         Prepared model with media and spend, reach/frequency and their spend,
         or both. Input families without spending stay fixed.
     results : xarray.DataTree
-        Results containing the model's constrained posterior draws.
+        Results containing the model's constrained draws in the selected group.
     quantity : str
         Key returned by ``transformed_parameters`` with one expected response
         per observation in reporting units, such as ``"expected_revenue"``.
         Values are recomputed for each scenario without inverse scaling.
         Revenue gives monetary returns. Other outcomes give outcome per unit spend.
+    group : {"prior", "posterior"}, default "posterior"
+        Parameter draws to use. Choose ``"prior"`` with results from
+        ``sample_prior`` to inspect returns implied by the priors.
+        No sampling is performed. Compare groups using separate calls.
     incremental_increase : float, default 0.01
         Positive fractional spend increase used for marginal ROI. The default
         measures return on a 1% increase, not an exact derivative.
@@ -462,12 +483,13 @@ def media_metrics(
         the labels from ``prepare_data`` and require grouped data. Omit to
         sum over both. Retained axes follow time then group order.
     batch_size : int, default 64
-        Maximum posterior draws evaluated together. Scenarios run sequentially.
+        Maximum parameter draws evaluated together. Scenarios run sequentially.
 
     Returns
     -------
     xarray.Dataset
-        Channel metrics retaining chain and draw coordinates.
+        Channel metrics retaining chain and draw coordinates. The ``group``
+        attribute records which parameter draws were used.
 
         - **incremental_response** is reference response minus response with
           that channel's spending removed during ``spend_periods``.
@@ -501,6 +523,7 @@ def media_metrics(
         model,
         results,
         quantity=quantity,
+        group=group,
         spend_to_media=spend_to_media,
         spend_to_rf=spend_to_rf,
         channels=channels,
@@ -524,7 +547,7 @@ def media_metrics(
 
 @dataclass(frozen=True)
 class _ResponseContext:
-    """Prepared posterior evaluation and labels shared by spending analyses."""
+    """Prepared draw evaluation and labels shared by spending analyses."""
 
     evaluator: "_BudgetResponse"
     reference_spend: jax.Array
@@ -655,7 +678,7 @@ def _evaluate_response_pairs(
     *,
     retain_axes: tuple[int, ...] = (),
 ) -> tuple[NDArray[np.generic], NDArray[np.generic]]:
-    """Evaluate paired scenarios sequentially while batching posterior draws."""
+    """Evaluate paired scenarios sequentially while batching parameter draws."""
     evaluate = jax.jit(
         lambda budgets: jax.lax.map(
             lambda pair: context.evaluator.paired_evaluation(*pair, retain_axes=retain_axes), budgets
@@ -666,7 +689,7 @@ def _evaluate_response_pairs(
     if not np.isfinite(responses).all() or not np.isfinite(differences).all():
         raise ValueError(
             "A scenario produced invalid media or a nonfinite response. "
-            "Check the conversion, transformed quantity, and posterior draws"
+            "Check the conversion, transformed quantity, and parameter draws"
         )
 
     return responses, differences
@@ -678,8 +701,10 @@ def _response_inputs(
     quantity: str,
     new_data: object,
     batch_size: int,
+    *,
+    group: Literal["prior", "posterior"] = "posterior",
 ) -> tuple[_ModelData, PreparedData, dict[str, jax.Array], dict[str, NDArray[np.generic]]]:
-    """Recover raw reference data while retaining fitted inputs and posterior labels."""
+    """Recover raw reference data while retaining fitted inputs and draw labels."""
     if not isinstance(model, Model):
         raise TypeError("model must be a Model")
     if model._data is None:
@@ -692,7 +717,7 @@ def _response_inputs(
         raise ValueError("batch_size must be a positive integer")
 
     dimensions, coordinates = _parameter_metadata(model)
-    posterior, coordinates = _posterior_draws(model, results, dimensions, coordinates)
+    samples, coordinates = _parameter_draws(model, results, dimensions, coordinates, group=group)
     inputs = model._data
     prepared = _result_data(model)
     assert prepared is not None
@@ -705,7 +730,7 @@ def _response_inputs(
     if model.scaling is not None:
         prepared = model.scaling.inverse_transform(prepared)
 
-    return inputs, prepared, {name: jnp.asarray(value) for name, value in posterior.items()}, coordinates
+    return inputs, prepared, {name: jnp.asarray(value) for name, value in samples.items()}, coordinates
 
 
 def _prepare_response(
@@ -713,6 +738,7 @@ def _prepare_response(
     results: xr.DataTree,
     *,
     quantity: str,
+    group: Literal["prior", "posterior"] = "posterior",
     spend_to_media: Literal["proportional"] | Callable[[jax.Array], ArrayLike],
     spend_to_rf: _ReachFrequencyConversion = "reach",
     channels: Sequence[str] | None = None,
@@ -722,7 +748,9 @@ def _prepare_response(
     batch_size: int = 64,
 ) -> _ResponseContext:
     """Prepare fixed model inputs and labels before numerical budget evaluation."""
-    inputs, prepared, posterior, coordinates = _response_inputs(model, results, quantity, new_data, batch_size)
+    inputs, prepared, samples, coordinates = _response_inputs(
+        model, results, quantity, new_data, batch_size, group=group
+    )
     if not callable(spend_to_media) and not (isinstance(spend_to_media, str) and spend_to_media == "proportional"):
         raise ValueError("spend_to_media must be 'proportional' or a JAX-compatible callable")
     if not callable(spend_to_rf) and not (isinstance(spend_to_rf, str) and spend_to_rf in ("reach", "frequency")):
@@ -829,7 +857,7 @@ def _prepare_response(
     evaluator = _BudgetResponse(
         model=model,
         inputs=inputs,
-        posterior=posterior,
+        samples=samples,
         quantity=quantity,
         spend_weights=selected_spend / jnp.where(totals > 0, totals, 1),
         convert=convert,
@@ -857,6 +885,7 @@ def _prepare_response(
         response_coords=response_coords,
         attrs={
             "quantity": quantity,
+            "group": group,
             "spend_to_media": "proportional" if isinstance(spend_to_media, str) else "custom",
             "spend_to_rf": (spend_to_rf if isinstance(spend_to_rf, str) else "custom"),
             "allocation": "reference spending proportions across selected spending periods and groups",
@@ -867,9 +896,9 @@ def _prepare_response(
     )
 
 
-def _posterior_response(
+def _sample_response(
     model: Model,
-    posterior: dict[str, jax.Array],
+    samples: dict[str, jax.Array],
     inputs: _ModelData,
     reference_inputs: _ModelData | None,
     *,
@@ -879,7 +908,7 @@ def _posterior_response(
     batch_size: int,
     retain_axes: tuple[int, ...] = (),
 ) -> tuple[jax.Array, jax.Array]:
-    """Evaluate paired observation responses in bounded posterior batches."""
+    """Evaluate paired observation responses in bounded parameter batches."""
     reduction_axes = tuple(axis for axis in range(len(observation_shape)) if axis not in retain_axes)
 
     def evaluate_quantity(data: _ModelData, parameters: dict[str, jax.Array]) -> jax.Array:
@@ -902,8 +931,8 @@ def _posterior_response(
 
         return jnp.sum(value, axis=reduction_axes), jnp.sum(difference, axis=reduction_axes)
 
-    chains, draws = next(iter(posterior.values())).shape[:2]
-    flattened = {name: value.reshape((-1, *value.shape[2:])) for name, value in posterior.items()}
+    chains, draws = next(iter(samples.values())).shape[:2]
+    flattened = {name: value.reshape((-1, *value.shape[2:])) for name, value in samples.items()}
     totals, differences = cast(
         tuple[jax.Array, jax.Array],
         jax.lax.map(response, flattened, batch_size=min(int(batch_size), chains * draws)),
@@ -950,7 +979,7 @@ class _BudgetResponse:
 
     model: Model
     inputs: _ModelData
-    posterior: dict[str, jax.Array]
+    samples: dict[str, jax.Array]
     quantity: str
     spend_weights: jax.Array
     convert: Callable[[jax.Array], ArrayLike] | None
@@ -963,7 +992,7 @@ class _BudgetResponse:
     conversion_mask: jax.Array | None = None
 
     def __call__(self, budgets: jax.Array) -> jax.Array:
-        """Return one total response per posterior draw for a joint allocation."""
+        """Return one total response per parameter draw for a joint allocation."""
         return self.paired_evaluation(budgets)[0]
 
     def _scenario_inputs(self, budgets: jax.Array) -> tuple[_ModelData, jax.Array]:
@@ -1040,9 +1069,9 @@ class _BudgetResponse:
             reference_inputs, reference_valid = self._scenario_inputs(reference)
             valid = valid & reference_valid
 
-        totals, differences = _posterior_response(
+        totals, differences = _sample_response(
             self.model,
-            self.posterior,
+            self.samples,
             inputs,
             reference_inputs,
             quantity=self.quantity,
