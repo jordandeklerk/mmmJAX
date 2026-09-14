@@ -17,6 +17,9 @@ scipy = ">=1.14"
 xarray = ">=2025.1.2"
 
 [pypi-dependencies]
+# Include optional progress dependencies omitted by the conda package.
+jax-tap = ">=0.2.1"
+tqdm = ">=4.66"
 tfp-nightly = "==0.26.0.dev20260912"
 
 [feature.dev.dependencies]
@@ -103,7 +106,7 @@ pandas = ">=2.2"
 xarray = ">=2025.1.2"
 
 [feature.gpu.pypi-dependencies]
-blackjax = ">=1.6.2,<1.7"
+blackjax = { version = ">=1.6.2,<1.7", extras = ["progress"] }
 tfp-nightly = "==0.26.0.dev20260912"
 jax = { version = ">=0.10.0,<0.11", extras = ["cuda12"] }
 jaxtyping = ">=0.2.36"

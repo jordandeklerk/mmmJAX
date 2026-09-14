@@ -3,6 +3,7 @@
 import os
 import subprocess
 import sys
+from contextlib import contextmanager
 from textwrap import dedent
 
 import jax
@@ -49,7 +50,18 @@ def nuts_calls(monkeypatch):
     calls = []
 
     def stationary_draws(
-        logdensity, initial_positions, keys, *, draws, warmup, target_accept, max_tree_depth, chain_method, mass_matrix
+        logdensity,
+        initial_positions,
+        keys,
+        *,
+        draws,
+        warmup,
+        target_accept,
+        max_tree_depth,
+        chain_method,
+        mass_matrix,
+        chunk_size,
+        progress,
     ):
         calls.append(
             {
@@ -61,16 +73,19 @@ def nuts_calls(monkeypatch):
                 "max_tree_depth": max_tree_depth,
                 "chain_method": chain_method,
                 "mass_matrix": mass_matrix,
+                "chunk_size": chunk_size,
+                "progress": progress,
             }
         )
         positions = jax.tree.map(
-            lambda value: jnp.broadcast_to(value[:, None], (value.shape[0], draws, *value.shape[1:])), initial_positions
+            lambda value: np.broadcast_to(value[:, None], (value.shape[0], draws, *value.shape[1:])).copy(),
+            initial_positions,
         )
         chains = next(iter(initial_positions.values())).shape[0]
         return positions, {
-            "diverging": jnp.zeros((chains, draws), dtype=bool),
-            "reached_max_treedepth": jnp.zeros((chains, draws), dtype=bool),
-            "lp": jax.vmap(jax.vmap(logdensity))(positions),
+            "diverging": np.zeros((chains, draws), dtype=bool),
+            "reached_max_treedepth": np.zeros((chains, draws), dtype=bool),
+            "lp": np.asarray(jax.vmap(jax.vmap(logdensity))(positions)).copy(),
         }
 
     monkeypatch.setattr(sampling, "_sample_nuts", stationary_draws)
@@ -79,7 +94,7 @@ def nuts_calls(monkeypatch):
 
 @pytest.fixture
 def adaptation_metrics(monkeypatch):
-    captured = {"diagonal": [], "matrices": []}
+    captured = {"diagonal": [], "matrices": [], "steps": []}
     window_adaptation = nuts.blackjax.window_adaptation
 
     def record_adaptation(*args, **kwargs):
@@ -88,15 +103,40 @@ def adaptation_metrics(monkeypatch):
 
         def run(*args, **kwargs):
             adapted, information = adaptation.run(*args, **kwargs)
-            jax.debug.callback(
-                lambda matrix: captured["matrices"].append(np.array(matrix)), adapted[1]["inverse_mass_matrix"]
-            )
+
+            def record_result(matrix):
+                captured["matrices"].append(np.array(matrix))
+                captured["steps"].append(kwargs["num_steps"])
+
+            jax.debug.callback(record_result, adapted[1]["inverse_mass_matrix"])
             return adapted, information
 
         return adaptation._replace(run=run)
 
     monkeypatch.setattr(nuts.blackjax, "window_adaptation", record_adaptation)
     return captured
+
+
+@pytest.fixture
+def progress_contexts(monkeypatch):
+    contexts = []
+    progress_bar = nuts.blackjax.progress_bar
+
+    @contextmanager
+    def record_progress(*args, **kwargs):
+        original_scan = jax.lax.scan
+        try:
+            with progress_bar(*args, **kwargs) as state:
+                contexts.append(state)
+                yield state
+                assert not state.closed
+                assert state.n_steps > 0
+                assert state.current_step == state.n_steps - 1
+        finally:
+            assert jax.lax.scan is original_scan
+
+    monkeypatch.setattr(nuts.blackjax, "progress_bar", record_progress)
+    return contexts
 
 
 def _prepared_model():
@@ -283,6 +323,150 @@ def test_default_initialization_and_keys_are_independent_per_chain(normal_model,
     assert len(np.unique(call["keys"], axis=0)) == 3
     assert call["chain_method"] == "sequential"
     assert call["mass_matrix"] == "diagonal"
+    assert call["chunk_size"] == 100
+    assert call["progress"] is True
+
+
+@pytest.mark.parametrize("chunk_size,progress", [(1, False), (3, True), (20, False)])
+def test_chunk_and_progress_options_preserve_keys_initialization_and_result_groups(nuts_calls, chunk_size, progress):
+    model, _ = _prepared_model()
+    options = {"draws": 7, "warmup": 5, "chains": 2, "seed": 12, "batch_size": 2}
+    expected = sample(model, **options)
+    result = sample(model, **options, chunk_size=chunk_size, progress=progress)
+
+    assert nuts_calls[1]["chunk_size"] == chunk_size
+    assert nuts_calls[1]["progress"] is progress
+    np.testing.assert_array_equal(nuts_calls[0]["keys"], nuts_calls[1]["keys"])
+    for name in nuts_calls[0]["positions"]:
+        np.testing.assert_array_equal(nuts_calls[0]["positions"][name], nuts_calls[1]["positions"][name])
+    xr.testing.assert_identical(result, expected)
+    for group in result.children.values():
+        for variable in group.data_vars.values():
+            assert isinstance(variable.data, np.ndarray)
+
+
+@pytest.mark.parametrize("progress", [None, 0, 1, "true", [], {}, np.bool_(True)])
+def test_progress_requires_a_bool_before_initialization(normal_model, nuts_calls, monkeypatch, progress):
+    def forbidden_initialize(self, key):
+        raise AssertionError("Progress validation must run before parameter initialization")
+
+    monkeypatch.setattr(Model, "initialize_random", forbidden_initialize)
+    with pytest.raises(TypeError, match="progress"):
+        sample(normal_model, data=0.0, draws=2, warmup=3, chains=1, progress=progress)
+    assert not nuts_calls
+
+
+@pytest.mark.parametrize(
+    "chain_method,mass_matrix", [("sequential", "diagonal"), ("vectorized", "diagonal"), ("vectorized", "dense")]
+)
+def test_seeded_nuts_is_unchanged_by_chunk_boundaries_and_progress(normal_model, chain_method, mass_matrix):
+    options = {
+        "data": 0.0,
+        "draws": 7,
+        "warmup": 60,
+        "chains": 2,
+        "seed": 19,
+        "chain_method": chain_method,
+        "mass_matrix": mass_matrix,
+    }
+    expected = sample(normal_model, **options, chunk_size=20, progress=False)
+    for chunk_size, progress in ((1, True), (3, False)):
+        result = sample(normal_model, **options, chunk_size=chunk_size, progress=progress)
+        xr.testing.assert_identical(result, expected)
+
+
+@pytest.mark.parametrize("chain_method", ["sequential", "vectorized"])
+@pytest.mark.parametrize("progress", [False, True])
+def test_nuts_chunks_preserve_draw_keys_warmup_counts_and_bounded_host_transfers(
+    monkeypatch, adaptation_metrics, progress_contexts, capsys, chain_method, progress
+):
+    draw_keys = []
+    chunk_shapes = []
+    make_sampler = nuts.blackjax.nuts.differentiable
+    device_get = jax.device_get
+
+    def record_sampler(*args, **kwargs):
+        sampler = make_sampler(*args, **kwargs)
+
+        def step(key, state):
+            jax.debug.callback(lambda words: draw_keys.append(tuple(np.asarray(words))), jax.random.key_data(key))
+            return sampler.step(key, state)
+
+        return sampler._replace(step=step)
+
+    def record_transfer(value):
+        if isinstance(value, tuple) and len(value) == 2 and isinstance(value[1], dict) and "lp" in value[1]:
+            chunk_shapes.append(value[1]["lp"].shape)
+            if progress:
+                assert not progress_contexts[-1].closed
+        return device_get(value)
+
+    monkeypatch.setattr(nuts.blackjax.nuts, "differentiable", record_sampler)
+    monkeypatch.setattr(nuts.jax, "device_get", record_transfer)
+    keys = jax.random.split(jax.random.key(19), 2)
+    history = nuts._sample_nuts(
+        lambda position: normal(position["location"], 0.0, 1.0),
+        {"location": jnp.array([-0.1, 0.1])},
+        keys,
+        draws=7,
+        warmup=40,
+        target_accept=0.8,
+        max_tree_depth=6,
+        chain_method=chain_method,
+        mass_matrix="diagonal",
+        chunk_size=3,
+        progress=progress,
+    )
+    jax.effects_barrier()
+
+    assert adaptation_metrics["steps"] == [40, 40]
+    expected_keys = jax.vmap(lambda key: jax.random.split(jax.random.split(key)[1], 7))(keys)
+    expected_words = np.asarray(jax.random.key_data(expected_keys)).reshape(-1, 2)
+    assert sorted(draw_keys) == sorted(tuple(words) for words in expected_words)
+    expected_shapes = [(3,), (3,), (1,)] * 2 if chain_method == "sequential" else [(2, 3), (2, 3), (2, 1)]
+    assert chunk_shapes == expected_shapes
+    for value in jax.tree.leaves(history):
+        assert isinstance(value, np.ndarray)
+        assert value.shape == (2, 7)
+        assert value.flags.writeable
+    if progress:
+        expected_steps = [40, 3, 3, 1] * (2 if chain_method == "sequential" else 1)
+        assert [state.n_steps for state in progress_contexts] == expected_steps
+        assert all(state.closed for state in progress_contexts)
+    else:
+        assert not progress_contexts
+        output = capsys.readouterr()
+        assert output.out == ""
+        assert output.err == ""
+
+
+def test_native_progress_restores_scan_after_transfer_failure_and_repeated_calls(
+    normal_model, progress_contexts, monkeypatch
+):
+    original_scan = jax.lax.scan
+    device_get = jax.device_get
+    options = {"data": 0.0, "draws": 7, "warmup": 40, "chains": 1, "chunk_size": 3, "seed": 19}
+
+    def fail_transfer(value):
+        result = device_get(value)
+        if isinstance(value, tuple) and len(value) == 2 and isinstance(value[1], dict) and "lp" in value[1]:
+            raise RuntimeError("Simulated chunk transfer failure")
+        return result
+
+    with monkeypatch.context() as failure_patch:
+        failure_patch.setattr(nuts.jax, "device_get", fail_transfer)
+        with pytest.raises(RuntimeError, match="Simulated chunk transfer failure"):
+            sample(normal_model, **options)
+    assert jax.lax.scan is original_scan
+    assert len(progress_contexts) == 2
+    assert all(state.closed for state in progress_contexts)
+
+    first = sample(normal_model, **options)
+    repeated = sample(normal_model, **options)
+    xr.testing.assert_identical(first, repeated)
+    assert jax.lax.scan is original_scan
+    assert len(progress_contexts) == 10
+    assert all(state.closed for state in progress_contexts)
 
 
 @pytest.mark.parametrize("chain_method", ["sequential", "vectorized", "parallel"])
@@ -362,6 +546,9 @@ def test_parallel_sampling_requires_enough_devices_before_evaluating_model(monke
 def test_parallel_nuts_on_two_cpu_devices_preserves_targets_generation_and_labels():
     script = dedent(
         """
+        from contextlib import contextmanager
+
+        import blackjax
         import jax
         import jax.numpy as jnp
         import numpy as np
@@ -372,15 +559,70 @@ def test_parallel_nuts_on_two_cpu_devices_preserves_targets_generation_and_label
         assert jax.local_device_count() == 2
         assert all(device.platform == "cpu" for device in jax.local_devices())
         run_nuts = sampling._sample_nuts
+        device_get = jax.device_get
+        progress_bar = blackjax.progress_bar
+        progress_contexts = []
+        parallel_chunks = []
+        active_method = None
+
+        @contextmanager
+        def check_progress(*args, **kwargs):
+            original_scan = jax.lax.scan
+            try:
+                with progress_bar(*args, **kwargs) as state:
+                    progress_contexts.append(state)
+                    yield state
+                    assert not state.closed
+                    assert state.n_steps > 0
+                    assert state.current_step == state.n_steps - 1
+                    if active_method == "parallel":
+                        assert "per device" in state.label.replace("-", " ").lower()
+            finally:
+                assert jax.lax.scan is original_scan
+
+        def check_transfer(value):
+            if (
+                active_method == "parallel" and isinstance(value, tuple) and len(value) == 2
+                and isinstance(value[1], dict) and "lp" in value[1]
+            ):
+                chains = value[1]["lp"].shape[0]
+                for leaf in jax.tree.leaves(value):
+                    assert leaf.sharding.device_set == set(jax.local_devices()[:chains])
+                parallel_chunks.append(value[1]["lp"].shape)
+            return device_get(value)
 
         def check_execution(*args, **kwargs):
+            global active_method
+            active_method = kwargs["chain_method"]
+            start = len(parallel_chunks)
+            context_start = len(progress_contexts)
             history = run_nuts(*args, **kwargs)
+            active_method = None
+            for value in jax.tree.leaves(history):
+                assert isinstance(value, np.ndarray)
+                assert value.flags.writeable
+            states = progress_contexts[context_start:]
+            if kwargs["progress"]:
+                steps = [kwargs["warmup"]] + [
+                    min(kwargs["chunk_size"], kwargs["draws"] - offset)
+                    for offset in range(0, kwargs["draws"], kwargs["chunk_size"])
+                ]
+                if kwargs["chain_method"] == "sequential":
+                    steps *= next(iter(args[1].values())).shape[0]
+                assert [state.n_steps for state in states] == steps
+                assert all(state.closed for state in states)
+            else:
+                assert not states
             if kwargs["chain_method"] == "parallel":
                 chains = next(iter(args[1].values())).shape[0]
-                for value in jax.tree.leaves(history):
-                    assert len(value.sharding.device_set) == chains
+                assert parallel_chunks[start:] == [
+                    (chains, min(kwargs["chunk_size"], kwargs["draws"] - offset))
+                    for offset in range(0, kwargs["draws"], kwargs["chunk_size"])
+                ]
             return history
 
+        jax.device_get = check_transfer
+        blackjax.progress_bar = check_progress
         sampling._sample_nuts = check_execution
         observed_location = jax.device_put(jnp.array(0.0), jax.local_devices()[1])
         model = Model(
@@ -392,7 +634,7 @@ def test_parallel_nuts_on_two_cpu_devices_preserves_targets_generation_and_label
             },
             predictive=("prediction",),
         )
-        options = dict(data=observed_location, draws=160, warmup=120, chains=2, seed=19, batch_size=17)
+        options = dict(data=observed_location, draws=160, warmup=120, chains=2, seed=19, batch_size=17, chunk_size=37)
         generation_key = jax.random.split(jax.random.key(19), 4)[2]
         keys = jax.random.split(generation_key, (2, 160))
         noise = jax.jit(jax.vmap(jax.vmap(jax.random.normal)))(keys)
@@ -429,12 +671,13 @@ def test_parallel_nuts_on_two_cpu_devices_preserves_targets_generation_and_label
             if method == "parallel":
                 parallel = result
 
-        repeated = sample(model, **options, chain_method="parallel")
-        xr.testing.assert_allclose(parallel, repeated)
+        repeated = sample(model, **(options | {"chunk_size": 200}), chain_method="parallel", progress=False)
+        xr.testing.assert_identical(parallel, repeated)
         single_options = options | {
             "draws": 8,
             "warmup": 60,
             "chains": 1,
+            "chunk_size": 3,
             "initial_values": {"location": jax.device_put(jnp.array(0.25), jax.local_devices()[1])},
         }
         single = sample(model, **single_options, chain_method="parallel", generate=False)
@@ -466,7 +709,7 @@ def test_parallel_nuts_on_two_cpu_devices_preserves_targets_generation_and_label
         )
         simplex = sample(
             simplex_model, chains=2, draws=8, warmup=40, seed=8, chain_method="parallel",
-            initial_values={"location": 0.0, "weights": jnp.ones(1)}, generate=False,
+            initial_values={"location": 0.0, "weights": jnp.ones(1)}, generate=False, chunk_size=3,
         )
         assert simplex["posterior"]["weights"].shape == (2, 8, 1)
         np.testing.assert_array_equal(simplex["posterior"]["weights"], np.ones((2, 8, 1)))
@@ -479,7 +722,7 @@ def test_parallel_nuts_on_two_cpu_devices_preserves_targets_generation_and_label
         )
         dense = sample(
             dense_model, chains=2, draws=12, warmup=100, seed=17,
-            chain_method="parallel", mass_matrix="dense", batch_size=5,
+            chain_method="parallel", mass_matrix="dense", batch_size=5, chunk_size=5,
         )
         assert dense.attrs["mass_matrix"] == "dense"
         assert dense["posterior"]["coefficients"].shape == (2, 12, 2)
@@ -994,7 +1237,7 @@ def test_problematic_sampler_diagnostics_warn_without_dropping_draws(
 
     def flagged_draws(*args, **kwargs):
         positions, statistics = backend(*args, **kwargs)
-        statistics[statistic] = statistics[statistic].at[0, 0].set(True)
+        statistics[statistic][0, 0] = True
         return positions, statistics
 
     monkeypatch.setattr(sampling, "_sample_nuts", flagged_draws)
@@ -1009,7 +1252,7 @@ def test_nonfinite_sampled_log_density_raises_instead_of_returning_results(norma
 
     def invalid_draws(*args, **kwargs):
         positions, statistics = backend(*args, **kwargs)
-        statistics["lp"] = statistics["lp"].at[0, 0].set(-jnp.inf)
+        statistics["lp"][0, 0] = -np.inf
         return positions, statistics
 
     monkeypatch.setattr(sampling, "_sample_nuts", invalid_draws)
@@ -1017,9 +1260,13 @@ def test_nonfinite_sampled_log_density_raises_instead_of_returning_results(norma
         sample(normal_model, data=0.0, draws=3, warmup=4, chains=1)
 
 
-@pytest.mark.parametrize("option", ["draws", "warmup", "chains", "max_tree_depth", "batch_size"])
-@pytest.mark.parametrize("value", [0, -1, True, 1.5])
-def test_counts_require_positive_integers_before_sampling(normal_model, nuts_calls, option, value):
+@pytest.mark.parametrize("option", ["draws", "warmup", "chains", "max_tree_depth", "batch_size", "chunk_size"])
+@pytest.mark.parametrize("value", [0, -1, True, 1.5, None, "2", np.nan, np.bool_(True)])
+def test_counts_require_positive_integers_before_sampling(normal_model, nuts_calls, monkeypatch, option, value):
+    def forbidden_initialize(self, key):
+        raise AssertionError("Count validation must run before parameter initialization")
+
+    monkeypatch.setattr(Model, "initialize_random", forbidden_initialize)
     arguments = {"draws": 2, "warmup": 3, "chains": 1, option: value}
     with pytest.raises(ValueError, match=option):
         sample(normal_model, data=0.0, **arguments)
