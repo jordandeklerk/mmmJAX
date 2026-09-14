@@ -35,7 +35,9 @@ def sample(
     max_tree_depth: int = 10,
     initial_values: Mapping[str, ArrayLike] | None = None,
     generate: bool = True,
+    chunk_size: int = 100,
     batch_size: int = 64,
+    progress: bool = True,
 ) -> xr.DataTree:
     """Sample a model with NUTS and return labeled posterior results.
 
@@ -77,10 +79,18 @@ def sample(
         Otherwise, each chain starts from a random unconstrained position.
     generate : bool, default True
         Evaluate saved quantities and outputs from the generation callback.
+    chunk_size : int, default 100
+        Maximum retained draws per chain in a sampling chunk before transfer
+        to host memory. Smaller chunks reduce device memory use without
+        restarting warmup or thinning draws.
     batch_size : int, default 64
         Maximum draws evaluated together across chains when converting
         parameters and generating quantities. Smaller batches reduce working
         memory. This does not change NUTS or the number of retained draws.
+    progress : bool, default True
+        Show warmup and sampling progress bars. Sampling bars restart for each
+        chunk. Parallel counters reflect individual devices, not completion
+        of all chains.
 
     Returns
     -------
@@ -107,7 +117,13 @@ def sample(
     if not isinstance(model, Model):
         raise TypeError("model must be a Model")
     _validate_batch_size(batch_size)
-    for name, value in (("draws", draws), ("warmup", warmup), ("chains", chains), ("max_tree_depth", max_tree_depth)):
+    for name, value in (
+        ("draws", draws),
+        ("warmup", warmup),
+        ("chains", chains),
+        ("max_tree_depth", max_tree_depth),
+        ("chunk_size", chunk_size),
+    ):
         if isinstance(value, bool) or not isinstance(value, Integral) or value < 1:
             raise ValueError(f"{name} must be a positive integer")
 
@@ -127,6 +143,8 @@ def sample(
         raise ValueError("target_accept must be between zero and one")
     if not isinstance(generate, bool):
         raise TypeError("generate must be a bool")
+    if not isinstance(progress, bool):
+        raise TypeError("progress must be a bool")
     if model._data is not None and data is not None:
         raise ValueError("Prepared models use their stored data. Omit data when sampling")
     if not any(np.prod(parameter.position_shape) > 0 for parameter in model.parameters.values()):
@@ -199,7 +217,7 @@ def sample(
         {name: value[None, None] for name, value in initial_parameters.items()},
         {name: value[None, None] for name, value in outputs.items()},
     )
-    positions, stats = _sample_nuts(
+    unconstrained, stats = _sample_nuts(
         logdensity,
         positions,
         jax.random.split(sampling_key, chains),
@@ -209,14 +227,19 @@ def sample(
         max_tree_depth=max_tree_depth,
         chain_method=chain_method,
         mass_matrix=mass_matrix,
+        chunk_size=chunk_size,
+        progress=progress,
     )
     if not np.isfinite(np.asarray(stats["lp"])).all():
         raise RuntimeError("Sampling produced nonfinite log densities. Check the model and initial_values")
 
-    positions = jax.device_get(positions)
-    stats = jax.tree.map(lambda value: np.array(value, copy=True), stats)
-    posterior = _evaluate_draws(model.constrain, positions, sample_shape=(chains, draws), batch_size=batch_size)
-    del positions
+    posterior = _evaluate_draws(
+        model.constrain,
+        unconstrained,
+        sample_shape=(chains, draws),
+        batch_size=batch_size,
+    )
+    del unconstrained
     generated: dict[str, NDArray[np.generic]] = {}
 
     if generate and model._has_generated_quantities:
