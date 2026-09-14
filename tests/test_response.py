@@ -1646,6 +1646,110 @@ def test_frequency_curves_preserve_date_labels_and_fractional_reach_from_integer
     np.testing.assert_array_equal(model.data.values["reach"][:, 0], [2, 6, 10])
 
 
+@pytest.fixture
+def integer_frequency_data():
+    data = _rf_data()
+    for role in ("reach", "media_frequency"):
+        data.arrays[role] = data.arrays[role].astype(np.int64)
+    return data
+
+
+def _integer_frequency_model(data):
+    return Model(
+        {"coefficient": Real()},
+        lambda coefficient: -(coefficient**2),
+        data=data,
+        transformed_parameters=lambda reach, media_frequency, coefficient: {
+            "expected": coefficient * reach[1:, 1] + coefficient * media_frequency[1:, 1]
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "role, location, new_data",
+    [
+        ("reach", "selected", False),
+        ("media_frequency", "selected", False),
+        ("reach", "unselected", False),
+        ("media_frequency", "history", False),
+        ("reach", "outside_periods", False),
+        ("reach", "zero_impressions", False),
+        ("media_frequency", "zero_impressions", False),
+        ("reach", "history", True),
+        ("media_frequency", "unselected", True),
+    ],
+)
+def test_frequency_curves_reject_integer_precision_loss(integer_frequency_data, role, location, new_data):
+    data = integer_frequency_data
+    with jax.enable_x64(False):
+        training_model = _integer_frequency_model(data) if new_data else None
+        row, channel = {"history": (0, 0), "unselected": (1, 1), "outside_periods": (3, 0)}.get(location, (1, 0))
+        data.arrays[role][row, channel] = 2**24 + 1
+        if location == "zero_impressions":
+            other_role = "media_frequency" if role == "reach" else "reach"
+            data.arrays[other_role][row, channel] = 0
+        model = training_model if new_data else _integer_frequency_model(data)
+        with pytest.raises(ValueError, match=r"precision|64-bit"):
+            frequency_curves(
+                model,
+                _rf_results(),
+                quantity="expected",
+                frequencies=[2.0, 4.0],
+                channels=["Video"],
+                periods=[1, 2],
+                response_periods=[1, 2],
+                new_data=data if new_data else None,
+            )
+
+
+@pytest.mark.parametrize("role", ["reach", "media_frequency"])
+def test_frequency_curves_preserve_large_integer_inputs_with_x64(integer_frequency_data, role):
+    data = integer_frequency_data
+    data.arrays[role][:, 1] = 2**24 + 1
+    with jax.enable_x64(True):
+        model = _integer_frequency_model(data)
+        results = _collect_results({"coefficient": np.array([[0.5, 1.0], [1.5, 2.0]], dtype=np.float64)})
+        curves = frequency_curves(model, results, quantity="expected", frequencies=[2.0, 4.0], channels=["Video"])
+        expected = results["posterior"]["coefficient"].values.astype(np.float64) * (
+            data.arrays["reach"][1:, 1].sum() + data.arrays["media_frequency"][1:, 1].sum()
+        )
+        np.testing.assert_array_equal(curves["reference_response"], expected)
+        np.testing.assert_array_equal(curves["response_change"], 0.0)
+        for frequency in [2.0, 4.0]:
+            np.testing.assert_array_equal(curves["response"].sel(channel="Video", frequency=frequency), expected)
+        np.testing.assert_array_equal(model.data.values[role], data.arrays[role])
+
+
+@pytest.mark.parametrize("dtype", [np.int64, np.uint64])
+def test_frequency_curves_reject_integer_boundaries_rounded_out_of_range(integer_frequency_data, dtype):
+    data = integer_frequency_data
+    data.arrays["reach"] = data.arrays["reach"].astype(dtype)
+    data.arrays["reach"][0, 1] = np.iinfo(dtype).max
+    with jax.enable_x64(True):
+        model = _integer_frequency_model(data)
+        with pytest.raises(ValueError, match=r"precision|64-bit"):
+            frequency_curves(model, _rf_results(), quantity="expected", frequencies=[2.0], channels=["Video"])
+
+
+def test_frequency_curves_evaluate_reference_with_original_integer_arithmetic(integer_frequency_data):
+    data = integer_frequency_data
+    data.arrays["reach"][:, 1] = 2**24
+    data.arrays["media_frequency"][:, 1] = 1
+    with jax.enable_x64(False):
+        model = Model(
+            {"coefficient": Real()},
+            lambda coefficient: -(coefficient**2),
+            data=data,
+            transformed_parameters=lambda reach, media_frequency, coefficient: {
+                "expected": coefficient * ((reach[1:, 1] + media_frequency[1:, 1]) % 3)
+            },
+        )
+        results = _collect_results({"coefficient": np.ones((1, 1), dtype=np.float32)})
+        curves = frequency_curves(model, results, quantity="expected", frequencies=[2.0], channels=["Video"])
+    # Every input is exactly representable, but converting before the addition changes the remainder.
+    np.testing.assert_array_equal(curves["reference_response"], [[6.0]])
+
+
 @pytest.mark.parametrize(
     "frequencies", [[], [0.0], [-1.0], [np.nan], [np.inf], [[1.0, 2.0]], [True], [1.0, 1.0], [1j], ["2"]]
 )

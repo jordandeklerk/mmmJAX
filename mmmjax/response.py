@@ -247,6 +247,18 @@ def frequency_curves(
     if not {"reach", "media_frequency", "rf_spend"}.issubset(prepared.arrays):
         raise ValueError("Frequency evaluation requires reach, media_frequency, and paired rf_spend columns")
 
+    # Scenario arrays become floating point, including fixed cells and earlier history.
+    for role in ("reach", "media_frequency"):
+        original = np.asarray(inputs.values[role])
+        if np.issubdtype(original.dtype, np.integer):
+            converted = original.astype(model._dtype)
+            upper_limit = 2 ** (np.iinfo(original.dtype).bits - (original.dtype.kind == "i"))
+            if np.any(converted >= upper_limit) or not np.array_equal(converted.astype(original.dtype), original):
+                raise ValueError(
+                    f"Integer {role} inputs lose precision in frequency scenarios. "
+                    "Rescale them or enable JAX 64-bit mode before constructing the model"
+                )
+
     labels = prepared.rf_channels
     selected = labels if channels is None else channels
     if isinstance(selected, (str, bytes)) or not isinstance(selected, Sequence) or not selected:
@@ -315,18 +327,29 @@ def frequency_curves(
         )
         return jnp.where(valid, response, jnp.nan), jnp.where(valid, change, jnp.nan)
 
-    # The initial scenario selects no channel and retains the reference inputs.
-    scenario_channels = jnp.asarray(np.concatenate(([-1], np.repeat(indices, len(grid)))))
-    scenario_levels = jnp.asarray(np.concatenate((candidate_grid[:1], np.tile(candidate_grid, len(indices)))))
-    responses, changes = map(
-        np.asarray, jax.jit(lambda candidates: jax.lax.map(evaluate, candidates))((scenario_channels, scenario_levels))
-    )
-    if not np.isfinite(responses).all() or not np.isfinite(changes).all():
+    def evaluate_grid(candidates: tuple[jax.Array, jax.Array]) -> tuple[jax.Array, jax.Array, jax.Array]:
+        reference, _ = _posterior_response(
+            model,
+            posterior,
+            inputs,
+            None,
+            quantity=quantity,
+            observation_shape=spend.shape[:-1],
+            response_indices=response_indices,
+            batch_size=batch_size,
+        )
+        responses, changes = cast(tuple[jax.Array, jax.Array], jax.lax.map(evaluate, candidates))
+        return reference, responses, changes
+
+    scenario_channels = jnp.asarray(np.repeat(indices, len(grid)))
+    scenario_levels = jnp.asarray(np.tile(candidate_grid, len(indices)))
+    reference, responses, changes = map(np.asarray, jax.jit(evaluate_grid)((scenario_channels, scenario_levels)))
+    if not all(np.isfinite(value).all() for value in (reference, responses, changes)):
         raise ValueError("A frequency scenario produced invalid exposures or a nonfinite response")
 
     shape = (len(indices), len(grid), *responses.shape[1:])
-    response = responses[1:].reshape(shape).transpose(2, 3, 0, 1)
-    change = changes[1:].reshape(shape).transpose(2, 3, 0, 1)
+    response = responses.reshape(shape).transpose(2, 3, 0, 1)
+    change = changes.reshape(shape).transpose(2, 3, 0, 1)
     best = np.argmax(change.mean(axis=(0, 1), dtype=np.float64), axis=-1)
     axes = ("chain", "draw", "channel", "frequency")
 
@@ -334,7 +357,7 @@ def frequency_curves(
         {
             "response": (axes, response),
             "response_change": (axes, change),
-            "reference_response": (("chain", "draw"), responses[0]),
+            "reference_response": (("chain", "draw"), reference),
             "reference_spend": ("channel", totals),
             "best_frequency": ("channel", grid[best]),
         },
