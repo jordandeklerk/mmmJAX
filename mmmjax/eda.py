@@ -1,4 +1,4 @@
-"""Descriptive checks for marketing data before model specification."""
+"""Exploratory data analysis for marketing inputs before model specification."""
 
 from numbers import Real
 
@@ -18,7 +18,7 @@ def check_data(
     max_zero_fraction: float = 0.8,
     correlation_threshold: float = 0.9,
 ) -> xr.DataTree:
-    """Inspect marketing inputs for limited variation and overlapping signals.
+    """Inspect marketing inputs for measurement issues and overlapping signals.
 
     Check raw modeling periods without changing the data. Earlier media history
     is counted separately and excluded from the calculations. Flags identify
@@ -40,15 +40,28 @@ def check_data(
     Returns
     -------
     xarray.DataTree
-        Labeled report containing three groups.
+        Labeled report containing five groups.
 
         - **coverage** records modeling dates, history dates, groups, and cadence.
         - **series** contains minimum, maximum, mean, population standard
           deviation, nonzero periods, zero fraction, longest zero run, and
-          ``constant`` and ``sparse`` flags by feature and optional group.
+          quartiles. The ``constant`` and ``sparse`` flags apply by feature and
+          optional group. ``outlier_periods`` counts values outside 1.5 interquartile ranges
+          from the quartiles. ``std_without_outliers`` and
+          ``outlier_driven_variation`` identify variation lost when those
+          observations are excluded. The flag requires constant retained values.
         - **pairs** contains predictor correlations and ``high_correlation``
           flags. For grouped data, ``within_group_correlation`` removes each
           group's temporal mean and has its own flag. Constant inputs give NaN.
+        - **spend** contains dated spend/exposure mismatches and cost-per-exposure
+          outliers for channels with spend. Reach-frequency exposure is reach
+          times frequency. Costs are NaN without exposure. Cost fences use
+          1.5 interquartile ranges within each channel and group across time.
+        - **predictors** contains variance inflation factors in ``vif``.
+          Constant predictors give NaN and linearly dependent predictors give
+          infinity. Grouped inputs also report unadjusted variation explained
+          by group and time indicators, separately and together. These are
+          descriptive summaries, not measures of a fitted model's quality.
 
         Features are identified by role and source column. Predictor pairs
         exclude outcomes and spend. Exposure pairs also report jointly and
@@ -60,27 +73,6 @@ def check_data(
 
         Fixed frequency or sparse promotions may be intentional. No data are
         dropped, and no minimum history or overall readiness score is imposed.
-
-    Examples
-    --------
-    Inspect exposure columns before choosing their model specification.
-
-    .. ipython::
-
-        In [1]: import polars as pl
-           ...: from mmmjax import check_data, prepare_data
-           ...: frame = pl.DataFrame({
-           ...:     "week": [1, 2, 3, 4, 5],
-           ...:     "sales": [100, 120, 110, 130, 105],
-           ...:     "video": [0, 200, 0, 400, 0],
-           ...:     "social": [0, 100, 0, 200, 0],
-           ...: })
-           ...: data = prepare_data(
-           ...:     frame, time="week", outcome="sales",
-           ...:     media=["video", "social"],
-           ...: )
-           ...: report = check_data(data)
-           ...: report["pairs"].to_dataset().to_dataframe()
     """
     if not isinstance(data, PreparedData):
         raise TypeError("data must be PreparedData returned by prepare_data")
@@ -93,7 +85,7 @@ def check_data(
         if not np.isfinite(value) or not 0 < value <= 1:
             raise ValueError(f"{name} must be greater than zero and at most one")
 
-    values, features, roles, columns, channels = _readiness_values(data)
+    values, features, roles, columns, channels = _data_values(data)
     coordinates, auxiliary = _prepared_coordinates(data)
     n_periods, n_groups, _ = values.shape
     coverage = xr.Dataset(
@@ -131,13 +123,116 @@ def check_data(
         correlation_threshold,
     )
 
+    predictors = _predictor_checks(
+        values[:, :, selected], np.asarray(features, dtype=str)[selected], bool(data.group_columns)
+    )
+    predictors = predictors.assign_coords(
+        role=("feature", np.asarray(roles, dtype=str)[selected]),
+        column=("feature", np.asarray(columns, dtype=str)[selected]),
+        channel=("feature", np.asarray(channels, dtype=str)[selected]),
+    )
+
+    spend = _spend_checks(values, features, roles, columns, channels)
+    spend = spend.assign_coords(time=coordinates["time"])
+    if not data.group_columns:
+        spend = spend.isel(group=0, drop=True)
+    else:
+        spend = spend.assign_coords({"group": coordinates["group"], **auxiliary})
+
     return xr.DataTree.from_dict(
-        {"coverage": coverage, "series": series, "pairs": pairs},
+        {"coverage": coverage, "series": series, "pairs": pairs, "spend": spend, "predictors": predictors},
         name="data_checks",
     )
 
 
-def _readiness_values(
+def _spend_checks(
+    values: NDArray[np.float64],
+    features: list[str],
+    roles: list[str],
+    columns: list[str],
+    channels: list[str],
+) -> xr.Dataset:
+    """Compare paired spending and exposure over each group's modeling periods."""
+    role_labels = np.asarray(roles, dtype=str)
+    spend_indices: list[int] = []
+    exposure_indices: list[int] = []
+    frequency_columns: list[str] = []
+    exposure_blocks: list[NDArray[np.float64]] = []
+
+    for spend_role, exposure_role in (("spend", "media"), ("rf_spend", "reach")):
+        selected = np.flatnonzero(role_labels == spend_role)
+        if selected.size == 0:
+            continue
+
+        exposures = np.flatnonzero(role_labels == exposure_role)
+        exposure = values[:, :, exposures]
+        if spend_role == "rf_spend":
+            frequencies = np.flatnonzero(role_labels == "media_frequency")
+            exposure = exposure * values[:, :, frequencies]
+            frequency_columns.extend(columns[index] for index in frequencies)
+        else:
+            frequency_columns.extend([""] * len(selected))
+
+        spend_indices.extend(selected.tolist())
+        exposure_indices.extend(exposures.tolist())
+        exposure_blocks.append(exposure)
+
+    spend = values[:, :, spend_indices]
+    exposure = np.concatenate(exposure_blocks, axis=-1) if exposure_blocks else np.empty_like(spend)
+    has_exposure = exposure > 0
+    cost = np.divide(spend, exposure, out=np.full_like(spend, np.nan), where=has_exposure)
+    lower = np.full(spend.shape[1:], np.nan)
+    upper = np.full_like(lower, np.nan)
+
+    # Only observations with exposure define a cost. All-inactive channels
+    # have no reference costs, rather than artificial zero-cost observations.
+    for group in range(spend.shape[1]):
+        for feature in range(spend.shape[2]):
+            eligible = cost[has_exposure[:, group, feature], group, feature]
+            if eligible.size:
+                q1, q3 = np.quantile(eligible, [0.25, 0.75])
+                width = 1.5 * (q3 - q1)
+                lower[group, feature] = q1 - width
+                upper[group, feature] = q3 + width
+
+    observations = {
+        "spend_without_exposure": (spend > 0) & ~has_exposure,
+        "exposure_without_spend": has_exposure & (spend == 0),
+        "cost_per_exposure": cost,
+        "cost_outlier": (cost < lower) | (cost > upper),
+    }
+    summaries = {
+        "cost_observations": has_exposure.sum(axis=0),
+        "cost_lower_fence": lower,
+        "cost_upper_fence": upper,
+    }
+    result = xr.Dataset(
+        {
+            **{name: (("time", "group", "feature"), array) for name, array in observations.items()},
+            **{name: (("feature", "group"), array.T) for name, array in summaries.items()},
+        },
+        coords={
+            "feature": np.asarray(features, dtype=str)[spend_indices],
+            "role": ("feature", role_labels[spend_indices]),
+            "column": ("feature", np.asarray(columns, dtype=str)[spend_indices]),
+            "channel": ("feature", np.asarray(channels, dtype=str)[spend_indices]),
+            "exposure_column": ("feature", np.asarray(columns, dtype=str)[exposure_indices]),
+            "frequency_column": ("feature", np.asarray(frequency_columns, dtype=str)),
+        },
+        attrs={"outlier_iqr_multiplier": 1.5, "period_scope": "modeling periods only"},
+    )
+    result["cost_per_exposure"].attrs["description"] = (
+        "Spend per selected media unit or reach times frequency. NaN without exposure"
+    )
+    result["cost_outlier"].attrs["description"] = (
+        "Cost outside IQR fences calculated over modeling periods within each channel and group"
+    )
+    result["spend_without_exposure"].attrs["description"] = "Positive spend with zero exposure"
+    result["exposure_without_spend"].attrs["description"] = "Positive exposure with zero spend"
+    return result
+
+
+def _data_values(
     data: PreparedData,
 ) -> tuple[NDArray[np.float64], list[str], list[str], list[str], list[str]]:
     """Collect unscaled modeling observations in time, group, feature order."""
@@ -208,6 +303,15 @@ def _series_checks(values: NDArray[np.float64], max_zero_fraction: float) -> xr.
     centered = scaled - scaled[:1]
     minimum = values.min(axis=0)
     maximum = values.max(axis=0)
+
+    lower_quartile, upper_quartile = np.quantile(values, [0.25, 0.75], axis=0)
+    interquartile_range = upper_quartile - lower_quartile
+    retained = (values >= lower_quartile - 1.5 * interquartile_range) & (
+        values <= upper_quartile + 1.5 * interquartile_range
+    )
+    retained_minimum = np.min(scaled, axis=0, where=retained, initial=np.inf)
+    retained_maximum = np.max(scaled, axis=0, where=retained, initial=-np.inf)
+
     statistics = {
         "minimum": minimum,
         "maximum": maximum,
@@ -218,13 +322,30 @@ def _series_checks(values: NDArray[np.float64], max_zero_fraction: float) -> xr.
         "longest_zero_run": longest_run,
         "constant": minimum == maximum,
         "sparse": zero_fraction >= max_zero_fraction,
+        "lower_quartile": lower_quartile,
+        "upper_quartile": upper_quartile,
+        "interquartile_range": interquartile_range,
+        "outlier_periods": (~retained).sum(axis=0),
+        "std_without_outliers": centered.std(axis=0, where=retained) * magnitude,
+        "outlier_driven_variation": (minimum != maximum) & (retained_minimum == retained_maximum),
     }
     result = xr.Dataset(
         {name: (("feature", "group"), array.T) for name, array in statistics.items()},
-        attrs={"max_zero_fraction": max_zero_fraction, "period_scope": "modeling periods only"},
+        attrs={
+            "max_zero_fraction": max_zero_fraction,
+            "outlier_iqr_multiplier": 1.5,
+            "period_scope": "modeling periods only",
+        },
     )
     result["std"].attrs["description"] = "Temporal standard deviation with ddof zero"
     result["longest_zero_run"].attrs["description"] = "Longest consecutive zero run in observation periods"
+    result["outlier_periods"].attrs["description"] = "Periods strictly outside the quartiles plus or minus 1.5 IQR"
+    result["std_without_outliers"].attrs["description"] = (
+        "Temporal standard deviation with ddof zero after excluding outliers"
+    )
+    result["outlier_driven_variation"].attrs["description"] = (
+        "Varying series that becomes constant after excluding outliers"
+    )
     return result
 
 
@@ -302,3 +423,74 @@ def _correlations(values: NDArray[np.float64]) -> NDArray[np.float64]:
     result[norm == 0, :] = np.nan
     result[:, norm == 0] = np.nan
     return result
+
+
+def _predictor_checks(
+    values: NDArray[np.float64],
+    features: NDArray[np.str_],
+    grouped: bool,
+) -> xr.Dataset:
+    """Measure multivariate dependence and additive geographic and time patterns."""
+    n_periods, n_groups, n_features = values.shape
+    magnitude = np.max(np.abs(values), axis=(0, 1), keepdims=True)
+    normalized = values / np.where(magnitude == 0, 1, magnitude)
+    centered = normalized - normalized[:1, :1]
+    centered -= centered.mean(axis=(0, 1), keepdims=True)
+    total_variation = np.sum(centered**2, axis=(0, 1))
+    variable = total_variation > 0
+
+    # Unit column norms make the rank tolerance independent of measurement units.
+    flattened = centered.reshape(n_periods * n_groups, n_features)
+    unit = np.divide(flattened, np.sqrt(total_variation), out=np.zeros_like(flattened), where=variable)
+    vif = np.full(n_features, np.nan)
+    if np.any(variable):
+        vif[variable] = _variance_inflation(unit[:, variable])
+
+    result = xr.Dataset(
+        {"vif": ("feature", vif)},
+        coords={"feature": features},
+        attrs={
+            "period_scope": "modeling periods only",
+            "predictor_scope": "raw predictors pooled over modeling observations",
+            "n_observations": n_periods * n_groups,
+            "n_predictors": n_features,
+        },
+    )
+    result["vif"].attrs["description"] = (
+        "Variance inflation from regressing each predictor on the others with an intercept. "
+        "Constant predictors are NaN and linearly dependent predictors are infinite"
+    )
+
+    if grouped:
+        group_mean = centered.mean(axis=0, keepdims=True)
+        time_mean = centered.mean(axis=1, keepdims=True)
+        residuals = {
+            "group_r_squared": (centered - group_mean, "group indicators"),
+            "time_r_squared": (centered - time_mean, "time indicators"),
+            "group_time_r_squared": (centered - group_mean - time_mean, "additive group and time indicators"),
+        }
+        for name, (residual, description) in residuals.items():
+            fraction = np.full(n_features, np.nan)
+            np.divide(np.sum(residual**2, axis=(0, 1)), total_variation, out=fraction, where=variable)
+            result[name] = ("feature", np.clip(1 - fraction, 0, 1))
+            result[name].attrs["description"] = (
+                f"Unadjusted fraction of variation explained by {description}. Constant predictors are NaN"
+            )
+
+    return result
+
+
+def _variance_inflation(unit: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Compute VIFs from centered unit-norm columns, including singular designs."""
+    # Retain all right singular vectors without building an observation-sized
+    # square matrix when there are more observations than predictors.
+    _, singular_values, right = np.linalg.svd(unit, full_matrices=unit.shape[0] < unit.shape[1])
+    tolerance = np.finfo(np.float64).eps * max(unit.shape)
+    rank = np.count_nonzero(singular_values > tolerance * singular_values[0])
+    vif: NDArray[np.float64] = np.sum((right[:rank] / singular_values[:rank, None]) ** 2, axis=0)
+
+    # A pseudoinverse alone gives misleading finite values for dependencies.
+    # Only columns involved in a null-space direction have infinite VIF.
+    dependent = np.linalg.norm(right[rank:], axis=0) > tolerance
+    vif[dependent] = np.inf
+    return np.maximum(vif, 1)

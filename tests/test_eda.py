@@ -1,4 +1,4 @@
-"""Tests for labeled marketing data readiness checks."""
+"""Tests for exploratory analysis of labeled marketing data."""
 
 import numpy as np
 import pandas as pd
@@ -8,7 +8,7 @@ import pytest
 import xarray as xr
 
 from mmmjax import fit_data_scaling, prepare_data
-from mmmjax.readiness import check_data
+from mmmjax.eda import _predictor_checks, check_data
 
 
 def _pair(report, first, second):
@@ -41,7 +41,7 @@ def test_check_data_reports_hand_calculated_series_statistics():
     report = check_data(data, max_zero_fraction=0.6)
 
     assert isinstance(report, xr.DataTree)
-    assert set(report.children) == {"coverage", "series", "pairs"}
+    assert set(report.children) == {"coverage", "series", "pairs", "spend", "predictors"}
     assert report["series"]["mean"].dims == ("feature",)
     series = report["series"].to_dataset()
     media = series.sel(feature="media.impressions")
@@ -122,6 +122,11 @@ def test_check_data_excludes_exposure_history_from_statistics_and_pairs():
     assert pair["correlation"].item() == pytest.approx(1)
     assert pair["joint_active_observations"].item() == 1
     assert pair["matching_activity"].item()
+    spending = report["spend"].to_dataset().sel(feature="spend.cost")
+    np.testing.assert_array_equal(spending["time"], data.time_values)
+    np.testing.assert_array_equal(spending["spend_without_exposure"], [True, False, False])
+    np.testing.assert_array_equal(spending["exposure_without_spend"], [False, True, False])
+    assert spending["cost_observations"].item() == 1
 
 
 def test_check_data_labels_every_role_without_merging_shared_channel_names():
@@ -337,6 +342,8 @@ def test_check_data_accepts_time_labels_without_selected_arrays(grouped):
     assert "media_time" not in report["coverage"].coords
     assert report["series"].sizes["feature"] == 0
     assert report["pairs"].sizes["pair"] == 0
+    assert report["spend"].sizes["feature"] == 0
+    assert report["predictors"].sizes["feature"] == 0
 
 
 def test_check_data_does_not_modify_inputs_or_retain_mutable_observations():
@@ -482,3 +489,407 @@ def test_check_data_rejects_edited_array_shapes():
 
     with pytest.raises(ValueError, match="shape"):
         check_data(data)
+
+
+def test_predictor_checks_detect_multivariate_dependence_beyond_pairwise_correlations():
+    rows = np.arange(16)[:, None]
+    independent = 2.0 * ((rows // (2 ** np.arange(4))) % 2) - 1
+    values = np.column_stack((independent[:, :3], independent[:, :3].sum(axis=1), independent[:, 3]))
+    features = np.array(["first", "second", "third", "combined", "unrelated"])
+    correlations = np.corrcoef(values, rowvar=False)
+    np.testing.assert_array_less(np.abs(correlations[np.triu_indices(5, k=1)]), 0.6)
+
+    result = _predictor_checks(values[:, None], features, False)
+
+    np.testing.assert_array_equal(result["feature"], features)
+    assert np.isinf(result["vif"].sel(feature=["first", "second", "third", "combined"])).all()
+    assert result["vif"].sel(feature="unrelated").item() == pytest.approx(1)
+    assert set(result.data_vars) == {"vif"}
+
+
+def test_predictor_checks_keep_unrelated_vif_finite_when_other_columns_are_duplicates():
+    first = np.array([-1.0, -1.0, 1.0, 1.0])
+    independent = np.array([-1.0, 1.0, -1.0, 1.0])
+    values = np.column_stack((first, 2 * first + 5, independent + first, np.ones(4)))
+
+    result = _predictor_checks(values[:, None], np.array(["first", "duplicate", "third", "constant"]), False)
+
+    assert np.isinf(result["vif"].sel(feature=["first", "duplicate"])).all()
+    assert result["vif"].sel(feature="third").item() == pytest.approx(2)
+    assert np.isnan(result["vif"].sel(feature="constant").item())
+
+
+@pytest.mark.parametrize("factors", [[1, 1, 1, 1], [1e-12, 1e12, -1e6, 1e-6]])
+def test_predictor_checks_vif_matches_auxiliary_regressions_and_is_invariant_to_units(factors):
+    rng = np.random.default_rng(42)
+    values = rng.normal(size=(12, 4))
+    values[:, 1] += 2 * values[:, 0]
+    expected = []
+    for column in range(values.shape[1]):
+        predictor = values[:, column]
+        design = np.column_stack((np.ones(len(values)), np.delete(values, column, axis=1)))
+        fitted = design @ np.linalg.lstsq(design, predictor, rcond=None)[0]
+        expected.append(np.sum((predictor - predictor.mean()) ** 2) / np.sum((predictor - fitted) ** 2))
+
+    result = _predictor_checks((values * factors)[:, None], np.array(["a", "b", "c", "d"]), False)
+
+    np.testing.assert_allclose(result["vif"], expected, rtol=1e-12)
+
+
+@pytest.mark.parametrize("n_observations", [1, 2, 3])
+def test_predictor_checks_saturated_designs_are_not_given_finite_vifs(n_observations):
+    rng = np.random.default_rng(14)
+    values = rng.normal(size=(n_observations, 5))
+
+    result = _predictor_checks(values[:, None], np.array(["a", "b", "c", "d", "e"]), False)
+
+    if n_observations == 1:
+        assert np.isnan(result["vif"]).all()
+    else:
+        assert np.isinf(result["vif"]).all()
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+@pytest.mark.parametrize("n_features", [0, 1])
+def test_predictor_checks_support_empty_and_single_feature_inputs(grouped, n_features):
+    n_groups = 2 if grouped else 1
+    values = np.arange(3 * n_groups, dtype=float).reshape(3, n_groups, 1)[..., :n_features]
+
+    result = _predictor_checks(values, np.array(["media"][:n_features], dtype=str), grouped)
+
+    assert result.sizes["feature"] == n_features
+    assert result["vif"].dims == ("feature",)
+    if n_features:
+        assert result["vif"].item() == pytest.approx(1)
+
+
+def test_predictor_checks_distinguish_group_time_and_interaction_variation():
+    time = np.array([-1.0, 0.0, 1.0])[:, None]
+    group = np.array([-1.0, 1.0])[None, :]
+    values = np.stack(
+        (
+            np.broadcast_to(time, (3, 2)),
+            np.broadcast_to(group, (3, 2)),
+            time + group,
+            time * group,
+            np.ones((3, 2)),
+        ),
+        axis=-1,
+    )
+    features = np.array(["time", "group", "additive", "interaction", "constant"])
+
+    result = _predictor_checks(values, features, True)
+
+    np.testing.assert_allclose(result["group_r_squared"], [0, 1, 0.6, 0, np.nan], atol=1e-15)
+    np.testing.assert_allclose(result["time_r_squared"], [1, 0, 0.4, 0, np.nan], atol=1e-15)
+    np.testing.assert_allclose(result["group_time_r_squared"], [1, 1, 1, 0, np.nan], atol=1e-15)
+    assert result.attrs["n_observations"] == 6
+    assert result.attrs["n_predictors"] == 5
+    assert "Unadjusted" in result["group_time_r_squared"].attrs["description"]
+
+
+@pytest.mark.parametrize("shape", [(1, 3), (3, 1)])
+def test_predictor_checks_group_time_summaries_allow_one_period_or_one_group(shape):
+    values = np.arange(3.0).reshape(*shape, 1)
+
+    result = _predictor_checks(values, np.array(["feature"]), True)
+
+    assert result["group_r_squared"].item() == pytest.approx(int(shape[0] == 1))
+    assert result["time_r_squared"].item() == pytest.approx(int(shape[1] == 1))
+    assert result["group_time_r_squared"].item() == pytest.approx(1)
+
+
+def test_predictor_checks_group_time_summaries_match_indicator_regressions():
+    rng = np.random.default_rng(11)
+    values = rng.normal(size=(5, 3, 2))
+    values[:, :, 0] += np.arange(5)[:, None]
+    values[:, :, 1] += 2 * np.arange(3)[None, :]
+    flattened = values.reshape(15, 2)
+    group = np.tile(np.eye(3), (5, 1))
+    time = np.repeat(np.eye(5), 3, axis=0)
+
+    result = _predictor_checks(values, np.array(["a", "b"]), True)
+
+    for name, design in (
+        ("group_r_squared", group),
+        ("time_r_squared", time),
+        ("group_time_r_squared", np.column_stack((group, time))),
+    ):
+        fitted = design @ np.linalg.lstsq(design, flattened, rcond=None)[0]
+        expected = 1 - np.sum((flattened - fitted) ** 2, axis=0) / np.sum(
+            (flattened - flattened.mean(axis=0)) ** 2, axis=0
+        )
+        np.testing.assert_allclose(result[name], expected, rtol=1e-12)
+
+
+def test_check_data_predictor_checks_exclude_outcomes_spend_and_history():
+    data = prepare_data(
+        pl.DataFrame(
+            {
+                "week": [3, 4, 5, 6],
+                "impressions": [0, 1, 0, 1],
+                "sales": [0, 1, 0, 1],
+                "cost": [0, 1, 0, 1],
+                "price": [-1, 1, 1, -1],
+            }
+        ),
+        time="week",
+        outcome="sales",
+        media=["impressions"],
+        spend=["cost"],
+        channels=["video"],
+        controls=["price"],
+        media_history=pl.DataFrame({"week": [1, 2], "impressions": [300, 400]}),
+    )
+
+    result = check_data(data)["predictors"].to_dataset()
+
+    np.testing.assert_array_equal(result["feature"], ["media.impressions", "controls.price"])
+    np.testing.assert_array_equal(result["role"], ["media", "controls"])
+    np.testing.assert_array_equal(result["column"], ["impressions", "price"])
+    np.testing.assert_array_equal(result["channel"], ["video", ""])
+    np.testing.assert_allclose(result["vif"], [1, 1])
+    assert result.attrs["n_observations"] == 4
+    assert result.attrs["n_predictors"] == 2
+
+
+def test_check_data_reports_dated_spend_mismatches_and_cost_outliers():
+    data = prepare_data(
+        pl.DataFrame(
+            {
+                "week": np.arange(1, 10),
+                "video": [0, 0, 10, 10, 10, 10, 10, 10, 10],
+                "cost": [0, 5, 0, 10, 10, 10, 10, 10, 100],
+            }
+        ),
+        time="week",
+        media=["video"],
+        spend=["cost"],
+        channels=["Online video"],
+    )
+
+    spend = check_data(data)["spend"].to_dataset().sel(feature="spend.cost")
+
+    assert spend["cost_per_exposure"].dims == ("time",)
+    assert spend["channel"].item() == "Online video"
+    assert spend["column"].item() == "cost"
+    assert spend["exposure_column"].item() == "video"
+    assert spend["frequency_column"].item() == ""
+    np.testing.assert_array_equal(spend["spend_without_exposure"], [False, True, *([False] * 7)])
+    np.testing.assert_array_equal(spend["exposure_without_spend"], [False, False, True, *([False] * 6)])
+    np.testing.assert_allclose(spend["cost_per_exposure"], [np.nan, np.nan, 0, 1, 1, 1, 1, 1, 10], equal_nan=True)
+    np.testing.assert_array_equal(spend["cost_outlier"], [False, False, True, *([False] * 5), True])
+    assert spend["cost_observations"].item() == 7
+    assert spend["cost_lower_fence"].item() == 1
+    assert spend["cost_upper_fence"].item() == 1
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_check_data_pairs_rf_spend_and_uses_group_local_cost_fences(nested):
+    rows = []
+    for region, store, unit_cost in (("west", 2, 10.0), ("east", 1, 1.0)):
+        for period in range(1, 9):
+            frequency = 0 if period == 1 else 2
+            rows.append(
+                {
+                    "week": period,
+                    "region": region,
+                    "store": store,
+                    "views": 10,
+                    "audience": 5,
+                    "frequency": frequency,
+                    "cost": 10 * unit_cost,
+                }
+            )
+    data = prepare_data(
+        pl.DataFrame(rows),
+        time="week",
+        groups=["region", "store"] if nested else ["region"],
+        media=["views"],
+        spend=["cost"],
+        channels=["Shared"],
+        reach=["audience"],
+        media_frequency=["frequency"],
+        rf_spend=["cost"],
+        rf_channels=["Shared"],
+    )
+
+    spend = check_data(data)["spend"].to_dataset()
+
+    np.testing.assert_array_equal(spend["feature"], ["spend.cost", "rf_spend.cost"])
+    np.testing.assert_array_equal(spend["group"], [0, 1] if nested else ["west", "east"])
+    assert spend["cost_per_exposure"].dims == ("time", "group", "feature")
+    assert spend["cost_lower_fence"].dims == ("feature", "group")
+    assert not spend["cost_outlier"].values.any()
+    np.testing.assert_allclose(spend["cost_lower_fence"], [[10, 1], [10, 1]])
+    rf = spend.sel(feature="rf_spend.cost")
+    assert rf["exposure_column"].item() == "audience"
+    assert rf["frequency_column"].item() == "frequency"
+    assert rf["spend_without_exposure"].isel(time=0).values.all()
+    assert not rf["spend_without_exposure"].isel(time=slice(1, None)).values.any()
+    np.testing.assert_allclose(rf["cost_per_exposure"].isel(time=1), [10, 1])
+    np.testing.assert_array_equal(rf["cost_observations"], [7, 7])
+    if nested:
+        np.testing.assert_array_equal(spend["group_region"], ["west", "east"])
+        np.testing.assert_array_equal(spend["group_store"], [2, 1])
+
+
+def test_check_data_keeps_undefined_costs_unflagged_and_handles_one_observation():
+    data = prepare_data(
+        pl.DataFrame(
+            {
+                "week": [1, 2, 3],
+                "inactive": [0, 0, 0],
+                "active": [0, 10, 0],
+                "free": [0, 0, 0],
+                "cost": [1, 2, 3],
+            }
+        ),
+        time="week",
+        media=["inactive", "active"],
+        spend=["free", "cost"],
+    )
+
+    spend = check_data(data)["spend"].to_dataset()
+
+    inactive = spend.sel(feature="spend.free")
+    assert inactive["cost_per_exposure"].isnull().all()
+    assert inactive["cost_lower_fence"].isnull()
+    assert inactive["cost_upper_fence"].isnull()
+    assert not inactive["cost_outlier"].any()
+    assert not inactive["spend_without_exposure"].any()
+    assert not inactive["exposure_without_spend"].any()
+    assert inactive["cost_observations"].item() == 0
+    active = spend.sel(feature="spend.cost")
+    assert active["cost_lower_fence"].item() == pytest.approx(0.2)
+    assert active["cost_upper_fence"].item() == pytest.approx(0.2)
+    assert not active["cost_outlier"].any()
+
+
+def test_check_data_keeps_costs_on_iqr_fences_unflagged():
+    data = prepare_data(
+        pl.DataFrame({"week": np.arange(1, 10), "media": np.ones(9), "cost": [0, 3, 3, 4, 4, 5, 5, 5, 8]}),
+        time="week",
+        media=["media"],
+        spend=["cost"],
+    )
+
+    spend = check_data(data)["spend"].to_dataset()
+
+    assert spend["cost_lower_fence"].item() == 0
+    assert spend["cost_upper_fence"].item() == 8
+    assert not spend["cost_outlier"].any()
+
+
+def test_check_data_reports_hand_calculated_robust_variability_for_signed_controls():
+    data = prepare_data(
+        pl.DataFrame({"week": np.arange(7), "temperature": [-100, -2, -1, 0, 1, 2, 100]}),
+        time="week",
+        controls=["temperature"],
+    )
+
+    series = check_data(data)["series"].to_dataset().sel(feature="controls.temperature")
+
+    assert series["lower_quartile"].item() == pytest.approx(-1.5)
+    assert series["upper_quartile"].item() == pytest.approx(1.5)
+    assert series["interquartile_range"].item() == pytest.approx(3)
+    assert series["outlier_periods"].item() == 2
+    assert series["std_without_outliers"].item() == pytest.approx(np.sqrt(2))
+    assert not series["outlier_driven_variation"].item()
+
+
+@pytest.mark.parametrize(
+    ("observations", "outliers", "driven"),
+    [
+        ([0, 0, 0, 0, 10], 1, True),
+        ([1, 1, 1, 1, 10], 1, True),
+        ([0, 0, 0, 0, 0], 0, False),
+        ([7, 7, 7, 7, 7], 0, False),
+    ],
+)
+def test_check_data_distinguishes_outlier_driven_variability_from_constant_series(observations, outliers, driven):
+    data = prepare_data(
+        pl.DataFrame({"week": np.arange(len(observations)), "impressions": observations}),
+        time="week",
+        media=["impressions"],
+    )
+
+    series = check_data(data)["series"].to_dataset().sel(feature="media.impressions")
+
+    assert series["interquartile_range"].item() == 0
+    assert series["outlier_periods"].item() == outliers
+    assert series["std_without_outliers"].item() == 0
+    assert series["outlier_driven_variation"].item() is driven
+
+
+def test_check_data_retains_observations_on_iqr_fences():
+    observations = np.array([1, 4, 4, 5, 6, 6, 9])
+    data = prepare_data(
+        pl.DataFrame({"week": np.arange(len(observations)), "impressions": observations}),
+        time="week",
+        media=["impressions"],
+    )
+
+    series = check_data(data)["series"].to_dataset().sel(feature="media.impressions")
+
+    assert series["lower_quartile"].item() == pytest.approx(4)
+    assert series["upper_quartile"].item() == pytest.approx(6)
+    assert series["outlier_periods"].item() == 0
+    assert series["std_without_outliers"].item() == pytest.approx(observations.std())
+    assert not series["outlier_driven_variation"].item()
+
+
+def test_check_data_keeps_fence_boundary_when_rescaling_would_introduce_roundoff():
+    observations = np.array([18, 16, -4, 8, -19, 11, 16])
+    data = prepare_data(
+        pl.DataFrame({"week": np.arange(len(observations)), "temperature": observations}),
+        time="week",
+        controls=["temperature"],
+    )
+
+    series = check_data(data)["series"].to_dataset().sel(feature="controls.temperature")
+
+    assert series["lower_quartile"].item() == 2
+    assert series["upper_quartile"].item() == 16
+    assert series["outlier_periods"].item() == 0
+    assert series["std_without_outliers"].item() == pytest.approx(observations.std())
+
+
+@pytest.mark.parametrize("observations", [[2], [1, 9]])
+def test_check_data_handles_short_series_for_robust_variability(observations):
+    data = prepare_data(
+        pl.DataFrame({"week": np.arange(len(observations)), "impressions": observations}),
+        time="week",
+        media=["impressions"],
+    )
+
+    series = check_data(data)["series"].to_dataset().sel(feature="media.impressions")
+
+    assert series["outlier_periods"].item() == 0
+    assert series["std_without_outliers"].item() == pytest.approx(np.std(observations))
+    assert not series["outlier_driven_variation"].item()
+
+
+def test_check_data_computes_robust_variability_separately_by_group_and_excludes_history():
+    frame = pl.concat(
+        [
+            pl.DataFrame({"week": [1, 2, 3, 4, 5], "geo": [geo] * 5, "impressions": observations})
+            for geo, observations in (("west", [1, 1, 1, 1, 10]), ("east", [100, 200, 300, 400, 500]))
+        ]
+    )
+    data = prepare_data(
+        frame,
+        time="week",
+        groups=["geo"],
+        media=["impressions"],
+        media_history=pl.DataFrame({"week": [0, 0], "geo": ["west", "east"], "impressions": [9999, 9999]}),
+    )
+
+    series = check_data(data)["series"].to_dataset().sel(feature="media.impressions")
+
+    assert series["outlier_periods"].dims == ("group",)
+    np.testing.assert_array_equal(series["group"], ["west", "east"])
+    np.testing.assert_array_equal(series["outlier_periods"], [1, 0])
+    np.testing.assert_allclose(series["interquartile_range"], [0, 200])
+    np.testing.assert_allclose(series["std_without_outliers"], [0, np.sqrt(20000)])
+    np.testing.assert_array_equal(series["outlier_driven_variation"], [True, False])
