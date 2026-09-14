@@ -799,7 +799,7 @@ def generate_quantities(
         raise ValueError("seed must be a nonnegative integer")
 
     dimensions, coordinates = _parameter_metadata(model)
-    posterior, coordinates = _posterior_draws(model, results, dimensions, coordinates)
+    posterior, coordinates = _parameter_draws(model, results, dimensions, coordinates)
     # The new result tree owns its draws without modifying the supplied results.
     posterior = {name: value.copy() for name, value in posterior.items()}
     prepared = _result_data(model)
@@ -841,25 +841,30 @@ def generate_quantities(
     return evaluated
 
 
-def _posterior_draws(
+def _parameter_draws(
     model: Model,
     results: xr.DataTree,
     dimensions: dict[str, tuple[str, ...]],
     coordinates: dict[str, NDArray[np.generic]],
+    *,
+    group: Literal["prior", "posterior"] = "posterior",
 ) -> tuple[dict[str, NDArray[np.generic]], dict[str, NDArray[np.generic]]]:
-    """Validate labeled constrained draws before passing them to model callbacks."""
+    """Validate labeled constrained draws from the selected result group."""
+    if not isinstance(group, str) or group not in ("prior", "posterior"):
+        raise ValueError("group must be 'prior' or 'posterior'")
+    label = group.capitalize()
     if not isinstance(results, xr.DataTree):
-        raise TypeError("results must be an xarray.DataTree containing posterior draws")
-    if "posterior" not in results.children:
-        raise ValueError("results must contain a posterior group")
-    dataset = results["posterior"].to_dataset()
+        raise TypeError(f"results must be an xarray.DataTree containing {group} draws")
+    if group not in results.children:
+        raise ValueError(f"results must contain a {group} group")
+    dataset = results[group].to_dataset()
     if not dataset.data_vars or set(dataset.data_vars) != set(model.parameters):
-        raise ValueError("Posterior parameter names must match the model declarations")
+        raise ValueError(f"{label} parameter names must match the model declarations")
     for axis in ("chain", "draw"):
         if dataset.sizes.get(axis, 0) == 0:
-            raise ValueError(f"posterior must contain at least one {axis}")
+            raise ValueError(f"{group} must contain at least one {axis}")
         if axis in coordinates:
-            raise ValueError("Posterior draws supply chain and draw coordinates. Supply only model axes in coords")
+            raise ValueError(f"{label} draws supply chain and draw coordinates. Supply only model axes in coords")
 
     expected_coordinates = coordinates.copy()
     training = _result_data(model)
@@ -876,34 +881,34 @@ def _posterior_draws(
                     or dataset.coords[name].dims != (axis,)
                     or not _same_labels(dataset.coords[name].values, labels)
                 ):
-                    raise ValueError(f"Posterior coordinate {name!r} must match the model group labels and ordering")
+                    raise ValueError(f"{label} coordinate {name!r} must match the model group labels and ordering")
 
-    posterior = {}
+    samples = {}
     for name, parameter in model.parameters.items():
         value = dataset[name]
         axes = ("chain", "draw", *dimensions[name])
         if len(value.dims) != len(axes) or set(value.dims) != set(axes):
-            raise ValueError(f"Posterior dimensions for {name!r} must match the model axes {axes}")
+            raise ValueError(f"{label} dimensions for {name!r} must match the model axes {axes}")
         value = value.transpose(*axes)
         if value.shape[2:] != parameter.shape:
-            raise ValueError(f"Posterior shape for {name!r} must match its constrained parameter shape")
+            raise ValueError(f"{label} shape for {name!r} must match its constrained parameter shape")
         for axis, size in zip(dimensions[name], parameter.shape, strict=True):
             labels = expected_coordinates.get(axis, np.arange(size))
             if axis not in value.coords or not _same_labels(value.coords[axis].values, labels):
-                raise ValueError(f"Posterior coordinate {axis!r} must match the model labels and ordering")
+                raise ValueError(f"{label} coordinate {axis!r} must match the model labels and ordering")
             coordinates[axis] = labels.copy()
         array = np.asarray(value)
         if array.dtype.kind not in "fiu" or not np.isfinite(array).all():
-            raise ValueError(f"Posterior draws for {name!r} must be finite real numbers")
+            raise ValueError(f"{label} draws for {name!r} must be finite real numbers")
         if jax.dtypes.canonicalize_dtype(array.dtype) != array.dtype:
-            raise ValueError("Enable JAX 64-bit mode to evaluate these posterior draws without losing precision")
-        posterior[name] = array
+            raise ValueError(f"Enable JAX 64-bit mode to evaluate these {group} draws without losing precision")
+        samples[name] = array
 
     for axis in ("chain", "draw"):
         coordinates[axis] = np.array(
             dataset.coords[axis].values if axis in dataset.coords else np.arange(dataset.sizes[axis])
         )
-    return posterior, coordinates
+    return samples, coordinates
 
 
 def _validate_batch_size(batch_size: int) -> None:

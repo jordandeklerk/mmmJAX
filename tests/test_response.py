@@ -1,4 +1,4 @@
-"""Tests for posterior response curves with proportional or custom spending assumptions."""
+"""Tests for prior and posterior response curves with explicit spending assumptions."""
 
 from dataclasses import replace
 from datetime import date, datetime
@@ -22,6 +22,7 @@ from mmmjax import (
     hill_saturation,
     prepare_data,
     response_curves,
+    sample_prior,
 )
 from mmmjax._results import _collect_results
 from mmmjax.response import _BudgetResponse, _prepare_response
@@ -151,7 +152,12 @@ def test_response_curves_default_to_proportional_media():
 
     curves = response_curves(model, results, quantity="expected", multipliers=[0.0, 1.0, 2.0])
     explicit = response_curves(
-        model, results, quantity="expected", multipliers=[0.0, 1.0, 2.0], spend_to_media="proportional"
+        model,
+        results,
+        quantity="expected",
+        multipliers=[0.0, 1.0, 2.0],
+        spend_to_media="proportional",
+        group="posterior",
     )
 
     xr.testing.assert_identical(curves, explicit)
@@ -459,7 +465,7 @@ def test_budget_response_supports_joint_allocations_and_compiled_gradients():
     evaluator = _BudgetResponse(
         model=model,
         inputs=model.data,
-        posterior=posterior,
+        samples=posterior,
         quantity="expected",
         spend_weights=jnp.asarray(weights),
         convert=lambda candidate: candidate * jnp.array([2.0, 3.0]),
@@ -1059,7 +1065,7 @@ def test_budget_response_keeps_exact_stored_values_outside_spending_periods(scal
     evaluator = _BudgetResponse(
         model=model,
         inputs=model.data,
-        posterior={"coefficient": jnp.asarray(_results(model, data)["posterior"]["coefficient"].values)},
+        samples={"coefficient": jnp.asarray(_results(model, data)["posterior"]["coefficient"].values)},
         quantity="expected",
         spend_weights=jnp.where(mask[:, None, None], spend / budgets, 0),
         convert=lambda candidate: candidate * jnp.array([2.0, 3.0]) + 7.0,
@@ -1101,7 +1107,7 @@ def test_budget_response_differentiates_carryover_with_a_separate_response_windo
     evaluator = _BudgetResponse(
         model=model,
         inputs=model.data,
-        posterior=posterior,
+        samples=posterior,
         quantity="expected",
         spend_weights=jnp.where(mask[:, None], spend / budgets, 0),
         convert=lambda candidate: candidate * jnp.array([2.0, 3.0]),
@@ -1602,6 +1608,9 @@ def test_frequency_curves_are_public_and_evaluate_conditional_responses_per_draw
     model, results = _rf_model(data), _rf_results()
     frequencies = [4.0, 0.5, 2.0]
     curves = frequency_curves(model, results, quantity="expected", frequencies=frequencies)
+    explicit = frequency_curves(model, results, quantity="expected", frequencies=frequencies, group="posterior")
+    xr.testing.assert_identical(curves, explicit)
+    assert curves.attrs["group"] == "posterior"
 
     assert set(curves.data_vars) == {
         "response",
@@ -2066,3 +2075,179 @@ def test_frequency_curves_reject_unrepresentable_exposures(scenario):
             quantity="expected",
             frequencies=[candidate],
         )
+
+
+@pytest.mark.parametrize("kind", ["spending", "frequency"])
+@pytest.mark.parametrize("group", ["prior", "posterior"])
+def test_response_analysis_selects_independent_parameter_groups(kind, group):
+    data = _rf_data(mixed=True, grouped=True)
+    scaling = fit_data_scaling(data, adjust_population=True)
+    model = _rf_model(data, scaling=scaling)
+    prior = _collect_results(
+        {"coefficient": np.array([[0.3, 0.9, 1.8]], dtype=np.float32)},
+        sample_group="prior",
+        coords={"chain": [42], "draw": [9, 3, 7]},
+    )
+    results = xr.DataTree.from_dict(
+        {"prior": prior["prior"].to_dataset(), "posterior": _rf_results()["posterior"].to_dataset()}
+    )
+    original = results.copy(deep=True)
+    options = {"quantity": "expected", "group": group, "channels": ["Audio", "Video"], "response_periods": [2, 3]}
+    if kind == "spending":
+        curves = response_curves(
+            model, results, multipliers=[0.0, 1.0, 2.0], spend_periods=[1], batch_size=2, **options
+        )
+    else:
+        curves = frequency_curves(model, results, frequencies=[0.5, 2.0, 4.0], periods=[1], batch_size=2, **options)
+
+    draws = results[group]["coefficient"]
+    assert curves.attrs["group"] == group
+    np.testing.assert_array_equal(curves.chain, draws.chain)
+    np.testing.assert_array_equal(curves.draw, draws.draw)
+    for chain, draw in np.ndindex(draws.shape):
+        coefficient = draws.values[chain, draw]
+        reference = _rf_expected(data, coefficient, scaling=scaling, response_periods=[2, 3])
+        np.testing.assert_allclose(curves["reference_response"][chain, draw], reference, rtol=3e-6)
+        for channel in curves.channel.values:
+            if kind == "spending":
+                zero = _rf_expected(
+                    _rf_scenario(data, channel, 0.0, spend_periods=[1]),
+                    coefficient,
+                    scaling=scaling,
+                    response_periods=[2, 3],
+                )
+                for multiplier in curves.multiplier.values:
+                    expected = _rf_expected(
+                        _rf_scenario(data, channel, multiplier, spend_periods=[1]),
+                        coefficient,
+                        scaling=scaling,
+                        response_periods=[2, 3],
+                    )
+                    actual = curves.sel(channel=channel, multiplier=multiplier).isel(chain=chain, draw=draw)
+                    np.testing.assert_allclose(actual["response"], expected, rtol=3e-6)
+                    np.testing.assert_allclose(actual["incremental_response"], expected - zero, rtol=3e-6, atol=3e-5)
+            else:
+                for frequency in curves.frequency.values:
+                    expected = _rf_expected(
+                        _frequency_scenario(data, channel, frequency, periods=[1]),
+                        coefficient,
+                        scaling=scaling,
+                        response_periods=[2, 3],
+                    )
+                    actual = curves.sel(channel=channel, frequency=frequency).isel(chain=chain, draw=draw)
+                    np.testing.assert_allclose(actual["response"], expected, rtol=3e-6)
+                    np.testing.assert_allclose(actual["response_change"], expected - reference, rtol=3e-6, atol=3e-5)
+    if kind == "frequency":
+        best = curves["response"].mean(("chain", "draw")).argmax("frequency")
+        np.testing.assert_array_equal(curves["best_frequency"], curves.frequency.values[best.values])
+    if group == "prior":
+        if kind == "spending":
+            prior_only = response_curves(
+                model, prior, multipliers=[0.0, 1.0, 2.0], spend_periods=[1], batch_size=2, **options
+            )
+        else:
+            prior_only = frequency_curves(
+                model, prior, frequencies=[0.5, 2.0, 4.0], periods=[1], batch_size=2, **options
+            )
+        xr.testing.assert_identical(curves, prior_only)
+    xr.testing.assert_identical(results, original)
+
+
+def test_response_curves_use_sampled_priors_without_generation_or_resampling():
+    data = _data(grouped=True)
+    scaling = fit_data_scaling(data, adjust_population=True)
+    model = _model(data, scaling=scaling, cross_group=True)
+    allow_sampling = True
+
+    def prior(key):
+        if not allow_sampling:
+            raise AssertionError("Response analysis must reuse the supplied draws")
+        return {"coefficient": jax.random.uniform(key, shape=(2,), minval=0.2, maxval=2.0)}
+
+    results = sample_prior(model, prior, draws=5, seed=42, generate=False, batch_size=3)
+    allow_sampling = False
+    assert "posterior" not in results.children
+    assert "prior_generated_quantities" not in results.children
+    original = results.copy(deep=True)
+    options = {
+        "quantity": "expected",
+        "multipliers": [0.0, 0.5, 2.0],
+        "group": "prior",
+        "spend_periods": [3, 1],
+        "response_periods": [3, 2],
+    }
+    detailed = response_curves(model, results, by=("group", "time"), batch_size=3, **options)
+    aggregate = response_curves(model, results, batch_size=1, **options)
+    assert detailed["response"].dims == ("chain", "draw", "time", "group", "channel", "multiplier")
+    assert detailed.attrs["group"] == "prior"
+    np.testing.assert_array_equal(detailed.time, [2, 3])
+    np.testing.assert_array_equal(detailed.group, ["east", "west"])
+    for name in ("response", "incremental_response", "reference_response"):
+        xr.testing.assert_allclose(detailed[name].sum(("time", "group")), aggregate[name], rtol=3e-5, atol=3e-6)
+    for draw in range(5):
+        coefficient = results["prior"]["coefficient"].values[0, draw]
+        for channel in range(2):
+            expected = _window_expected(
+                _window_scenario(data, channel, 2.0, [1, 3]),
+                coefficient,
+                [2, 3],
+                scaling=scaling,
+                by=("time", "group"),
+                cross_group=True,
+            )
+            actual = detailed["response"].sel(multiplier=2).isel(chain=0, draw=draw, channel=channel)
+            np.testing.assert_allclose(actual, expected, rtol=3e-6)
+    xr.testing.assert_identical(results, original)
+
+
+@pytest.mark.parametrize("kind", ["spending", "frequency"])
+@pytest.mark.parametrize("group", [None, "Prior", "prior_predictive", 1, ["prior"]])
+def test_response_analysis_rejects_invalid_result_groups(kind, group):
+    data = _rf_data()
+    model = _rf_model(data)
+    function, grid = (
+        (response_curves, {"multipliers": [1.0]}) if kind == "spending" else (frequency_curves, {"frequencies": [1.0]})
+    )
+    with pytest.raises(ValueError, match="group"):
+        function(model, _rf_results(), quantity="expected", group=group, **grid)
+
+
+@pytest.mark.parametrize("kind", ["spending", "frequency"])
+def test_response_analysis_requires_the_selected_group_without_falling_back(kind):
+    data = _rf_data()
+    model = _rf_model(data)
+    function, grid = (
+        (response_curves, {"multipliers": [1.0]}) if kind == "spending" else (frequency_curves, {"frequencies": [1.0]})
+    )
+    with pytest.raises(ValueError, match="prior"):
+        function(model, _rf_results(), quantity="expected", group="prior", **grid)
+    prior = _collect_results({"coefficient": np.ones((1, 1), dtype=np.float32)}, sample_group="prior")
+    with pytest.raises(ValueError, match="posterior"):
+        function(model, prior, quantity="expected", **grid)
+
+
+@pytest.mark.parametrize("invalid", ["shape", "labels", "nonfinite", "precision"])
+def test_response_curves_validate_prior_parameter_shape_labels_and_values(invalid):
+    data = _data()
+    model = _model(data)
+    values = np.array([[[0.5, 1.0]]], dtype=np.float32)
+    labels = list(data.channels)
+    if invalid == "shape":
+        values = values[..., :1]
+        labels = labels[:1]
+    elif invalid == "labels":
+        labels.reverse()
+    elif invalid == "nonfinite":
+        values[0, 0, 0] = np.nan
+    else:
+        values = values.astype(np.float64)
+    results = xr.DataTree.from_dict(
+        {"prior": xr.Dataset({"coefficient": (("chain", "draw", "channel"), values)}, coords={"channel": labels})}
+    )
+    if invalid == "precision" and jax.config.jax_enable_x64:
+        curves = response_curves(model, results, quantity="expected", group="prior", multipliers=[1.0])
+        assert curves["response"].dtype == np.dtype(np.float64)
+        np.testing.assert_allclose(curves["reference_response"], _expected(data, values[0, 0]), rtol=1e-12)
+        return
+    with pytest.raises(ValueError, match=r"shape|coordinate|finite|64-bit"):
+        response_curves(model, results, quantity="expected", group="prior", multipliers=[1.0])

@@ -1,7 +1,7 @@
 Media response
 ==============
 
-Evaluate spending and frequency scenarios using the fitted model and its posterior draws.
+Evaluate media scenarios and returns using prior or posterior parameter draws.
 
 .. currentmodule:: mmmjax
 
