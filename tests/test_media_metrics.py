@@ -534,6 +534,75 @@ def test_media_metrics_rf_default_reach_and_selected_channels_match_full_result(
     xr.testing.assert_allclose(selected, default.sel(channel=["Video"]).isel(chain=[1], draw=[1, 0]))
 
 
+@pytest.mark.parametrize("channel", ["Search", "Video"])
+@pytest.mark.parametrize("mode", ["reach", "frequency"])
+def test_media_metrics_preserve_unselected_family_exposure_with_zero_spend(channel, mode):
+    data, model, results = _rf_case(mixed=True)
+    arrays = {name: value.copy() for name, value in data.arrays.items()}
+    arrays["rf_spend" if channel == "Search" else "spend"][:] = 0.0
+    new_data = replace(data, arrays=arrays)
+    metrics = media_metrics(
+        model,
+        results,
+        quantity="expected_users",
+        channels=[channel],
+        new_data=new_data,
+        spend_to_rf=mode,
+        incremental_increase=0.25,
+    )
+    coefficient = results["posterior"]["coefficient"].values[..., None]
+
+    def response(multiplier):
+        reach = arrays["reach"][:, 0].copy()
+        frequency = arrays["media_frequency"][:, 0].copy()
+        media = arrays["media"][:, 0].copy()
+        if channel == "Search":
+            media[1:] *= multiplier
+        elif mode == "reach":
+            reach[1:] *= multiplier
+        else:
+            frequency[1:] *= multiplier
+        saturated = reach * frequency / (1.0 + frequency)
+        carried = saturated[1:] + 0.5 * saturated[:-1]
+        return (3.0 + coefficient**2 * carried + coefficient * media[1:] * (1.0 + carried)).sum(axis=-1)
+
+    reference = response(1.0)
+    incremental = reference - response(0.0)
+    marginal = response(1.25) - reference
+    spend = 6.0 if channel == "Search" else 9.0
+    np.testing.assert_array_equal(metrics.channel, [channel])
+    np.testing.assert_array_equal(metrics.channel_type, ["media" if channel == "Search" else "reach_frequency"])
+    np.testing.assert_allclose(metrics["reference_spend"], [spend])
+    np.testing.assert_allclose(metrics["reference_response"], reference, rtol=2e-6)
+    for name, expected in {
+        "incremental_response": incremental,
+        "roi": incremental / spend,
+        "marginal_response": marginal,
+        "marginal_roi": marginal / (0.25 * spend),
+    }.items():
+        np.testing.assert_allclose(metrics[name].sel(channel=channel), expected, rtol=2e-5, atol=2e-5)
+    for name in ("media", "reach", "media_frequency"):
+        np.testing.assert_array_equal(new_data.arrays[name], data.arrays[name])
+
+
+@pytest.mark.parametrize(("channel", "role", "conversion"), [("Search", "spend", "media"), ("Video", "rf_spend", "rf")])
+@pytest.mark.parametrize("mode", ["reach", "frequency"])
+def test_media_metrics_reject_selected_positive_exposure_at_zero_spend(channel, role, conversion, mode):
+    data, model, results = _rf_case(mixed=True)
+    arrays = {name: value.copy() for name, value in data.arrays.items()}
+    arrays[role][0, 0] = 0.0
+
+    with pytest.raises(ValueError, match=f"explicit spend_to_{conversion}"):
+        media_metrics(
+            model,
+            results,
+            quantity="expected_users",
+            channels=[channel],
+            new_data=replace(data, arrays=arrays),
+            spend_to_rf=mode,
+        )
+
+
 def test_media_metrics_rf_validate_custom_conversion_at_increased_spending():
     data, model, results = _rf_case()
     reference = jnp.asarray(data.arrays["rf_spend"])

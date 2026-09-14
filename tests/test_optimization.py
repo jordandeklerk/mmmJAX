@@ -116,7 +116,7 @@ def _uncertain_linear_problem():
     return model, results
 
 
-def _mixed_reach_frequency_problem():
+def _mixed_reach_frequency_problem(*, zero_spend_channels=()):
     portions = np.array([0.4, 0.6])
     data = prepare_data(
         pl.DataFrame(
@@ -140,6 +140,9 @@ def _mixed_reach_frequency_problem():
         rf_spend=["video_cost", "audio_cost"],
         rf_channels=["video", "audio"],
     )
+    for channel in zero_spend_channels:
+        role, index = {"search": ("spend", 0), "video": ("rf_spend", 0), "audio": ("rf_spend", 1)}[channel]
+        data.arrays[role][..., index] = 0.0
     curvature = np.array([[2.0, 0.6, 0.2], [0.6, 1.5, 0.3], [0.2, 0.3, 1.0]])
 
     def transformed(media, reach, media_frequency, coefficient):
@@ -651,6 +654,58 @@ def test_optimize_budget_mixed_rf_selection_keeps_unselected_frequency_channel_f
         allocation["response"].sel(allocation="optimized"), _response(results, curvature, [9.0, 9.0, 2.0]), atol=2e-4
     )
     assert allocation.attrs["budget"] == pytest.approx(11.0)
+
+
+@pytest.mark.parametrize("channels", [["search"], ["video", "audio"], ["audio", "search"]])
+@pytest.mark.parametrize("conversion", [None, "frequency"], ids=["default", "frequency"])
+def test_optimize_budget_preserves_unselected_positive_exposure_with_zero_spend(channels, conversion):
+    labels = ["search", "video", "audio"]
+    unselected = [name for name in labels if name not in channels]
+    model, results, curvature = _mixed_reach_frequency_problem(zero_spend_channels=unselected)
+    original = {name: np.asarray(value).copy() for name, value in model.data.values.items()}
+    reference = np.array([6.0, 9.0, 5.0])
+    selected_indices = [labels.index(name) for name in channels]
+    fixed_indices = [labels.index(name) for name in unselected]
+    budget = 1.25 * reference[selected_indices].sum()
+    options = {} if conversion is None else {"spend_to_rf": conversion}
+    allocation = optimize_budget(
+        model,
+        results,
+        quantity="expected",
+        channels=channels,
+        budget=budget,
+        include_metrics=True,
+        **options,
+    )
+
+    target = (results["posterior"]["coefficient"].values.astype(float) ** 2).mean(axis=(0, 1))
+    selected_curvature = curvature[np.ix_(selected_indices, selected_indices)]
+    fixed_effect = curvature[np.ix_(selected_indices, fixed_indices)] @ (
+        reference[fixed_indices] - target[fixed_indices]
+    )
+    center = target[selected_indices] - np.linalg.solve(selected_curvature, fixed_effect)
+    direction = np.linalg.solve(selected_curvature, np.ones(len(channels)))
+    expected_spend = center - direction * (center.sum() - budget) / direction.sum()
+    expected_exposure = reference.copy()
+    expected_exposure[selected_indices] = expected_spend
+    np.testing.assert_array_equal(allocation.channel, channels)
+    np.testing.assert_array_equal(
+        allocation.channel_type, ["media" if channel == "search" else "reach_frequency" for channel in channels]
+    )
+    np.testing.assert_allclose(allocation["spend"].sel(allocation="reference"), reference[selected_indices])
+    np.testing.assert_allclose(allocation["spend"].sel(allocation="optimized"), expected_spend, atol=3e-4)
+    np.testing.assert_allclose(
+        allocation["response"].sel(allocation="reference"), _response(results, curvature, reference), atol=2e-4
+    )
+    np.testing.assert_allclose(
+        allocation["response"].sel(allocation="optimized"), _response(results, curvature, expected_exposure), atol=2e-4
+    )
+    assert np.isfinite(allocation["roi"]).all()
+    assert np.isfinite(allocation["marginal_roi"]).all()
+    assert allocation.attrs["budget"] == pytest.approx(budget)
+    assert allocation.attrs["reference_budget"] == pytest.approx(reference[selected_indices].sum())
+    for name, value in original.items():
+        np.testing.assert_array_equal(model.data.values[name], value)
 
 
 def test_optimize_budget_mixed_rf_bounds_and_group_constraints_follow_selected_order():

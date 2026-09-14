@@ -445,6 +445,10 @@ def _prepare_response(
         raise ValueError("channels must contain distinct labels from the model's paid-media channels")
     indices = np.array([labels.index(name) for name in selected], dtype=np.intp)
 
+    # Default conversions affect selected channels. Custom mappings cover their full input family.
+    conversion_mask = np.zeros(len(labels), dtype=bool)
+    conversion_mask[indices] = True
+
     # Recover original input units once. Candidate evaluation reuses the fitted factors.
     if model.scaling is not None:
         prepared = model.scaling.inverse_transform(prepared)
@@ -473,7 +477,8 @@ def _prepare_response(
         media_spend = spend[..., : len(media_labels)]
         media = jnp.asarray(prepared.arrays["media"][-periods:], dtype=model._dtype)
         if isinstance(spend_to_media, str):
-            if np.any(np.asarray(mask) & (np.asarray(media_spend) == 0) & (np.asarray(media) > 0)):
+            changed = np.asarray(mask) & conversion_mask[: len(media_labels)]
+            if np.any(changed & (np.asarray(media_spend) == 0) & (np.asarray(media) > 0)):
                 raise ValueError("Positive media with zero spend needs an explicit spend_to_media function")
 
             def convert_media(candidate_spend: jax.Array) -> jax.Array:
@@ -482,6 +487,7 @@ def _prepare_response(
             convert = convert_media
         else:
             convert = spend_to_media
+            conversion_mask[: len(media_labels)] = True
 
     convert_reach_frequency: Callable[[jax.Array], tuple[ArrayLike, ArrayLike]] | None = None
     if has_rf:
@@ -490,7 +496,8 @@ def _prepare_response(
         frequency = jnp.asarray(prepared.arrays["media_frequency"][-periods:], dtype=model._dtype)
         if isinstance(spend_to_rf, str):
             positive_exposure = (np.asarray(reach) > 0) & (np.asarray(frequency) > 0)
-            if np.any(np.asarray(mask) & (np.asarray(rf_spend) == 0) & positive_exposure):
+            changed = np.asarray(mask) & conversion_mask[len(media_labels) :]
+            if np.any(changed & (np.asarray(rf_spend) == 0) & positive_exposure):
                 raise ValueError("Positive reach and frequency with zero spend need an explicit spend_to_rf function")
 
             def convert_rf(candidate_spend: jax.Array) -> tuple[jax.Array, jax.Array]:
@@ -503,6 +510,7 @@ def _prepare_response(
             convert_reach_frequency = convert_rf
         else:
             convert_reach_frequency = spend_to_rf
+            conversion_mask[len(media_labels) :] = True
 
     evaluator = _BudgetResponse(
         model=model,
@@ -517,6 +525,7 @@ def _prepare_response(
         spend_mask=jnp.asarray(spend_mask),
         reference_spend=spend,
         response_indices=jnp.asarray(response_indices),
+        conversion_mask=jnp.asarray(conversion_mask),
     )
 
     return _ResponseContext(
@@ -588,6 +597,7 @@ class _BudgetResponse:
     reference_spend: jax.Array | None = None
     response_indices: jax.Array | None = None
     convert_reach_frequency: Callable[[jax.Array], tuple[ArrayLike, ArrayLike]] | None = None
+    conversion_mask: jax.Array | None = None
 
     def __call__(self, budgets: jax.Array) -> jax.Array:
         """Return one total response per posterior draw for a joint allocation."""
@@ -606,6 +616,7 @@ class _BudgetResponse:
         scaling = self.model.scaling
         transformations = {} if scaling is None else scaling.transformations
         periods = self.observation_shape[0]
+        n_media = 0 if self.convert is None else values["media"].shape[-1]
         valid = jnp.asarray(True)
 
         def update(name: str, value: ArrayLike, shape: tuple[int, ...], conversion: str) -> None:
@@ -616,19 +627,25 @@ class _BudgetResponse:
             ):
                 raise ValueError(f"{conversion} must return real {name} values with the current spend shape")
 
+            current_mask = mask
+            if self.conversion_mask is not None:
+                channels = (
+                    self.conversion_mask[:n_media] if name in ("media", "spend") else self.conversion_mask[n_media:]
+                )
+                current_mask = mask & channels
+
             current = current.astype(self.model._dtype)
-            valid = valid & jnp.all(jnp.where(mask, jnp.isfinite(current) & (current >= 0), True))
+            valid = valid & jnp.all(jnp.where(current_mask, jnp.isfinite(current) & (current >= 0), True))
             if name in transformations:
                 current = transformations[name].transform(current)
 
-            # Avoid inverse-scaling round trips outside the intervention and in history.
+            # Preserve exact inputs for unselected channels, excluded periods, and history.
             if name in ("spend", "rf_spend"):
-                values[name] = jnp.where(mask, current, values[name])
+                values[name] = jnp.where(current_mask, current, values[name])
             else:
-                current = jnp.where(mask, current, values[name][-periods:])
+                current = jnp.where(current_mask, current, values[name][-periods:])
                 values[name] = jnp.concatenate((values[name][:-periods], current), axis=0)
 
-        n_media = 0 if self.convert is None else values["media"].shape[-1]
         if self.convert is not None:
             media_spend = spend[..., :n_media]
             update("media", self.convert(media_spend), media_spend.shape, "spend_to_media")

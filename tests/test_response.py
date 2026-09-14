@@ -1203,6 +1203,46 @@ def test_response_curves_reject_invalid_rf_conversions(conversion):
 
 
 @pytest.mark.parametrize("mode", ["reach", "frequency"])
+@pytest.mark.parametrize("scaled", [False, True])
+@pytest.mark.parametrize(
+    "channel, unchanged_spend", [("Search", "rf_spend"), ("Audio", "rf_spend"), ("Audio", "spend")]
+)
+def test_response_curves_preserve_unselected_exposures_with_zero_spend(channel, unchanged_spend, scaled, mode):
+    data = _rf_data(mixed=True, grouped=True)
+    data.arrays[unchanged_spend][0, ..., 0] = 0.0
+    scaling = fit_data_scaling(data, adjust_population=True) if scaled else None
+    model, results = _rf_model(data, scaling=scaling), _rf_results()
+    curves = response_curves(
+        model, results, quantity="expected", multipliers=[0.0, 1.0, 2.0], channels=[channel], spend_to_rf=mode
+    )
+
+    for multiplier in [0.0, 1.0, 2.0]:
+        scenario = _rf_scenario(data, channel, multiplier, mode=mode)
+        expected = _rf_expected(scenario, 0.5, scaling=scaling)
+        np.testing.assert_allclose(
+            curves["response"].sel(channel=channel, multiplier=multiplier).isel(chain=0, draw=0),
+            expected,
+            rtol=3e-6,
+        )
+
+    context = _prepare_response(
+        model, results, quantity="expected", channels=[channel], spend_to_media="proportional", spend_to_rf=mode
+    )
+    budgets = context.reference_spend.at[context.indices].multiply(2.0)
+    scenario, valid = jax.jit(context.evaluator._scenario_inputs)(budgets)
+    assert valid
+    for roles, labels in [
+        (("media", "spend"), data.channels),
+        (("reach", "media_frequency", "rf_spend"), data.rf_channels),
+    ]:
+        unchanged = [index for index, name in enumerate(labels) if name != channel]
+        for role in roles:
+            np.testing.assert_array_equal(
+                scenario.values[role][..., unchanged], model.data.values[role][..., unchanged]
+            )
+
+
+@pytest.mark.parametrize("mode", ["reach", "frequency"])
 def test_response_curves_rf_positive_exposure_at_zero_spend_needs_custom_conversion(mode):
     data = _rf_data()
     data.arrays["rf_spend"][0, 0] = 0.0
