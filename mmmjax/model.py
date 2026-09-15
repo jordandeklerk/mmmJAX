@@ -7,7 +7,7 @@ from inspect import Parameter as SignatureParameter
 from inspect import signature
 from keyword import iskeyword
 from numbers import Integral
-from typing import Literal, TypeAlias
+from typing import Literal, TypeAlias, get_args
 
 import jax
 import jax.numpy as jnp
@@ -44,6 +44,9 @@ _CallbackValue: TypeAlias = ArrayLike | Callable[[ArrayLike], jax.Array]
 _InputBindings: TypeAlias = tuple[tuple[str, str], ...]
 _DataVariables: TypeAlias = tuple[tuple[str, str, str], ...]
 _BuiltinParameter: TypeAlias = Real | Positive | LowerBound | UpperBound | Interval | Simplex | CorrelationCholesky
+_ResultGroup: TypeAlias = Literal["predictive", "log_likelihood", "log_prior"]
+_OutputGroup: TypeAlias = Literal["generated"] | _ResultGroup
+_OutputKey: TypeAlias = tuple[_OutputGroup, str]
 
 
 @jax.tree_util.register_dataclass
@@ -101,6 +104,14 @@ class Model:
         Function returning named reporting quantities or simulated observations.
         Outputs do not contribute to the log density.
         Receives a JAX random key first, followed by the model inputs it needs.
+        Entries under the keys ``predictive``, ``log_likelihood``, and
+        ``log_prior`` are mappings of named outputs stored in the matching
+        result groups, and all other entries are ordinary generated quantities.
+        Predictive draws and pointwise log likelihoods matching the outcome
+        shape inherit its observation labels. Pointwise log likelihoods exclude
+        priors and adjustments. Mapped prior definitions already record
+        ``log_prior_<parameter>`` terms, so return only additional prior
+        factors, each once and without constraint adjustments.
     save : sequence of str, default ()
         Transformed quantities to retain in results,
         such as ``("mu", "paid_media", "paid_media_total")``. These are evaluated
@@ -140,21 +151,8 @@ class Model:
     generated_dims : mapping of str to sequence of str, optional
         Axis labels for saved or generated arrays, excluding chain and draw.
         Overrides labels inherited from unchanged data or parameter
-        inputs and from observation-shaped predictive and likelihood outputs.
-    predictive : sequence of str, default ()
-        Generated output names to store as prior or posterior predictive observations.
-        Outputs matching the outcome shape use its observation order and labels
-        unless ``generated_dims`` specifies otherwise.
-    log_likelihood : sequence of str, default ()
-        Saved or generated output names containing pointwise log likelihoods.
-        Do not use the scalar model density, which also contains priors and adjustments.
-        Observation-shaped outputs inherit outcome labels as for ``predictive``.
-    log_prior : sequence of str, default ()
-        Additional saved or generated log-prior terms for sensitivity analysis.
-        Mapped prior definitions already supply ``log_prior_<parameter>``
-        outputs with parameter labels. Terms are not added to ``log_density``.
-        Record each prior factor only once and exclude constraint adjustments.
-        Label custom arrays with ``generated_dims``.
+        inputs and from observation-shaped predictive and log-likelihood
+        outputs. A name shared by several result groups receives the same axes.
     """
 
     _parameterizations: tuple[tuple[str, Parameterization], ...]
@@ -185,9 +183,6 @@ class Model:
     _result_dims: dict[str, tuple[str, ...]]
     _result_coords: dict[str, NDArray[np.generic]]
     _generated_dims: dict[str, tuple[str, ...]]
-    _predictive_names: tuple[str, ...]
-    _likelihood_names: tuple[str, ...]
-    _log_prior_names: tuple[str, ...]
 
     def __init__(
         self,
@@ -203,9 +198,6 @@ class Model:
         dims: Mapping[str, Sequence[str]] | None = None,
         coords: Mapping[str, object] | None = None,
         generated_dims: Mapping[str, Sequence[str]] | None = None,
-        predictive: Sequence[str] = (),
-        log_likelihood: Sequence[str] = (),
-        log_prior: Sequence[str] = (),
     ) -> None:
         """Create a model from named parameter declarations and plain functions."""
         if prior is not None and not isinstance(prior, Mapping):
@@ -330,7 +322,7 @@ class Model:
                     raise TypeError(
                         f"Prior definition for {name!r} must be a Prior object with fixed distribution settings. "
                         "Use a prior-draw function for dependent draws. "
-                        "Pass saved or generated log-density output names through log_prior"
+                        "Return additional log-prior terms under log_prior in generated_quantities"
                     )
                 try:
                     prior[name]._validate_shape(declaration.shape)
@@ -386,21 +378,7 @@ class Model:
                 saved_inputs.append((name, "transformed"))
 
         output_dims = _dimensions(generated_dims)
-        predictive_names = _result_names(predictive, name="predictive")
-        likelihood_names = _result_names(log_likelihood, name="log_likelihood")
-        explicit_prior_names = _result_names(log_prior, name="log_prior")
-        automatic_prior_names = tuple(f"log_prior_{name}" for name, _ in prior_definitions)
-        log_prior_names = tuple(dict.fromkeys((*automatic_prior_names, *explicit_prior_names)))
-        if set(predictive_names) & set(likelihood_names):
-            raise ValueError("predictive and log_likelihood must identify different generated outputs")
-        if set(log_prior_names) & (set(predictive_names) | set(likelihood_names)):
-            raise ValueError("log_prior must identify outputs separate from predictive and log_likelihood")
-        if (
-            generated_quantities is None
-            and not saved_inputs
-            and not prior_definitions
-            and (output_dims or predictive_names or likelihood_names or log_prior_names)
-        ):
+        if generated_quantities is None and not saved_inputs and not prior_definitions and output_dims:
             raise ValueError("Generated result metadata requires a generated_quantities callback or saved quantities")
         declarations = dict(parameterizations)
         dimension_sizes = {axis: len(labels) for axis, labels in axis_coordinates.items()}
@@ -443,9 +421,6 @@ class Model:
         object.__setattr__(self, "_result_dims", result_dims)
         object.__setattr__(self, "_result_coords", result_coords)
         object.__setattr__(self, "_generated_dims", output_dims)
-        object.__setattr__(self, "_predictive_names", predictive_names)
-        object.__setattr__(self, "_likelihood_names", likelihood_names)
-        object.__setattr__(self, "_log_prior_names", log_prior_names)
 
     @property
     def parameters(self) -> dict[str, Parameterization]:
@@ -790,7 +765,7 @@ class Model:
         key: jax.Array,
         parameters: ParameterValues,
         data: object,
-    ) -> dict[str, jax.Array]:
+    ) -> dict[str, jax.Array | dict[str, jax.Array]]:
         """Evaluate saved and generated quantities from constrained model parameters.
 
         Parameters
@@ -808,20 +783,29 @@ class Model:
 
         Returns
         -------
-        dict of str to jax.Array
-            Saved transformed quantities alongside
-            outputs from the ``generated_quantities`` callback and mapped log-prior terms,
-            each mapped to a JAX array.
+        dict of str to jax.Array or dict of str to jax.Array
+            Saved transformed quantities and ordinary callback outputs by name.
+            Outputs returned under ``predictive``, ``log_likelihood``, and
+            ``log_prior``, together with mapped log-prior terms, appear as
+            mappings under those keys when present.
         """
-        return self._generate_with_inputs(key, parameters, data)[0]
+        quantities = self._generate_with_inputs(key, parameters, data)[0]
+        outputs: dict[str, jax.Array | dict[str, jax.Array]] = {
+            name: value for (group, name), value in quantities.items() if group == "generated"
+        }
+        for group in get_args(_ResultGroup):
+            grouped = {name: value for (kind, name), value in quantities.items() if kind == group}
+            if grouped:
+                outputs[group] = grouped
+        return outputs
 
     def _generate_with_inputs(
         self,
         key: jax.Array,
         parameters: ParameterValues,
         data: object,
-    ) -> tuple[dict[str, jax.Array], dict[str, ArrayLike]]:
-        """Retain callback inputs so sampling can label unchanged generated arrays."""
+    ) -> tuple[dict[_OutputKey, jax.Array], dict[str, ArrayLike]]:
+        """Return outputs keyed by result group and name, with the callback inputs for labeling."""
         if not self._has_generated_quantities:
             raise RuntimeError(
                 "Generated quantities are unavailable because this model has no generated_quantities callback, "
@@ -849,33 +833,56 @@ class Model:
                 f"got {type(generated).__name__}"
             )
 
-        for name in generated:
-            _validate_name(name, label="generated quantity")
-            if self._data is not None and name in self._data.reserved_names:
-                raise ValueError(f"Generated quantity {name!r} conflicts with a model-supplied input")
+        outputs: dict[_OutputKey, ArrayLike] = {}
+        result_groups: tuple[_ResultGroup, ...] = get_args(_ResultGroup)
+        for group in result_groups:
+            if group not in generated:
+                continue
+            grouped = generated[group]
+            if not isinstance(grouped, Mapping):
+                raise TypeError(
+                    f"generated_quantities must return a mapping of named outputs under {group!r}, "
+                    f"got {type(grouped).__name__}"
+                )
+            for output_name, output in grouped.items():
+                self._validate_generated_name(output_name, label=f"{group} quantity")
+                outputs[(group, output_name)] = output
+        for name, value in generated.items():
+            if name in result_groups:
+                continue
+            self._validate_generated_name(name, label="generated quantity")
+            outputs[("generated", name)] = value
 
-        conflicts = saved.keys() & generated.keys()
+        conflicts = {name for name in saved if ("generated", name) in outputs}
         if conflicts:
             raise ValueError(
                 f"Saved quantities {sorted(conflicts)} are also returned by generated_quantities. "
                 "Choose one place to retain them"
             )
+        outputs.update({("generated", name): value for name, value in saved.items()})
 
-        automatic = {}
         for name, prior in self._priors:
             output_name = f"log_prior_{name}"
-            if output_name in saved or output_name in generated:
+            if ("log_prior", output_name) in outputs or ("generated", output_name) in outputs:
                 raise ValueError(f"Generated quantity {output_name!r} conflicts with a mapped prior output")
-            automatic[output_name] = prior.logpdf(constrained[name])
+            outputs[("log_prior", output_name)] = prior.logpdf(constrained[name])
 
-        quantities: dict[str, jax.Array] = {}
-        for name, value in sorted((saved | dict(generated) | automatic).items()):
+        quantities: dict[_OutputKey, jax.Array] = {}
+        for output_key, value in sorted(outputs.items()):
             try:
-                quantities[name] = jnp.asarray(value)
+                quantities[output_key] = jnp.asarray(value)
             except (TypeError, ValueError) as exc:
-                raise TypeError(f"generated quantity {name!r} must be array-like, got {type(value).__name__}") from exc
+                raise TypeError(
+                    f"generated quantity {output_key[1]!r} must be array-like, got {type(value).__name__}"
+                ) from exc
         numeric_arguments = {name: value for name, value in arguments.items() if not callable(value)}
         return quantities, numeric_arguments
+
+    def _validate_generated_name(self, name: object, *, label: str) -> None:
+        """Reject output names that would shadow model-supplied inputs."""
+        _validate_name(name, label=label)
+        if self._data is not None and name in self._data.reserved_names:
+            raise ValueError(f"Generated quantity {name!r} conflicts with a model-supplied input")
 
     def _evaluate_quantities(self, inputs: _ModelData, parameters: ParameterValues) -> dict[str, jax.Array]:
         """Evaluate the shared deterministic calculations with current inputs."""
@@ -1014,15 +1021,6 @@ def _model_time_inputs(
 
 def _result_names(values: Sequence[str], *, name: str) -> tuple[str, ...]:
     """Copy distinct generated output names without evaluating their callback."""
-    if name == "log_prior" and (
-        isinstance(values, (Mapping, Prior))
-        or callable(values)
-        or (isinstance(values, Sequence) and any(isinstance(value, Prior) or callable(value) for value in values))
-    ):
-        raise TypeError(
-            "log_prior must be a sequence of saved or generated log-density output names. "
-            "Pass Prior definitions or a prior-draw function through Model(prior=...)"
-        )
     if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
         raise TypeError(f"{name} must be a sequence of generated output names")
     if any(not isinstance(value, str) or not value for value in values):

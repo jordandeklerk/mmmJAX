@@ -1,12 +1,12 @@
 """Prior and posterior sampling with labeled model results."""
 
 import warnings
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Hashable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from importlib.metadata import version
 from numbers import Integral, Real
-from typing import Literal, cast, overload
+from typing import Literal, TypeVar, cast, get_args, overload
 
 import jax
 import jax.numpy as jnp
@@ -18,8 +18,18 @@ from numpy.typing import NDArray
 from mmmjax._nuts import _NUTSContinuation, _sample_nuts
 from mmmjax._results import _collect_results, _coordinates, _data_dimensions, _prepared_groups, _same_labels
 from mmmjax.data import PreparedData
-from mmmjax.model import Model, PriorSampler, _metadata_source, _validate_value_names
+from mmmjax.model import (
+    Model,
+    PriorSampler,
+    _metadata_source,
+    _OutputGroup,
+    _OutputKey,
+    _ResultGroup,
+    _validate_value_names,
+)
 from mmmjax.priors import _validate_prior_sampler
+
+_Key = TypeVar("_Key", bound=Hashable)
 
 __all__ = ["SamplingState", "continue_sampling", "generate_quantities", "sample", "sample_prior"]
 
@@ -209,9 +219,9 @@ def sample(
         - **sample_stats** contains sampler diagnostics, including divergences
           and the unconstrained log density in ``lp``.
         - **posterior_predictive**, **log_likelihood**, and **log_prior** contain
-          outputs selected by the model. Other outputs, including saved
-          transformed quantities, are stored in
-          **generated_quantities**.
+          the outputs returned under those keys by ``generated_quantities``
+          and mapped log-prior terms. Other outputs, including saved
+          transformed quantities, are stored in **generated_quantities**.
         - **observed_data** and **constant_data** contain prepared model inputs
           in their evaluated units, including any fitted scaling.
           Auxiliary ``DataBlock`` inputs are stored in **constant_data**.
@@ -344,12 +354,12 @@ def sample(
         batch_size=batch_size,
     )
     del unconstrained
-    generated: dict[str, NDArray[np.generic]] = {}
+    generated: dict[_OutputKey, NDArray[np.generic]] = {}
 
     if generate and model._has_generated_quantities:
         keys = _generation_keys(generation_key, chains, 0, int(draws))
         generated = _evaluate_draws(
-            lambda key, parameters: model.generate_quantities(key, parameters, inputs),
+            lambda key, parameters: model._generate_with_inputs(key, parameters, inputs)[0],
             keys,
             posterior,
             sample_shape=(chains, draws),
@@ -471,11 +481,11 @@ def continue_sampling(
         batch_size=batch_size,
     )
     del unconstrained
-    generated: dict[str, NDArray[np.generic]] = {}
+    generated: dict[_OutputKey, NDArray[np.generic]] = {}
     if state._generate and model._has_generated_quantities:
         keys = _generation_keys(state._generation_key, state.chains, state.draws, stop)
         generated = _evaluate_draws(
-            lambda key, parameters: model.generate_quantities(key, parameters, inputs),
+            lambda key, parameters: model._generate_with_inputs(key, parameters, inputs)[0],
             keys,
             posterior,
             sample_shape=(state.chains, int(draws)),
@@ -519,27 +529,33 @@ def _generation_keys(key: jax.Array, chains: int, start: int, stop: int) -> jax.
     return jax.vmap(lambda chain_key: jax.vmap(lambda index: jax.random.fold_in(chain_key, index))(indices))(chain_keys)
 
 
+def _grouped_outputs(generated: Mapping[_OutputKey, ArrayLike]) -> dict[_OutputGroup, dict[str, ArrayLike]]:
+    """Separate result groups from the flat callback outputs."""
+    groups: dict[_OutputGroup, dict[str, ArrayLike]] = {"generated": {}}
+    groups.update({group: {} for group in get_args(_ResultGroup)})
+    for (group, name), value in generated.items():
+        groups[group][name] = value
+    return groups
+
+
 def _collect_sampling_results(
     model: Model,
     posterior: Mapping[str, ArrayLike],
-    generated: Mapping[str, ArrayLike],
+    generated: Mapping[_OutputKey, ArrayLike],
     stats: Mapping[str, ArrayLike] | None,
     output_dimensions: dict[str, tuple[str, ...]],
 ) -> xr.DataTree:
     """Use the same result groups and labels for initial and continued draws."""
     dimensions, coordinates = _parameter_metadata(model)
+    groups = _grouped_outputs(generated)
     return _collect_results(
         posterior,
         data=_result_data(model),
         inputs=_result_inputs(model),
-        posterior_predictive={name: value for name, value in generated.items() if name in model._predictive_names},
-        log_likelihood={name: value for name, value in generated.items() if name in model._likelihood_names},
-        log_prior={name: value for name, value in generated.items() if name in model._log_prior_names},
-        generated_quantities={
-            name: value
-            for name, value in generated.items()
-            if name not in (*model._predictive_names, *model._likelihood_names, *model._log_prior_names)
-        },
+        posterior_predictive=groups["predictive"],
+        log_likelihood=groups["log_likelihood"],
+        log_prior=groups["log_prior"],
+        generated_quantities=groups["generated"],
         sample_stats=stats,
         dims=dimensions,
         generated_dims=output_dimensions,
@@ -615,15 +631,15 @@ def sample_prior(
         results must fit in host memory.
 
         - **prior** contains constrained parameter draws.
-        - **prior_predictive** contains outputs selected by the model's
-          ``predictive`` argument.
+        - **prior_predictive** contains outputs returned under ``predictive``
+          by ``generated_quantities``.
         - **prior_generated_quantities** contains saved quantities and other
           generated outputs.
         - **observed_data** and **constant_data** contain prepared model inputs
           in their evaluated units, including fitted scaling.
           Auxiliary ``DataBlock`` inputs are stored in **constant_data**.
 
-        Outputs selected as log likelihoods or log priors are omitted. The chain
+        Log-likelihood and log-prior outputs are omitted. The chain
         axis is for result compatibility, not an MCMC chain. Without generation,
         only prior draws and available model inputs are returned.
     """
@@ -653,7 +669,7 @@ def sample_prior(
     prepared = _result_data(model)
     prior_key, generation_key, preview_key = jax.random.split(jax.random.key(int(seed)), 3)
     parameters = _prior_draws(model, prior, prior_key, int(draws), batch_size=batch_size)
-    generated: dict[str, NDArray[np.generic]] = {}
+    generated: dict[_OutputKey, NDArray[np.generic]] = {}
     output_dimensions: dict[str, tuple[str, ...]] = {}
 
     if generate and (model._generate is not None or model._saved_inputs):
@@ -662,25 +678,20 @@ def sample_prior(
         output_dimensions = _output_dimensions(model, outputs, arguments, dimensions, prepared)
         keys = jax.random.split(generation_key, draws)
         generated = _evaluate_draws(
-            lambda key, values: model.generate_quantities(key, values, inputs),
+            lambda key, values: model._generate_with_inputs(key, values, inputs)[0],
             keys,
             parameters,
             sample_shape=(draws,),
             batch_size=batch_size,
         )
 
+    groups = _grouped_outputs(generated)
     results = _collect_results(
         {name: value[None] for name, value in parameters.items()},
         data=prepared,
         inputs=_result_inputs(model),
-        posterior_predictive={
-            name: value[None] for name, value in generated.items() if name in model._predictive_names
-        },
-        generated_quantities={
-            name: value[None]
-            for name, value in generated.items()
-            if name not in (*model._predictive_names, *model._likelihood_names, *model._log_prior_names)
-        },
+        posterior_predictive={name: value[None] for name, value in groups["predictive"].items()},
+        generated_quantities={name: value[None] for name, value in groups["generated"].items()},
         dims=dimensions,
         generated_dims=output_dimensions,
         coords=coordinates,
@@ -710,7 +721,7 @@ def _prior_draws(
         if not isinstance(values, Mapping):
             raise TypeError(
                 "prior(key) must return a mapping of parameter names to constrained draws, not a log density. "
-                "Record custom log-prior terms in generated quantities and select their names with Model log_prior"
+                "Return custom log-prior terms under log_prior in generated_quantities"
             )
         _validate_value_names(values, model._parameterizations, name="Prior draws")
 
@@ -722,7 +733,7 @@ def _prior_draws(
                 raise TypeError(
                     f"Prior draw for {name!r} must be a real array-like value. "
                     "Return constrained draws from prior(key). "
-                    "Pass Prior definitions through Model(prior=...) and log-density output names through log_prior"
+                    "Pass Prior definitions through Model(prior=...) or return log-prior terms under log_prior"
                 ) from exc
             if value.shape != declaration.shape:
                 raise ValueError(f"Prior draw shape for {name!r} must match its declared shape {declaration.shape}")
@@ -800,8 +811,8 @@ def generate_quantities(
 
         - **posterior** contains the reused draws and sample labels.
         - **posterior_predictive**, **log_likelihood**, **log_prior**, and
-          **generated_quantities** contain newly evaluated outputs, classified
-          by the model's result settings.
+          **generated_quantities** contain newly evaluated outputs, grouped
+          as returned by the model.
         - **observed_data** and **constant_data** contain the evaluated inputs
           in model units. Original sampler diagnostics are not copied.
     """
@@ -832,24 +843,21 @@ def generate_quantities(
     chains, draws = next(iter(posterior.values())).shape[:2]
     keys = jax.random.split(generation_key, (chains, draws))
     generated = _evaluate_draws(
-        lambda key, parameters: model.generate_quantities(key, parameters, inputs),
+        lambda key, parameters: model._generate_with_inputs(key, parameters, inputs)[0],
         keys,
         posterior,
         sample_shape=(chains, draws),
         batch_size=batch_size,
     )
+    groups = _grouped_outputs(generated)
     evaluated = _collect_results(
         posterior,
         data=prepared,
         inputs=_result_inputs(model),
-        posterior_predictive={name: value for name, value in generated.items() if name in model._predictive_names},
-        log_likelihood={name: value for name, value in generated.items() if name in model._likelihood_names},
-        log_prior={name: value for name, value in generated.items() if name in model._log_prior_names},
-        generated_quantities={
-            name: value
-            for name, value in generated.items()
-            if name not in (*model._predictive_names, *model._likelihood_names, *model._log_prior_names)
-        },
+        posterior_predictive=groups["predictive"],
+        log_likelihood=groups["log_likelihood"],
+        log_prior=groups["log_prior"],
+        generated_quantities=groups["generated"],
         dims=dimensions,
         generated_dims=output_dimensions,
         coords=coordinates,
@@ -936,16 +944,16 @@ def _validate_batch_size(batch_size: int) -> None:
 
 
 def _evaluate_draws(
-    function: Callable[..., dict[str, jax.Array]],
+    function: Callable[..., Mapping[_Key, jax.Array]],
     *arguments: jax.Array | Mapping[str, jax.Array | NDArray[np.generic]],
     sample_shape: tuple[int, ...],
     batch_size: int,
-) -> dict[str, NDArray[np.generic]]:
+) -> dict[_Key, NDArray[np.generic]]:
     """Evaluate flattened draw batches into preallocated host-side results."""
     total = int(np.prod(sample_shape))
     flattened = jax.tree.map(lambda value: value.reshape((total, *value.shape[len(sample_shape) :])), arguments)
     evaluate = jax.jit(jax.vmap(function))
-    buffers: dict[str, NDArray[np.generic]] = {}
+    buffers: dict[_Key, NDArray[np.generic]] = {}
 
     for start in range(0, total, batch_size):
         stop = min(start + batch_size, total)
@@ -993,19 +1001,13 @@ def _parameter_metadata(model: Model) -> tuple[dict[str, tuple[str, ...]], dict[
 
 def _output_dimensions(
     model: Model,
-    outputs: dict[str, jax.Array],
+    outputs: Mapping[_OutputKey, jax.Array],
     arguments: dict[str, ArrayLike],
     parameter_dimensions: dict[str, tuple[str, ...]],
     prepared: PreparedData | None,
 ) -> dict[str, tuple[str, ...]]:
     """Label known callback inputs and declared observations without shape guessing."""
-    requested = (
-        set(model._generated_dims)
-        | set(model._predictive_names)
-        | set(model._likelihood_names)
-        | set(model._log_prior_names)
-    )
-    missing = requested - outputs.keys()
+    missing = set(model._generated_dims) - {name for _, name in outputs}
     if missing:
         raise ValueError(f"Generated result metadata refers to missing outputs {sorted(missing)}")
     input_dimensions: dict[str, tuple[str, ...]] = {}
@@ -1042,38 +1044,33 @@ def _output_dimensions(
     else:
         input_dimensions.update(parameter_dimensions)
 
-    observation_names = set(model._predictive_names) | set(model._likelihood_names)
     prior_dimensions = {}
     for parameter_name, prior in model._priors:
         axes = parameter_dimensions[parameter_name]
         prior_dimensions[f"log_prior_{parameter_name}"] = axes[: -prior.event_ndims] if prior.event_ndims else axes
 
-    dimensions = {}
-    for name, value in outputs.items():
-        if name in model._generated_dims:
-            dimensions[name] = model._generated_dims[name]
-            continue
-        if name in prior_dimensions:
-            dimensions[name] = prior_dimensions[name]
-            continue
+    dimensions: dict[str, tuple[str, ...]] = {}
+    for (group, name), value in outputs.items():
+        fallback = tuple(f"{name}_dim_{index}" for index in range(value.ndim))
         inherited = {axes for argument, axes in input_dimensions.items() if value is arguments.get(argument)}
-        if any(value is arguments.get(argument) for argument in reference_inputs):
-            dimensions[name] = (
-                inherited.pop() if len(inherited) == 1 else tuple(f"{name}_dim_{index}" for index in range(value.ndim))
-            )
-            continue
         input_axes = {input_dimensions[argument] for argument in auxiliary_inputs if value is arguments.get(argument)}
-        if len(input_axes) == 1:
-            dimensions[name] = input_axes.pop()
-            continue
-        if name in observation_names and value.shape == outcome_shape:
-            dimensions[name] = observation_axes
-            continue
-        # Equal values or equal shapes do not establish a shared axis or ordering.
-        if len(inherited) == 1:
-            dimensions[name] = inherited.pop()
+        if name in model._generated_dims:
+            axes = model._generated_dims[name]
+        elif group == "log_prior" and name in prior_dimensions:
+            axes = prior_dimensions[name]
+        elif any(value is arguments.get(argument) for argument in reference_inputs):
+            axes = inherited.pop() if len(inherited) == 1 else fallback
+        elif len(input_axes) == 1:
+            axes = input_axes.pop()
+        elif group in ("predictive", "log_likelihood") and value.shape == outcome_shape:
+            axes = observation_axes
+        elif len(inherited) == 1:
+            # Equal values or equal shapes do not establish a shared axis or ordering.
+            axes = inherited.pop()
         else:
-            dimensions[name] = tuple(f"{name}_dim_{index}" for index in range(value.ndim))
+            axes = fallback
+        if dimensions.setdefault(name, axes) != axes:
+            raise ValueError(f"Generated output {name!r} has different axes across result groups. Use generated_dims")
     return dimensions
 
 
