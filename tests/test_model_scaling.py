@@ -9,7 +9,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-from mmmjax import Model, Real, fit_data_scaling, normal, prepare_data
+from mmmjax import Model, Real, fit_data_scaling, generate_quantities, normal, prepare_data
+from mmmjax._results import _collect_results
 
 
 def _data(*, multiplier=1.0, reverse=False, outcome=True):
@@ -54,6 +55,43 @@ def _model(data, *, scaling=None):
     return Model({"intercept": Real()}, density, generate, data=data, scaling=scaling)
 
 
+def _population_data(*, start=1, reverse=False, include_population=True):
+    groups = [("west", 10.0), ("east", 20.0)]
+    if reverse:
+        groups.reverse()
+    rows = [
+        {
+            "time": time,
+            "region": region,
+            "sales": population * (time + (region == "east")),
+            "residents": population,
+            "video": 10.0 * time,
+            "search": 20.0 * time,
+        }
+        for time in range(start, start + 3)
+        for region, population in groups
+    ]
+    return prepare_data(
+        pl.DataFrame(rows),
+        time="time",
+        groups=["region"],
+        outcome="sales",
+        population="residents" if include_population else None,
+        media=["search", "video"] if reverse else ["video", "search"],
+    )
+
+
+def _population_model(data, *, scaling=None):
+    return Model(
+        {"intercept": Real()},
+        lambda outcome, intercept: normal(outcome, intercept, 1.0) + normal(intercept, 0.0, 1.0),
+        lambda key, outcome, intercept: {"prediction": jnp.full_like(outcome, intercept)},
+        data=data,
+        scaling=scaling,
+        predictive=("prediction",),
+    )
+
+
 def test_auto_scaling_matches_explicit_fitting_without_changing_counts_or_costs():
     data = _data()
     model = _model(data, scaling="auto")
@@ -83,6 +121,70 @@ def test_supplied_scaling_can_standardize_continuous_outcomes():
     np.testing.assert_allclose(model.data.values["outcome"], [-np.sqrt(1.5), 0, np.sqrt(1.5)], rtol=1e-6)
     restored = scaling.transformations["outcome"].inverse_transform(model.data.values["outcome"])
     np.testing.assert_allclose(restored, data.arrays["outcome"])
+
+
+def test_population_outcome_scaling_matches_manual_preparation_and_jit_gradients():
+    raw = _population_data()
+    original = raw.arrays["outcome"].copy()
+    fitted = fit_data_scaling(raw, scale_outcome="population", media_method=None)
+    model = _population_model(raw, scaling=fitted)
+    per_capita = original / raw.arrays["population"]
+    expected = (per_capita - per_capita.mean()) / per_capita.std(ddof=0)
+    manual = _population_model(replace(raw, arrays=raw.arrays | {"outcome": expected}))
+    position = {"intercept": jnp.array(0.3)}
+    actual_value, actual_gradient = jax.jit(jax.value_and_grad(model.log_density))(position, model.data)
+    expected_value, expected_gradient = jax.jit(jax.value_and_grad(manual.log_density))(position, manual.data)
+
+    assert model.scaling is fitted
+    np.testing.assert_allclose(model.data.values["outcome"], expected, rtol=1e-6)
+    np.testing.assert_allclose(actual_value, expected_value, rtol=1e-6)
+    np.testing.assert_allclose(actual_gradient["intercept"], expected_gradient["intercept"], rtol=1e-6)
+    np.testing.assert_array_equal(raw.arrays["outcome"], original)
+    restored = fitted.transformations["outcome"].inverse_transform(model.data.values["outcome"])
+    np.testing.assert_allclose(restored, original, rtol=1e-6)
+
+
+@pytest.mark.parametrize("include_population", [False, True])
+def test_population_outcome_scaling_reuses_training_factors_and_result_labels(include_population):
+    raw = _population_data()
+    fitted = fit_data_scaling(raw, scale_outcome="population", media_method=None)
+    model = _population_model(raw, scaling=fitted)
+    incoming = _population_data(start=4, reverse=True, include_population=include_population)
+    canonical = _population_data(start=4)
+    posterior = _collect_results({"intercept": np.zeros((1, 2), dtype=np.float32)})
+    evaluated = generate_quantities(model, posterior, new_data=incoming)
+    per_capita = raw.arrays["outcome"] / raw.arrays["population"]
+    expected = (canonical.arrays["outcome"] / raw.arrays["population"] - per_capita.mean()) / per_capita.std()
+
+    np.testing.assert_allclose(evaluated["observed_data"]["outcome"], expected, rtol=1e-6)
+    np.testing.assert_array_equal(evaluated["constant_data"]["media"], canonical.arrays["media"])
+    for group in ("observed_data", "posterior_predictive"):
+        np.testing.assert_array_equal(evaluated[group]["time"], [4, 5, 6])
+        np.testing.assert_array_equal(evaluated[group]["group"], ["west", "east"])
+    assert evaluated["posterior_predictive"]["prediction"].dims == ("chain", "draw", "time", "group")
+    assert incoming.group_values == (("east",), ("west",))
+    np.testing.assert_array_equal(evaluated["constant_data"]["channel"], ["video", "search"])
+    np.testing.assert_allclose(model.data.values["outcome"], (per_capita - per_capita.mean()) / per_capita.std())
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_population_outcome_scaling_provenance_prevents_double_transformation(explicit):
+    raw = _population_data()
+    fitted = fit_data_scaling(raw, scale_outcome="population")
+    scaled = fitted.transform(raw)
+    model = _population_model(scaled, scaling=fitted if explicit else None)
+    assert model.scaling is fitted
+    for incoming in (raw, scaled):
+        prepared = model.prepare_data(incoming)
+        for role, values in model.data.values.items():
+            np.testing.assert_array_equal(prepared.values[role], values)
+
+
+def test_auto_model_scaling_keeps_outcomes_in_raw_units_when_population_is_available():
+    raw = _population_data()
+    model = _population_model(raw, scaling="auto")
+    assert "outcome" not in model.scaling.transformations
+    np.testing.assert_array_equal(model.data.values["outcome"], raw.arrays["outcome"])
 
 
 def test_new_data_reuses_fitted_statistics_and_channel_order_without_outcomes():

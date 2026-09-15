@@ -426,6 +426,98 @@ def test_media_metrics_reuse_fitted_scales_and_report_transformed_quantity_units
     _assert_closed_form(metrics, data, results, scaling=scaling)
 
 
+@pytest.mark.parametrize("already_scaled", [False, True])
+@pytest.mark.parametrize("new_scenario", [False, True])
+@pytest.mark.parametrize("by", [(), ("time",), ("group",), ("time", "group")])
+def test_media_metrics_population_outcome_inversion_restores_revenue_and_roi(already_scaled, new_scenario, by):
+    frame = pl.DataFrame(
+        {
+            "week": [0, 0, 1, 1, 2, 2],
+            "region": ["east", "west"] * 3,
+            "population": [100.0, 400.0] * 3,
+            "outcome": [100.0, 1200.0, 200.0, 1600.0, 300.0, 2000.0],
+            "revenue": [2.0, 3.0, 4.0, 2.0, 3.0, 5.0],
+            "video": [10.0, 20.0, 30.0, 60.0, 50.0, 100.0],
+            "search": [5.0, 15.0, 10.0, 30.0, 20.0, 60.0],
+        }
+    ).with_columns(video_cost=pl.col("video") / 2, search_cost=pl.col("search") / 4)
+    data = prepare_data(
+        frame,
+        time="week",
+        groups=["region"],
+        population="population",
+        outcome="outcome",
+        revenue_per_outcome="revenue",
+        media=["video", "search"],
+        spend=["video_cost", "search_cost"],
+    )
+    scaling = fit_data_scaling(data, scale_outcome="population", adjust_population=True)
+    outcome_scaling = scaling.transformations["outcome"]
+
+    def transformed(media, revenue_per_outcome, coefficient):
+        expected_standardized = 0.25 + media @ coefficient
+        expected_outcome = outcome_scaling.inverse_transform(expected_standardized)
+        return {"expected_revenue": expected_outcome * revenue_per_outcome}
+
+    def density(coefficient):
+        raise AssertionError("Media metrics must not evaluate the log density")
+
+    model = Model(
+        {"coefficient": Real((2,))},
+        density,
+        data=scaling.transform(data) if already_scaled else data,
+        transformed_parameters=transformed,
+        scaling=scaling,
+        dims={"coefficient": ("channel",)},
+    )
+    results = _results(data)
+    reference_data = data
+    new_data = None
+    if new_scenario:
+        arrays = {name: value.copy() for name, value in data.arrays.items()}
+        arrays["media"] *= 1.5
+        arrays["spend"] *= 1.5
+        arrays["outcome"] *= 5.0
+        reference_data = replace(data, arrays=arrays)
+        new_data = scaling.transform(reference_data) if already_scaled else reference_data
+
+    metrics = media_metrics(
+        model,
+        results,
+        quantity="expected_revenue",
+        new_data=new_data,
+        by=by,
+        incremental_increase=0.25,
+        batch_size=4,
+    )
+
+    population = data.arrays["population"]
+    per_person_outcome = data.arrays["outcome"] / population
+    mean, deviation = per_person_outcome.mean(), per_person_outcome.std()
+    median_media = np.median(data.arrays["media"] / population[:, None], axis=(0, 1))
+    scaled_media = reference_data.arrays["media"] / (population[:, None] * median_media)
+    revenue_factor = deviation * population * reference_data.arrays["revenue_per_outcome"]
+    coefficient = results["posterior"]["coefficient"].values
+    lift = np.einsum("tgc,adc->adtgc", scaled_media, coefficient) * revenue_factor[None, None, ..., None]
+    baseline = (mean + 0.25 * deviation) * population * reference_data.arrays["revenue_per_outcome"]
+    reference = baseline[None, None] + lift.sum(axis=-1)
+    spend = reference_data.arrays["spend"].sum(axis=(0, 1))
+    axes = tuple(index + 2 for index, axis in enumerate(("time", "group")) if axis not in by)
+    expected = {
+        "reference_response": reference.sum(axis=axes),
+        "incremental_response": lift.sum(axis=axes),
+        "marginal_response": 0.25 * lift.sum(axis=axes),
+        "reference_spend": spend,
+        "incremental_spend": 0.25 * spend,
+        "roi": lift.sum(axis=(2, 3)) / spend,
+        "marginal_roi": lift.sum(axis=(2, 3)) / spend,
+    }
+    assert metrics["reference_response"].dims == ("chain", "draw", *by)
+    assert metrics["incremental_response"].dims == ("chain", "draw", *by, "channel")
+    for name, values in expected.items():
+        np.testing.assert_allclose(metrics[name], values, rtol=3e-6, atol=3e-3)
+
+
 def test_media_metrics_prepare_new_data_with_existing_fitted_scales(case):
     data, _, results = case
     model = _model(data, scaling="auto")

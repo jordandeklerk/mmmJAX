@@ -118,8 +118,9 @@ def test_data_scaling_preserves_unselected_values_and_independent_storage(traini
 
 
 @pytest.mark.parametrize("adjust_population", [False, True])
-def test_inverse_data_scaling_recovers_values_with_zero_exposures(training_data, adjust_population):
-    fitted = fit_data_scaling(training_data, scale_outcome=True, adjust_population=adjust_population)
+@pytest.mark.parametrize("scale_outcome", [True, "population"])
+def test_inverse_data_scaling_recovers_values_with_zero_exposures(training_data, adjust_population, scale_outcome):
+    fitted = fit_data_scaling(training_data, scale_outcome=scale_outcome, adjust_population=adjust_population)
     restored = fitted.inverse_transform(fitted.transform(training_data))
     for role, values in training_data.arrays.items():
         np.testing.assert_allclose(restored.arrays[role], values, rtol=1e-6, atol=1e-6)
@@ -133,6 +134,160 @@ def test_outcome_scaling_is_explicit_and_does_not_adjust_for_population(training
     assert np.issubdtype(transformed.arrays["outcome"].dtype, np.floating)
     np.testing.assert_allclose(transformed.arrays["outcome"], (training_data.arrays["outcome"] - 5) / np.sqrt(5))
     assert np.issubdtype(training_data.arrays["outcome"].dtype, np.integer)
+
+
+@pytest.mark.parametrize("adjust_population", [False, True])
+@pytest.mark.parametrize("media_method", [None, "median"])
+def test_population_outcome_scaling_pools_per_capita_values(training_data, adjust_population, media_method):
+    options = {"adjust_population": adjust_population, "media_method": media_method}
+    fitted = fit_data_scaling(training_data, scale_outcome="population", **options)
+    transformed = fitted.transform(training_data)
+    unscaled_outcome = fit_data_scaling(training_data, **options).transform(training_data)
+    per_capita = training_data.arrays["outcome"] / training_data.arrays["population"]
+    mean, deviation = per_capita.mean(), per_capita.std(ddof=0)
+    outcome = fitted.transformations["outcome"]
+
+    assert outcome.offset.shape == outcome.scale.shape == (1, 2)
+    np.testing.assert_allclose(outcome.offset, training_data.arrays["population"][None] * mean, rtol=1e-6)
+    np.testing.assert_allclose(outcome.scale, training_data.arrays["population"][None] * deviation, rtol=1e-6)
+    np.testing.assert_allclose(transformed.arrays["outcome"], (per_capita - mean) / deviation, rtol=1e-6)
+    np.testing.assert_allclose(transformed.arrays["outcome"].mean(), 0.0, atol=2e-7)
+    np.testing.assert_allclose(transformed.arrays["outcome"].std(ddof=0), 1.0, rtol=1e-6)
+    assert transformed.group_values == training_data.group_values
+    for role in transformed.arrays:
+        if role != "outcome":
+            np.testing.assert_array_equal(transformed.arrays[role], unscaled_outcome.arrays[role])
+
+
+def test_population_outcome_inverse_preserves_batched_raw_units_and_jit_gradients(training_data):
+    fitted = fit_data_scaling(training_data, scale_outcome="population").transformations["outcome"]
+    population = training_data.arrays["population"]
+    per_capita = training_data.arrays["outcome"] / population
+    raw = np.broadcast_to(training_data.arrays["outcome"], (2, 3, 2, 2)).copy().astype(np.float32)
+    raw += np.arange(3, dtype=np.float32)[None, :, None, None]
+    transformed = jax.jit(fitted.transform)(raw)
+    restored = jax.jit(fitted.inverse_transform)(transformed)
+    forward_gradient = jax.jit(jax.grad(lambda values: fitted.transform(values).sum()))(jnp.asarray(raw))
+    inverse_gradient = jax.jit(jax.grad(lambda values: fitted.inverse_transform(values).sum()))(transformed)
+
+    assert transformed.shape == restored.shape == raw.shape
+    np.testing.assert_allclose(transformed, (raw / population - per_capita.mean()) / per_capita.std(), rtol=1e-6)
+    np.testing.assert_allclose(restored, raw, rtol=1e-6, atol=1e-6)
+    factors = np.broadcast_to(population * per_capita.std(ddof=0), raw.shape)
+    np.testing.assert_allclose(inverse_gradient, factors, rtol=1e-6)
+    np.testing.assert_allclose(forward_gradient, 1 / factors, rtol=1e-6)
+
+
+def test_national_population_outcome_scaling_keeps_a_length_one_statistic_axis():
+    data = prepare_data(
+        pl.DataFrame({"week": [1, 2, 3], "sales": [100.0, 200.0, 300.0], "residents": [10.0] * 3}),
+        time="week",
+        outcome="sales",
+        population="residents",
+    )
+    fitted = fit_data_scaling(data, scale_outcome="population")
+    outcome = fitted.transformations["outcome"]
+    ordinary = fit_data_scaling(data, scale_outcome=True).transformations["outcome"]
+    assert outcome.offset.shape == outcome.scale.shape == (1,)
+    np.testing.assert_allclose(outcome.offset, ordinary.offset, rtol=1e-6)
+    np.testing.assert_allclose(outcome.scale, ordinary.scale, rtol=1e-6)
+    np.testing.assert_allclose(fitted.inverse_transform(fitted.transform(data)).arrays["outcome"], [100, 200, 300])
+
+
+def test_constant_per_capita_outcome_uses_unit_deviation(training_data):
+    training_data.arrays["outcome"] = np.broadcast_to(2 * training_data.arrays["population"], (2, 2)).copy()
+    fitted = fit_data_scaling(training_data, scale_outcome="population")
+    outcome = fitted.transformations["outcome"]
+    np.testing.assert_array_equal(outcome.offset, [[20, 40]])
+    np.testing.assert_array_equal(outcome.scale, [[10, 20]])
+    np.testing.assert_array_equal(fitted.transform(training_data).arrays["outcome"], np.zeros((2, 2)))
+
+
+@pytest.mark.parametrize("include_population", [False, True])
+def test_population_outcome_scaling_reuses_factors_after_group_alignment(training_data, include_population):
+    fitted = fit_data_scaling(training_data, scale_outcome="population", media_method=None)
+    prediction = prepare_data(
+        pl.DataFrame(
+            {
+                "week": [4, 3, 3, 4],
+                "region": ["east", "west", "east", "west"],
+                "sales": [20.0, 10.0, 16.0, 12.0],
+                "residents": [20, 10, 20, 10],
+            }
+        ),
+        time="week",
+        groups=["region"],
+        outcome="sales",
+        population="residents" if include_population else None,
+    )
+    transformed = fitted.transform(prediction)
+    per_capita = training_data.arrays["outcome"] / training_data.arrays["population"]
+    raw = np.array([[10.0, 16.0], [12.0, 20.0]])
+    expected = (raw / training_data.arrays["population"] - per_capita.mean()) / per_capita.std(ddof=0)
+    np.testing.assert_allclose(transformed.arrays["outcome"], expected, rtol=1e-6)
+    np.testing.assert_allclose(fitted.inverse_transform(transformed).arrays["outcome"], raw, rtol=1e-6)
+    assert transformed.time_values == (3, 4)
+    assert transformed.group_values == training_data.group_values
+    assert prediction.group_values == (("east",), ("west",))
+    assert ("population" in transformed.arrays) is include_population
+
+
+@pytest.mark.parametrize("operation", ["transform", "inverse_transform"])
+def test_population_outcome_scaling_rejects_changed_population_without_scaled_media(training_data, operation):
+    fitted = fit_data_scaling(training_data, scale_outcome="population", media_method=None)
+    prediction = deepcopy(training_data)
+    prediction.arrays["population"][0] += 1
+    with pytest.raises(ValueError, match="population"):
+        getattr(fitted, operation)(prediction)
+
+
+def test_population_outcome_scaling_allows_changed_population_when_outcome_is_omitted(training_data):
+    fitted = fit_data_scaling(training_data, scale_outcome="population", media_method=None)
+    prediction = deepcopy(training_data)
+    prediction.arrays.pop("outcome")
+    prediction.columns.pop("outcome")
+    prediction.arrays["population"] *= 2
+    transformed = fitted.transform(prediction)
+    np.testing.assert_array_equal(transformed.arrays["population"], prediction.arrays["population"])
+    np.testing.assert_array_equal(transformed.arrays["media"], prediction.arrays["media"])
+
+
+@pytest.mark.parametrize("missing", ["outcome", "population"])
+def test_population_outcome_scaling_requires_both_inputs(missing):
+    data = prepare_data(
+        pl.DataFrame({"week": [1, 2], "sales": [1.0, 2.0], "residents": [10.0, 10.0]}),
+        time="week",
+        outcome=None if missing == "outcome" else "sales",
+        population=None if missing == "population" else "residents",
+    )
+    with pytest.raises(ValueError, match=missing):
+        fit_data_scaling(data, scale_outcome="population")
+
+
+@pytest.mark.parametrize("population", [0.0, -1.0, np.nan, np.inf])
+def test_population_outcome_scaling_revalidates_population_values(training_data, population):
+    training_data.arrays["population"] = np.array([population, 20.0])
+    with pytest.raises(ValueError, match="population"):
+        fit_data_scaling(training_data, scale_outcome="population", media_method=None)
+
+
+@pytest.mark.parametrize("case", ["adjusted_overflow", "factor_overflow", "factor_underflow"])
+def test_population_outcome_scaling_requires_finite_adjusted_values_and_representable_factors(case):
+    populations = {"adjusted_overflow": 1e-308, "factor_overflow": 1e40, "factor_underflow": 1e-46}
+    population = populations[case]
+    outcomes = [1e308, 5e307] if case == "adjusted_overflow" else [population, 3 * population]
+    data = prepare_data(
+        pl.DataFrame({"week": [1, 2], "sales": outcomes, "residents": [population, population]}),
+        time="week",
+        outcome="sales",
+        population="residents",
+    )
+    with jax.enable_x64(False), pytest.raises(ValueError, match=r"finite|positive|scale|outcome"):
+        fit_data_scaling(data, scale_outcome="population")
+    if case != "adjusted_overflow":
+        with jax.enable_x64(True):
+            fitted = fit_data_scaling(data, scale_outcome="population")
+            np.testing.assert_allclose(fitted.transform(data).arrays["outcome"], [-1.0, 1.0], atol=1e-14)
 
 
 @pytest.mark.parametrize(
