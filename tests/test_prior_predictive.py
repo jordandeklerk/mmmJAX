@@ -97,6 +97,7 @@ def _prepared_model(*, scaling=False):
         return {
             "prediction": mean + jax.random.normal(key, outcome.shape),
             "pointwise": jnp.zeros_like(outcome),
+            "lp_location": -0.5 * location**2,
             "mean": mean,
             "inputs": controls,
         }
@@ -109,6 +110,7 @@ def _prepared_model(*, scaling=False):
         scaling=fit_data_scaling(data, scale_outcome=True) if scaling else None,
         predictive=("prediction",),
         log_likelihood=("pointwise",),
+        log_prior=("lp_location",),
         generated_dims={"mean": ("time",)},
     )
     return model, data
@@ -175,6 +177,8 @@ def test_prior_batches_preserve_seeded_draws_generated_groups_and_labels(batch_s
         "constant_data",
     }
     assert "pointwise" not in result["prior_generated_quantities"]
+    assert "lp_location" not in result["prior_generated_quantities"]
+    assert "log_prior" not in result
     for group, name in (("prior_predictive", "prediction"), ("prior_generated_quantities", "mean")):
         np.testing.assert_allclose(result[group][name].values[0], generated[name], rtol=2e-6, atol=2e-6)
         np.testing.assert_array_equal(result[group]["time"], [10, 11, 12])
@@ -532,7 +536,12 @@ def test_prior_saves_transformed_quantities_without_generation_callback_or_densi
 
     def transformed(location, controls, outcome):
         mean = location + controls[:, 0]
-        return {"mean": mean, "pointwise": -0.5 * (outcome - mean) ** 2, "total": mean.sum()}
+        return {
+            "mean": mean,
+            "pointwise": -0.5 * (outcome - mean) ** 2,
+            "lp_location": -0.5 * location**2,
+            "total": mean.sum(),
+        }
 
     model = Model(
         {"location": Real()},
@@ -540,15 +549,17 @@ def test_prior_saves_transformed_quantities_without_generation_callback_or_densi
         data=data,
         prior=_normal_prior,
         transformed_parameters=transformed,
-        save=("mean", "pointwise", "total"),
+        save=("mean", "pointwise", "lp_location", "total"),
         predictive=("mean",),
         log_likelihood=("pointwise",),
+        log_prior=("lp_location",),
     )
     result = sample_prior(model, draws=6, seed=23, batch_size=batch_size)
 
     assert set(result["prior"].data_vars) == {"location"}
     assert set(result["prior_generated_quantities"].data_vars) == {"total"}
     assert "log_likelihood" not in result
+    assert "log_prior" not in result
     assert result["prior_predictive"]["mean"].dims == ("chain", "draw", "time")
     np.testing.assert_array_equal(result["prior_predictive"]["time"], [10, 11, 12])
     expected = result["prior"]["location"].values[..., None] + data.arrays["controls"][:, 0]

@@ -90,10 +90,11 @@ def test_collection_labels_all_result_groups(posterior):
         data=data,
         posterior_predictive={"outcome": predictions},
         log_likelihood={"outcome": -predictions.astype(float)},
+        log_prior={"lp_coefficient": -posterior["coefficient"]},
         generated_quantities={"mean": predictions.astype(float)},
         sample_stats={"diverging": divergences, "tree_depth": np.full((2, 3), 4), "warmup_steps": 200},
         dims={"coefficient": ("channel",)},
-        generated_dims={"outcome": ("time",), "mean": ("time",)},
+        generated_dims={"outcome": ("time",), "mean": ("time",), "lp_coefficient": ("channel",)},
         coords={"chain": ["first", "second"], "draw": [10, 20, 30]},
     )
     assert isinstance(results, xr.DataTree)
@@ -101,6 +102,7 @@ def test_collection_labels_all_result_groups(posterior):
         "posterior",
         "posterior_predictive",
         "log_likelihood",
+        "log_prior",
         "generated_quantities",
         "sample_stats",
         "observed_data",
@@ -111,13 +113,23 @@ def test_collection_labels_all_result_groups(posterior):
     for name in ("posterior_predictive", "log_likelihood"):
         assert results[name]["outcome"].dims == ("chain", "draw", "time")
     assert results["generated_quantities"]["mean"].dims == ("chain", "draw", "time")
+    assert results["log_prior"]["lp_coefficient"].dims == ("chain", "draw", "channel")
+    np.testing.assert_array_equal(results["log_prior"]["lp_coefficient"], -posterior["coefficient"])
+    np.testing.assert_array_equal(results["log_prior"]["channel"], ["Video", "Search"])
     assert results["observed_data"]["outcome"].dims == ("time",)
     assert results["constant_data"]["media"].dims == ("media_time", "channel")
     assert results["constant_data"]["population"].dims == ()
     assert results["sample_stats"]["diverging"].dtype == np.bool_
     assert np.issubdtype(results["sample_stats"]["tree_depth"].dtype, np.integer)
     assert results["sample_stats"]["warmup_steps"].dims == ()
-    for name in ("posterior", "posterior_predictive", "log_likelihood", "generated_quantities", "sample_stats"):
+    for name in (
+        "posterior",
+        "posterior_predictive",
+        "log_likelihood",
+        "log_prior",
+        "generated_quantities",
+        "sample_stats",
+    ):
         np.testing.assert_array_equal(results[name]["chain"], ["first", "second"])
         np.testing.assert_array_equal(results[name]["draw"], [10, 20, 30])
         assert results[name].attrs["sample_dims"] == ["chain", "draw"]
@@ -143,15 +155,26 @@ def test_collection_preserves_constrained_simplex_values_and_jax_array_dtype():
     np.testing.assert_array_equal(weights, np.asarray(simplex))
 
 
-def test_nonfinite_log_likelihood_and_diagnostics_are_preserved():
+def test_nonfinite_log_densities_and_diagnostics_are_preserved():
     values = np.array([[-np.inf, np.nan, -1.0]])
     results = _collect_results(
         {"intercept": np.zeros((1, 3))},
         log_likelihood={"joint_observation": values},
+        log_prior={"lp_coefficient": values},
         sample_stats={"energy": values},
     )
     np.testing.assert_array_equal(results["log_likelihood"]["joint_observation"], values)
+    np.testing.assert_array_equal(results["log_prior"]["lp_coefficient"], values)
     np.testing.assert_array_equal(results["sample_stats"]["energy"], values)
+
+
+def test_prior_draw_collection_rejects_posterior_log_prior_terms():
+    with pytest.raises(ValueError, match="Prior draws"):
+        _collect_results(
+            {"coefficient": np.ones((1, 2))},
+            log_prior={"lp_coefficient": -np.ones((1, 2))},
+            sample_group="prior",
+        )
 
 
 @pytest.mark.parametrize("grouping", ["national", "single", "multiple"])
@@ -291,6 +314,7 @@ def test_collection_can_adopt_owned_draw_buffers_while_copying_model_inputs(post
     pointwise = np.ones((2, 3, 3))
     transformed = np.full((2, 3, 3), 2.0)
     diagnostic = np.zeros((2, 3), dtype=bool)
+    prior_density = np.full((2, 3), -3.0)
     labels = np.array(["Video", "Search"])
     inputs = xr.Dataset({"lift": ("experiment", [1.0, 2.0])})
     results = _collect_results(
@@ -299,6 +323,7 @@ def test_collection_can_adopt_owned_draw_buffers_while_copying_model_inputs(post
         inputs=inputs,
         posterior_predictive={"prediction": predictions},
         log_likelihood={"pointwise": pointwise},
+        log_prior={"lp_coefficient": prior_density},
         generated_quantities={"mean": transformed},
         sample_stats={"diverging": diagnostic},
         dims={"coefficient": ("channel",)},
@@ -311,6 +336,7 @@ def test_collection_can_adopt_owned_draw_buffers_while_copying_model_inputs(post
         ("posterior", "coefficient", posterior["coefficient"]),
         ("posterior_predictive", "prediction", predictions),
         ("log_likelihood", "pointwise", pointwise),
+        ("log_prior", "lp_coefficient", prior_density),
         ("generated_quantities", "mean", transformed),
         ("sample_stats", "diverging", diagnostic),
     ):
@@ -450,7 +476,9 @@ def test_posterior_requires_nonempty_sample_axes(shape):
         _collect_results({"intercept": np.zeros(shape)})
 
 
-@pytest.mark.parametrize("group", ["posterior", "posterior_predictive", "log_likelihood", "generated_quantities"])
+@pytest.mark.parametrize(
+    "group", ["posterior", "posterior_predictive", "log_likelihood", "log_prior", "generated_quantities"]
+)
 @pytest.mark.parametrize("values", [1.0, np.ones(3)])
 def test_sampled_mappings_require_explicit_chain_and_draw_axes(group, values):
     arguments = {"posterior": {"intercept": np.zeros((1, 3))}, group: {"invalid": values}}
@@ -458,14 +486,16 @@ def test_sampled_mappings_require_explicit_chain_and_draw_axes(group, values):
         _collect_results(**arguments)
 
 
-@pytest.mark.parametrize("group", ["posterior_predictive", "log_likelihood", "generated_quantities", "sample_stats"])
+@pytest.mark.parametrize(
+    "group", ["posterior_predictive", "log_likelihood", "log_prior", "generated_quantities", "sample_stats"]
+)
 @pytest.mark.parametrize("shape", [(1, 3), (2, 4)])
 def test_sampled_groups_reject_mismatched_chain_or_draw_counts(group, shape):
     with pytest.raises(ValueError, match=r"chain|draw"):
         _collect_results({"intercept": np.zeros((2, 3))}, **{group: {"value": np.zeros(shape)}})
 
 
-@pytest.mark.parametrize("group", ["posterior_predictive", "log_likelihood", "generated_quantities"])
+@pytest.mark.parametrize("group", ["posterior_predictive", "log_likelihood", "log_prior", "generated_quantities"])
 def test_generated_mapping_arrays_require_named_intrinsic_dimensions(group):
     with pytest.raises(ValueError, match="custom"):
         _collect_results({"intercept": np.ones((1, 2))}, **{group: {"custom": np.ones((1, 2, 3))}})
@@ -484,7 +514,8 @@ def test_explicit_coordinates_cannot_relabel_prepared_data(dimension, labels):
 
 
 @pytest.mark.parametrize(
-    "group", ["posterior", "posterior_predictive", "log_likelihood", "generated_quantities", "sample_stats"]
+    "group",
+    ["posterior", "posterior_predictive", "log_likelihood", "log_prior", "generated_quantities", "sample_stats"],
 )
 def test_sampled_group_inputs_are_unlabeled_array_mappings(group):
     dataset = xr.Dataset({"intercept": (("chain", "draw"), np.zeros((1, 2)))})

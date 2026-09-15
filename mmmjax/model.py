@@ -129,9 +129,14 @@ class Model:
         Outputs matching the outcome shape use its observation order and labels
         unless ``generated_dims`` specifies otherwise.
     log_likelihood : sequence of str, default ()
-        Generated output names containing pointwise log likelihoods. Do not use
-        the scalar model density, which also contains priors and adjustments.
+        Saved or generated output names containing pointwise log likelihoods.
+        Do not use the scalar model density, which also contains priors and adjustments.
         Observation-shaped outputs inherit outcome labels as for ``predictive``.
+    log_prior : sequence of str, default ()
+        Saved or generated output names containing explicit log-prior terms
+        evaluated at posterior draws. These are stored for sensitivity analysis,
+        not added to ``log_density``. Exclude sampling constraint adjustments.
+        Use ``generated_dims`` to label array-valued terms.
     """
 
     _parameterizations: tuple[tuple[str, Parameterization], ...]
@@ -161,6 +166,7 @@ class Model:
     _generated_dims: dict[str, tuple[str, ...]]
     _predictive_names: tuple[str, ...]
     _likelihood_names: tuple[str, ...]
+    _log_prior_names: tuple[str, ...]
 
     def __init__(
         self,
@@ -179,6 +185,7 @@ class Model:
         generated_dims: Mapping[str, Sequence[str]] | None = None,
         predictive: Sequence[str] = (),
         log_likelihood: Sequence[str] = (),
+        log_prior: Sequence[str] = (),
     ) -> None:
         """Create a model from named parameter declarations and plain functions."""
         if prior is not None and not callable(prior):
@@ -288,9 +295,16 @@ class Model:
         output_dims = _dimensions(generated_dims)
         predictive_names = _result_names(predictive, name="predictive")
         likelihood_names = _result_names(log_likelihood, name="log_likelihood")
+        log_prior_names = _result_names(log_prior, name="log_prior")
         if set(predictive_names) & set(likelihood_names):
             raise ValueError("predictive and log_likelihood must identify different generated outputs")
-        if generate is None and not saved_inputs and (output_dims or predictive_names or likelihood_names):
+        if set(log_prior_names) & (set(predictive_names) | set(likelihood_names)):
+            raise ValueError("log_prior must identify outputs separate from predictive and log_likelihood")
+        if (
+            generate is None
+            and not saved_inputs
+            and (output_dims or predictive_names or likelihood_names or log_prior_names)
+        ):
             raise ValueError("Generated result metadata requires a generate callback or saved quantities")
         declarations = dict(parameterizations)
         dimension_sizes = {axis: len(labels) for axis, labels in axis_coordinates.items()}
@@ -332,6 +346,7 @@ class Model:
         object.__setattr__(self, "_generated_dims", output_dims)
         object.__setattr__(self, "_predictive_names", predictive_names)
         object.__setattr__(self, "_likelihood_names", likelihood_names)
+        object.__setattr__(self, "_log_prior_names", log_prior_names)
 
     @property
     def parameters(self) -> dict[str, Parameterization]:

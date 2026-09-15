@@ -69,6 +69,7 @@ def test_empty_metadata_preserves_existing_models():
     assert model._generated_dims == {}
     assert model._predictive_names == ()
     assert model._likelihood_names == ()
+    assert model._log_prior_names == ()
     assert model._time_values == ()
     assert model._media_time_values == ()
 
@@ -80,6 +81,7 @@ def test_result_metadata_copies_mappings_axes_coordinates_and_output_names():
     generated_dims = {"outcome": ["time"], "pointwise": ["time"], "mean": ["time"]}
     predictive = ["outcome"]
     likelihood = ["pointwise"]
+    prior = ["lp_coefficient"]
     model = _plain_model(
         generate=_generate,
         dims=dims,
@@ -87,6 +89,7 @@ def test_result_metadata_copies_mappings_axes_coordinates_and_output_names():
         generated_dims=generated_dims,
         predictive=predictive,
         log_likelihood=likelihood,
+        log_prior=prior,
     )
     dims["coefficient"].append("another")
     dims["extra"] = []
@@ -96,6 +99,7 @@ def test_result_metadata_copies_mappings_axes_coordinates_and_output_names():
     generated_dims["outcome"].clear()
     predictive.append("mean")
     likelihood.clear()
+    prior.clear()
 
     assert model._result_dims == {"coefficient": ("channel",), "intercept": ()}
     np.testing.assert_array_equal(model._result_coords["channel"], ["video", "search"])
@@ -106,6 +110,7 @@ def test_result_metadata_copies_mappings_axes_coordinates_and_output_names():
     assert model._generated_dims == {"outcome": ("time",), "pointwise": ("time",), "mean": ("time",)}
     assert model._predictive_names == ("outcome",)
     assert model._likelihood_names == ("pointwise",)
+    assert model._log_prior_names == ("lp_coefficient",)
 
 
 @pytest.mark.parametrize(
@@ -157,7 +162,7 @@ def test_simplex_metadata_uses_constrained_shape():
         )
 
 
-@pytest.mark.parametrize("option", ["predictive", "log_likelihood", "save"])
+@pytest.mark.parametrize("option", ["predictive", "log_likelihood", "log_prior", "save"])
 @pytest.mark.parametrize(
     "value,error,message",
     [
@@ -213,9 +218,12 @@ def test_save_requires_transformed_parameters():
         Model({}, lambda: jnp.array(0.0), data=_prepared_data(), save=("missing",))
 
 
-def test_predictive_and_likelihood_names_cannot_overlap():
-    with pytest.raises(ValueError, match="different generated outputs"):
-        _plain_model(generate=_generate, predictive=["outcome"], log_likelihood=["outcome"])
+@pytest.mark.parametrize(
+    "first,second", [("predictive", "log_likelihood"), ("predictive", "log_prior"), ("log_likelihood", "log_prior")]
+)
+def test_generated_group_names_cannot_overlap(first, second):
+    with pytest.raises(ValueError, match="outputs"):
+        _plain_model(generate=_generate, **{first: ["outcome"], second: ["outcome"]})
 
 
 @pytest.mark.parametrize(
@@ -223,6 +231,7 @@ def test_predictive_and_likelihood_names_cannot_overlap():
     [
         {"predictive": ["outcome"]},
         {"log_likelihood": ["pointwise"]},
+        {"log_prior": ["lp_coefficient"]},
         {"generated_dims": {"mean": ("time",)}},
     ],
 )
@@ -249,6 +258,7 @@ def test_metadata_does_not_execute_generated_quantities_at_construction():
         generated_dims={"later_output": ("new_axis",)},
         predictive=["later_output"],
         log_likelihood=["pointwise"],
+        log_prior=["lp_coefficient"],
     )
     assert model._generated_dims == {"later_output": ("new_axis",)}
     assert model._predictive_names == ("later_output",)

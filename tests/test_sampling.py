@@ -828,6 +828,36 @@ def test_prepared_data_and_selected_generated_outputs_are_collected_automaticall
 
 
 @pytest.mark.parametrize("batch_size", [1, 4, 64])
+def test_sampling_collects_explicit_log_prior_without_sampling_jacobian(nuts_calls, batch_size):
+    def density(data, scale):
+        return lognormal(scale, 0.0, 1.0) + normal(data, scale, 0.5)
+
+    def generate(key, data, scale):
+        return {"lp_scale": lognormal(scale, 0.0, 1.0), "observation": normal(data, scale, 0.5)}
+
+    model = Model(
+        {"scale": Positive()},
+        density,
+        generate,
+        log_prior=("lp_scale",),
+        log_likelihood=("observation",),
+    )
+    result = sample(model, data=1.5, draws=3, warmup=1, chains=2, initial_values={"scale": 2.0}, batch_size=batch_size)
+    scale = result["posterior"]["scale"].values
+    expected_prior = -0.5 * np.log(scale) ** 2 - np.log(scale) - 0.5 * np.log(2 * np.pi)
+    expected_likelihood = -0.5 * ((1.5 - scale) / 0.5) ** 2 - np.log(0.5) - 0.5 * np.log(2 * np.pi)
+    assert set(result.children) == {"posterior", "sample_stats", "log_likelihood", "log_prior"}
+    assert result["log_prior"]["lp_scale"].dims == ("chain", "draw")
+    np.testing.assert_allclose(result["log_prior"]["lp_scale"], expected_prior, rtol=2e-6)
+    np.testing.assert_allclose(result["log_likelihood"]["observation"], expected_likelihood, rtol=2e-6)
+    np.testing.assert_allclose(
+        result["sample_stats"]["lp"], expected_prior + expected_likelihood + np.log(scale), rtol=2e-6
+    )
+    assert not np.allclose(result["log_prior"]["lp_scale"], result["sample_stats"]["lp"])
+    assert len(nuts_calls) == 1
+
+
+@pytest.mark.parametrize("batch_size", [1, 4, 64])
 def test_sampling_batches_preserve_seeded_draws_generation_and_labels(nuts_calls, batch_size):
     model, _ = _prepared_model()
     options = {"draws": 5, "warmup": 3, "chains": 2, "seed": 17}
@@ -937,7 +967,12 @@ def test_generation_can_be_disabled_without_executing_the_callback(nuts_calls, b
     def forbidden_generate(key, data, location):
         raise AssertionError("Generation was disabled")
 
-    model = Model({"location": Real()}, lambda data, location: normal(location, 0.0, 1.0), forbidden_generate)
+    model = Model(
+        {"location": Real()},
+        lambda data, location: normal(location, 0.0, 1.0),
+        forbidden_generate,
+        log_prior=("lp_location",),
+    )
     result = sample(model, draws=3, warmup=3, chains=2, generate=False, batch_size=batch_size)
     assert set(result.children) == {"posterior", "sample_stats"}
 
@@ -1087,15 +1122,17 @@ def test_predictive_outputs_use_declared_observation_order(nuts_calls):
     assert result["generated_quantities"]["copy"].dims == ("chain", "draw", "levels_dim_0")
 
 
-def test_missing_selected_generated_output_is_reported(nuts_calls):
+@pytest.mark.parametrize("selection", ["predictive", "log_likelihood", "log_prior"])
+def test_missing_selected_generated_output_is_reported_before_sampling(nuts_calls, selection):
     model = Model(
         {"location": Real()},
         lambda data, location: normal(location, 0.0, 1.0),
         lambda key, data, location: {"mean": location},
-        predictive=("prediction",),
+        **{selection: ("prediction",)},
     )
     with pytest.raises(ValueError, match="prediction"):
         sample(model, draws=2, warmup=3, chains=1)
+    assert not nuts_calls
 
 
 @pytest.mark.parametrize("group_specific", [False, True])
@@ -1522,10 +1559,11 @@ def test_continuation_preserves_generated_streams_saved_quantities_and_prepared_
     def density(outcome, mu, location):
         return normal(outcome, mu, 1.0) + normal(location, 0.0, 2.0)
 
-    def generate(key, outcome, mu):
+    def generate(key, outcome, mu, location):
         return {
             "prediction": normal_rng(key, mu, 1.0),
             "pointwise": normal_logpdf(outcome, mu, 1.0),
+            "lp_location": normal(location, 0.0, 2.0),
             "key_words": jax.random.key_data(key),
         }
 
@@ -1538,6 +1576,7 @@ def test_continuation_preserves_generated_streams_saved_quantities_and_prepared_
         save=("mu",),
         predictive=("prediction",),
         log_likelihood=("pointwise",),
+        log_prior=("lp_location",),
         generated_dims={"mu": ("time",), "key_words": ("word",)},
         coords={"word": ["first", "second"]},
     )
@@ -1551,6 +1590,13 @@ def test_continuation_preserves_generated_streams_saved_quantities_and_prepared_
     assert combined.attrs == first.attrs
     assert combined.attrs["warmup_steps"] == 60
     assert combined.attrs["seed"] == 17
+    assert combined["log_prior"]["lp_location"].dims == ("chain", "draw")
+    np.testing.assert_array_equal(combined["log_prior"]["draw"], np.arange(7))
+    np.testing.assert_allclose(
+        combined["log_prior"]["lp_location"],
+        normal_logpdf(combined["posterior"]["location"].values, 0.0, 2.0),
+        rtol=2e-6,
+    )
     for group in ("posterior_predictive", "log_likelihood", "generated_quantities"):
         np.testing.assert_array_equal(combined[group].coords["draw"], np.arange(7))
         np.testing.assert_array_equal(combined[group].coords["time"], [10, 11, 12])

@@ -206,7 +206,7 @@ def sample(
         - **posterior** contains constrained parameter draws.
         - **sample_stats** contains sampler diagnostics, including divergences
           and the unconstrained log density in ``lp``.
-        - **posterior_predictive** and **log_likelihood** contain generated
+        - **posterior_predictive**, **log_likelihood**, and **log_prior** contain
           outputs selected by the model. Other outputs, including saved
           transformed quantities, are stored in
           **generated_quantities**.
@@ -532,10 +532,11 @@ def _collect_sampling_results(
         inputs=_result_inputs(model),
         posterior_predictive={name: value for name, value in generated.items() if name in model._predictive_names},
         log_likelihood={name: value for name, value in generated.items() if name in model._likelihood_names},
+        log_prior={name: value for name, value in generated.items() if name in model._log_prior_names},
         generated_quantities={
             name: value
             for name, value in generated.items()
-            if name not in (*model._predictive_names, *model._likelihood_names)
+            if name not in (*model._predictive_names, *model._likelihood_names, *model._log_prior_names)
         },
         sample_stats=stats,
         dims=dimensions,
@@ -578,7 +579,8 @@ def sample_prior(
     """Draw explicit priors and inspect their implied outcomes before fitting.
 
     Use the model's prior-draw function and reuse its transformed parameters
-    and generation callback. No log density or posterior sampler is evaluated.
+    and generation callback. The ``log_density`` callback and posterior
+    sampler are not evaluated.
     Keep the sampling distributions consistent with the priors in ``log_density``.
 
     Parameters
@@ -617,9 +619,9 @@ def sample_prior(
           in their evaluated units, including fitted scaling.
           Additional inputs supplied to ``Model`` are stored in **constant_data**.
 
-        Outputs selected as log likelihoods are omitted. The chain axis is for
-        result compatibility, not an MCMC chain. Without generation, only prior
-        draws and available model inputs are returned.
+        Outputs selected as log likelihoods or log priors are omitted. The chain
+        axis is for result compatibility, not an MCMC chain. Without generation,
+        only prior draws and available model inputs are returned.
     """
     if not isinstance(model, Model):
         raise TypeError("model must be a Model")
@@ -674,7 +676,7 @@ def sample_prior(
         generated_quantities={
             name: value[None]
             for name, value in generated.items()
-            if name not in (*model._predictive_names, *model._likelihood_names)
+            if name not in (*model._predictive_names, *model._likelihood_names, *model._log_prior_names)
         },
         dims=dimensions,
         generated_dims=output_dimensions,
@@ -752,8 +754,9 @@ def generate_quantities(
     """Evaluate generated quantities from existing posterior draws without refitting.
 
     Evaluate saved quantities and any generation callback for every draw.
-    Priors, likelihood evaluation in ``log_density``, and sampling are not
-    rerun. Scenario calculations remain defined by the model.
+    The ``log_density`` callback and sampling are not rerun. Log-prior and
+    likelihood terms can be returned explicitly by the evaluated callbacks.
+    Scenario calculations remain defined by the model.
 
     Parameters
     ----------
@@ -784,7 +787,7 @@ def generate_quantities(
         The complete results must fit in host memory.
 
         - **posterior** contains the reused draws and sample labels.
-        - **posterior_predictive**, **log_likelihood**, and
+        - **posterior_predictive**, **log_likelihood**, **log_prior**, and
           **generated_quantities** contain newly evaluated outputs, classified
           by the model's result settings.
         - **observed_data** and **constant_data** contain the evaluated inputs
@@ -827,10 +830,11 @@ def generate_quantities(
         inputs=_result_inputs(model),
         posterior_predictive={name: value for name, value in generated.items() if name in model._predictive_names},
         log_likelihood={name: value for name, value in generated.items() if name in model._likelihood_names},
+        log_prior={name: value for name, value in generated.items() if name in model._log_prior_names},
         generated_quantities={
             name: value
             for name, value in generated.items()
-            if name not in (*model._predictive_names, *model._likelihood_names)
+            if name not in (*model._predictive_names, *model._likelihood_names, *model._log_prior_names)
         },
         dims=dimensions,
         generated_dims=output_dimensions,
@@ -964,7 +968,12 @@ def _output_dimensions(
     prepared: PreparedData | None,
 ) -> dict[str, tuple[str, ...]]:
     """Label known generation inputs and declared observations without shape guessing."""
-    requested = set(model._generated_dims) | set(model._predictive_names) | set(model._likelihood_names)
+    requested = (
+        set(model._generated_dims)
+        | set(model._predictive_names)
+        | set(model._likelihood_names)
+        | set(model._log_prior_names)
+    )
     missing = requested - outputs.keys()
     if missing:
         raise ValueError(f"Generated result metadata refers to missing outputs {sorted(missing)}")
