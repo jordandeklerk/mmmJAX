@@ -8,6 +8,7 @@ from jax.scipy.special import gammaln
 from jax.typing import ArrayLike
 from tensorflow_probability.substrates.jax import distributions as tfd
 
+from mmmjax.distributions._distribution import _bind_distribution
 from mmmjax.distributions._utils import (
     _asymptotic_gamma_shape_log_derivative,
     _asymptotic_gamma_shape_normalizer,
@@ -455,3 +456,6 @@ def _standard_beta_logpdf(
     safe_alpha = jnp.where(valid_alpha, alpha, jnp.ones_like(alpha))
     safe_beta = jnp.where(valid_beta, beta, jnp.ones_like(beta))
     return cast(jax.Array, tfd.Beta(safe_alpha, safe_beta).log_prob(safe_value))
+
+
+_bind_distribution(beta, beta_logpdf, beta_rng, tfd.Beta, alpha="concentration1", beta="concentration0")

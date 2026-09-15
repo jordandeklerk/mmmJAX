@@ -11,6 +11,7 @@ from mmmjax.distributions._discrete import (
     _binomial_interior_log_mass,
     _prepare_nonnegative_count,
 )
+from mmmjax.distributions._distribution import _bind_distribution
 from mmmjax.distributions._utils import (
     _as_real_array,
     _gamma_shape_log_derivative,
@@ -998,3 +999,21 @@ def _log_concentration_fraction(
         -jnp.log1p(ratio),
         jnp.log(concentration) - jnp.log(count) - jnp.log1p(ratio),
     )
+
+
+_bind_distribution(
+    negative_binomial,
+    negative_binomial_logpmf,
+    negative_binomial_rng,
+    tfd.NegativeBinomial,
+    mean="logits",
+    concentration="total_count",
+)
+_bind_distribution(
+    negative_binomial_log,
+    negative_binomial_log_logpmf,
+    negative_binomial_log_rng,
+    tfd.NegativeBinomial,
+    log_mean="logits",
+    concentration="total_count",
+)

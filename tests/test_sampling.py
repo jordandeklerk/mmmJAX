@@ -21,6 +21,7 @@ from mmmjax import (
     Interval,
     Model,
     Positive,
+    Prior,
     Real,
     SamplingState,
     Simplex,
@@ -828,18 +829,23 @@ def test_prepared_data_and_selected_generated_outputs_are_collected_automaticall
 
 
 @pytest.mark.parametrize("batch_size", [1, 4, 64])
-def test_sampling_collects_explicit_log_prior_without_sampling_jacobian(nuts_calls, batch_size):
+@pytest.mark.parametrize("registered", [False, True])
+def test_sampling_collects_log_prior_without_sampling_jacobian(nuts_calls, batch_size, registered):
+    prior = Prior(lognormal, location=0.0, scale=1.0)
+
     def density(data, scale):
-        return lognormal(scale, 0.0, 1.0) + normal(data, scale, 0.5)
+        return prior(scale) + normal(data, scale, 0.5)
 
     def generate(key, data, scale):
-        return {"lp_scale": lognormal(scale, 0.0, 1.0), "observation": normal(data, scale, 0.5)}
+        output = {"observation": normal(data, scale, 0.5)}
+        return output if registered else output | {"lp_scale": prior(scale)}
 
     model = Model(
         {"scale": Positive()},
         density,
         generate,
-        log_prior=("lp_scale",),
+        prior={"scale": prior} if registered else None,
+        log_prior=() if registered else ("lp_scale",),
         log_likelihood=("observation",),
     )
     result = sample(model, data=1.5, draws=3, warmup=1, chains=2, initial_values={"scale": 2.0}, batch_size=batch_size)
@@ -847,14 +853,27 @@ def test_sampling_collects_explicit_log_prior_without_sampling_jacobian(nuts_cal
     expected_prior = -0.5 * np.log(scale) ** 2 - np.log(scale) - 0.5 * np.log(2 * np.pi)
     expected_likelihood = -0.5 * ((1.5 - scale) / 0.5) ** 2 - np.log(0.5) - 0.5 * np.log(2 * np.pi)
     assert set(result.children) == {"posterior", "sample_stats", "log_likelihood", "log_prior"}
-    assert result["log_prior"]["lp_scale"].dims == ("chain", "draw")
-    np.testing.assert_allclose(result["log_prior"]["lp_scale"], expected_prior, rtol=2e-6)
+    prior_name = "log_prior_scale" if registered else "lp_scale"
+    assert result["log_prior"][prior_name].dims == ("chain", "draw")
+    np.testing.assert_allclose(result["log_prior"][prior_name], expected_prior, rtol=2e-6)
     np.testing.assert_allclose(result["log_likelihood"]["observation"], expected_likelihood, rtol=2e-6)
     np.testing.assert_allclose(
         result["sample_stats"]["lp"], expected_prior + expected_likelihood + np.log(scale), rtol=2e-6
     )
-    assert not np.allclose(result["log_prior"]["lp_scale"], result["sample_stats"]["lp"])
+    assert not np.allclose(result["log_prior"][prior_name], result["sample_stats"]["lp"])
     assert len(nuts_calls) == 1
+
+
+@pytest.mark.parametrize("generate", [False, True])
+def test_sampling_registered_log_priors_without_a_callback_respects_generation_toggle(nuts_calls, generate):
+    prior = Prior(normal, location=0.0, scale=1.0)
+    model = Model({"location": Real()}, lambda data, location: prior(location), prior={"location": prior})
+    result = sample(model, draws=3, warmup=1, chains=2, initial_values={"location": 1.5}, generate=generate)
+    expected_groups = {"posterior", "sample_stats", "log_prior"} if generate else {"posterior", "sample_stats"}
+    assert set(result.children) == expected_groups
+    if generate:
+        assert result["log_prior"]["log_prior_location"].dims == ("chain", "draw")
+        np.testing.assert_allclose(result["log_prior"]["log_prior_location"], -0.5 * 1.5**2 - 0.5 * np.log(2 * np.pi))
 
 
 @pytest.mark.parametrize("batch_size", [1, 4, 64])
@@ -1574,6 +1593,7 @@ def test_continuation_preserves_generated_streams_saved_quantities_and_prepared_
         data=data,
         transformed_parameters=transformed,
         save=("mu",),
+        prior={"location": Prior(normal, location=0.0, scale=2.0)},
         predictive=("prediction",),
         log_likelihood=("pointwise",),
         log_prior=("lp_location",),
@@ -1591,6 +1611,8 @@ def test_continuation_preserves_generated_streams_saved_quantities_and_prepared_
     assert combined.attrs["warmup_steps"] == 60
     assert combined.attrs["seed"] == 17
     assert combined["log_prior"]["lp_location"].dims == ("chain", "draw")
+    assert combined["log_prior"]["log_prior_location"].dims == ("chain", "draw")
+    np.testing.assert_array_equal(combined["log_prior"]["log_prior_location"], combined["log_prior"]["lp_location"])
     np.testing.assert_array_equal(combined["log_prior"]["draw"], np.arange(7))
     np.testing.assert_allclose(
         combined["log_prior"]["lp_location"],

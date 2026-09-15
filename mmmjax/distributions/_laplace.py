@@ -5,6 +5,7 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 from tensorflow_probability.substrates.jax import distributions as tfd
 
+from mmmjax.distributions._distribution import _bind_distribution
 from mmmjax.distributions._utils import _promote_inexact, _random_shape
 
 
@@ -344,3 +345,6 @@ def _standardize_jvp(
     cross_tangent = value_tangent / scale - location_tangent / scale - standardized * (scale_tangent / scale)
     direct_tangent = (value_tangent - location_tangent - standardized * scale_tangent) / scale
     return standardized, jnp.where(crosses_zero, cross_tangent, direct_tangent)
+
+
+_bind_distribution(laplace, laplace_logpdf, laplace_rng, tfd.Laplace, location="loc", scale="scale")

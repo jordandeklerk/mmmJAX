@@ -5,6 +5,7 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 from tensorflow_probability.substrates.jax import distributions as tfd
 
+from mmmjax.distributions._distribution import _bind_distribution
 from mmmjax.distributions._utils import (
     _as_real_array,
     _gamma_shape_normalizer,
@@ -594,3 +595,45 @@ def _prepare_multinomial_inputs(
     total = jnp.where(supported, reverse_total[..., 0], jnp.zeros_like(reverse_total[..., 0]))
     has_nan = jnp.any(jnp.isnan(value_array), axis=-1)
     return count, total, parameter_array, supported, has_nan, batch_shape
+
+
+def _with_prior_trials(log_mass: jax.Array, value: ArrayLike, trials: ArrayLike) -> jax.Array:
+    """Keep a bound prior's trial count consistent between density and draws."""
+    trials = jnp.asarray(trials)
+    total = jnp.sum(jnp.asarray(value), axis=-1)
+    valid_trials = jnp.isfinite(trials) & (trials >= 0) & (trials == jnp.floor(trials))
+    result = jnp.where((total == trials) | jnp.isnan(log_mass), log_mass, -jnp.inf)
+    result = jnp.where(valid_trials & ~jnp.isnan(total), result, jnp.nan)
+    return result
+
+
+def _multinomial_prior_logpmf(value: ArrayLike, probabilities: ArrayLike, trials: ArrayLike) -> jax.Array:
+    log_mass = multinomial_logpmf(value, probabilities)
+    result = _with_prior_trials(log_mass, value, trials)
+    return result
+
+
+def _multinomial_logit_prior_logpmf(value: ArrayLike, logits: ArrayLike, trials: ArrayLike) -> jax.Array:
+    log_mass = multinomial_logit_logpmf(value, logits)
+    result = _with_prior_trials(log_mass, value, trials)
+    return result
+
+
+_bind_distribution(
+    multinomial,
+    _multinomial_prior_logpmf,
+    multinomial_rng,
+    tfd.Multinomial,
+    event_ndims=1,
+    probabilities="probs",
+    trials="total_count",
+)
+_bind_distribution(
+    multinomial_logit,
+    _multinomial_logit_prior_logpmf,
+    multinomial_logit_rng,
+    tfd.Multinomial,
+    event_ndims=1,
+    logits="logits",
+    trials="total_count",
+)

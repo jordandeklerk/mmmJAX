@@ -136,6 +136,7 @@ from mmmjax.parameters import (
     UpperBound,
 )
 from mmmjax.eda import check_data, check_prior
+from mmmjax.priors import Prior
 from mmmjax.response import frequency_curves, media_metrics, response_curves
 from mmmjax.saturation import hill_saturation, log_saturation, logistic_saturation, root_saturation
 from mmmjax.scaling import DataScaling, Scaling, fit_data_scaling, fit_media_scaling, fit_scaling
@@ -155,6 +156,7 @@ __all__ = [
     "Parameterization",
     "Positive",
     "PreparedData",
+    "Prior",
     "Real",
     "SamplingState",
     "Scaling",

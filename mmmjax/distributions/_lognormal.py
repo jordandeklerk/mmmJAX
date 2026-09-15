@@ -5,6 +5,7 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 from tensorflow_probability.substrates.jax import distributions as tfd
 
+from mmmjax.distributions._distribution import _bind_distribution
 from mmmjax.distributions._normal import normal_logcdf, normal_logpdf, normal_logsf
 from mmmjax.distributions._utils import _promote_inexact, _random_shape
 
@@ -305,3 +306,6 @@ def _lognormal_log_probability(
     boundary_probability = jnp.where(value <= 0, -jnp.inf, 0) if direction == 1 else jnp.where(value <= 0, 0, -jnp.inf)
     supported_log_probability = jnp.where(supported_boundary, boundary_probability, log_probability)
     return jnp.where(valid_parameters, supported_log_probability, jnp.nan)
+
+
+_bind_distribution(lognormal, lognormal_logpdf, lognormal_rng, tfd.LogNormal, location="loc", scale="scale")

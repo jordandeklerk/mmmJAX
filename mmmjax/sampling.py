@@ -18,7 +18,8 @@ from numpy.typing import NDArray
 from mmmjax._nuts import _NUTSContinuation, _sample_nuts
 from mmmjax._results import _collect_results, _data_dimensions, _prepared_groups, _same_labels
 from mmmjax.data import PreparedData
-from mmmjax.model import Model, Prior
+from mmmjax.model import Model, PriorSampler, _validate_value_names
+from mmmjax.priors import _validate_prior_sampler
 
 __all__ = ["SamplingState", "continue_sampling", "generate_quantities", "sample", "sample_prior"]
 
@@ -180,7 +181,8 @@ def sample(
         Complete constrained parameter values used to start every chain.
         Otherwise, each chain starts from a random unconstrained position.
     generate : bool, default True
-        Evaluate saved quantities and outputs from the generation callback.
+        Evaluate saved quantities, mapped log-prior terms, and outputs from
+        the generation callback.
     chunk_size : int, default 100
         Maximum retained draws per chain in a sampling chunk before transfer
         to host memory. Smaller chunks reduce device memory use without
@@ -568,7 +570,7 @@ def _warn_sampling(stats: Mapping[str, ArrayLike]) -> None:
 
 def sample_prior(
     model: Model,
-    prior: Prior | None = None,
+    prior: PriorSampler | None = None,
     *,
     data: object = None,
     draws: int = 500,
@@ -578,9 +580,9 @@ def sample_prior(
 ) -> xr.DataTree:
     """Draw explicit priors and inspect their implied outcomes before fitting.
 
-    Use the model's prior-draw function and reuse its transformed parameters
-    and generation callback. The ``log_density`` callback and posterior
-    sampler are not evaluated.
+    Use the model's prior definitions or prior-draw function and reuse its
+    transformed parameters and generation callback. The ``log_density``
+    callback and posterior sampler are not evaluated.
     Keep the sampling distributions consistent with the priors in ``log_density``.
 
     Parameters
@@ -590,7 +592,8 @@ def sample_prior(
     prior : callable, optional
         Override the prior-draw function attached to ``Model`` for this call.
         The function ``prior(key)`` must return one constrained draw per
-        declared parameter. Required if the model has no prior-draw function.
+        declared parameter. Required if the model has no prior definitions
+        or prior-draw function.
     data : object, optional
         Inputs for a model without prepared data. Prepared models use their
         stored observations and fitted scaling automatically.
@@ -629,9 +632,8 @@ def sample_prior(
     if prior is None:
         prior = model._prior
     if prior is None:
-        raise ValueError("Provide a prior-draw function on Model or pass prior to sample_prior")
-    if not callable(prior):
-        raise TypeError("prior must be a JAX-compatible function accepting a random key")
+        raise ValueError("Provide prior definitions or a prior-draw function on Model, or pass prior to sample_prior")
+    _validate_prior_sampler(prior)
     if isinstance(draws, bool) or not isinstance(draws, Integral) or draws < 1:
         raise ValueError("draws must be a positive integer")
     if isinstance(seed, bool) or not isinstance(seed, Integral) or seed < 0:
@@ -653,7 +655,7 @@ def sample_prior(
     generated: dict[str, NDArray[np.generic]] = {}
     output_dimensions: dict[str, tuple[str, ...]] = {}
 
-    if generate and model._has_generated_quantities:
+    if generate and (model._generate is not None or model._saved_inputs):
         initial = {name: value[0] for name, value in parameters.items()}
         outputs, arguments = model._generate_with_inputs(preview_key, initial, inputs)
         output_dimensions = _output_dimensions(model, outputs, arguments, dimensions, prepared)
@@ -694,7 +696,7 @@ def sample_prior(
 
 def _prior_draws(
     model: Model,
-    prior: Prior,
+    prior: PriorSampler,
     key: jax.Array,
     draws: int,
     *,
@@ -705,13 +707,22 @@ def _prior_draws(
     def draw_parameters(draw_key: jax.Array) -> dict[str, jax.Array]:
         values = prior(draw_key)
         if not isinstance(values, Mapping):
-            raise TypeError("prior must return a mapping of parameter names to constrained draws")
-        if set(values) != set(model.parameters):
-            raise ValueError("Prior parameter names must match all model declarations")
+            raise TypeError(
+                "prior(key) must return a mapping of parameter names to constrained draws, not a log density. "
+                "Record custom log-prior terms in generated quantities and select their names with Model log_prior"
+            )
+        _validate_value_names(values, model._parameterizations, name="Prior draws")
 
         parameters = {}
         for name, declaration in model.parameters.items():
-            value = jnp.asarray(values[name])
+            try:
+                value = jnp.asarray(values[name])
+            except (TypeError, ValueError) as exc:
+                raise TypeError(
+                    f"Prior draw for {name!r} must be a real array-like value. "
+                    "Return constrained draws from prior(key). "
+                    "Pass Prior definitions through Model(prior=...) and log-density output names through log_prior"
+                ) from exc
             if value.shape != declaration.shape:
                 raise ValueError(f"Prior draw shape for {name!r} must match its declared shape {declaration.shape}")
             if not (jnp.issubdtype(value.dtype, jnp.floating) or jnp.issubdtype(value.dtype, jnp.integer)):
@@ -753,16 +764,15 @@ def generate_quantities(
 ) -> xr.DataTree:
     """Evaluate generated quantities from existing posterior draws without refitting.
 
-    Evaluate saved quantities and any generation callback for every draw.
-    The ``log_density`` callback and sampling are not rerun. Log-prior and
-    likelihood terms can be returned explicitly by the evaluated callbacks.
-    Scenario calculations remain defined by the model.
+    Evaluate saved quantities, mapped log-prior terms, and any generation
+    callback for every draw. The ``log_density`` callback and sampling are
+    not rerun. Scenario calculations remain defined by the model.
 
     Parameters
     ----------
     model : Model
-        Model with saved quantities or a generation callback and the fitted
-        parameter declarations.
+        Model with saved quantities, mapped priors, or a generation callback
+        and the fitted parameter declarations.
     results : xarray.DataTree
         Results containing constrained posterior draws with the model's parameter
         names, shapes, and axis labels. Draws may be sliced or thinned.
@@ -797,7 +807,7 @@ def generate_quantities(
         raise TypeError("model must be a Model")
     _validate_batch_size(batch_size)
     if not model._has_generated_quantities:
-        raise ValueError("The model must define a generation callback or select quantities with save")
+        raise ValueError("The model must define a generation callback, select quantities with save, or map priors")
     if isinstance(seed, bool) or not isinstance(seed, Integral) or seed < 0:
         raise ValueError("seed must be a nonnegative integer")
 
@@ -997,10 +1007,18 @@ def _output_dimensions(
         input_dimensions.update(parameter_dimensions)
 
     observation_names = set(model._predictive_names) | set(model._likelihood_names)
+    prior_dimensions = {}
+    for parameter_name, prior in model._priors:
+        axes = parameter_dimensions[parameter_name]
+        prior_dimensions[f"log_prior_{parameter_name}"] = axes[: -prior.event_ndims] if prior.event_ndims else axes
+
     dimensions = {}
     for name, value in outputs.items():
         if name in model._generated_dims:
             dimensions[name] = model._generated_dims[name]
+            continue
+        if name in prior_dimensions:
+            dimensions[name] = prior_dimensions[name]
             continue
         input_axes = {axes for argument, axes in model._input_dims.items() if value is arguments.get(argument)}
         if len(input_axes) == 1:

@@ -3,7 +3,9 @@
 import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
+from tensorflow_probability.substrates.jax import distributions as tfd
 
+from mmmjax.distributions._distribution import _bind_distribution
 from mmmjax.distributions._utils import _as_real_array, _is_valid_simplex, _promote_inexact, _random_shape
 
 
@@ -398,3 +400,7 @@ def _validate_categorical_event_axis(parameter_array: jax.Array, *, parameter_na
         raise ValueError(f"{parameter_name} must include a final Categorical event axis, got shape ()")
     if parameter_array.shape[-1] == 0:
         raise ValueError(f"Categorical event size must be positive, got {parameter_name}.shape={parameter_array.shape}")
+
+
+_bind_distribution(categorical, categorical_logpmf, categorical_rng, tfd.Categorical, probabilities="probs")
+_bind_distribution(categorical_logit, categorical_logit_logpmf, categorical_logit_rng, tfd.Categorical, logits="logits")

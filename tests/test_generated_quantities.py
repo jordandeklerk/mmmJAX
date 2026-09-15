@@ -9,7 +9,25 @@ import xarray as xr
 
 import mmmjax
 import mmmjax.sampling as sampling
-from mmmjax import Model, Positive, Real, generate_quantities, normal, normal_logpdf, prepare_data
+from mmmjax import (
+    CorrelationCholesky,
+    Model,
+    Positive,
+    Prior,
+    Real,
+    Simplex,
+    dirichlet,
+    dirichlet_logpdf,
+    generate_quantities,
+    lkj_cholesky,
+    lkj_cholesky_logpdf,
+    lognormal,
+    multivariate_normal,
+    multivariate_normal_logpdf,
+    normal,
+    normal_logpdf,
+    prepare_data,
+)
 from mmmjax._results import _collect_results
 
 
@@ -313,6 +331,118 @@ def test_log_prior_axes_do_not_inherit_matching_parameter_shapes(results, explic
         np.testing.assert_array_equal(evaluated["log_prior"][name], -results["posterior"]["scale"])
     if not explicit_dims:
         assert "channel" not in evaluated["log_prior"].coords
+
+
+@pytest.mark.parametrize("batch_size", [1, 4, 64])
+def test_registered_log_priors_preserve_batch_axes_and_reduce_distribution_events(batch_size):
+    def forbidden_density(data, **parameters):
+        raise AssertionError("Generating registered prior terms must not evaluate the model density")
+
+    priors = {
+        "scale": Prior(lognormal, location=0.2, scale=0.9),
+        "independent": Prior(normal, location=jnp.zeros(3), scale=1.0),
+        "coefficient": Prior(multivariate_normal, location=jnp.zeros(3), scale_tril=jnp.eye(3)),
+        "weights": Prior(dirichlet, concentration=jnp.array([2.0, 3.0, 4.0])),
+        "factor": Prior(lkj_cholesky, concentration=2.0),
+    }
+    dims = {
+        "independent": ("group", "channel"),
+        "coefficient": ("group", "channel"),
+        "weights": ("group", "channel"),
+        "factor": ("group", "channel", "channel_to"),
+    }
+    coords = {
+        "group": ["west", "east"],
+        "channel": ["search", "video", "radio"],
+        "channel_to": ["search", "video", "radio"],
+    }
+    model = Model(
+        {
+            "scale": Positive(),
+            "independent": Real(dims=("group", "channel")),
+            "coefficient": Real(dims=("group", "channel")),
+            "weights": Simplex(dims=("group", "channel")),
+            "factor": CorrelationCholesky(dims=("group", "channel", "channel_to")),
+        },
+        forbidden_density,
+        prior=priors,
+        coords=coords,
+    )
+    coefficients = np.arange(36, dtype=np.float32).reshape(2, 3, 2, 3) / 10
+    posterior = {
+        "scale": 0.5 + np.arange(6, dtype=np.float32).reshape(2, 3) / 4,
+        "independent": coefficients,
+        "coefficient": coefficients,
+        "weights": (coefficients + 1) / (coefficients + 1).sum(axis=-1, keepdims=True),
+        "factor": np.broadcast_to(np.eye(3, dtype=np.float32), (2, 3, 2, 3, 3)).copy(),
+    }
+    original = _collect_results(posterior, dims=dims, coords=coords | {"chain": [4, 8], "draw": [10, 20, 30]})
+    evaluated = generate_quantities(model, original, batch_size=batch_size)
+    assert set(evaluated.children) == {"posterior", "log_prior"}
+    expected = {
+        "scale": (
+            -0.5 * ((np.log(posterior["scale"]) - 0.2) / 0.9) ** 2
+            - np.log(posterior["scale"])
+            - np.log(0.9)
+            - 0.5 * np.log(2 * np.pi)
+        ),
+        "independent": -0.5 * coefficients**2 - 0.5 * np.log(2 * np.pi),
+        "coefficient": multivariate_normal_logpdf(coefficients, jnp.zeros(3), jnp.eye(3)),
+        "weights": dirichlet_logpdf(posterior["weights"], jnp.array([2.0, 3.0, 4.0])),
+        "factor": lkj_cholesky_logpdf(posterior["factor"], 2.0),
+    }
+    log_prior = evaluated["log_prior"]
+    assert set(log_prior.data_vars) == {f"log_prior_{name}" for name in priors}
+    np.testing.assert_array_equal(log_prior["chain"], [4, 8])
+    np.testing.assert_array_equal(log_prior["draw"], [10, 20, 30])
+    np.testing.assert_array_equal(log_prior["group"], ["west", "east"])
+    np.testing.assert_array_equal(log_prior["channel"], ["search", "video", "radio"])
+    for name, values in expected.items():
+        variable = log_prior[f"log_prior_{name}"]
+        axes = () if name == "scale" else ("group", "channel") if name == "independent" else ("group",)
+        assert variable.dims == ("chain", "draw", *axes)
+        np.testing.assert_allclose(variable, values, rtol=2e-6, atol=2e-6)
+    xr.testing.assert_identical(evaluated["posterior"], original["posterior"])
+
+
+def test_registered_log_priors_allow_additional_explicit_terms_and_deduplicate_auto_names(results):
+    model = Model(
+        {"scale": Positive((2,))},
+        _unused_density,
+        lambda key, data, scale: {"manual": normal(scale, 0.0, 1.0), "mean": jnp.mean(scale)},
+        prior={"scale": Prior(lognormal, location=0.2, scale=0.9)},
+        dims={"scale": ("channel",)},
+        coords={"channel": ["search", "video"]},
+        log_prior=("log_prior_scale", "manual"),
+    )
+    evaluated = generate_quantities(model, results)
+    assert set(evaluated["log_prior"].data_vars) == {"log_prior_scale", "manual"}
+    assert evaluated["log_prior"]["log_prior_scale"].dims == ("chain", "draw", "channel")
+    assert evaluated["log_prior"]["manual"].dims == ("chain", "draw")
+    assert set(evaluated["generated_quantities"].data_vars) == {"mean"}
+
+
+@pytest.mark.parametrize("saved", [False, True])
+def test_registered_log_prior_names_cannot_shadow_saved_or_generated_outputs(results, saved):
+    options = (
+        {
+            "data": _saved_data(),
+            "transformed_parameters": lambda scale: {"log_prior_scale": -scale.sum()},
+            "save": ("log_prior_scale",),
+        }
+        if saved
+        else {"generate": lambda key, data, scale: {"log_prior_scale": -scale.sum()}}
+    )
+    with pytest.raises(ValueError, match="log_prior_scale"):
+        model = Model(
+            {"scale": Positive((2,))},
+            (lambda scale: -scale.sum()) if saved else (lambda data, scale: -scale.sum()),
+            prior={"scale": Prior(lognormal, location=0.2, scale=0.9)},
+            dims={"scale": ("channel",)},
+            coords={"channel": ["search", "video"]},
+            **options,
+        )
+        generate_quantities(model, results)
 
 
 def _saved_data(*, start=0, observations=3):

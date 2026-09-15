@@ -16,3 +16,4 @@ Data, fitted transformations, and model configuration objects.
    HSGPConfig
    SpendConstraint
    SamplingState
+   Prior

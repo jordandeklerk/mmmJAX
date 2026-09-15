@@ -5,6 +5,7 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 from tensorflow_probability.substrates.jax import distributions as tfd
 
+from mmmjax.distributions._distribution import _bind_distribution
 from mmmjax.distributions._gamma import _gamma_log_probability
 from mmmjax.distributions._utils import (
     _gamma_shape_log_derivative,
@@ -461,3 +462,8 @@ def _inverse_gamma_log_probability(
     )
     supported_log_probability = jnp.where(jnp.isnan(value_array), jnp.nan, supported_log_probability)
     return jnp.where(valid_shape & valid_scale, supported_log_probability, jnp.nan)
+
+
+_bind_distribution(
+    inverse_gamma, inverse_gamma_logpdf, inverse_gamma_rng, tfd.InverseGamma, shape="concentration", scale="scale"
+)

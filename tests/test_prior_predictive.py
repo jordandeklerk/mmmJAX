@@ -1,5 +1,7 @@
 """Tests for explicit prior draws and labeled prior predictive quantities."""
 
+from functools import partial
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -14,16 +16,20 @@ from mmmjax import (
     Interval,
     Model,
     Positive,
+    Prior,
     Real,
     Simplex,
+    dirichlet,
     fit_data_scaling,
     fourier_features,
     geometric_adstock,
     hill_saturation,
     lkj_cholesky,
     lkj_cholesky_rng,
+    lognormal,
     multivariate_normal,
     multivariate_normal_rng,
+    normal,
     prepare_data,
     sample_prior,
 )
@@ -39,6 +45,87 @@ def scalar_model():
 
 def _normal_prior(key):
     return {"location": jax.random.normal(key)}
+
+
+@pytest.mark.parametrize("batch_size", [1, 4, 64])
+def test_registered_priors_draw_declared_shapes_with_independent_keys_and_copied_mapping(batch_size):
+    def forbidden_density(data, first, second, scale, weights, joint, factor):
+        raise AssertionError("Registered prior draws must not evaluate the model density")
+
+    shared = Prior(normal, location=jnp.array([-0.5, 0.0, 0.5]), scale=0.5)
+    priors = {
+        "first": shared,
+        "second": shared,
+        "scale": Prior(lognormal, location=0.2, scale=0.9),
+        "weights": Prior(dirichlet, concentration=jnp.array([2.0, 3.0, 4.0])),
+        "joint": Prior(multivariate_normal, location=jnp.zeros(3), scale_tril=jnp.eye(3)),
+        "factor": Prior(lkj_cholesky, concentration=2.0),
+    }
+    model = Model(
+        {
+            "first": Real(dims=("group", "channel")),
+            "second": Real(dims=("group", "channel")),
+            "scale": Positive(),
+            "weights": Simplex(dims=("group", "channel")),
+            "joint": Real(dims=("group", "channel")),
+            "factor": CorrelationCholesky(dims=("group", "channel", "channel_to")),
+        },
+        forbidden_density,
+        prior=priors,
+        coords={
+            "group": ["west", "east"],
+            "channel": ["search", "video", "radio"],
+            "channel_to": ["search", "video", "radio"],
+        },
+    )
+    priors.clear()
+    first = sample_prior(model, draws=5, seed=19, batch_size=batch_size)
+    repeated = sample_prior(model, draws=5, seed=19, batch_size=64)
+    xr.testing.assert_allclose(first, repeated)
+    assert set(first.children) == {"prior"}
+    assert set(first["prior"].data_vars) == {"first", "second", "scale", "weights", "joint", "factor"}
+    for name in ("first", "second", "weights", "joint"):
+        assert first["prior"][name].dims == ("chain", "draw", "group", "channel")
+        assert first["prior"][name].shape == (1, 5, 2, 3)
+    assert first["prior"]["scale"].dims == ("chain", "draw")
+    factor = first["prior"]["factor"]
+    assert factor.dims == ("chain", "draw", "group", "channel", "channel_to")
+    assert factor.shape == (1, 5, 2, 3, 3)
+    np.testing.assert_array_equal(factor, np.tril(factor))
+    np.testing.assert_allclose(np.square(factor).sum("channel_to"), 1.0, rtol=2e-6)
+    np.testing.assert_array_equal(first["prior"]["channel"], ["search", "video", "radio"])
+    np.testing.assert_array_equal(first["prior"]["group"], ["west", "east"])
+    assert not np.array_equal(first["prior"]["first"], first["prior"]["second"])
+    assert np.unique(first["prior"]["first"]).size == 30
+    assert np.all(first["prior"]["scale"] > 0)
+    np.testing.assert_allclose(first["prior"]["weights"].sum("channel"), 1.0, rtol=2e-6)
+
+
+def test_registered_prior_draws_still_require_parameter_support():
+    model = Model(
+        {"scale": Positive()},
+        lambda data, scale: normal(scale, 0.0, 1.0),
+        prior={"scale": Prior(normal, location=-100.0, scale=0.01)},
+    )
+    with pytest.raises(ValueError, match=r"scale|support"):
+        sample_prior(model, draws=3)
+
+
+def test_registered_prior_only_draws_skip_unsaved_transforms():
+    def forbidden_transform(location):
+        raise AssertionError("Prior draws must not evaluate transforms when no outputs are requested")
+
+    _, data = _prepared_model()
+    model = Model(
+        {"location": Real()},
+        lambda mean: mean.sum(),
+        data=data,
+        transformed_parameters=forbidden_transform,
+        prior={"location": Prior(normal, location=0.0, scale=1.0)},
+    )
+    result = sample_prior(model, draws=3)
+    assert set(result.children) == {"prior", "observed_data", "constant_data"}
+    assert result["prior"]["location"].shape == (1, 3)
 
 
 def test_correlated_joint_prior_draws_keep_parameter_and_predictive_axes():
@@ -205,8 +292,10 @@ def test_attached_prior_matches_explicit_callback_and_supports_generation_toggle
     assert set(disabled.children) == {"prior"}
 
 
-def test_per_call_prior_override_does_not_replace_the_attached_callback():
-    model = Model({"location": Real()}, lambda data, location: jnp.nan, prior=_normal_prior)
+@pytest.mark.parametrize("registered", [False, True])
+def test_per_call_prior_override_does_not_replace_the_attached_prior(registered):
+    prior = {"location": Prior(normal, location=0.0, scale=1.0)} if registered else _normal_prior
+    model = Model({"location": Real()}, lambda data, location: jnp.nan, prior=prior)
     original = sample_prior(model, draws=3, seed=5)
     override = sample_prior(model, lambda key: {"location": 42.0}, draws=3, seed=5)
     again = sample_prior(model, draws=3, seed=5)
@@ -698,9 +787,160 @@ def test_prior_argument_must_be_callable(scalar_model, prior):
         sample_prior(scalar_model, prior, draws=2)
 
 
-def test_model_rejects_noncallable_prior():
-    with pytest.raises(TypeError, match=r"prior.*(callable|function)"):
-        Model({"location": Real()}, lambda data, location: jnp.nan, prior={"location": 1.0})
+@pytest.mark.parametrize("definition", [1.0, normal, "normal"])
+def test_model_rejects_invalid_registered_prior_entries(definition):
+    with pytest.raises(TypeError, match="Prior") as error:
+        Model({"location": Real()}, lambda data, location: jnp.nan, prior={"location": definition})
+    assert "location" in str(error.value)
+
+
+@pytest.mark.parametrize("override", [False, True])
+@pytest.mark.parametrize("form", ["instance", "logpdf"])
+def test_registered_prior_density_requires_parameter_mapping(scalar_model, override, form):
+    prior = Prior(normal, location=0.0, scale=1.0)
+    value = prior if form == "instance" else prior.logpdf
+    with pytest.raises(TypeError, match="mapping"):
+        if override:
+            sample_prior(scalar_model, value, draws=2)
+        else:
+            Model({"location": Real()}, lambda data, location: jnp.nan, prior=value)
+
+
+@pytest.mark.parametrize("value", [("lp_location",), ["lp_location"], "lp_location"])
+@pytest.mark.parametrize("override", [False, True])
+def test_output_names_passed_as_prior_point_to_log_prior(scalar_model, value, override):
+    with pytest.raises(TypeError, match="log_prior"):
+        if override:
+            sample_prior(scalar_model, value, draws=2)
+        else:
+            Model({"location": Real()}, lambda data, location: jnp.nan, prior=value)
+
+
+@pytest.mark.parametrize("form", ["instance", "mapping", "sequence", "density"])
+def test_prior_definitions_passed_as_log_prior_point_to_prior(form):
+    prior = Prior(normal, location=0.0, scale=1.0)
+    value = {"instance": prior, "mapping": {"location": prior}, "sequence": [prior], "density": normal}[form]
+    with pytest.raises(TypeError, match=r"log_prior.*\bprior\b"):
+        Model(
+            {"location": Real()},
+            lambda data, location: jnp.nan,
+            lambda key, data, location: {"lp_location": prior(location)},
+            log_prior=value,
+        )
+
+
+@pytest.mark.parametrize("form", ["no_key", "required_positional", "required_keyword", "density"])
+@pytest.mark.parametrize("override", [False, True])
+def test_prior_callback_signatures_are_rejected_without_execution(scalar_model, form, override):
+    def no_key():
+        raise AssertionError("Signature validation must not run prior callbacks")
+
+    def required_positional(key, location):
+        raise AssertionError("Signature validation must not run prior callbacks")
+
+    def required_keyword(key, *, location):
+        raise AssertionError("Signature validation must not run prior callbacks")
+
+    prior = {
+        "no_key": no_key,
+        "required_positional": required_positional,
+        "required_keyword": required_keyword,
+        "density": normal,
+    }[form]
+    with pytest.raises(TypeError, match=r"prior\(key\)") as error:
+        if override:
+            sample_prior(scalar_model, prior, draws=2)
+        else:
+            Model({"location": Real()}, lambda data, location: jnp.nan, prior=prior)
+    assert "mapping" in str(error.value)
+    assert "density" in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "form", ["positional_only", "defaults", "callable_object", "callable_sequence", "partial", "jit"]
+)
+@pytest.mark.parametrize("override", [False, True])
+def test_compatible_prior_callbacks_are_validated_without_executing_at_construction(form, override):
+    calls = []
+
+    def positional_only(key, /):
+        calls.append(True)
+        return _normal_prior(key)
+
+    def defaults(key, location=0.0, *, scale=1.0):
+        calls.append(True)
+        return {"location": location + scale * jax.random.normal(key)}
+
+    def with_location(location, key):
+        return defaults(key, location)
+
+    class Sampler:
+        def __call__(self, key):
+            return positional_only(key)
+
+    class SamplerSequence(list):
+        def __call__(self, key):
+            return positional_only(key)
+
+    prior = {
+        "positional_only": positional_only,
+        "defaults": defaults,
+        "callable_object": Sampler(),
+        "callable_sequence": SamplerSequence(),
+        "partial": partial(with_location, 0.0),
+        "jit": jax.jit(positional_only),
+    }[form]
+    model = Model({"location": Real()}, lambda data, location: jnp.nan, prior=None if override else prior)
+    assert calls == []
+    result = sample_prior(model, prior if override else None, draws=3)
+    assert calls
+    assert result["prior"]["location"].shape == (1, 3)
+    assert np.unique(result["prior"]["location"]).size == 3
+
+
+def test_opaque_prior_callback_keeps_runtime_output_validation():
+    calls = []
+
+    class OpaqueSampler:
+        __signature__ = "unavailable"
+
+        def __call__(self, key):
+            calls.append(True)
+            return jnp.array(-1.0)
+
+    prior = OpaqueSampler()
+    model = Model({"location": Real()}, lambda data, location: jnp.nan, prior=prior)
+    assert calls == []
+    with pytest.raises(TypeError, match="mapping"):
+        sample_prior(model, draws=2)
+    assert calls
+
+
+@pytest.mark.parametrize("names", [(), ("extra",), ("location", "extra")])
+@pytest.mark.parametrize("registered", [False, True])
+def test_prior_key_errors_identify_missing_and_unexpected_names(scalar_model, names, registered):
+    values = {name: Prior(normal, location=0.0, scale=1.0) if registered else 1.0 for name in names}
+    with pytest.raises(ValueError) as error:
+        if registered:
+            Model({"location": Real()}, lambda data, location: jnp.nan, prior=values)
+        else:
+            sample_prior(scalar_model, lambda key: values, draws=2)
+    message = str(error.value).lower()
+    if "location" not in names:
+        assert "missing" in message and "location" in message
+    if "extra" in names:
+        assert "unexpected" in message and "extra" in message
+
+
+@pytest.mark.parametrize("registered", [False, True])
+def test_prior_mapping_keys_must_be_strings(scalar_model, registered):
+    value = Prior(normal, location=0.0, scale=1.0) if registered else 1.0
+    values = {"location": value, 1: value}
+    with pytest.raises((TypeError, ValueError), match=r"name|string"):
+        if registered:
+            Model({"location": Real()}, lambda data, location: jnp.nan, prior=values)
+        else:
+            sample_prior(scalar_model, lambda key: values, draws=2)
 
 
 def test_generate_flag_must_be_boolean(scalar_model):
@@ -712,6 +952,20 @@ def test_generate_flag_must_be_boolean(scalar_model):
 def test_prior_output_must_be_a_mapping(scalar_model, value):
     with pytest.raises(TypeError, match="mapping"):
         sample_prior(scalar_model, lambda key: value, draws=2)
+
+
+@pytest.mark.parametrize("form", ["prior", "density", "output_name"])
+def test_prior_draw_callbacks_reject_definitions_and_output_names(scalar_model, form):
+    value = {
+        "prior": Prior(normal, location=0.0, scale=1.0),
+        "density": normal,
+        "output_name": "lp_location",
+    }[form]
+    with pytest.raises(TypeError, match="location") as error:
+        sample_prior(scalar_model, lambda key: {"location": value}, draws=2)
+    message = str(error.value)
+    assert "prior=" in message
+    assert "log_prior" in message
 
 
 @pytest.mark.parametrize("value", [{}, {"location": 1.0, "extra": 2.0}])

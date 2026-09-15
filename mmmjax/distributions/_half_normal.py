@@ -7,6 +7,7 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 from tensorflow_probability.substrates.jax import distributions as tfd
 
+from mmmjax.distributions._distribution import _bind_distribution
 from mmmjax.distributions._normal import _standardize
 from mmmjax.distributions._utils import _promote_inexact, _random_shape
 
@@ -288,3 +289,6 @@ def _half_normal_logsf_kernel(value: jax.Array, scale: jax.Array) -> jax.Array:
     )
     supported_logsf = jnp.where(jnp.isnan(value), jnp.nan, supported_logsf)
     return jnp.asarray(jnp.where(valid_scale, supported_logsf, jnp.nan), dtype=value.dtype)
+
+
+_bind_distribution(half_normal, half_normal_logpdf, half_normal_rng, tfd.HalfNormal, scale="scale")

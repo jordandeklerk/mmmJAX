@@ -9,6 +9,7 @@ from jax.typing import ArrayLike, DTypeLike
 from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax.distributions._discrete import _binomial_interior_log_mass
+from mmmjax.distributions._distribution import _bind_distribution
 from mmmjax.distributions._utils import (
     _as_real_array,
     _promote_inexact,
@@ -799,3 +800,9 @@ def _prepare_binomial_counts(
     trials_float = jnp.asarray(safe_trials, dtype=dtype)
 
     return successes, failures, trials_float, supported, valid_trials
+
+
+_bind_distribution(binomial, binomial_logpmf, binomial_rng, tfd.Binomial, trials="total_count", probability="probs")
+_bind_distribution(
+    binomial_logit, binomial_logit_logpmf, binomial_logit_rng, tfd.Binomial, trials="total_count", logits="logits"
+)

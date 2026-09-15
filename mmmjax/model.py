@@ -28,13 +28,14 @@ from mmmjax.parameters import (
     UpperBound,
     _as_array,
 )
+from mmmjax.priors import Prior, _validate_prior_sampler
 from mmmjax.scaling import DataScaling, fit_data_scaling
 
 __all__ = ["Model"]
 
 LogDensity: TypeAlias = Callable[..., ArrayLike]
 Generate: TypeAlias = Callable[..., Mapping[str, ArrayLike]]
-Prior: TypeAlias = Callable[[jax.Array], Mapping[str, ArrayLike]]
+PriorSampler: TypeAlias = Callable[[jax.Array], Mapping[str, ArrayLike]]
 TransformedParameters: TypeAlias = Callable[..., Mapping[str, ArrayLike]]
 ParameterValues: TypeAlias = Mapping[str, ArrayLike]
 _InputBindings: TypeAlias = tuple[tuple[str, str], ...]
@@ -84,11 +85,13 @@ class Model:
         such as ``("mu", "paid_media", "paid_media_total")``. These are evaluated
         for each draw without a ``generate`` callback. Names must differ from
         outputs returned by ``generate``. Requires prepared data.
-    prior : callable, optional
-        JAX-compatible function ``prior(key)`` returning one constrained draw
-        for every name in ``model.parameters``, with its declared shape.
-        Used by :func:`sample_prior` only. Keep its distributions consistent
-        with the priors written in ``log_density``.
+    prior : mapping of str to Prior or callable, optional
+        Reusable prior definitions for every declared parameter. The mapping
+        supplies independent prior draws and records named log-prior terms
+        at posterior draws. Include these priors explicitly in ``log_density``.
+        For dependent or custom draws, supply a JAX-compatible ``prior(key)``
+        returning all constrained parameters with their declared shapes.
+        A custom sampler does not automatically record log-prior terms.
     data : PreparedData, optional
         Observations from ``prepare_data``. Enables named callback inputs,
         using data roles such as ``outcome``, not source column names.
@@ -133,16 +136,18 @@ class Model:
         Do not use the scalar model density, which also contains priors and adjustments.
         Observation-shaped outputs inherit outcome labels as for ``predictive``.
     log_prior : sequence of str, default ()
-        Saved or generated output names containing explicit log-prior terms
-        evaluated at posterior draws. These are stored for sensitivity analysis,
-        not added to ``log_density``. Exclude sampling constraint adjustments.
-        Use ``generated_dims`` to label array-valued terms.
+        Additional saved or generated log-prior terms for sensitivity analysis.
+        Mapped prior definitions already supply ``log_prior_<parameter>``
+        outputs with parameter labels. Terms are not added to ``log_density``.
+        Record each prior factor only once and exclude constraint adjustments.
+        Label custom arrays with ``generated_dims``.
     """
 
     _parameterizations: tuple[tuple[str, Parameterization], ...]
     _log_density: LogDensity
     _generate: Generate | None
-    _prior: Prior | None
+    _prior: PriorSampler | None
+    _priors: tuple[tuple[str, Prior], ...]
     _transformed_parameters: TransformedParameters | None
     _transform_inputs: _InputBindings
     _saved_inputs: _InputBindings
@@ -175,7 +180,7 @@ class Model:
         generate: Generate | None = None,
         *,
         save: Sequence[str] = (),
-        prior: Prior | None = None,
+        prior: Mapping[str, Prior] | PriorSampler | None = None,
         data: PreparedData | None = None,
         inputs: xr.Dataset | None = None,
         transformed_parameters: TransformedParameters | None = None,
@@ -188,8 +193,8 @@ class Model:
         log_prior: Sequence[str] = (),
     ) -> None:
         """Create a model from named parameter declarations and plain functions."""
-        if prior is not None and not callable(prior):
-            raise TypeError("prior must be a JAX-compatible function accepting a random key")
+        if prior is not None and not isinstance(prior, Mapping):
+            _validate_prior_sampler(prior)
 
         parameterizations = _prepare_parameterizations(parameters)
         parameter_names = tuple(name for name, _ in parameterizations)
@@ -245,6 +250,22 @@ class Model:
             prepared_data.values.update(input_values)
         parameterizations = _resolve_parameter_dimensions(parameterizations, result_dims, axis_coordinates)
 
+        prior_definitions: tuple[tuple[str, Prior], ...] = ()
+        if isinstance(prior, Mapping):
+            _validate_value_names(prior, parameterizations, name="prior")
+            for name, declaration in parameterizations:
+                if not isinstance(prior[name], Prior):
+                    raise TypeError(
+                        f"Prior definition for {name!r} must be a Prior object with fixed distribution settings. "
+                        "Use a prior-draw function for dependent draws. "
+                        "Pass saved or generated log-density output names through log_prior"
+                    )
+                try:
+                    prior[name]._validate_shape(declaration.shape)
+                except ValueError as exc:
+                    raise ValueError(f"Invalid prior shape for parameter {name!r}. {exc}") from exc
+            prior_definitions = tuple((name, prior[name]) for name in parameter_names)
+
         transform_inputs: _InputBindings = ()
         if transformed_parameters is not None:
             if prepared_data is None:
@@ -295,7 +316,9 @@ class Model:
         output_dims = _dimensions(generated_dims)
         predictive_names = _result_names(predictive, name="predictive")
         likelihood_names = _result_names(log_likelihood, name="log_likelihood")
-        log_prior_names = _result_names(log_prior, name="log_prior")
+        explicit_prior_names = _result_names(log_prior, name="log_prior")
+        automatic_prior_names = tuple(f"log_prior_{name}" for name, _ in prior_definitions)
+        log_prior_names = tuple(dict.fromkeys((*automatic_prior_names, *explicit_prior_names)))
         if set(predictive_names) & set(likelihood_names):
             raise ValueError("predictive and log_likelihood must identify different generated outputs")
         if set(log_prior_names) & (set(predictive_names) | set(likelihood_names)):
@@ -303,6 +326,7 @@ class Model:
         if (
             generate is None
             and not saved_inputs
+            and not prior_definitions
             and (output_dims or predictive_names or likelihood_names or log_prior_names)
         ):
             raise ValueError("Generated result metadata requires a generate callback or saved quantities")
@@ -322,7 +346,8 @@ class Model:
         object.__setattr__(self, "_parameterizations", parameterizations)
         object.__setattr__(self, "_log_density", log_density)
         object.__setattr__(self, "_generate", generate)
-        object.__setattr__(self, "_prior", prior)
+        object.__setattr__(self, "_priors", prior_definitions)
+        object.__setattr__(self, "_prior", self._draw_prior if isinstance(prior, Mapping) else prior)
         object.__setattr__(self, "_transformed_parameters", transformed_parameters)
         object.__setattr__(self, "_transform_inputs", transform_inputs)
         object.__setattr__(self, "_saved_inputs", tuple(saved_inputs))
@@ -355,8 +380,18 @@ class Model:
 
     @property
     def _has_generated_quantities(self) -> bool:
-        """Indicate whether evaluation has saved or callback-generated outputs."""
-        return self._generate is not None or bool(self._saved_inputs)
+        """Indicate whether evaluation has saved, generated, or prior outputs."""
+        return self._generate is not None or bool(self._saved_inputs) or bool(self._priors)
+
+    def _draw_prior(self, key: jax.Array) -> dict[str, jax.Array]:
+        """Draw independent prior definitions in declared parameter shapes."""
+        keys = jax.random.split(key, len(self._priors))
+        declarations = self.parameters
+        values = {}
+        for (name, prior), draw_key in zip(self._priors, keys, strict=True):
+            declaration = declarations[name]
+            values[name] = prior._sample(draw_key, declaration.shape, declaration.dtype)
+        return values
 
     @property
     def scaling(self) -> DataScaling | None:
@@ -653,7 +688,8 @@ class Model:
         -------
         dict of str to jax.Array
             Saved transformed quantities alongside
-            outputs from the generation callback, each mapped to a JAX array.
+            outputs from the generation callback and mapped log-prior terms,
+            each mapped to a JAX array.
         """
         return self._generate_with_inputs(key, parameters, data)[0]
 
@@ -666,17 +702,17 @@ class Model:
         """Retain callback inputs so sampling can label unchanged generated arrays."""
         if not self._has_generated_quantities:
             raise RuntimeError(
-                "generated quantities are unavailable because this model has no generate callback or save selection"
+                "generated quantities are unavailable because this model has no generate callback, "
+                "save selection, or mapped prior definitions"
             )
 
         constrained = self._constrained_values(parameters)
         saved: dict[str, ArrayLike] = {}
         arguments: dict[str, ArrayLike]
         if self._data is None:
-            assert self._generate is not None
             names = parameters if self._generate_parameter_names is None else self._generate_parameter_names
             arguments = {name: constrained[name] for name in names}
-            generated = self._generate(key, data, **arguments)
+            generated = {} if self._generate is None else self._generate(key, data, **arguments)
         else:
             inputs = self._validated_data(data)
             effects = self._evaluate_quantities(inputs, constrained)
@@ -699,8 +735,15 @@ class Model:
                 f"Saved quantities {sorted(conflicts)} are also returned by generate. Choose one place to retain them"
             )
 
+        automatic = {}
+        for name, prior in self._priors:
+            output_name = f"log_prior_{name}"
+            if output_name in saved or output_name in generated:
+                raise ValueError(f"Generated quantity {output_name!r} conflicts with a mapped prior output")
+            automatic[output_name] = prior.logpdf(constrained[name])
+
         quantities: dict[str, jax.Array] = {}
-        for name, value in sorted((saved | dict(generated)).items()):
+        for name, value in sorted((saved | dict(generated) | automatic).items()):
             try:
                 quantities[name] = jnp.asarray(value)
             except (TypeError, ValueError) as exc:
@@ -844,6 +887,15 @@ def _model_time_inputs(
 
 def _result_names(values: Sequence[str], *, name: str) -> tuple[str, ...]:
     """Copy distinct generated output names without evaluating their callback."""
+    if name == "log_prior" and (
+        isinstance(values, (Mapping, Prior))
+        or callable(values)
+        or (isinstance(values, Sequence) and any(isinstance(value, Prior) or callable(value) for value in values))
+    ):
+        raise TypeError(
+            "log_prior must be a sequence of saved or generated log-density output names. "
+            "Pass Prior definitions or a prior-draw function through Model(prior=...)"
+        )
     if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
         raise TypeError(f"{name} must be a sequence of generated output names")
     if any(not isinstance(value, str) or not value for value in values):
@@ -1122,7 +1174,7 @@ def _model_parameter_names(
 
 
 def _validate_value_names(
-    values: ParameterValues,
+    values: Mapping[str, object],
     parameterizations: tuple[tuple[str, Parameterization], ...],
     *,
     name: str,
@@ -1142,7 +1194,7 @@ def _validate_value_names(
     unexpected = sorted(actual - expected)
     if missing or unexpected:
         details = _name_mismatch_details(missing, unexpected)
-        raise ValueError(f"{name} does not match the model parameters: {details}")
+        raise ValueError(f"{name} does not match the model parameters. {details}")
 
 
 def _name_mismatch_details(missing: list[str], unexpected: list[str]) -> str:
@@ -1151,7 +1203,7 @@ def _name_mismatch_details(missing: list[str], unexpected: list[str]) -> str:
         details.append(f"missing {missing}")
     if unexpected:
         details.append(f"unexpected {unexpected}")
-    return "; ".join(details)
+    return ". ".join(details)
 
 
 def _as_scalar(value: ArrayLike, *, name: str) -> jax.Array:

@@ -12,11 +12,15 @@ import xarray as xr
 from mmmjax import (
     Model,
     Positive,
+    Prior,
     Real,
     Simplex,
+    dirichlet,
     fit_data_scaling,
     fourier_features,
     generate_quantities,
+    lognormal,
+    normal,
     prepare_data,
 )
 from mmmjax._results import _collect_results
@@ -72,6 +76,57 @@ def test_empty_metadata_preserves_existing_models():
     assert model._log_prior_names == ()
     assert model._time_values == ()
     assert model._media_time_values == ()
+
+
+@pytest.mark.parametrize("names", [(), ("coefficient",), ("coefficient", "intercept", "extra")])
+def test_registered_priors_require_exact_parameter_names(names):
+    with pytest.raises(ValueError, match=r"prior|parameter"):
+        _plain_model(prior={name: Prior(normal, location=0.0, scale=1.0) for name in names})
+
+
+@pytest.mark.parametrize("distribution", [normal, 1.0, None])
+def test_registered_prior_entries_require_prior_objects(distribution):
+    with pytest.raises(TypeError, match="Prior"):
+        _plain_model(prior={"coefficient": distribution, "intercept": Prior(normal, location=0.0, scale=1.0)})
+
+
+@pytest.mark.parametrize("event", [False, True])
+def test_registered_prior_shapes_must_match_parameter_declarations(event):
+    parameter = Simplex((3,)) if event else Real((3,))
+    distribution = (
+        Prior(dirichlet, concentration=jnp.ones(2)) if event else Prior(normal, location=jnp.zeros(2), scale=1.0)
+    )
+    with pytest.raises(ValueError, match=r"shape.*coefficient"):
+        _plain_model(parameters={"coefficient": parameter}, prior={"coefficient": distribution})
+
+
+@pytest.mark.parametrize("include_prior", [False, True])
+def test_registered_priors_do_not_implicitly_change_jitted_density_or_gradient(include_prior):
+    prior = Prior(lognormal, location=0.2, scale=0.9)
+
+    def density(data, scale):
+        likelihood = normal(data, scale, 0.5)
+        return likelihood + prior(scale) if include_prior else likelihood
+
+    plain = Model({"scale": Positive()}, density)
+    registered = Model({"scale": Positive()}, density, prior={"scale": prior})
+    values = {"scale": jnp.array(2.0)}
+    position = {"scale": jnp.log(values["scale"])}
+    for method, arguments in (("log_prob", values), ("log_density", position)):
+        expected = jax.jit(jax.value_and_grad(getattr(plain, method)))(arguments, 1.5)
+        actual = jax.jit(jax.value_and_grad(getattr(registered, method)))(arguments, 1.5)
+        for actual_array, expected_array in zip(jax.tree.leaves(actual), jax.tree.leaves(expected), strict=True):
+            np.testing.assert_array_equal(actual_array, expected_array)
+
+
+@pytest.mark.parametrize("selection", ["predictive", "log_likelihood"])
+def test_registered_log_priors_cannot_be_selected_as_other_generated_groups(selection):
+    with pytest.raises(ValueError, match=r"log_prior|outputs"):
+        _plain_model(
+            parameters={"coefficient": Real()},
+            prior={"coefficient": Prior(normal, location=0.0, scale=1.0)},
+            **{selection: ("log_prior_coefficient",)},
+        )
 
 
 def test_result_metadata_copies_mappings_axes_coordinates_and_output_names():

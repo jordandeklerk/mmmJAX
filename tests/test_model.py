@@ -618,7 +618,7 @@ def test_log_density_parameters_must_match_model_parameters() -> None:
 
     with pytest.raises(
         ValueError,
-        match=r"missing \['a'\]; unexpected \['b'\]",
+        match=r"missing \['a'\].*unexpected \['b'\]",
     ):
         Model({"a": Real()}, wrong_name)
 
@@ -744,7 +744,7 @@ def test_constrain_and_unconstrain_complete_parameter_mapping() -> None:
         ({"a": 0.0, "s": 1.0, "extra": 0.0}, r"unexpected \['extra'\]"),
         (
             {"a": 0.0, "scale": 1.0},
-            r"missing \['s'\]; unexpected \['scale'\]",
+            r"missing \['s'\].*unexpected \['scale'\]",
         ),
     ],
 )
