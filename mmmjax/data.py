@@ -269,7 +269,8 @@ class DataBlock:
         Observations and labels returned by :func:`prepare_data`.
     variables : mapping of str to str, optional
         Model function argument names mapped to prepared or auxiliary input
-        names. If omitted, functions use the standard input names.
+        names. If omitted, functions use the standard input names. When
+        supplied, only the declared names are available to model functions.
     inputs : xarray.Dataset, optional
         Additional fixed inputs, such as experiment measurements.
     scaling : DataScaling or {"auto"}, optional

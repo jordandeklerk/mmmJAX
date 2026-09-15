@@ -214,7 +214,7 @@ def sample(
           **generated_quantities**.
         - **observed_data** and **constant_data** contain prepared model inputs
           in their evaluated units, including any fitted scaling.
-          Additional inputs supplied to ``Model`` are stored in **constant_data**.
+          Auxiliary ``DataBlock`` inputs are stored in **constant_data**.
 
         Declared parameter and data axes retain their labels, including unchanged
         callback inputs. Observation-shaped predictive and likelihood outputs
@@ -621,7 +621,7 @@ def sample_prior(
           generated outputs.
         - **observed_data** and **constant_data** contain prepared model inputs
           in their evaluated units, including fitted scaling.
-          Additional inputs supplied to ``Model`` are stored in **constant_data**.
+          Auxiliary ``DataBlock`` inputs are stored in **constant_data**.
 
         Outputs selected as log likelihoods or log priors are omitted. The chain
         axis is for result compatibility, not an MCMC chain. Without generation,
@@ -784,8 +784,8 @@ def generate_quantities(
         Omit to evaluate stored observations. Earlier exposures are not added
         automatically. Include them through ``prepare_data(media_history=...)``.
         Other models receive this input directly. Omit outcomes only when no
-        evaluated callback needs them. Additional inputs supplied to ``Model``
-        remain fixed across scenarios.
+        evaluated callback needs them. Auxiliary ``DataBlock`` inputs remain
+        fixed across scenarios.
     seed : int, default 0
         Random seed for generated quantities, with an independent key per draw.
     batch_size : int, default 64

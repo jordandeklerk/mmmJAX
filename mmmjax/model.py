@@ -69,29 +69,23 @@ class _ModelData:
 class Model:
     """Compose parameter declarations, log density, and generated quantities.
 
-    Write all priors and likelihood terms in ``log_density``. Prepared models
-    supply callback inputs by name. Ordinary and keyword-only arguments are
-    supported for declared data variables, parameters, and transformed quantities.
-    Models without prepared data retain a data-first callback.
+    A model evaluates its program blocks in order, from ``data`` and
+    ``transformed_data`` through ``parameters``, ``transformed_parameters``,
+    and ``log_density`` to ``generated_quantities``. Each function requests the
+    inputs it needs by argument name from data inputs, the outputs of earlier
+    blocks, and parameters. Models without prepared data receive the data as
+    a leading positional argument instead.
 
-    Declare every sampled parameter and compute effects explicitly in
-    ``transformed_parameters`` using ordinary JAX functions.
-
-    Supply a :class:`DataBlock` to declare input names, additional observations,
-    and preprocessing together. ``transformed_data`` computes fixed quantities
-    before inference. Subsequent functions request these inputs by name.
-
-    Sources include prepared data roles, auxiliary input variables, elapsed
-    ``time`` and ``media_time``, and the observation count ``n_periods``.
-    Dates use elapsed days, and new data keeps the original time origin.
-    ``outcome_scale`` and ``outcome_offset`` restore outcome units with
-    ``mu * scale + offset``. Contributions use only the scale.
-    ``reference_<role>`` and ``reference_n_periods`` retain original inputs
-    and their period count when evaluating new data.
+    Prepared data supplies the selected role names, such as ``outcome`` and
+    ``media``, together with elapsed ``time`` and ``media_time``,
+    ``n_periods``, the outcome conversions ``outcome_scale``,
+    ``outcome_offset``, and ``unscale_outcome``, and the training inputs
+    ``reference_<role>`` and ``reference_n_periods`` when evaluating new
+    data. ``DataBlock`` variables replace these names with declared ones.
 
     Inspect derived quantities with ``evaluate`` and the constrained log
-    density with ``log_prob`` before fitting. ``log_density`` instead accepts
-    unconstrained inference positions and adds parameterization adjustments.
+    density with ``log_prob`` before fitting. Samplers call ``log_density``
+    on unconstrained positions and add parameterization adjustments.
 
     Parameters
     ----------
@@ -229,11 +223,6 @@ class Model:
         fitted_scaling = None
         time_inputs: tuple[str, ...] = ()
         time_origin = None
-        if isinstance(scaling, str):
-            if scaling != "auto":
-                raise ValueError("scaling must be 'auto', a fitted DataScaling, or None")
-        elif scaling is not None and not isinstance(scaling, DataScaling):
-            raise TypeError("scaling must be 'auto', a fitted DataScaling, or None")
         if data is None:
             if transformed_data is not None:
                 raise ValueError("transformed_data requires prepared data")
@@ -470,8 +459,10 @@ class Model:
         Returns
         -------
         dict of str to str
-            A copy of the input declarations. Models without prepared data
-            return an empty mapping.
+            A copy of the input declarations. Without explicit declarations,
+            the standard names currently supplied map to themselves, including
+            ``time`` and ``reference_`` inputs only when a function requests
+            them. Models without prepared data return an empty mapping.
         """
         if self._data is None:
             return {}
@@ -537,7 +528,7 @@ class Model:
 
         Reuse fitted scaling, the time origin, and parameter declarations
         without changing the model's stored data. Call outside JAX transformations.
-        Additional ``inputs`` retain their original values and labels.
+        Auxiliary ``DataBlock`` inputs retain their original values and labels.
 
         Parameters
         ----------
@@ -805,11 +796,11 @@ class Model:
         Parameters
         ----------
         key : jax.Array
-            JAX random key passed to the generation callback. The callback
+            JAX random key passed to the ``generated_quantities`` callback. The callback
             must split it when drawing multiple independent samples.
         parameters : mapping of str to array_like
             Constrained values for every declared parameter. Only the names
-            requested by the generation callback are passed to it.
+            requested by the ``generated_quantities`` callback are passed to it.
         data : object
             For a prepared model, pass ``model.data`` or the result of
             ``model.prepare_data``. Otherwise, pass a JAX-compatible PyTree
@@ -819,7 +810,7 @@ class Model:
         -------
         dict of str to jax.Array
             Saved transformed quantities alongside
-            outputs from the generation callback and mapped log-prior terms,
+            outputs from the ``generated_quantities`` callback and mapped log-prior terms,
             each mapped to a JAX array.
         """
         return self._generate_with_inputs(key, parameters, data)[0]
@@ -1048,13 +1039,9 @@ def _data_variable_declarations(
     """Copy explicit callback names without changing the underlying data layout."""
     if declarations is None:
         return None
-    if not isinstance(declarations, Mapping):
-        raise TypeError("DataBlock variables must map function input names to data source names")
 
-    for name, source in declarations.items():
-        _validate_name(name, label="data variable")
-        if not isinstance(source, str) or not source:
-            raise TypeError(f"Source for data variable {name!r} must be a nonempty string")
+    # DataBlock validates the names and sources before the model receives them.
+    for name in declarations:
         if name in parameter_names:
             raise ValueError(f"Data variable {name!r} conflicts with a declared parameter")
 
