@@ -10,19 +10,139 @@ import pandas as pd
 import polars as pl
 import pyarrow as pa
 import pytest
+import xarray as xr
 
 import mmmjax
-from mmmjax import Model, PreparedData, Real, geometric_adstock, normal, prepare_data
+from mmmjax import DataBlock, Model, PreparedData, Real, fit_data_scaling, geometric_adstock, normal, prepare_data
 from mmmjax.data import _prepare_frame, _prepare_panel
 
 
 def test_data_api_exports_public_entry_points():
-    assert mmmjax.data.__all__ == ["PreparedData", "prepare_data", "select_channels"]
-    assert {"PreparedData", "prepare_data"}.issubset(mmmjax.__all__)
+    assert mmmjax.data.__all__ == ["DataBlock", "PreparedData", "prepare_data", "select_channels"]
+    assert {"DataBlock", "PreparedData", "prepare_data"}.issubset(mmmjax.__all__)
+    assert DataBlock is mmmjax.data.DataBlock
     assert PreparedData is mmmjax.data.PreparedData
     assert not hasattr(PreparedData, "align_to")
     assert not hasattr(PreparedData, "to_jax")
     assert prepare_data is mmmjax.data.prepare_data
+
+
+@pytest.fixture
+def block_observations():
+    frame = pl.DataFrame({"week": [1, 2, 3], "sales": [2.0, 4.0, 8.0], "video": [10.0, 0.0, 20.0]})
+    return prepare_data(frame, time="week", outcome="sales", media=["video"])
+
+
+def test_data_block_snapshots_observations_and_names(block_observations):
+    variables = {"revenue": "outcome", "impressions": "media"}
+    block = DataBlock(block_observations, variables=variables)
+
+    block_observations.arrays["outcome"][:] = -1
+    block_observations.columns["outcome"] = ("changed",)
+    variables["revenue"] = "media"
+
+    np.testing.assert_array_equal(block.observations.arrays["outcome"], [2.0, 4.0, 8.0])
+    assert block.observations.columns["outcome"] == ("sales",)
+    assert block.variables == {"revenue": "outcome", "impressions": "media"}
+
+    exposed = block.observations
+    exposed.arrays["media"][:] = -1
+    exposed.columns.clear()
+    block.variables.clear()
+
+    np.testing.assert_array_equal(block.observations.arrays["media"], [[10.0], [0.0], [20.0]])
+    assert "media" in block.observations.columns
+    assert block.variables == {"revenue": "outcome", "impressions": "media"}
+
+
+def test_data_block_snapshots_auxiliary_arrays_and_labels(block_observations):
+    inputs = xr.Dataset({"lift": ("experiment", [1.0, 2.0])}, coords={"experiment": ["a", "b"]})
+    block = DataBlock(block_observations, inputs=inputs)
+
+    inputs["lift"].values[:] = 0
+    inputs["experiment"].values[:] = "z"
+    exposed = block.inputs
+    exposed["lift"].values[:] = 3
+    exposed["experiment"].values[:] = "y"
+
+    np.testing.assert_array_equal(block.inputs["lift"].values, [1.0, 2.0])
+    np.testing.assert_array_equal(block.inputs["experiment"].values, ["a", "b"])
+
+
+def test_data_block_preserves_fitted_scaling_identity_in_snapshots(block_observations):
+    scaling = fit_data_scaling(block_observations, scale_outcome=True)
+    scaled = scaling.transform(block_observations)
+    block = DataBlock(scaled, scaling=scaling)
+
+    observations, variables, inputs, fitted = block._snapshot()
+
+    assert variables is None
+    assert inputs is None
+    assert observations._scaling is fitted
+    assert fitted is scaling
+    np.testing.assert_array_equal(observations.arrays["outcome"], scaled.arrays["outcome"])
+    observations.arrays["outcome"][:] = -1
+
+    observations, _, _, fitted = block._snapshot()
+    assert observations._scaling is fitted
+    assert "outcome" in fitted._layout.columns
+    np.testing.assert_array_equal(observations.arrays["outcome"], scaled.arrays["outcome"])
+
+
+def test_data_block_reuses_fitted_scaling_with_independent_data(block_observations):
+    scaling = fit_data_scaling(block_observations)
+    block = DataBlock(block_observations, scaling=scaling)
+
+    assert block.scaling is scaling
+    assert block.observations is not block_observations
+    assert block.observations._scaling is None
+
+
+def test_data_block_preserves_a_distinct_applied_scaler(block_observations):
+    applied = fit_data_scaling(block_observations)
+    other = fit_data_scaling(block_observations, scale_outcome=True)
+    scaled = applied.transform(block_observations)
+    block = DataBlock(scaled, scaling=other)
+
+    observations, _, _, configured = block._snapshot()
+
+    assert observations._scaling is applied
+    assert configured is other
+
+
+@pytest.mark.parametrize("variables", [None, {}])
+@pytest.mark.parametrize("scaling", [None, "auto"])
+def test_data_block_retains_optional_declarations(block_observations, variables, scaling):
+    block = DataBlock(block_observations, variables=variables, scaling=scaling)
+
+    assert block.variables == variables
+    assert block.scaling == scaling
+    assert block.inputs is None
+
+
+@pytest.mark.parametrize("data", [None, {}, np.ones(3), pl.DataFrame({"x": [1]})])
+def test_data_block_requires_prepared_observations(data):
+    with pytest.raises(TypeError, match="DataBlock data must be PreparedData"):
+        DataBlock(data)
+
+
+@pytest.mark.parametrize(
+    "option, error, message",
+    [
+        ({"variables": []}, TypeError, "variables must map"),
+        ({"variables": {"invalid name": "outcome"}}, ValueError, "valid Python identifier"),
+        ({"variables": {"for": "outcome"}}, ValueError, "valid Python identifier"),
+        ({"variables": {1: "outcome"}}, ValueError, "valid Python identifier"),
+        ({"variables": {"revenue": ""}}, TypeError, "nonempty string"),
+        ({"variables": {"revenue": 1}}, TypeError, "nonempty string"),
+        ({"inputs": {"lift": [1.0]}}, TypeError, "inputs must be an xarray.Dataset"),
+        ({"scaling": "standardize"}, ValueError, "scaling must be DataScaling"),
+        ({"scaling": True}, TypeError, "scaling must be DataScaling"),
+    ],
+)
+def test_data_block_validates_declarations(block_observations, option, error, message):
+    with pytest.raises(error, match=message):
+        DataBlock(block_observations, **option)
 
 
 @pytest.fixture(params=["pandas", "pandas_nullable", "pandas_arrow", "polars", "pyarrow"])
@@ -2269,7 +2389,7 @@ def test_paid_and_organic_history_work_with_adstock_and_model_gradients():
     }
     inputs = data._to_jax()
     value, gradient = jax.jit(jax.value_and_grad(model.log_density))(position, inputs)
-    generated = jax.jit(model.generate)(jax.random.key(0), position, inputs)
+    generated = jax.jit(model.generate_quantities)(jax.random.key(0), position, inputs)
 
     # One lag gives current + decay * previous, including the history row for the first period
     paid = np.array([[4.0, 2.5], [5.5, 6.0]])
@@ -2369,7 +2489,7 @@ def test_reach_frequency_history_works_with_grouped_model_and_adstock_gradients(
     }
     inputs = data._to_jax()
     value, gradient = jax.jit(jax.value_and_grad(model.log_density))(position, inputs)
-    generated = jax.jit(model.generate)(jax.random.key(0), position, inputs)
+    generated = jax.jit(model.generate_quantities)(jax.random.key(0), position, inputs)
 
     # Work out the one-lag sums independently so a swapped input or lost history changes the result
     paid = np.array([[[7.5, 3.5], [2.0, 2.75]], [[5.0, 6.75], [5.5, 3.5]]])

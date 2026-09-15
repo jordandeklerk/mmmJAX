@@ -12,6 +12,7 @@ import xarray as xr
 
 import mmmjax
 from mmmjax import (
+    DataBlock,
     Interval,
     Model,
     Positive,
@@ -92,9 +93,8 @@ def _model(data, *, scaling=None, cross_group=False):
         {"coefficient": Real((2,))},
         density,
         generated,
-        data=data,
+        data=DataBlock(data, scaling=scaling),
         transformed_parameters=transformed,
-        scaling=scaling,
         dims={"coefficient": ("channel",)},
     )
 
@@ -181,8 +181,7 @@ def test_response_curves_retain_fixed_inputs_during_budget_changes(new_data):
     model = Model(
         {"coefficient": Real(dims="channel")},
         lambda expected: -expected.sum(),
-        data=data,
-        inputs=inputs,
+        data=DataBlock(data, inputs=inputs),
         transformed_parameters=transformed,
     )
     results = _results(model, data)
@@ -637,9 +636,8 @@ def test_response_curves_accept_dataframes_and_evaluate_the_supplied_periods_onl
     model = Model(
         {"coefficient": Real()},
         lambda coefficient: -(coefficient**2),
-        data=data,
+        data=DataBlock(data, scaling="auto"),
         transformed_parameters=lambda media, coefficient: {"expected": media[:, 0] * coefficient},
-        scaling="auto",
     )
     results = _collect_results({"coefficient": jnp.ones((1, 1))})
     scenario = pl.DataFrame({"week": [5, 4], "views": [80.0, 60.0], "cost": [16.0, 12.0]})
@@ -999,9 +997,8 @@ def test_response_curves_resolve_period_labels_from_new_data():
     model = Model(
         {"coefficient": Real()},
         lambda coefficient: -(coefficient**2),
-        data=data,
+        data=DataBlock(data, scaling="auto"),
         transformed_parameters=lambda media, coefficient: {"expected": media[:, 0] * coefficient},
-        scaling="auto",
     )
     results = _collect_results({"coefficient": jnp.ones((1, 1))})
     scenario = pl.DataFrame({"week": [5, 4], "views": [80.0, 60.0], "cost": [16.0, 12.0]})
@@ -1200,7 +1197,9 @@ def _rf_model(data, *, scaling=None):
     def density(expected):
         raise AssertionError("Response curves must only evaluate transformed quantities")
 
-    return Model({"coefficient": Real()}, density, data=data, transformed_parameters=transformed, scaling=scaling)
+    return Model(
+        {"coefficient": Real()}, density, data=DataBlock(data, scaling=scaling), transformed_parameters=transformed
+    )
 
 
 def _rf_results():
@@ -2062,8 +2061,7 @@ def test_frequency_curves_reject_unrepresentable_exposures(scenario):
     model = Model(
         {"coefficient": Real()},
         lambda coefficient: -(coefficient**2),
-        data=data,
-        scaling=fit_data_scaling(data) if scenario == "scaled_overflow" else None,
+        data=DataBlock(data, scaling=fit_data_scaling(data) if scenario == "scaled_overflow" else None),
         transformed_parameters=lambda reach, media_frequency, coefficient: {
             "expected": coefficient * (jnp.tanh(reach) * media_frequency)[:, 0]
         },

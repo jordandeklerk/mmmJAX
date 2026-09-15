@@ -10,6 +10,7 @@ import pytest
 import xarray as xr
 
 from mmmjax import (
+    DataBlock,
     Model,
     Positive,
     Prior,
@@ -22,6 +23,7 @@ from mmmjax import (
     lognormal,
     normal,
     prepare_data,
+    sample_prior,
 )
 from mmmjax._results import _collect_results
 
@@ -291,7 +293,7 @@ def test_generated_group_names_cannot_overlap(first, second):
     ],
 )
 def test_generated_metadata_requires_generation_callback(metadata):
-    with pytest.raises(ValueError, match="requires a generate callback"):
+    with pytest.raises(ValueError, match="requires a generated_quantities callback"):
         _plain_model(**metadata)
 
 
@@ -358,8 +360,7 @@ def test_aligned_time_history_and_group_metadata_follow_actual_scaled_model_inpu
     model = Model(
         {},
         lambda outcome: -jnp.square(outcome).sum(),
-        data=incoming,
-        scaling=scaling,
+        data=DataBlock(incoming, scaling=scaling),
     )
     assert model._time_values == expected.time_values == (2, 3, 4)
     assert model._media_time_values == expected.media_time_values == (1, 2, 3, 4)
@@ -394,8 +395,10 @@ def test_result_labels_do_not_change_density_gradients_or_generation():
     for actual_array, expected_array in zip(jax.tree.leaves(actual), jax.tree.leaves(expected), strict=True):
         np.testing.assert_array_equal(actual_array, expected_array)
     key = jax.random.key(0)
-    for name, expected_array in plain.generate(key, plain.constrain(position), None).items():
-        np.testing.assert_array_equal(labeled.generate(key, labeled.constrain(position), None)[name], expected_array)
+    for name, expected_array in plain.generate_quantities(key, plain.constrain(position), None).items():
+        np.testing.assert_array_equal(
+            labeled.generate_quantities(key, labeled.constrain(position), None)[name], expected_array
+        )
 
 
 def _named_axis_data():
@@ -607,8 +610,7 @@ def test_auxiliary_inputs_remain_fixed_across_shorter_reordered_scenarios():
         {"coefficient": Real(dims="channel")},
         lambda coefficient: -jnp.square(coefficient).sum(),
         lambda key, media, experiment_spend: {"media_copy": media, "experiment_copy": experiment_spend},
-        data=data,
-        inputs=inputs,
+        data=DataBlock(data, inputs=inputs),
         transformed_parameters=lambda experiment_spend, coefficient: {
             "experiment_response": experiment_spend @ coefficient
         },
@@ -642,6 +644,296 @@ def test_auxiliary_inputs_remain_fixed_across_shorter_reordered_scenarios():
     np.testing.assert_array_equal(generated["media_time"], [8, 9])
     np.testing.assert_array_equal(model.data.values["experiment_spend"], inputs.experiment_spend)
     np.testing.assert_array_equal(results["constant_data"]["media_time"], [1, 2, 3, 4])
+
+
+@pytest.mark.parametrize("periods", [(8, 9), (8, 9, 10), (8, 9, 10, 11, 12)])
+def test_generated_reference_inputs_keep_training_labels_for_new_observation_windows(periods):
+    data = _prepared_data()
+    scaling = fit_data_scaling(data, scale_outcome=True)
+
+    def generated(
+        key,
+        media,
+        outcome,
+        reference_media,
+        reference_outcome,
+        reference_time,
+        reference_media_time,
+        outcome_scale,
+        unscale_outcome,
+        n_periods,
+        reference_n_periods,
+    ):
+        return {
+            "current_media": media,
+            "original_media": reference_media,
+            "original_outcome": reference_outcome,
+            "original_elapsed": reference_time,
+            "original_media_elapsed": reference_media_time,
+            "restored_outcome": unscale_outcome(outcome),
+            "outcome_divisor": outcome_scale,
+            "current_count": jnp.asarray(n_periods),
+            "original_count": jnp.asarray(reference_n_periods),
+        }
+
+    model = Model(
+        {"level": Real()},
+        lambda level: -jnp.square(level),
+        generated,
+        data=DataBlock(data, scaling=scaling),
+        predictive=("restored_outcome", "original_outcome"),
+    )
+    results = _collect_results({"level": np.zeros((1, 2), dtype=np.float32)}, data=data)
+    scenario = pl.DataFrame(
+        [
+            {
+                "week": week,
+                "region": region,
+                "segment": segment,
+                "sales": 100.0 + week,
+                "video": 20.0,
+                "search": 10.0,
+            }
+            for week in periods
+            for region, segment in reversed(data.group_values)
+        ]
+    )
+    evaluated = generate_quantities(model, results, new_data=scenario, batch_size=1)
+    generated_values = evaluated["generated_quantities"]
+    predictive = evaluated["posterior_predictive"]
+
+    assert generated_values["current_media"].dims == ("chain", "draw", "media_time", "group", "channel")
+    assert generated_values["original_media"].dims == ("chain", "draw", "reference_media_time", "group", "channel")
+    assert predictive["original_outcome"].dims == ("chain", "draw", "reference_time", "group")
+    assert predictive["restored_outcome"].dims == ("chain", "draw", "time", "group")
+    assert generated_values["original_elapsed"].dims == ("chain", "draw", "reference_time")
+    assert generated_values["original_media_elapsed"].dims == ("chain", "draw", "reference_media_time")
+    assert generated_values["outcome_divisor"].dims == ("chain", "draw")
+    np.testing.assert_array_equal(generated_values["media_time"], periods)
+    np.testing.assert_array_equal(generated_values["reference_media_time"], data.media_time_values)
+    np.testing.assert_array_equal(predictive["time"], periods)
+    np.testing.assert_array_equal(predictive["reference_time"], data.time_values)
+    np.testing.assert_array_equal(generated_values["channel"], data.channels)
+    np.testing.assert_array_equal(generated_values["group_region"], ["west", "east"])
+    np.testing.assert_array_equal(generated_values["current_count"], [[len(periods)] * 2])
+    np.testing.assert_array_equal(generated_values["original_count"], [[len(data.time_values)] * 2])
+    np.testing.assert_array_equal(generated_values["original_elapsed"][0, 0], [0.0, 1.0, 2.0])
+    np.testing.assert_array_equal(generated_values["original_media_elapsed"][0, 0], [-1.0, 0.0, 1.0, 2.0])
+    expected = scaling.transform(data)
+    np.testing.assert_array_equal(generated_values["original_media"][0, 0], expected.arrays["media"])
+    np.testing.assert_array_equal(predictive["original_outcome"][0, 0], expected.arrays["outcome"])
+    restored = np.repeat(100.0 + np.array(periods), 2).reshape(-1, 2)
+    np.testing.assert_allclose(predictive["restored_outcome"][0, 0], restored)
+    assert set(evaluated["observed_data"].data_vars) == {"outcome"}
+    assert set(evaluated["constant_data"].data_vars) == {"media"}
+
+
+@pytest.mark.parametrize("prior", [False, True])
+def test_generated_training_arrays_distinguish_current_and_reference_provenance(prior):
+    data = _prepared_data()
+    model = Model(
+        {"level": Real()},
+        lambda level: -jnp.square(level),
+        lambda key, media, reference_media: {"current_media": media, "original_media": reference_media},
+        data=data,
+        prior=lambda key: {"level": jnp.asarray(0.0)},
+    )
+    if prior:
+        evaluated = sample_prior(model, draws=2)
+        generated = evaluated["prior_generated_quantities"]
+    else:
+        results = _collect_results({"level": np.zeros((1, 2), dtype=np.float32)}, data=data)
+        evaluated = generate_quantities(model, results)
+        generated = evaluated["generated_quantities"]
+
+    assert generated["current_media"].dims == ("chain", "draw", "media_time", "group", "channel")
+    assert generated["original_media"].dims == ("chain", "draw", "reference_media_time", "group", "channel")
+    np.testing.assert_array_equal(generated["current_media"], generated["original_media"])
+    np.testing.assert_array_equal(generated["reference_media_time"], data.media_time_values)
+    assert set(evaluated["constant_data"].data_vars) == {"media"}
+
+
+@pytest.mark.parametrize("groups", [1, 2])
+def test_generated_population_outcome_scale_retains_group_axis_even_for_one_group(groups):
+    frame = pl.DataFrame(
+        [
+            {"week": week, "region": str(group), "population": 100.0 * (group + 1), "sales": 50.0 * week}
+            for week in (1, 2, 3)
+            for group in range(groups)
+        ]
+    )
+    data = prepare_data(frame, time="week", groups=["region"], outcome="sales", population="population")
+    scaling = fit_data_scaling(data, scale_outcome="population")
+    model = Model(
+        {"level": Real()},
+        lambda level: -jnp.square(level),
+        lambda key, outcome_scale: {"outcome_divisor": outcome_scale},
+        data=DataBlock(data, scaling=scaling),
+    )
+    results = _collect_results({"level": np.zeros((1, 2), dtype=np.float32)}, data=data)
+    generated = generate_quantities(model, results)["generated_quantities"]
+
+    assert generated["outcome_divisor"].dims == ("chain", "draw", "group")
+    np.testing.assert_array_equal(generated["group"], [str(group) for group in range(groups)])
+    np.testing.assert_array_equal(generated["outcome_divisor"][0, 0], scaling.transformations["outcome"].scale[0])
+
+
+@pytest.mark.parametrize("prior", [False, True])
+def test_declared_data_variables_keep_prepared_and_auxiliary_result_labels(prior):
+    data = _prepared_data()
+    inputs = xr.Dataset(
+        {"experiment_spend": (("experiment", "channel"), [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])},
+        coords={"experiment": ["north", "south", "national"], "channel": ["video", "search"]},
+    )
+
+    def generated(key, revenue, impressions, experiment_costs):
+        quantities = {
+            "sales": revenue,
+            "exposure": impressions,
+            "experiment_costs": experiment_costs,
+        }
+        return quantities
+
+    model = Model(
+        {"level": Real()},
+        lambda level: -jnp.square(level),
+        generated,
+        data=DataBlock(
+            data,
+            inputs=inputs,
+            variables={
+                "revenue": "outcome",
+                "impressions": "media",
+                "experiment_costs": "experiment_spend",
+            },
+        ),
+        prior={"level": Prior(normal, location=0.0, scale=1.0)},
+        predictive=("sales", "experiment_costs"),
+    )
+    if prior:
+        evaluated = sample_prior(model, draws=2, batch_size=1)
+        generated_values = evaluated["prior_generated_quantities"]
+        predictive = evaluated["prior_predictive"]
+    else:
+        results = _collect_results({"level": np.zeros((1, 2), dtype=np.float32)}, data=data, inputs=inputs)
+        evaluated = generate_quantities(model, results, batch_size=1)
+        generated_values = evaluated["generated_quantities"]
+        predictive = evaluated["posterior_predictive"]
+
+    assert predictive["sales"].dims == ("chain", "draw", "time", "group")
+    assert generated_values["exposure"].dims == ("chain", "draw", "media_time", "group", "channel")
+    assert predictive["experiment_costs"].dims == ("chain", "draw", "experiment", "channel")
+    np.testing.assert_array_equal(predictive["time"], data.time_values)
+    np.testing.assert_array_equal(predictive["group_region"], ["west", "east"])
+    np.testing.assert_array_equal(generated_values["media_time"], data.media_time_values)
+    np.testing.assert_array_equal(generated_values["channel"], data.channels)
+    np.testing.assert_array_equal(predictive["experiment"], inputs.experiment)
+    np.testing.assert_array_equal(predictive["sales"][0, 0], model.data.values["outcome"])
+    np.testing.assert_array_equal(generated_values["exposure"][0, 0], model.data.values["media"])
+    np.testing.assert_array_equal(predictive["experiment_costs"][0, 0], inputs.experiment_spend)
+    assert set(evaluated["observed_data"].data_vars) == {"outcome"}
+    assert set(evaluated["constant_data"].data_vars) == {"media", "experiment_spend"}
+
+
+@pytest.mark.parametrize("groups", [1, 2])
+def test_declared_outcome_scaling_variables_keep_group_labels(groups):
+    frame = pl.DataFrame(
+        [
+            {"week": week, "region": str(group), "population": 100.0 * (group + 1), "sales": 50.0 * week}
+            for week in (1, 2, 3)
+            for group in range(groups)
+        ]
+    )
+    data = prepare_data(frame, time="week", groups=["region"], outcome="sales", population="population")
+    scaling = fit_data_scaling(data, scale_outcome="population")
+
+    def generated(key, revenue, revenue_scale, revenue_offset):
+        restored = revenue * revenue_scale + revenue_offset
+        quantities = {"divisor": revenue_scale, "offset": revenue_offset, "restored": restored}
+        return quantities
+
+    model = Model(
+        {"level": Real()},
+        lambda level: -jnp.square(level),
+        generated,
+        data=DataBlock(
+            data,
+            scaling=scaling,
+            variables={
+                "revenue": "outcome",
+                "revenue_scale": "outcome_scale",
+                "revenue_offset": "outcome_offset",
+            },
+        ),
+        predictive=("restored",),
+    )
+    results = _collect_results({"level": np.zeros((1, 2), dtype=np.float32)}, data=data)
+    evaluated = generate_quantities(model, results, batch_size=1)
+    generated_values = evaluated["generated_quantities"]
+
+    assert generated_values["divisor"].dims == ("chain", "draw", "group")
+    assert generated_values["offset"].dims == ("chain", "draw", "group")
+    np.testing.assert_array_equal(generated_values["group"], [str(group) for group in range(groups)])
+    np.testing.assert_allclose(generated_values["divisor"][0, 0], scaling.transformations["outcome"].scale[0])
+    np.testing.assert_allclose(generated_values["offset"][0, 0], scaling.transformations["outcome"].offset[0])
+    np.testing.assert_allclose(evaluated["posterior_predictive"]["restored"][0, 0], data.arrays["outcome"])
+
+
+@pytest.mark.parametrize("periods", [(8, 9), (8, 9, 10), (8, 9, 10, 11, 12)])
+def test_declared_reference_variables_keep_original_labels_in_scenarios(periods):
+    data = _prepared_data()
+
+    def generated(key, impressions, original_impressions, original_revenue, original_elapsed):
+        quantities = {
+            "current": impressions,
+            "original": original_impressions,
+            "original_sales": original_revenue,
+            "original_elapsed": original_elapsed,
+        }
+        return quantities
+
+    model = Model(
+        {"level": Real()},
+        lambda level: -jnp.square(level),
+        generated,
+        data=DataBlock(
+            data,
+            variables={
+                "impressions": "media",
+                "original_impressions": "reference_media",
+                "original_revenue": "reference_outcome",
+                "original_elapsed": "reference_time",
+            },
+        ),
+        predictive=("original_sales",),
+    )
+    results = _collect_results({"level": np.zeros((1, 2), dtype=np.float32)}, data=data)
+    scenario = pl.DataFrame(
+        [
+            {"week": week, "region": region, "segment": segment, "video": 20.0, "search": 10.0}
+            for week in periods
+            for region, segment in reversed(data.group_values)
+        ]
+    )
+    evaluated = generate_quantities(model, results, new_data=scenario, batch_size=1)
+    generated_values = evaluated["generated_quantities"]
+    predictive = evaluated["posterior_predictive"]
+
+    assert generated_values["current"].dims == ("chain", "draw", "media_time", "group", "channel")
+    assert generated_values["original"].dims == ("chain", "draw", "reference_media_time", "group", "channel")
+    assert predictive["original_sales"].dims == ("chain", "draw", "reference_time", "group")
+    assert generated_values["original_elapsed"].dims == ("chain", "draw", "reference_time")
+    np.testing.assert_array_equal(generated_values["media_time"], periods)
+    np.testing.assert_array_equal(generated_values["reference_media_time"], data.media_time_values)
+    np.testing.assert_array_equal(predictive["reference_time"], data.time_values)
+    np.testing.assert_array_equal(generated_values["channel"], data.channels)
+    np.testing.assert_array_equal(generated_values["group_region"], ["west", "east"])
+    np.testing.assert_array_equal(generated_values["current"][0, 0], model.prepare_data(scenario).values["media"])
+    np.testing.assert_array_equal(generated_values["original"][0, 0], model.data.values["media"])
+    np.testing.assert_array_equal(predictive["original_sales"][0, 0], model.data.values["outcome"])
+    np.testing.assert_array_equal(generated_values["original_elapsed"][0, 0], [0.0, 1.0, 2.0])
+    assert "observed_data" not in evaluated.children
+    assert set(evaluated["constant_data"].data_vars) == {"media"}
 
 
 def test_result_collection_rejects_auxiliary_coordinate_alignment():

@@ -31,7 +31,8 @@ from mmmjax import (
 from mmmjax._results import _collect_results
 
 
-def test_generated_time_inputs_retain_date_labels_without_becoming_observed_data():
+@pytest.mark.parametrize("callback_binding", ["positional", "keyword"])
+def test_generated_time_inputs_retain_date_labels_without_becoming_observed_data(callback_binding):
     frame = pl.DataFrame({"period": [10, 11, 12], "sales": [1.0, 2.0, 3.0], "search": [5.0, 6.0, 7.0]})
     data = prepare_data(frame, time="period", outcome="sales", media=["search"])
 
@@ -41,7 +42,9 @@ def test_generated_time_inputs_retain_date_labels_without_becoming_observed_data
     def generate(key, time, media_time, level):
         return {"elapsed": time, "exposure_elapsed": media_time, "prediction": time + level}
 
-    model = Model({"level": Real()}, density, generate, data=data, predictive=("prediction",))
+    callbacks = (generate,) if callback_binding == "positional" else ()
+    options = {"generated_quantities": generate} if callback_binding == "keyword" else {}
+    model = Model({"level": Real()}, density, *callbacks, data=data, predictive=("prediction",), **options)
     results = _collect_results({"level": np.zeros((1, 2), dtype=np.float32)})
     for new_data in (None, frame.slice(1)):
         evaluated = generate_quantities(model, results, new_data=new_data)
@@ -136,7 +139,9 @@ def test_generated_batches_preserve_key_assignment_draw_order_and_labels(model, 
     generation_key, _ = jax.random.split(jax.random.key(9))
     keys = jax.random.split(generation_key, (2, 3))
     posterior = {"scale": jnp.asarray(results["posterior"]["scale"].values)}
-    reference = jax.jit(jax.vmap(jax.vmap(lambda key, values: model.generate(key, values, new_data))))(keys, posterior)
+    reference = jax.jit(jax.vmap(jax.vmap(lambda key, values: model.generate_quantities(key, values, new_data))))(
+        keys, posterior
+    )
     for group, name in (("generated_quantities", "mean"), ("posterior_predictive", "prediction")):
         np.testing.assert_allclose(evaluated[group][name], reference[name], rtol=2e-6, atol=2e-6)
         assert evaluated[group][name].dims == ("chain", "draw", "channel")
@@ -175,7 +180,7 @@ def test_generate_quantities_requires_model_callback_and_result_tree(model, resu
     with pytest.raises(TypeError, match="model must be a Model"):
         generate_quantities(None, results)
     no_callback = Model({"scale": Positive((2,))}, _unused_density)
-    with pytest.raises(ValueError, match="generation callback"):
+    with pytest.raises(ValueError, match="generated_quantities callback"):
         generate_quantities(no_callback, results)
     with pytest.raises(TypeError, match=r"xarray\.DataTree"):
         generate_quantities(model, results["posterior"].to_dataset())
@@ -431,7 +436,7 @@ def test_registered_log_prior_names_cannot_shadow_saved_or_generated_outputs(res
             "save": ("log_prior_scale",),
         }
         if saved
-        else {"generate": lambda key, data, scale: {"log_prior_scale": -scale.sum()}}
+        else {"generated_quantities": lambda key, data, scale: {"log_prior_scale": -scale.sum()}}
     )
     with pytest.raises(ValueError, match="log_prior_scale"):
         model = Model(

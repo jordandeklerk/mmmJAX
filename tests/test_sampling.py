@@ -18,6 +18,7 @@ import mmmjax._nuts as nuts
 import mmmjax.sampling as sampling
 from mmmjax import (
     CorrelationCholesky,
+    DataBlock,
     Interval,
     Model,
     Positive,
@@ -895,7 +896,7 @@ def test_sampling_batches_preserve_seeded_draws_generation_and_labels(nuts_calls
         jax.random.split(generation_key, 2)
     )
     posterior = {"intercept": jnp.asarray(result["posterior"]["intercept"].values)}
-    reference = jax.jit(jax.vmap(jax.vmap(lambda key, values: model.generate(key, values, model.data))))(
+    reference = jax.jit(jax.vmap(jax.vmap(lambda key, values: model.generate_quantities(key, values, model.data))))(
         keys, posterior
     )
     for group, name in (
@@ -1016,9 +1017,7 @@ def test_auxiliary_inputs_keep_evaluated_values_and_experiment_labels(nuts_calls
             "lift_copy": lift,
             "pointwise": normal_logpdf(lift, expected_lift, uncertainty),
         },
-        data=data,
-        inputs=inputs,
-        scaling=fit_data_scaling(data, scale_outcome=True),
+        data=DataBlock(data, inputs=inputs, scaling=fit_data_scaling(data, scale_outcome=True)),
         transformed_parameters=lambda effect, reference: {"expected_lift": effect * reference},
         save=("expected_lift",),
         predictive=("lift_copy",),
@@ -1293,8 +1292,7 @@ def test_collected_data_uses_model_scaling_and_does_not_rescale_draws_or_generat
         {"location": Real()},
         density,
         generate,
-        data=data,
-        scaling=scaling,
+        data=DataBlock(data, scaling=scaling),
         generated_dims={"mean": ("time",)},
     )
     expected_outcome = np.array(model.data.values["outcome"])
@@ -1505,8 +1503,8 @@ def test_saved_quantities_are_validated_before_chain_adaptation(nuts_calls, prob
         model = _saved_model(save=("unknown",))
         message = "unknown"
     elif problem == "collision":
-        model = _saved_model(generate=lambda key, mu: {"mu": mu})
-        message = "also returned by generate"
+        model = _saved_model(generated_quantities=lambda key, mu: {"mu": mu})
+        message = "also returned by generated_quantities"
     else:
         model = _saved_model(generated_dims={"mu": ()})
         message = "dims matching"
@@ -1646,7 +1644,7 @@ def test_continuation_preserves_prepared_inputs_in_wrapped_models():
     model = Model(
         prepared_model.parameters,
         lambda data, location: prepared_model.log_prob({"location": location}, data=data),
-        lambda key, data, location: prepared_model.generate(key, {"location": location}, data),
+        lambda key, data, location: prepared_model.generate_quantities(key, {"location": location}, data),
         predictive=("prediction",),
     )
     options = {"data": prepared_model.data, "warmup": 60, "chains": 1, "seed": 29, "progress": False}

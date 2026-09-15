@@ -13,6 +13,7 @@ import xarray as xr
 
 from mmmjax import (
     CorrelationCholesky,
+    DataBlock,
     Model,
     Positive,
     Real,
@@ -129,8 +130,7 @@ def test_labeled_inputs_reach_named_callbacks_and_have_analytic_jit_gradients(au
         {"theta": Real(dims="experiment"), "beta": Real(dims="channel")},
         density,
         generated,
-        data=auxiliary_data,
-        inputs=auxiliary_inputs,
+        data=DataBlock(auxiliary_data, inputs=auxiliary_inputs),
         transformed_parameters=transformed,
         save=("trial_mean",),
     )
@@ -149,7 +149,7 @@ def test_labeled_inputs_reach_named_callbacks_and_have_analytic_jit_gradients(au
     np.testing.assert_allclose(gradient["beta"], [-0.4, 1.35], rtol=2e-6)
     np.testing.assert_allclose(jax.jit(model.evaluate)(parameters)["trial_mean"], mean, rtol=2e-6)
     key = jax.random.key(17)
-    generated_values = jax.jit(model.generate)(key, parameters, model.data)
+    generated_values = jax.jit(model.generate_quantities)(key, parameters, model.data)
     np.testing.assert_allclose(generated_values["trial_mean"], mean, rtol=2e-6)
     np.testing.assert_allclose(generated_values["prediction"], normal_rng(key, jnp.asarray(mean), 0.5), rtol=2e-6)
     np.testing.assert_array_equal(generated_values["indices"], [1, 0, 1])
@@ -159,7 +159,7 @@ def test_labeled_inputs_reach_named_callbacks_and_have_analytic_jit_gradients(au
 
 
 def test_labeled_inputs_copy_source_values_labels_and_returned_data(auxiliary_data, auxiliary_inputs):
-    model = Model({}, lambda lift: -jnp.square(lift).sum(), data=auxiliary_data, inputs=auxiliary_inputs)
+    model = Model({}, lambda lift: -jnp.square(lift).sum(), data=DataBlock(auxiliary_data, inputs=auxiliary_inputs))
     auxiliary_inputs["lift"].values[:] = 100.0
     auxiliary_inputs["indices"].values[:] = 0
     auxiliary_inputs["experiment"].values[:] = ["other", "value", "names"]
@@ -184,10 +184,8 @@ def test_labeled_inputs_remain_unscaled_and_fixed_in_new_observation_scenarios(a
             "active": active,
             "media": media,
         },
-        data=auxiliary_data,
-        inputs=auxiliary_inputs,
+        data=DataBlock(auxiliary_data, inputs=auxiliary_inputs, scaling="auto"),
         transformed_parameters=lambda theta, lift: {"trial_mean": theta + lift},
-        scaling="auto",
     )
     future = pl.DataFrame(
         {
@@ -199,7 +197,7 @@ def test_labeled_inputs_remain_unscaled_and_fixed_in_new_observation_scenarios(a
     )
     parameters = {"theta": jnp.array([0.2, -0.1, 0.3])}
     scenario = model.prepare_data(future)
-    generated = jax.jit(model.generate)(jax.random.key(0), parameters, scenario)
+    generated = jax.jit(model.generate_quantities)(jax.random.key(0), parameters, scenario)
 
     assert "outcome" not in scenario.values
     assert generated["media"].shape == (3, 2, 2)
@@ -213,14 +211,14 @@ def test_labeled_inputs_remain_unscaled_and_fixed_in_new_observation_scenarios(a
 
 
 def test_labeled_inputs_require_prepared_data(auxiliary_inputs):
-    with pytest.raises(ValueError, match="inputs require prepared data"):
-        Model({}, lambda data: jnp.array(0.0), inputs=auxiliary_inputs)
+    with pytest.raises(TypeError, match="DataBlock data must be PreparedData"):
+        Model({}, lambda data: jnp.array(0.0), data=DataBlock(None, inputs=auxiliary_inputs))
 
 
 @pytest.mark.parametrize("inputs", [{"lift": [1.0]}, xr.DataArray([1.0]), [1.0]])
 def test_labeled_inputs_require_an_xarray_dataset(auxiliary_data, inputs):
     with pytest.raises(TypeError, match=r"inputs must be an xarray\.Dataset"):
-        Model({}, lambda: jnp.array(0.0), data=auxiliary_data, inputs=inputs)
+        Model({}, lambda: jnp.array(0.0), data=DataBlock(auxiliary_data, inputs=inputs))
 
 
 @pytest.mark.parametrize(
@@ -245,7 +243,7 @@ def test_labeled_inputs_require_an_xarray_dataset(auxiliary_data, inputs):
 )
 def test_labeled_inputs_cannot_use_prepared_roles_even_when_unselected(auxiliary_data, name):
     with pytest.raises(ValueError, match="conflicts with a data role"):
-        Model({}, lambda: jnp.array(0.0), data=auxiliary_data, inputs=xr.Dataset({name: 1.0}))
+        Model({}, lambda: jnp.array(0.0), data=DataBlock(auxiliary_data, inputs=xr.Dataset({name: 1.0})))
 
 
 @pytest.mark.parametrize("name", ["media", "controls", "group_region", "group_segment"])
@@ -273,7 +271,7 @@ def test_labeled_inputs_reject_role_and_group_label_namespaces(name, placement):
             inputs = inputs.assign_coords({name: ["first", "second"]})
         message = "conflict with prepared data variables"
     with pytest.raises(ValueError, match=message):
-        Model({}, lambda: jnp.array(0.0), data=data, inputs=inputs)
+        Model({}, lambda: jnp.array(0.0), data=DataBlock(data, inputs=inputs))
 
 
 @pytest.mark.parametrize("name", ["theta", "group", "channel", "external_axis"])
@@ -282,8 +280,7 @@ def test_labeled_input_names_cannot_shadow_parameters_or_coordinates(auxiliary_d
         Model(
             {"theta": Real()},
             lambda theta: -(theta**2),
-            data=auxiliary_data,
-            inputs=xr.Dataset({name: 1.0}),
+            data=DataBlock(auxiliary_data, inputs=xr.Dataset({name: 1.0})),
             coords={"external_axis": ["first"]},
         )
 
@@ -291,7 +288,7 @@ def test_labeled_input_names_cannot_shadow_parameters_or_coordinates(auxiliary_d
 @pytest.mark.parametrize("name", ["", "not-valid", "class", 1])
 def test_labeled_input_names_must_be_valid_identifiers(auxiliary_data, name):
     with pytest.raises(ValueError, match=r"nonempty string|valid non-keyword Python identifier"):
-        Model({}, lambda: jnp.array(0.0), data=auxiliary_data, inputs=xr.Dataset({name: 1.0}))
+        Model({}, lambda: jnp.array(0.0), data=DataBlock(auxiliary_data, inputs=xr.Dataset({name: 1.0})))
 
 
 @pytest.mark.parametrize(
@@ -300,7 +297,11 @@ def test_labeled_input_names_must_be_valid_identifiers(auxiliary_data, name):
 )
 def test_labeled_inputs_require_finite_real_values_or_booleans(auxiliary_data, values):
     with pytest.raises(ValueError, match="finite real numbers or booleans"):
-        Model({}, lambda: jnp.array(0.0), data=auxiliary_data, inputs=xr.Dataset({"lift": ("experiment", values)}))
+        Model(
+            {},
+            lambda: jnp.array(0.0),
+            data=DataBlock(auxiliary_data, inputs=xr.Dataset({"lift": ("experiment", values)})),
+        )
 
 
 @pytest.mark.parametrize("dtype", ["float32", "float64", "int32", "int64", "uint32", "uint64"])
@@ -311,7 +312,7 @@ def test_labeled_inputs_normalize_byte_order_without_changing_values(auxiliary_d
     inputs = xr.Dataset({"lift": ("experiment", values)})
 
     with jax.enable_x64(enable_x64):
-        model = Model({}, lambda: jnp.array(0.0), data=auxiliary_data, inputs=inputs)
+        model = Model({}, lambda: jnp.array(0.0), data=DataBlock(auxiliary_data, inputs=inputs))
         converted = model.data.values["lift"]
 
         assert converted.dtype == jax.dtypes.canonicalize_dtype(dtype)
@@ -335,9 +336,9 @@ def test_labeled_inputs_reject_values_that_overflow_jax_precision(auxiliary_data
     value = value.astype(value.dtype.newbyteorder(byteorder))
     inputs = xr.Dataset({"lift": ("experiment", value)})
     with jax.enable_x64(False), pytest.raises(ValueError, match=message):
-        Model({}, lambda: jnp.array(0.0), data=auxiliary_data, inputs=inputs)
+        Model({}, lambda: jnp.array(0.0), data=DataBlock(auxiliary_data, inputs=inputs))
     with jax.enable_x64(True):
-        model = Model({}, lambda: jnp.array(0.0), data=auxiliary_data, inputs=inputs)
+        model = Model({}, lambda: jnp.array(0.0), data=DataBlock(auxiliary_data, inputs=inputs))
         np.testing.assert_array_equal(model.data.values["lift"], value)
 
 
@@ -348,7 +349,7 @@ def test_shared_input_axes_require_exact_labels_without_alignment(auxiliary_data
         {"weights": (("group", "channel"), [[1.0, 2.0], [3.0, 4.0]])},
         coords={"group": ["east", "west"], "channel": ["video", "search"]},
     )
-    model = Model({}, lambda media, weights: -(media * weights).sum(), data=auxiliary_data, inputs=inputs)
+    model = Model({}, lambda media, weights: -(media * weights).sum(), data=DataBlock(auxiliary_data, inputs=inputs))
     expected = -(auxiliary_data.arrays["media"] * inputs["weights"].values).sum()
     np.testing.assert_allclose(jax.jit(model.log_prob)({}), expected)
 
@@ -361,7 +362,7 @@ def test_shared_input_axes_require_exact_labels_without_alignment(auxiliary_data
     else:
         inputs = inputs.isel({axis: [0]})
     with pytest.raises(ValueError, match=f"Input coordinate '{axis}' must match the model labels and ordering"):
-        Model({}, lambda: jnp.array(0.0), data=auxiliary_data, inputs=inputs)
+        Model({}, lambda: jnp.array(0.0), data=DataBlock(auxiliary_data, inputs=inputs))
 
 
 def test_input_axis_labels_must_agree_with_explicit_model_coordinates(auxiliary_data, auxiliary_inputs):
@@ -369,16 +370,14 @@ def test_input_axis_labels_must_agree_with_explicit_model_coordinates(auxiliary_
         Model(
             {},
             lambda: jnp.array(0.0),
-            data=auxiliary_data,
-            inputs=auxiliary_inputs,
+            data=DataBlock(auxiliary_data, inputs=auxiliary_inputs),
             coords={"experiment": ["third", "second", "first"]},
         )
     with pytest.raises(ValueError, match="Dimension 'experiment' must have length 4"):
         Model(
             {"theta": Real(shape=(4,), dims="experiment")},
             lambda theta: -jnp.square(theta).sum(),
-            data=auxiliary_data,
-            inputs=auxiliary_inputs,
+            data=DataBlock(auxiliary_data, inputs=auxiliary_inputs),
         )
 
 
@@ -386,8 +385,7 @@ def test_unlabeled_independent_input_axes_supply_positional_coordinates(auxiliar
     model = Model(
         {"theta": Real(dims="experiment")},
         lambda theta, lift: normal(lift, theta, 1.0),
-        data=auxiliary_data,
-        inputs=xr.Dataset({"lift": ("experiment", [1.0, 2.0, 3.0])}),
+        data=DataBlock(auxiliary_data, inputs=xr.Dataset({"lift": ("experiment", [1.0, 2.0, 3.0])})),
     )
     assert model.parameters["theta"].shape == (3,)
     np.testing.assert_array_equal(model._input_coords["experiment"], [0, 1, 2])
@@ -396,28 +394,27 @@ def test_unlabeled_independent_input_axes_supply_positional_coordinates(auxiliar
 @pytest.mark.parametrize("axis", ["time", "media_time", "chain", "draw", "sample", "pred_id"])
 def test_labeled_inputs_reject_observation_and_sample_axes(auxiliary_data, axis):
     with pytest.raises(ValueError, match=r"fixed across scenarios|sample dimensions"):
-        Model({}, lambda: jnp.array(0.0), data=auxiliary_data, inputs=xr.Dataset({"lift": (axis, [1.0])}))
+        Model({}, lambda: jnp.array(0.0), data=DataBlock(auxiliary_data, inputs=xr.Dataset({"lift": (axis, [1.0])})))
 
 
 @pytest.mark.parametrize("coordinate", [0.5, ("experiment", ["a", "b", "c"])])
 def test_labeled_inputs_reject_auxiliary_coordinates(auxiliary_data, auxiliary_inputs, coordinate):
     inputs = auxiliary_inputs.assign_coords(note=coordinate)
     with pytest.raises(ValueError, match="Input coordinate 'note' must label only its own dimension"):
-        Model({}, lambda: jnp.array(0.0), data=auxiliary_data, inputs=inputs)
+        Model({}, lambda: jnp.array(0.0), data=DataBlock(auxiliary_data, inputs=inputs))
 
 
 def test_labeled_inputs_require_unique_axis_labels(auxiliary_data, auxiliary_inputs):
     inputs = auxiliary_inputs.assign_coords(experiment=["first", "first", "third"])
     with pytest.raises(ValueError, match="Input coordinate 'experiment' must have unique labels"):
-        Model({}, lambda: jnp.array(0.0), data=auxiliary_data, inputs=inputs)
+        Model({}, lambda: jnp.array(0.0), data=DataBlock(auxiliary_data, inputs=inputs))
 
 
 def test_transformed_quantities_cannot_shadow_auxiliary_inputs(auxiliary_data, auxiliary_inputs):
     model = Model(
         {},
         lambda: jnp.array(0.0),
-        data=auxiliary_data,
-        inputs=auxiliary_inputs,
+        data=DataBlock(auxiliary_data, inputs=auxiliary_inputs),
         transformed_parameters=lambda: {"lift": 0.0},
     )
     with pytest.raises(ValueError, match="Transformed quantity 'lift' conflicts"):
@@ -491,7 +488,7 @@ def test_generation_key_name_does_not_request_time_coordinates():
     model = Model({}, lambda: jnp.array(0.0), generate, data=data)
     key = jax.random.key(10)
     assert model._time_inputs == ()
-    actual = jax.jit(model.generate)(key, {}, model.data)
+    actual = jax.jit(model.generate_quantities)(key, {}, model.data)
     np.testing.assert_array_equal(actual["draw"], jax.random.normal(key))
 
 
@@ -657,16 +654,16 @@ def test_generate_must_accept_random_key() -> None:
     def generate():
         return {}
 
-    with pytest.raises(TypeError, match="must accept key as positional argument 1"):
-        Model({}, _empty_log_density, generate)
+    with pytest.raises(TypeError, match="generated_quantities must accept key as positional argument 1"):
+        Model({}, _empty_log_density, generated_quantities=generate)
 
 
 def test_generate_must_accept_data() -> None:
     def generate(key):
         return {}
 
-    with pytest.raises(TypeError, match="must accept data as positional argument 2"):
-        Model({}, _empty_log_density, generate)
+    with pytest.raises(TypeError, match="generated_quantities must accept data as positional argument 2"):
+        Model({}, _empty_log_density, generated_quantities=generate)
 
 
 @pytest.mark.parametrize(
@@ -690,7 +687,7 @@ def test_generate_random_key_name_is_not_restricted() -> None:
 
     specification = Model({"a": Real()}, _one_parameter_log_density, generate)
 
-    result = specification.generate(jax.random.key(0), {"a": 1.0}, {})
+    result = specification.generate_quantities(jax.random.key(0), {"a": 1.0}, {})
 
     assert result["a"] == 1.0
 
@@ -703,7 +700,7 @@ def test_generate_mapping_callback_preserves_supplied_parameter_order() -> None:
         return {"values": jnp.stack(list(parameters.values()))}
 
     model = Model({"a": Real(), "b": Real()}, density, generate)
-    quantities = model.generate(jax.random.key(0), {"b": 2.0, "a": 1.0}, {})
+    quantities = model.generate_quantities(jax.random.key(0), {"b": 2.0, "a": 1.0}, {})
 
     assert jnp.array_equal(quantities["values"], jnp.array([2.0, 1.0]))
 
@@ -812,7 +809,7 @@ def test_model_outputs_follow_jax_default_dtype() -> None:
     expected_dtype = jnp.asarray(0.0).dtype
 
     density = specification.log_density(position, data)
-    generated = specification.generate(jax.random.key(1), parameters, data)
+    generated = specification.generate_quantities(jax.random.key(1), parameters, data)
 
     assert jax.tree.all(jax.tree.map(lambda value: value.dtype == expected_dtype, position))
     assert jax.tree.all(jax.tree.map(lambda value: value.dtype == expected_dtype, parameters))
@@ -829,7 +826,7 @@ def test_model_preserves_explicit_float32() -> None:
     parameters = specification.constrain(position)
 
     density = specification.log_density(position, {})
-    generated = specification.generate(jax.random.key(0), parameters, {})
+    generated = specification.generate_quantities(jax.random.key(0), parameters, {})
 
     assert density.dtype == jnp.dtype(jnp.float32)
     assert generated["a"].dtype == jnp.dtype(jnp.float32)
@@ -1082,7 +1079,7 @@ def test_generate_receives_unchanged_key_data_and_constrained_parameters() -> No
     data = {"media": jnp.array([[1.5, -0.5]])}
     expected_location = parameters["a"] + data["media"] @ parameters["b"]
 
-    result = specification.generate(key, parameters, data)
+    result = specification.generate_quantities(key, parameters, data)
     expected = normal_rng(key, expected_location, parameters["s"])
 
     assert list(result) == ["y_new"]
@@ -1101,7 +1098,7 @@ def test_generate_can_request_parameter_subset() -> None:
     parameters = {"a": 0.25, "prior_only": -1.0, "s": 1.5}
     data = {"location": jnp.array([0.0, 1.0])}
 
-    result = specification.generate(jax.random.key(7), parameters, data)
+    result = specification.generate_quantities(jax.random.key(7), parameters, data)
 
     assert result["y_new"].shape == (2,)
 
@@ -1116,7 +1113,7 @@ def test_generate_accepts_parameter_mapping_callback() -> None:
         generate,
     )
 
-    result = specification.generate(
+    result = specification.generate_quantities(
         jax.random.key(0),
         {"a": 1.0, "b": 2.0},
         {"offset": jnp.array(3.0)},
@@ -1125,19 +1122,20 @@ def test_generate_accepts_parameter_mapping_callback() -> None:
     assert result["total"] == 6.0
 
 
-def test_generate_can_be_jitted() -> None:
-    specification = _make_regression_model()
+@pytest.mark.parametrize("callback_binding", ["positional", "keyword"])
+def test_generate_quantities_can_be_jitted(callback_binding) -> None:
+    specification = _make_regression_model(callback_binding=callback_binding)
     key = jax.random.key(7)
     parameters = {"a": jnp.array(0.25), "b": jnp.array([0.5, -0.25]), "s": jnp.array(1.5)}
     data = {"media": jnp.array([[1.5, -0.5]])}
 
-    result = jax.jit(specification.generate)(key, parameters, data)
+    result = jax.jit(specification.generate_quantities)(key, parameters, data)
 
     assert jax.tree.all(
         jax.tree.map(
             jnp.array_equal,
             result,
-            specification.generate(key, parameters, data),
+            specification.generate_quantities(key, parameters, data),
         )
     )
 
@@ -1152,21 +1150,21 @@ def test_generate_can_be_vectorized_over_keys_and_parameters() -> None:
     }
     data = {"media": jnp.array([[1.5, -0.5]])}
 
-    result = jax.vmap(specification.generate, in_axes=(0, 0, None))(keys, parameters, data)
+    result = jax.vmap(specification.generate_quantities, in_axes=(0, 0, None))(keys, parameters, data)
 
     assert result["y_new"].shape == (2, 1)
 
 
 def test_generate_is_optional() -> None:
-    with pytest.raises(RuntimeError, match="model has no generate callback"):
-        _make_scalar_model().generate(jax.random.key(0), {"a": 0.0, "s": 1.0}, {})
+    with pytest.raises(RuntimeError, match="model has no generated_quantities callback"):
+        _make_scalar_model().generate_quantities(jax.random.key(0), {"a": 0.0, "s": 1.0}, {})
 
 
 def test_generate_parameter_values_must_match_model() -> None:
     specification = _make_regression_model()
 
     with pytest.raises(ValueError, match=r"missing \['b', 's'\]"):
-        specification.generate(jax.random.key(0), {"a": 0.0}, {"media": jnp.ones((1, 2))})
+        specification.generate_quantities(jax.random.key(0), {"a": 0.0}, {"media": jnp.ones((1, 2))})
 
 
 def test_generate_must_return_mapping() -> None:
@@ -1175,8 +1173,8 @@ def test_generate_must_return_mapping() -> None:
 
     specification = Model({"a": Real()}, _one_parameter_log_density, generate)
 
-    with pytest.raises(TypeError, match="generate must return a mapping"):
-        specification.generate(jax.random.key(0), {"a": 0.0}, {})
+    with pytest.raises(TypeError, match="generated_quantities must return a mapping"):
+        specification.generate_quantities(jax.random.key(0), {"a": 0.0}, {})
 
 
 def test_generated_quantity_values_must_be_array_like() -> None:
@@ -1186,7 +1184,7 @@ def test_generated_quantity_values_must_be_array_like() -> None:
     specification = Model({"a": Real()}, _one_parameter_log_density, generate)
 
     with pytest.raises(TypeError, match="generated quantity 'bad_value' must be array-like, got object"):
-        specification.generate(jax.random.key(0), {"a": 0.0}, {})
+        specification.generate_quantities(jax.random.key(0), {"a": 0.0}, {})
 
 
 @pytest.mark.parametrize("quantity_name", [1, "not-valid"])
@@ -1198,7 +1196,7 @@ def test_generated_quantity_names_are_valid_identifiers(quantity_name) -> None:
     error = TypeError if not isinstance(quantity_name, str) else ValueError
 
     with pytest.raises(error, match="generated quantity"):
-        specification.generate(jax.random.key(0), {"a": 0.0}, {})
+        specification.generate_quantities(jax.random.key(0), {"a": 0.0}, {})
 
 
 def _empty_log_density(data):
@@ -1239,7 +1237,7 @@ def _make_scalar_model() -> Model:
     return Model({"a": Real(), "s": Positive()}, _scalar_log_density)
 
 
-def _make_regression_model() -> Model:
+def _make_regression_model(*, callback_binding="positional") -> Model:
     def log_density(data, a, b, s):
         lp = normal(a, 0.0, 2.0)
         lp += normal(b, 0.0, 1.0)
@@ -1250,10 +1248,13 @@ def _make_regression_model() -> Model:
     def generate(key, data, a, b, s):
         return {"y_new": normal_rng(key, a + data["media"] @ b, s)}
 
+    callbacks = (generate,) if callback_binding == "positional" else ()
+    options = {"generated_quantities": generate} if callback_binding == "keyword" else {}
     return Model(
         {"a": Real(), "b": Real(shape=(2,)), "s": Positive()},
         log_density,
-        generate,
+        *callbacks,
+        **options,
     )
 
 

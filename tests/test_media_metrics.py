@@ -9,7 +9,7 @@ import pytest
 import xarray as xr
 
 import mmmjax
-from mmmjax import Model, Real, fit_data_scaling, media_metrics, prepare_data
+from mmmjax import DataBlock, Model, Positive, Real, fit_data_scaling, media_metrics, prepare_data
 from mmmjax._results import _collect_results
 
 
@@ -73,9 +73,8 @@ def _model(data, *, scaling=None, cross_group=False):
         {"coefficient": Real((2,))},
         density,
         generated,
-        data=data,
+        data=DataBlock(data, scaling=scaling),
         transformed_parameters=transformed,
-        scaling=scaling,
         dims={"coefficient": ("channel",)},
     )
 
@@ -465,9 +464,8 @@ def test_media_metrics_population_outcome_inversion_restores_revenue_and_roi(alr
     model = Model(
         {"coefficient": Real((2,))},
         density,
-        data=scaling.transform(data) if already_scaled else data,
+        data=DataBlock(scaling.transform(data) if already_scaled else data, scaling=scaling),
         transformed_parameters=transformed,
-        scaling=scaling,
         dims={"coefficient": ("channel",)},
     )
     results = _results(data)
@@ -518,6 +516,64 @@ def test_media_metrics_population_outcome_inversion_restores_revenue_and_roi(alr
         np.testing.assert_allclose(metrics[name], values, rtol=3e-6, atol=3e-3)
 
 
+def test_media_metrics_keep_model_reference_inputs_fixed_when_changing_channel_spend():
+    data = _data(grouped=True)
+    scaling = fit_data_scaling(data, scale_outcome="population", adjust_population=True)
+
+    def quantities(
+        media, reference_media, reference_spend, outcome_scale, unscale_outcome, n_periods, reference_n_periods, roi
+    ):
+        original = reference_media[-reference_n_periods:]
+        reference_response = original / (1.0 + original)
+        denominator = jnp.sum(reference_response * outcome_scale[None, :, None], axis=(0, 1))
+        coefficient = roi * reference_spend.sum(axis=(0, 1)) / denominator
+        current = media[-n_periods:]
+        standardized = 0.25 + jnp.sum(current / (1.0 + current) * coefficient, axis=-1)
+        return {"expected_revenue": unscale_outcome(standardized)}
+
+    def density(roi):
+        raise AssertionError("Media metrics must not evaluate the log density")
+
+    model = Model(
+        {"roi": Positive(dims="channel")},
+        density,
+        data=DataBlock(data, scaling=scaling),
+        transformed_parameters=quantities,
+    )
+    roi = np.array([[[1.0, 2.0], [3.0, 4.0]]], dtype=np.float32)
+    results = _collect_results({"roi": roi}, data=data, dims={"roi": ("channel",)})
+    options = {"quantity": "expected_revenue", "incremental_increase": 0.25, "by": ("time", "group")}
+    baseline = media_metrics(model, results, **options)
+    changed_data = _data(grouped=True, multiplier=2.0)
+    changed = media_metrics(model, results, new_data=changed_data, **options)
+
+    reference_media = scaling.transform(data).arrays["media"][1:]
+    outcome_scale = np.asarray(scaling.transformations["outcome"].scale)[..., None]
+    reference_weight = reference_media / (1.0 + reference_media) * outcome_scale
+    denominator = reference_weight.sum(axis=(0, 1))
+    spend = data.arrays["spend"].sum(axis=(0, 1))
+    coefficient = roi * spend / denominator
+    np.testing.assert_allclose(baseline["roi"], roi, rtol=2e-5)
+    np.testing.assert_allclose(baseline["reference_spend"], spend)
+    np.testing.assert_allclose(
+        baseline["incremental_response"], reference_weight * coefficient[:, :, None, None, :], rtol=2e-5, atol=2e-5
+    )
+
+    changed_media = scaling.transform(changed_data).arrays["media"][1:]
+    changed_weight = changed_media / (1.0 + changed_media) * outcome_scale
+    expected_lift = changed_weight * coefficient[:, :, None, None, :]
+    np.testing.assert_allclose(changed["reference_spend"], 2.0 * spend)
+    np.testing.assert_allclose(changed["incremental_response"], expected_lift, rtol=2e-5, atol=2e-5)
+    np.testing.assert_allclose(changed["roi"], expected_lift.sum(axis=(2, 3)) / (2.0 * spend), rtol=2e-5)
+    marginal_weight = 1.25 * changed_media / (1.0 + 1.25 * changed_media) * outcome_scale - changed_weight
+    expected_marginal = marginal_weight * coefficient[:, :, None, None, :]
+    np.testing.assert_allclose(changed["marginal_response"], expected_marginal, rtol=2e-5, atol=2e-5)
+    assert np.all(changed["reference_response"].values > baseline["reference_response"].values)
+    assert np.all(changed["roi"].values < roi)
+    assert np.all(changed["marginal_roi"].values > 0.0)
+    np.testing.assert_array_equal(model.data.reference_values["reference_spend"], data.arrays["spend"])
+
+
 def test_media_metrics_prepare_new_data_with_existing_fitted_scales(case):
     data, _, results = case
     model = _model(data, scaling="auto")
@@ -554,9 +610,8 @@ def _linear_model(*, media=(1, 3), spend=(1.0, 3.0), baseline=0.0, scaling=None)
     model = Model(
         {"coefficient": Real()},
         lambda coefficient: -(coefficient**2),
-        data=data,
+        data=DataBlock(data, scaling=scaling),
         transformed_parameters=lambda media, coefficient: {"expected_users": baseline + media[:, 0] * coefficient},
-        scaling=scaling,
     )
     return model, _collect_results({"coefficient": np.array([[1.0, 2.0]], dtype=np.float32)}, data=data)
 
@@ -768,9 +823,8 @@ def _rf_case(*, mixed=False, scaled=False):
     model = Model(
         {"coefficient": Real()},
         density,
-        data=data,
+        data=DataBlock(data, scaling="auto" if scaled else None),
         transformed_parameters=transformed,
-        scaling="auto" if scaled else None,
     )
     results = _collect_results(
         {"coefficient": np.array([[0.5, 1.0], [1.5, 2.0]], dtype=np.float32)},

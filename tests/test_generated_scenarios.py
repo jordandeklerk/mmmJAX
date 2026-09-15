@@ -10,6 +10,7 @@ import pytest
 import xarray as xr
 
 from mmmjax import (
+    DataBlock,
     Interval,
     Model,
     Positive,
@@ -111,9 +112,8 @@ def _model(data):
         },
         density,
         generated,
-        data=data,
+        data=DataBlock(data, scaling=fit_data_scaling(data, scale_outcome=True)),
         transformed_parameters=transformed,
-        scaling=fit_data_scaling(data, scale_outcome=True),
         coords={"annual_mode": ["sin_1", "cos_1"]},
         generated_dims={
             "mean": ("time", "group"),
@@ -167,7 +167,7 @@ def _assert_direct_quantities(model, results, scenario, generated):
                 name: jnp.asarray(variable.values[chain, draw])
                 for name, variable in results["posterior"].data_vars.items()
             }
-            expected = model.generate(jax.random.key(0), parameters, inputs)
+            expected = model.generate_quantities(jax.random.key(0), parameters, inputs)
             for name in ("mean", "contribution", "seasonal", "control_values"):
                 np.testing.assert_allclose(
                     generated["generated_quantities"][name].values[chain, draw],
@@ -349,7 +349,7 @@ def test_dataframe_scenario_preserves_additional_data_roles_and_channel_labels()
             "population_copy": population,
         }
 
-    model = Model({"intercept": Real()}, density, generated, data=training, scaling=None)
+    model = Model({"intercept": Real()}, density, generated, data=DataBlock(training, scaling=None))
     results = _collect_results({"intercept": jnp.array([[100.0, 110.0]])}, data=training)
     scenario = frame.iloc[::-1, ::-1].copy()
     scenario["video_frequency"] += 1

@@ -350,7 +350,7 @@ def frequency_curves(
         response, change = _sample_response(
             model,
             samples,
-            replace(inputs, values=values),
+            model._replace_data_values(inputs, values),
             inputs,
             quantity=quantity,
             observation_shape=spend.shape[:-1],
@@ -1053,7 +1053,7 @@ class _BudgetResponse:
             update("media_frequency", frequency, rf_spend.shape, "spend_to_rf")
             update("rf_spend", rf_spend, rf_spend.shape, "spend_to_rf")
 
-        return replace(self.inputs, values=values), valid
+        return self.model._replace_data_values(self.inputs, values), valid
 
     def paired_evaluation(
         self,

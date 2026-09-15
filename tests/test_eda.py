@@ -7,7 +7,7 @@ import pyarrow as pa
 import pytest
 import xarray as xr
 
-from mmmjax import Model, Real, fit_data_scaling, normal_rng, prepare_data, sample_prior
+from mmmjax import DataBlock, Model, Real, fit_data_scaling, normal_rng, prepare_data, sample_prior
 from mmmjax.eda import _predictor_checks, check_data, check_prior
 
 
@@ -1168,8 +1168,7 @@ def test_check_prior_checks_original_unit_quantities_saved_from_actual_prior_dra
     model = Model(
         {"location": Real()},
         density,
-        data=data,
-        scaling=scaling,
+        data=DataBlock(data, scaling=scaling),
         transformed_parameters=quantities,
         prior=prior,
         save=("expected_sales",),

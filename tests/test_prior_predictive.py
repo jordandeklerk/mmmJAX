@@ -13,6 +13,7 @@ import mmmjax
 import mmmjax.sampling as sampling
 from mmmjax import (
     CorrelationCholesky,
+    DataBlock,
     Interval,
     Model,
     Positive,
@@ -193,8 +194,7 @@ def _prepared_model(*, scaling=False):
         {"location": Real()},
         forbidden_density,
         generate,
-        data=data,
-        scaling=fit_data_scaling(data, scale_outcome=True) if scaling else None,
+        data=DataBlock(data, scaling=fit_data_scaling(data, scale_outcome=True) if scaling else None),
         predictive=("prediction",),
         log_likelihood=("pointwise",),
         log_prior=("lp_location",),
@@ -252,7 +252,7 @@ def test_prior_batches_preserve_seeded_draws_generated_groups_and_labels(batch_s
 
     prior_key, generation_key, _ = jax.random.split(jax.random.key(19), 3)
     parameters = jax.jit(jax.vmap(_normal_prior))(jax.random.split(prior_key, 10))
-    generated = jax.jit(jax.vmap(lambda key, values: model.generate(key, values, model.data)))(
+    generated = jax.jit(jax.vmap(lambda key, values: model.generate_quantities(key, values, model.data)))(
         jax.random.split(generation_key, 10), parameters
     )
     np.testing.assert_allclose(result["prior"]["location"].values[0], parameters["location"], rtol=2e-6)
@@ -439,8 +439,7 @@ def test_prior_auxiliary_inputs_supply_parameter_axes_and_saved_calculations(gen
         forbidden_density,
         lambda key, lift: {"lift_copy": lift},
         prior=lambda key: {"effect": jnp.array([1.0, 2.0, 3.0])},
-        data=data,
-        inputs=inputs,
+        data=DataBlock(data, inputs=inputs),
         transformed_parameters=lambda basis, effect: {"expected_lift": basis @ effect},
         save=("expected_lift",),
         predictive=("lift_copy",),
@@ -568,7 +567,7 @@ def test_explicit_media_and_seasonality_run_for_each_prior_draw():
     assert generated["weights"].dims == parameters["annual_coefficients"].dims
     for draw in range(3):
         constrained = {name: jnp.asarray(parameters[name].values[0, draw]) for name in model.parameters}
-        expected = model.generate(jax.random.key(0), constrained, model.data)
+        expected = model.generate_quantities(jax.random.key(0), constrained, model.data)
         np.testing.assert_allclose(
             result["prior_predictive"]["prediction"].values[0, draw], expected["prediction"], rtol=3e-6, atol=2e-6
         )
@@ -745,7 +744,7 @@ def test_prior_saves_explicit_media_and_seasonal_outputs_with_named_axes():
 
     for draw in range(3):
         parameters = {name: jnp.asarray(result["prior"][name].values[0, draw]) for name in model.parameters}
-        expected = model.generate(jax.random.key(0), parameters, model.data)
+        expected = model.generate_quantities(jax.random.key(0), parameters, model.data)
         np.testing.assert_allclose(generated["annual"].values[0, draw], expected["annual"], rtol=2e-6)
 
 

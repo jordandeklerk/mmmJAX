@@ -464,7 +464,7 @@ def test_delayed_adstock_composes_with_batched_model_parameters(normalize) -> No
         return density, prediction
 
     value, gradient = jax.jit(jax.value_and_grad(specification.log_density))(position, data)
-    generated = jax.jit(specification.generate)(jax.random.key(0), specification.constrain(position), data)
+    generated = jax.jit(specification.generate_quantities)(jax.random.key(0), specification.constrain(position), data)
     expected_density, expected_prediction = reference(position)
 
     np.testing.assert_allclose(value, expected_density, rtol=3e-6, atol=1e-6)

@@ -446,7 +446,7 @@ def test_model_constrained_draws_and_generated_quantities_keep_values_and_shapes
     }
     constrained = jax.vmap(jax.vmap(model.constrain))(positions)
     keys = jax.random.split(jax.random.key(3), (2, 3))
-    generated = jax.vmap(jax.vmap(lambda key, parameters: model.generate(key, parameters, model.data)))(
+    generated = jax.vmap(jax.vmap(lambda key, parameters: model.generate_quantities(key, parameters, model.data)))(
         keys, constrained
     )
     results = _collect_results(

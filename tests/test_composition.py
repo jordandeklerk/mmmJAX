@@ -122,7 +122,7 @@ def test_generation_receives_only_requested_effects_data_and_parameters(with_dra
     model, data, position = _national_model(sampled if with_draw else subset)
     constrained = model.constrain(position)
     key = jax.random.key(17)
-    result = jax.jit(model.generate)(key, constrained, model.data)
+    result = jax.jit(model.generate_quantities)(key, constrained, model.data)
     expected = (
         float(position["intercept"])
         + _features([0, 1, 3, 5], 8, 1) @ np.asarray(position["annual_coefficients"])
@@ -184,7 +184,7 @@ def test_grouped_composition_preserves_effect_shapes_and_counts_shared_priors_on
 
     assert model.parameters["seasonality_coefficients"].shape == ((2, 2) if group_specific_coefficients else (2,))
     value, gradient = jax.jit(jax.value_and_grad(model.log_density))(position, model.data)
-    generated = jax.jit(model.generate)(jax.random.key(0), model.constrain(position), model.data)
+    generated = jax.jit(model.generate_quantities)(jax.random.key(0), model.constrain(position), model.data)
     assert generated["seasonality"].shape == (3, 2)
     np.testing.assert_allclose(generated["seasonality"], expected, rtol=4e-6, atol=2e-6)
     np.testing.assert_allclose(value, _normal(residual) + _normal(coefficients), rtol=4e-6, atol=2e-6)
@@ -214,7 +214,7 @@ def test_complete_parameter_names_and_shapes_are_required_even_for_subset_genera
         for operation in (
             lambda values: model.constrain(values),
             lambda values: model.log_density(values, model.data),
-            lambda values: model.generate(jax.random.key(0), values, model.data),
+            lambda values: model.generate_quantities(jax.random.key(0), values, model.data),
         ):
             with pytest.raises(ValueError):
                 operation(values)
@@ -329,7 +329,7 @@ def test_runtime_inputs_reject_bundles_owned_by_another_model():
         with pytest.raises(error):
             model.log_density(position, supplied)
         with pytest.raises(error):
-            model.generate(jax.random.key(0), constrained, supplied)
+            model.generate_quantities(jax.random.key(0), constrained, supplied)
 
 
 def test_generation_skips_density_and_accepts_a_positional_only_random_key():
@@ -353,7 +353,7 @@ def test_generation_skips_density_and_accepts_a_positional_only_random_key():
     )
     coefficients = jnp.array([0.3, -0.7])
     constrained = model.constrain({"seasonality_coefficients": coefficients})
-    result = jax.jit(model.generate)(jax.random.key(0), constrained, model.data)
+    result = jax.jit(model.generate_quantities)(jax.random.key(0), constrained, model.data)
 
     np.testing.assert_allclose(
         result["effect"], _features([0, 1], 7, 1) @ np.asarray(coefficients), rtol=3e-6, atol=2e-6
@@ -479,7 +479,7 @@ def _prediction_reference(times, coefficients):
 
 def test_prediction_aligns_all_inputs_and_retains_training_phase_across_calls(prediction_model):
     model, _, coefficients = prediction_model
-    generate = jax.jit(model.generate)
+    generate = jax.jit(model.generate_quantities)
     for times in ((12, 13), (15, 17)):
         future = _prediction_data(times, reverse=True, outcome=False)
         inputs = model.prepare_data(future)
@@ -504,7 +504,7 @@ def test_prediction_supports_jitted_posterior_vmap(prediction_model):
     model, _, coefficients = prediction_model
     inputs = model.prepare_data(_prediction_data((12, 13), reverse=True, outcome=False))
     draws = jax.tree.map(lambda value: jnp.stack((value, value + 0.03)), coefficients)
-    generated = jax.jit(jax.vmap(model.generate, in_axes=(0, 0, None)))(
+    generated = jax.jit(jax.vmap(model.generate_quantities, in_axes=(0, 0, None)))(
         jax.random.split(jax.random.key(1), 2), draws, inputs
     )
 
@@ -527,7 +527,7 @@ def test_prediction_uses_training_layout_snapshot_and_copies_future_inputs(predi
     future.columns.clear()
 
     expected, _ = _prediction_reference((12, 13), coefficients)
-    actual = jax.jit(model.generate)(jax.random.key(0), coefficients, inputs)
+    actual = jax.jit(model.generate_quantities)(jax.random.key(0), coefficients, inputs)
     np.testing.assert_allclose(actual["mean"], expected, rtol=4e-6, atol=3e-6)
 
 
@@ -566,7 +566,7 @@ def test_prepared_models_prepare_partial_prediction_roles_and_validate_data():
         groups=["region"],
         population="residents",
     )
-    generated = jax.jit(model.generate)(jax.random.key(0), {}, model.prepare_data(future))
+    generated = jax.jit(model.generate_quantities)(jax.random.key(0), {}, model.prepare_data(future))
     np.testing.assert_array_equal(generated["population"], [150, 300])
     with pytest.raises(ValueError):
         model.prepare_data(replace(future, time_column="new_time"))
@@ -593,7 +593,7 @@ def test_outcome_only_seasonal_model_forecasts_from_calendar_labels_alone():
     )
     future = prepare_data(pl.DataFrame({"time": ["2026-01-05", "2026-01-08"]}), time="time")
     coefficients = jnp.array([0.3, -0.7])
-    generated = jax.jit(model.generate)(
+    generated = jax.jit(model.generate_quantities)(
         jax.random.key(0), {"seasonality_coefficients": coefficients}, model.prepare_data(future)
     )
 
@@ -619,7 +619,9 @@ def test_prediction_retains_training_float_precision_when_global_precision_chang
     future = prepare_data(pl.DataFrame({"time": [12, 13], "sales": [0.5, 0.9]}), time="time", outcome="sales")
     with jax.enable_x64(True):
         inputs = model.prepare_data(future)
-        generated = jax.jit(model.generate)(jax.random.key(0), {"seasonality_coefficients": coefficients}, inputs)
+        generated = jax.jit(model.generate_quantities)(
+            jax.random.key(0), {"seasonality_coefficients": coefficients}, inputs
+        )
 
     assert generated["effect"].dtype == generated["observed"].dtype == jnp.float32
     np.testing.assert_allclose(

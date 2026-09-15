@@ -2,15 +2,18 @@
 
 from calendar import monthrange
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
-from typing import TYPE_CHECKING, cast
+from keyword import iskeyword
+from typing import TYPE_CHECKING, Literal, cast
 
 import jax
 import jax.numpy as jnp
 import narwhals as nw
 import numpy as np
+import xarray as xr
 from jax.typing import ArrayLike, DTypeLike
 from narwhals.dependencies import is_into_dataframe
 from narwhals.typing import IntoDataFrameT
@@ -19,7 +22,7 @@ from numpy.typing import NDArray
 if TYPE_CHECKING:
     from mmmjax.scaling import DataScaling
 
-__all__ = ["PreparedData", "prepare_data", "select_channels"]
+__all__ = ["DataBlock", "PreparedData", "prepare_data", "select_channels"]
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -253,6 +256,108 @@ class PreparedData:
         )
 
 
+@dataclass(frozen=True, slots=True, eq=False, init=False)
+class DataBlock:
+    """Declare model data, variable names, and fixed preprocessing together.
+
+    Supply this object to ``Model(data=...)``. Observations, variable names,
+    and auxiliary inputs are copied. Fitted scaling objects are reused.
+
+    Parameters
+    ----------
+    data : PreparedData
+        Observations and labels returned by :func:`prepare_data`.
+    variables : mapping of str to str, optional
+        Model function argument names mapped to prepared or auxiliary input
+        names. If omitted, functions use the standard input names.
+    inputs : xarray.Dataset, optional
+        Additional fixed inputs, such as experiment measurements.
+    scaling : DataScaling or {"auto"}, optional
+        Fitted transformations or automatic scaling. None uses unchanged data.
+
+    Attributes
+    ----------
+    observations : PreparedData
+        A copy of the prepared observations.
+    variables : dict of str to str or None
+        A copy of the variable declarations.
+    inputs : xarray.Dataset or None
+        A copy of the auxiliary inputs.
+    scaling : DataScaling or str or None
+        The fitted transformations or requested scaling mode.
+    """
+
+    _observations: PreparedData
+    _variables: dict[str, str] | None
+    _inputs: xr.Dataset | None
+    _scaling: "DataScaling | Literal['auto'] | None"
+
+    def __init__(
+        self,
+        data: PreparedData,
+        *,
+        variables: Mapping[str, str] | None = None,
+        inputs: xr.Dataset | None = None,
+        scaling: "DataScaling | Literal['auto'] | None" = None,
+    ) -> None:
+        from mmmjax.scaling import DataScaling
+
+        if not isinstance(data, PreparedData):
+            raise TypeError("DataBlock data must be PreparedData returned by prepare_data")
+        if variables is not None:
+            if not isinstance(variables, Mapping):
+                raise TypeError("variables must map model function input names to data source names")
+            for name, source in variables.items():
+                if not isinstance(name, str) or not name.isidentifier() or iskeyword(name):
+                    raise ValueError("Each data variable name must be a valid Python identifier")
+                if not isinstance(source, str) or not source:
+                    raise TypeError(f"Source for data variable {name!r} must be a nonempty string")
+        if inputs is not None and not isinstance(inputs, xr.Dataset):
+            raise TypeError("inputs must be an xarray.Dataset")
+        if isinstance(scaling, str) and scaling != "auto":
+            raise ValueError("scaling must be DataScaling, 'auto', or None")
+        if scaling is not None and not isinstance(scaling, (DataScaling, str)):
+            raise TypeError("scaling must be DataScaling, 'auto', or None")
+
+        scaling_memo = {id(value): value for value in (data._scaling, scaling) if isinstance(value, DataScaling)}
+        observations = deepcopy(data, scaling_memo)
+        object.__setattr__(self, "_observations", observations)
+        object.__setattr__(self, "_variables", None if variables is None else dict(variables))
+        object.__setattr__(self, "_inputs", None if inputs is None else inputs.copy(deep=True))
+        object.__setattr__(self, "_scaling", scaling)
+
+    @property
+    def observations(self) -> PreparedData:
+        """Return a copy of the prepared observations."""
+        return deepcopy(self._observations, {id(self._observations._scaling): self._observations._scaling})
+
+    @property
+    def variables(self) -> dict[str, str] | None:
+        """Return a copy of the model variable declarations."""
+        if self._variables is None:
+            return None
+        return self._variables.copy()
+
+    @property
+    def inputs(self) -> xr.Dataset | None:
+        """Return a copy of the auxiliary model inputs."""
+        if self._inputs is None:
+            return None
+        return self._inputs.copy(deep=True)
+
+    @property
+    def scaling(self) -> "DataScaling | Literal['auto'] | None":
+        """Return the fitted transformations or requested scaling mode."""
+        return self._scaling
+
+    def _snapshot(
+        self,
+    ) -> tuple[PreparedData, dict[str, str] | None, xr.Dataset | None, "DataScaling | Literal['auto'] | None"]:
+        """Copy declarations together to preserve applied-scaling identity."""
+        snapshot = (self.observations, self.variables, self.inputs, self.scaling)
+        return snapshot
+
+
 @dataclass(frozen=True, slots=True)
 class _DataLayout:
     """Retain input ordering for reuse independently of training observations."""
@@ -458,75 +563,6 @@ def prepare_data(
         Integer outcomes and population estimates retain their dtype
         separately from continuous inputs. Arrays do not share memory with
         either dataframe. Unused group and channel labels are empty tuples.
-
-    Examples
-    --------
-    Prepare weekly sales for two regions with paid and organic media,
-    earlier exposure history, and a population estimate for each region.
-
-    .. ipython::
-
-        In [1]: import polars as pl
-           ...: from mmmjax import prepare_data
-           ...: # Search uses impressions, while video uses reach and frequency
-           ...: # Email and social are organic channels without associated spend
-           ...: # Sales counts units sold, and unit_revenue is revenue per sale
-           ...: df = pl.DataFrame({
-           ...:     "week": ["2026-01-05", "2026-01-05",
-           ...:              "2026-01-12", "2026-01-12"],
-           ...:     "region": ["west", "east", "west", "east"],
-           ...:     "sales": [100, 80, 140, 90],
-           ...:     "unit_revenue": [11.5, 10.5, 9.5, 10.0],
-           ...:     "residents": [50_000, 30_000, 50_000, 30_000],
-           ...:     "search_impressions": [5_000, 3_000, 6_000, 4_000],
-           ...:     "search_spend": [40.0, 30.0, 60.0, 45.0],
-           ...:     "video_reach": [5_000, 3_000, 7_000, 4_000],
-           ...:     "video_frequency": [2.0, 1.5, 2.5, 2.0],
-           ...:     "video_spend": [80.0, 50.0, 130.0, 70.0],
-           ...:     "email_clicks": [60, 40, 90, 50],
-           ...:     "social_reach": [300, 200, 350, 250],
-           ...:     "social_frequency": [1.0, 1.5, 2.0, 1.5],
-           ...:     "temperature": [10.0, 8.0, 12.0, 9.0],
-           ...:     "product_price": [12.0, 11.0, 10.0, 11.0],
-           ...: })
-           ...: # History needs the same exposure columns, but no sales or spend
-           ...: history = pl.DataFrame({
-           ...:     "week": ["2025-12-29", "2025-12-29"],
-           ...:     "region": ["west", "east"],
-           ...:     "search_impressions": [4_000, 2_500],
-           ...:     "video_reach": [4_000, 2_500],
-           ...:     "video_frequency": [1.5, 1.0],
-           ...:     "email_clicks": [45, 30],
-           ...:     "social_reach": [250, 150],
-           ...:     "social_frequency": [1.0, 1.0],
-           ...: })
-           ...: # Select each input and give its channels readable names
-           ...: # Product price is a treatment, and temperature is a control
-           ...: data = prepare_data(
-           ...:     df,
-           ...:     time="week",
-           ...:     groups=["region"],
-           ...:     frequency="weekly",
-           ...:     outcome="sales",
-           ...:     revenue_per_outcome="unit_revenue",
-           ...:     population="residents",
-           ...:     media=["search_impressions"],
-           ...:     spend=["search_spend"],
-           ...:     channels=["search"],
-           ...:     reach=["video_reach"],
-           ...:     media_frequency=["video_frequency"],
-           ...:     rf_spend=["video_spend"],
-           ...:     rf_channels=["video"],
-           ...:     organic_media=["email_clicks"],
-           ...:     organic_channels=["email"],
-           ...:     organic_reach=["social_reach"],
-           ...:     organic_frequency=["social_frequency"],
-           ...:     organic_rf_channels=["social"],
-           ...:     controls=["temperature"],
-           ...:     treatments=["product_price"],
-           ...:     media_history=history,
-           ...: )
-           ...: data.group_values
     """
     selections = {
         "outcome": outcome,

@@ -16,9 +16,9 @@ from jax.typing import ArrayLike
 from numpy.typing import NDArray
 
 from mmmjax._nuts import _NUTSContinuation, _sample_nuts
-from mmmjax._results import _collect_results, _data_dimensions, _prepared_groups, _same_labels
+from mmmjax._results import _collect_results, _coordinates, _data_dimensions, _prepared_groups, _same_labels
 from mmmjax.data import PreparedData
-from mmmjax.model import Model, PriorSampler, _validate_value_names
+from mmmjax.model import Model, PriorSampler, _metadata_source, _validate_value_names
 from mmmjax.priors import _validate_prior_sampler
 
 __all__ = ["SamplingState", "continue_sampling", "generate_quantities", "sample", "sample_prior"]
@@ -182,7 +182,7 @@ def sample(
         Otherwise, each chain starts from a random unconstrained position.
     generate : bool, default True
         Evaluate saved quantities, mapped log-prior terms, and outputs from
-        the generation callback.
+        the ``generated_quantities`` callback.
     chunk_size : int, default 100
         Maximum retained draws per chain in a sampling chunk before transfer
         to host memory. Smaller chunks reduce device memory use without
@@ -217,7 +217,7 @@ def sample(
           Additional inputs supplied to ``Model`` are stored in **constant_data**.
 
         Declared parameter and data axes retain their labels, including unchanged
-        generation inputs. Observation-shaped predictive and likelihood outputs
+        callback inputs. Observation-shaped predictive and likelihood outputs
         inherit outcome labels. Use ``dims``, ``generated_dims``, and ``coords``
         on the model for custom axes. Inspect diagnostics before interpreting results.
         With ``return_state=True``, returns ``(results, state)`` instead.
@@ -349,7 +349,7 @@ def sample(
     if generate and model._has_generated_quantities:
         keys = _generation_keys(generation_key, chains, 0, int(draws))
         generated = _evaluate_draws(
-            lambda key, parameters: model.generate(key, parameters, inputs),
+            lambda key, parameters: model.generate_quantities(key, parameters, inputs),
             keys,
             posterior,
             sample_shape=(chains, draws),
@@ -475,7 +475,7 @@ def continue_sampling(
     if state._generate and model._has_generated_quantities:
         keys = _generation_keys(state._generation_key, state.chains, state.draws, stop)
         generated = _evaluate_draws(
-            lambda key, parameters: model.generate(key, parameters, inputs),
+            lambda key, parameters: model.generate_quantities(key, parameters, inputs),
             keys,
             posterior,
             sample_shape=(state.chains, int(draws)),
@@ -581,8 +581,8 @@ def sample_prior(
     """Draw explicit priors and inspect their implied outcomes before fitting.
 
     Use the model's prior definitions or prior-draw function and reuse its
-    transformed parameters and generation callback. The ``log_density``
-    callback and posterior sampler are not evaluated.
+    transformed parameters and ``generated_quantities`` callback.
+    The ``log_density`` callback and posterior sampler are not evaluated.
     Keep the sampling distributions consistent with the priors in ``log_density``.
 
     Parameters
@@ -602,7 +602,8 @@ def sample_prior(
     seed : int, default 0
         Random seed for parameters and generated quantities.
     generate : bool, default True
-        Evaluate saved quantities and outputs from the generation callback.
+        Evaluate saved quantities and outputs from the ``generated_quantities``
+        callback.
     batch_size : int, default 64
         Maximum prior draws evaluated together, including generated quantities.
         Smaller batches reduce working memory without reducing the draw count.
@@ -661,7 +662,7 @@ def sample_prior(
         output_dimensions = _output_dimensions(model, outputs, arguments, dimensions, prepared)
         keys = jax.random.split(generation_key, draws)
         generated = _evaluate_draws(
-            lambda key, values: model.generate(key, values, inputs),
+            lambda key, values: model.generate_quantities(key, values, inputs),
             keys,
             parameters,
             sample_shape=(draws,),
@@ -764,15 +765,16 @@ def generate_quantities(
 ) -> xr.DataTree:
     """Evaluate generated quantities from existing posterior draws without refitting.
 
-    Evaluate saved quantities, mapped log-prior terms, and any generation
-    callback for every draw. The ``log_density`` callback and sampling are
-    not rerun. Scenario calculations remain defined by the model.
+    Evaluate saved quantities, mapped log-prior terms, and any
+    ``generated_quantities`` callback for every draw. The ``log_density``
+    callback and sampling are not rerun. Scenario calculations remain
+    defined by the model.
 
     Parameters
     ----------
     model : Model
-        Model with saved quantities, mapped priors, or a generation callback
-        and the fitted parameter declarations.
+        Model with saved quantities, mapped priors, or a ``generated_quantities``
+        callback and the fitted parameter declarations.
     results : xarray.DataTree
         Results containing constrained posterior draws with the model's parameter
         names, shapes, and axis labels. Draws may be sliced or thinned.
@@ -807,7 +809,9 @@ def generate_quantities(
         raise TypeError("model must be a Model")
     _validate_batch_size(batch_size)
     if not model._has_generated_quantities:
-        raise ValueError("The model must define a generation callback, select quantities with save, or map priors")
+        raise ValueError(
+            "The model must define a generated_quantities callback, select quantities with save, or map priors"
+        )
     if isinstance(seed, bool) or not isinstance(seed, Integral) or seed < 0:
         raise ValueError("seed must be a nonnegative integer")
 
@@ -828,7 +832,7 @@ def generate_quantities(
     chains, draws = next(iter(posterior.values())).shape[:2]
     keys = jax.random.split(generation_key, (chains, draws))
     generated = _evaluate_draws(
-        lambda key, parameters: model.generate(key, parameters, inputs),
+        lambda key, parameters: model.generate_quantities(key, parameters, inputs),
         keys,
         posterior,
         sample_shape=(chains, draws),
@@ -964,6 +968,23 @@ def _parameter_metadata(model: Model) -> tuple[dict[str, tuple[str, ...]], dict[
     dimensions: dict[str, tuple[str, ...]] = {}
     coordinates = {name: labels.copy() for name, labels in model._input_coords.items()}
     coordinates.update({name: labels.copy() for name, labels in model._result_coords.items()})
+    bindings = (
+        *model._transformed_data_inputs,
+        *model._transform_inputs,
+        *model._density_inputs,
+        *model._generation_inputs,
+        *model._saved_inputs,
+    )
+    if model._data is not None and any(
+        _metadata_source(name, source, model._data)[0] == "reference" for name, source in bindings
+    ):
+        reference_coordinates = _coordinates(
+            {"reference_time": model._time_values, "reference_media_time": model._media_time_values}
+        )
+        for axis, labels in reference_coordinates.items():
+            if axis in coordinates and not _same_labels(coordinates[axis], labels):
+                raise ValueError(f"Coordinate {axis!r} conflicts with the training reference labels")
+            coordinates[axis] = labels
     dimensions.update(model._result_dims)
     for name, parameter in model.parameters.items():
         dimensions.setdefault(name, tuple(f"{name}_dim_{index}" for index in range(len(parameter.shape))))
@@ -977,7 +998,7 @@ def _output_dimensions(
     parameter_dimensions: dict[str, tuple[str, ...]],
     prepared: PreparedData | None,
 ) -> dict[str, tuple[str, ...]]:
-    """Label known generation inputs and declared observations without shape guessing."""
+    """Label known callback inputs and declared observations without shape guessing."""
     requested = (
         set(model._generated_dims)
         | set(model._predictive_names)
@@ -988,6 +1009,8 @@ def _output_dimensions(
     if missing:
         raise ValueError(f"Generated result metadata refers to missing outputs {sorted(missing)}")
     input_dimensions: dict[str, tuple[str, ...]] = {}
+    reference_inputs: set[str] = set()
+    auxiliary_inputs: set[str] = set()
     observation_axes: tuple[str, ...] = ()
     outcome_shape: tuple[int, ...] | None = None
     if prepared is not None:
@@ -999,8 +1022,21 @@ def _output_dimensions(
         role_dimensions.update(time=("time",), media_time=("media_time",))
         role_dimensions.update(model._input_dims)
         for name, source in (*model._generation_inputs, *model._saved_inputs):
+            assert model._data is not None
+            source, source_name = _metadata_source(name, source, model._data)
             if source == "data":
-                input_dimensions[name] = role_dimensions[name]
+                input_dimensions[name] = role_dimensions[source_name]
+                if source_name in model._input_dims:
+                    auxiliary_inputs.add(name)
+            elif source == "reference":
+                input_dimensions[name] = tuple(
+                    f"reference_{axis}" if axis in ("time", "media_time") else axis
+                    for axis in role_dimensions[source_name.removeprefix("reference_")]
+                )
+                reference_inputs.add(name)
+            elif source == "builtin":
+                grouped_scale = source_name in ("outcome_scale", "outcome_offset") and model._data.outcome_group_scale
+                input_dimensions[name] = ("group",) if grouped_scale else ()
             elif source == "parameter":
                 input_dimensions[name] = parameter_dimensions[name]
     else:
@@ -1020,7 +1056,13 @@ def _output_dimensions(
         if name in prior_dimensions:
             dimensions[name] = prior_dimensions[name]
             continue
-        input_axes = {axes for argument, axes in model._input_dims.items() if value is arguments.get(argument)}
+        inherited = {axes for argument, axes in input_dimensions.items() if value is arguments.get(argument)}
+        if any(value is arguments.get(argument) for argument in reference_inputs):
+            dimensions[name] = (
+                inherited.pop() if len(inherited) == 1 else tuple(f"{name}_dim_{index}" for index in range(value.ndim))
+            )
+            continue
+        input_axes = {input_dimensions[argument] for argument in auxiliary_inputs if value is arguments.get(argument)}
         if len(input_axes) == 1:
             dimensions[name] = input_axes.pop()
             continue
@@ -1028,7 +1070,6 @@ def _output_dimensions(
             dimensions[name] = observation_axes
             continue
         # Equal values or equal shapes do not establish a shared axis or ordering.
-        inherited = {axes for argument, axes in input_dimensions.items() if value is arguments.get(argument)}
         if len(inherited) == 1:
             dimensions[name] = inherited.pop()
         else:
