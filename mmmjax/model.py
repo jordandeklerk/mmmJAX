@@ -7,7 +7,7 @@ from inspect import Parameter as SignatureParameter
 from inspect import signature
 from keyword import iskeyword
 from numbers import Integral
-from typing import Literal, TypeAlias, get_args
+from typing import Any, Literal, TypeAlias, get_args
 
 import jax
 import jax.numpy as jnp
@@ -24,6 +24,7 @@ from mmmjax.data import (
     _DataLayout,
     _day_of_year,
     _prepare_model_frame,
+    _time_input_names,
     _time_positions,
     _TimeInput,
 )
@@ -223,9 +224,9 @@ class Model:
         scaling: DataScaling | Literal["auto"] | None = None
         if isinstance(data, Data):
             data, variables, inputs, constants, scaling = data._snapshot()
-        conflicts = sorted(set(constants) & set(parameter_names))
-        if conflicts:
-            raise ValueError(f"Constants {conflicts} conflict with declared parameters")
+        constant_conflicts = sorted(set(constants) & set(parameter_names))
+        if constant_conflicts:
+            raise ValueError(f"Constants {constant_conflicts} conflict with declared parameters")
         variable_declarations = _data_variable_declarations(variables, parameter_names, tuple(constants))
         prepared_data = None
         fitted_scaling = None
@@ -248,24 +249,14 @@ class Model:
                     data = data._align_to(fitted_scaling._layout)
                 else:
                     data = fitted_scaling.transform(data)
-            requested = (
-                set(variable_declarations.values())
-                if variable_declarations is not None
-                else _requested_inputs(log_density, transformed_parameters, generated_quantities)
-                | _requested_inputs(transformed_data, None, None)
-            )
-            time_inputs = tuple(
-                name for name in get_args(_TimeInput) if name in requested or f"reference_{name}" in requested
-            )
             values = data._to_jax()
+            time_inputs = _time_input_names(data)
             if time_inputs:
                 _, time_origin = _time_positions(data.time_values)
                 values.update(_model_time_inputs(data, time_inputs, time_origin))
-            reference_values = {
-                f"reference_{role}": jnp.array(value, copy=True)
-                for role, value in values.items()
-                if f"reference_{role}" in requested
-            }
+            # Copies keep the training references distinct from the current inputs,
+            # so unchanged outputs can be labeled by which one they came from.
+            reference_values = {f"reference_{role}": jnp.array(value, copy=True) for role, value in values.items()}
             reserved = {f"reference_{role}" for role in (*_data_dimensions(data), *get_args(_TimeInput))}
             reserved.update(("outcome_scale", "outcome_offset", "unscale_outcome", "n_periods", "reference_n_periods"))
             conflicts = reserved & set(parameter_names) if variable_declarations is None else set()
@@ -449,10 +440,9 @@ class Model:
         Returns
         -------
         dict of str to str
-            A copy of the input declarations. Without explicit declarations,
-            the standard names currently supplied map to themselves, including
-            ``time`` and ``reference_`` inputs only when a function requests
-            them. Models without prepared data return an empty mapping.
+            A copy of the input declarations, with constants mapped to their
+            own names. Without explicit declarations, every standard name maps
+            to itself. Models without prepared data return an empty mapping.
         """
         if self._data is None:
             return {}
@@ -1003,24 +993,6 @@ def _prepare_inputs(
     return values, dimensions, input_coords
 
 
-def _requested_inputs(
-    density: Callable[..., object] | None,
-    transformed: TransformedParameters | None,
-    generated_quantities: GeneratedQuantities | None,
-) -> set[str]:
-    """Inspect input names without evaluating user functions."""
-    names: set[str] = set()
-    for function, skip in ((density, 0), (transformed, 0), (generated_quantities, 1)):
-        if function is None:
-            continue
-        try:
-            names.update(list(signature(function).parameters)[skip:])
-        except (TypeError, ValueError):
-            # Callback validation supplies the function-specific error.
-            continue
-    return names
-
-
 def _model_time_inputs(
     data: PreparedData,
     names: tuple[str, ...],
@@ -1241,9 +1213,10 @@ def _bind_inputs(
         matches = [source for source, names in sources.items() if argument.name in names]
         if not matches:
             if name == "transformed_data":
+                available = sorted(set().union(*sources.values()) - set(parameter_names))
                 raise ValueError(
-                    f"transformed_data requests unknown data variable {argument.name!r}. "
-                    "Declare its source in Data variables. Sampled parameters are not available here"
+                    _unknown_input_message(name, argument.name, available, declared=data.variable_sources is not None)
+                    + " Sampled parameters are not available in transformed_data."
                 )
             if argument.name in data.reserved_names:
                 role = argument.name.removeprefix("reference_") if argument.name.startswith("reference_") else "outcome"
@@ -1255,21 +1228,13 @@ def _bind_inputs(
                 continue
             available = sorted(set().union(*sources.values()))
             if data.variable_sources is not None:
-                raise ValueError(
-                    f"{name} requests unknown input {argument.name!r}. "
-                    "Declare its source in Data variables or declare it as a parameter. "
-                    f"Available inputs are {available}"
-                )
+                raise ValueError(_unknown_input_message(name, argument.name, available, declared=True))
             if argument.name in ("data", "effects"):
                 raise TypeError(
                     f"{name} no longer receives data or effects bundles in prepared models. "
                     "Request individual inputs by name, such as outcome or a declared parameter"
                 )
-            raise ValueError(
-                f"{name} requests unknown input {argument.name!r}. Use a selected data role or declared parameter. "
-                f"Available inputs are {available}, with time, media_time, day_of_year, media_day_of_year, "
-                "and reference_ inputs on request"
-            )
+            raise ValueError(_unknown_input_message(name, argument.name, available, declared=False))
         if len(matches) > 1:
             raise ValueError(
                 f"{name} input {argument.name!r} is ambiguous across {matches}. "
@@ -1285,6 +1250,16 @@ def _bind_inputs(
     return tuple(bindings)
 
 
+def _unknown_input_message(block: str, argument: str, available: list[str], *, declared: bool) -> str:
+    """Explain an unbound argument with the names that would have bound."""
+    guidance = (
+        "Declare its source in Data variables or declare it as a parameter"
+        if declared
+        else "Use a selected data role, declared constant, or declared parameter"
+    )
+    return f"{block} requests unknown input {argument!r}. {guidance}. Available inputs are {', '.join(available)}."
+
+
 def _callback_inputs(
     bindings: _InputBindings,
     data: _ModelData,
@@ -1294,7 +1269,7 @@ def _callback_inputs(
     name: str,
 ) -> dict[str, _CallbackValue]:
     """Supply current inputs, fixed references, and explicit unit conversions."""
-    sources: dict[str, ParameterValues] = {
+    sources: dict[str, Mapping[str, Any]] = {
         "data": data.values,
         "parameter": parameters,
         "transformed": effects,

@@ -696,17 +696,17 @@ def test_day_of_year_inputs_anchor_seasonality_to_the_calendar_for_new_data():
     np.testing.assert_array_equal(outputs["media_days"], [187.0, 194.0])
 
     numeric = prepare_data(pl.DataFrame({"time": [1, 2], "sales": [1.0, 2.0]}), time="time", outcome="sales")
-    with pytest.raises(ValueError, match="calendar dates"):
+    with pytest.raises(ValueError, match="unknown input 'day_of_year'"):
         Model({"level": Real()}, lambda outcome, day_of_year, level: jnp.sum(outcome * level), data=numeric)
 
 
 def test_unknown_input_errors_list_the_available_names():
     data = _data()
     with pytest.raises(
-        ValueError, match=r"unknown input 'sales'.*Available inputs.*'n_periods'.*'outcome'.*on request"
+        ValueError, match=r"(?s)unknown input 'sales'.*Available inputs.*n_periods.*outcome.*reference_outcome.*time"
     ):
         Model({"level": Real()}, lambda sales, level: jnp.sum(sales * level), data=data)
-    with pytest.raises(ValueError, match=r"unknown input 'sales'.*Available inputs.*'revenue'"):
+    with pytest.raises(ValueError, match=r"(?s)unknown input 'sales'.*Available inputs.*revenue"):
         Model(
             {"level": Real()},
             lambda sales, level: jnp.sum(sales * level),
@@ -773,7 +773,7 @@ def test_constants_are_available_beside_declared_variables():
         "approximation": "approximation",
         "label": "label",
     }
-    with pytest.raises(ValueError, match=r"unknown input 'lag'.*Available inputs.*'max_lag'"):
+    with pytest.raises(ValueError, match=r"(?s)unknown input 'lag'.*Available inputs.*max_lag"):
         Model({"level": Real()}, lambda revenue, lag, level: jnp.sum(revenue * level) * lag, data=block)
 
 
@@ -798,3 +798,35 @@ def test_constant_names_cannot_collide_with_other_inputs_or_parameters(declarati
             lambda outcome, max_lag: jnp.sum(outcome * max_lag),
             data=Data(data, constants={"max_lag": 2}),
         )
+
+
+def test_time_inputs_and_training_references_exist_without_being_requested():
+    frame = pl.DataFrame(
+        {"week": ["2026-01-05", "2026-01-12", "2026-01-19"], "video": [1.0, 2.0, 3.0], "sales": [1.0, 2.0, 3.0]}
+    )
+    history = pl.DataFrame({"week": ["2025-12-29"], "video": [0.5]})
+    data = prepare_data(frame, time="week", outcome="sales", media=["video"], media_history=history)
+    model = Model({"level": Real()}, lambda outcome, level: jnp.sum(outcome * level), data=data)
+    inputs = model.data
+
+    assert {"time", "media_time", "day_of_year", "media_day_of_year"} <= inputs.values.keys()
+    assert {
+        "reference_outcome",
+        "reference_media",
+        "reference_time",
+        "reference_day_of_year",
+    } <= inputs.reference_values.keys()
+    assert inputs.reference_values["reference_media"] is not inputs.values["media"]
+    np.testing.assert_array_equal(inputs.reference_values["reference_media"], inputs.values["media"])
+    np.testing.assert_array_equal(inputs.values["day_of_year"], data.day_of_year)
+
+    scenario = model.prepare_data(
+        prepare_data(pl.DataFrame({"week": ["2026-07-06"], "video": [1.0]}), time="week", media=["video"])
+    )
+    np.testing.assert_array_equal(scenario.values["time"], [182.0])
+    np.testing.assert_array_equal(scenario.reference_values["reference_media"], inputs.values["media"])
+
+    numeric = prepare_data(pl.DataFrame({"time": [1, 2], "sales": [1.0, 2.0]}), time="time", outcome="sales")
+    numeric_model = Model({"level": Real()}, lambda outcome, level: jnp.sum(outcome * level), data=numeric)
+    assert "day_of_year" not in numeric_model.data.values
+    assert "media_time" not in numeric_model.data.values

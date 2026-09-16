@@ -506,26 +506,39 @@ def _data_dimensions(data: PreparedData) -> dict[str, tuple[str, ...]]:
     }
 
 
-def _model_inputs(data: PreparedData) -> dict[str, ModelInput]:
-    """Enumerate the requestable inputs once for models, results, and users."""
-    role_axes = _data_dimensions(data)
-    inputs = {role: ModelInput("array", role_axes[role], "data") for role in data.arrays}
-    dated = any(isinstance(label, (str, date)) for label in data.time_values)
+def _time_input_names(data: PreparedData) -> tuple[_TimeInput, ...]:
+    """List the time inputs the data can supply, with calendar names only for dates."""
+    try:
+        _, origin = _time_positions(data.time_values)
+    except (TypeError, ValueError):
+        # Categorical period labels carry no positions, so no time input exists.
+        return ()
+    dated = isinstance(origin, datetime)
+    names: list[_TimeInput] = []
     for name in get_args(_TimeInput):
         if name.startswith("media_") and not data.media_time_values:
             continue
         if name.endswith("day_of_year") and not dated:
             continue
+        names.append(name)
+    return tuple(names)
+
+
+def _model_inputs(data: PreparedData) -> dict[str, ModelInput]:
+    """Enumerate the requestable inputs once for models, results, and users."""
+    role_axes = _data_dimensions(data)
+    inputs = {role: ModelInput("array", role_axes[role], "data") for role in data.arrays}
+    for name in _time_input_names(data):
         inputs[name] = ModelInput("array", ("media_time",) if name.startswith("media_") else ("time",), "time")
     inputs["n_periods"] = ModelInput("integer", (), "builtin")
     if "outcome" in data.arrays:
         inputs["outcome_scale"] = ModelInput("array", (), "builtin")
         inputs["outcome_offset"] = ModelInput("array", (), "builtin")
         inputs["unscale_outcome"] = ModelInput("function", (), "builtin")
-    for name, spec in list(inputs.items()):
+    for input_name, spec in list(inputs.items()):
         if spec.source in ("data", "time"):
             axes = tuple(f"reference_{axis}" if axis in ("time", "media_time") else axis for axis in spec.axes)
-            inputs[f"reference_{name}"] = ModelInput("array", axes, "reference")
+            inputs[f"reference_{input_name}"] = ModelInput("array", axes, "reference")
     inputs["reference_n_periods"] = ModelInput("integer", (), "reference")
     return inputs
 

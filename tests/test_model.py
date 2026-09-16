@@ -452,7 +452,7 @@ def test_model_time_inputs_keep_the_training_origin_for_scenarios(dated):
     assert jnp.isfinite(gradient["slope"])
 
 
-def test_model_does_not_interpret_time_labels_unless_requested():
+def test_model_supplies_no_time_inputs_for_categorical_period_labels():
     data = prepare_data(
         pl.DataFrame({"period": ["early", "late"], "sales": [1.0, 2.0]}),
         time="period",
@@ -463,7 +463,7 @@ def test_model_does_not_interpret_time_labels_unless_requested():
     assert jnp.isfinite(model.log_prob({"level": 0.0}))
     assert set(model.data.values) == {"outcome"}
 
-    with pytest.raises(ValueError, match="Invalid observation date"):
+    with pytest.raises(ValueError, match="unknown input 'time'"):
         Model({"level": Real()}, lambda time, level: normal(time, level, 1.0), data=data)
 
 
@@ -479,15 +479,21 @@ def test_model_media_time_requires_exposure_periods():
         Model({}, lambda media_time: jnp.sum(media_time), data=data)
 
 
-def test_generation_key_name_does_not_request_time_coordinates():
+def test_generation_key_name_cannot_shadow_a_time_input():
     data = prepare_data(pl.DataFrame({"period": [1, 2]}), time="period")
 
     def generate(time):
         return {"draw": jax.random.normal(time)}
 
-    model = Model({}, lambda: jnp.array(0.0), generate, data=data)
+    with pytest.raises(TypeError, match="places input 'time' where the random key is required"):
+        Model({}, lambda: jnp.array(0.0), generate, data=data)
+
+    def generate_with_key(rng):
+        return {"draw": jax.random.normal(rng)}
+
+    model = Model({}, lambda: jnp.array(0.0), generate_with_key, data=data)
     key = jax.random.key(10)
-    assert model._time_inputs == ()
+    assert model._time_inputs == ("time",)
     actual = jax.jit(model.generate_quantities)(key, {}, model.data)
     np.testing.assert_array_equal(actual["draw"], jax.random.normal(key))
 

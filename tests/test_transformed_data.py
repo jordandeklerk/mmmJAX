@@ -169,7 +169,7 @@ def test_transformed_data_requires_prepared_data():
 @pytest.mark.parametrize(
     "transformed_data, error, message",
     [
-        (lambda coefficient: {}, ValueError, "unknown data variable 'coefficient'"),
+        (lambda coefficient: {}, ValueError, "unknown input 'coefficient'"),
         (lambda media: {"media": media}, ValueError, "conflicts with an input or parameter"),
         (lambda media: {"coefficient": media}, ValueError, "conflicts with an input or parameter"),
         (lambda media: media, TypeError, "must return a mapping"),
@@ -207,7 +207,7 @@ def test_transformed_data_uses_declared_variable_names_only():
 
     assert model.data_variables == {"revenue": "outcome", "impressions": "media"}
     np.testing.assert_allclose(model.log_prob({"coefficient": jnp.asarray(coefficient)}), _normal(residual), rtol=2e-5)
-    with pytest.raises(ValueError, match="unknown data variable 'media'"):
+    with pytest.raises(ValueError, match="unknown input 'media'"):
         Model(
             {"coefficient": Real((2,))},
             log_density,
@@ -302,20 +302,12 @@ def test_budget_optimization_recomputes_transformed_data_for_candidate_allocatio
     )
 
 
-def test_data_variables_list_standard_names_only_when_supplied():
+def test_data_variables_list_every_standard_name_without_being_requested():
     data = _data()
     model = Model({"level": Real()}, lambda outcome, level: normal(outcome, level, 1.0), data=data)
     variables = model.data_variables
 
     assert variables == {name: name for name in variables}
     assert {"outcome", "media", "spend", "n_periods", "outcome_scale", "unscale_outcome"} <= variables.keys()
-    assert not {"time", "reference_outcome"} & variables.keys()
-
-    timed = Model(
-        {"level": Real()},
-        lambda outcome, time, reference_outcome, level: (
-            normal(outcome, level + 0.0 * time.sum(), 1.0) + 0.0 * reference_outcome.sum()
-        ),
-        data=data,
-    )
-    assert {"time", "reference_outcome"} <= timed.data_variables.keys()
+    assert {"time", "media_time", "reference_outcome", "reference_media", "reference_time"} <= variables.keys()
+    assert variables.keys() == data.model_inputs.keys()
