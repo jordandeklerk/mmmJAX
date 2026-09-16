@@ -9,7 +9,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from mmmjax import DataBlock, Model, Real, fit_data_scaling, generate_quantities, normal, prepare_data
+from mmmjax import Data, Model, Real, fit_data_scaling, generate_quantities, normal, prepare_data
 from mmmjax._results import _collect_results
 
 
@@ -52,7 +52,7 @@ def _model(data, *, scaling=None):
             "mu": intercept + media.sum(-1) + controls[..., 0] + treatments[..., 0],
         }
 
-    return Model({"intercept": Real()}, density, generate, data=DataBlock(data, scaling=scaling))
+    return Model({"intercept": Real()}, density, generate, data=Data(data, scaling=scaling))
 
 
 def _population_data(*, start=1, reverse=False, include_population=True):
@@ -86,7 +86,7 @@ def _population_model(data, *, scaling=None):
         {"intercept": Real()},
         lambda outcome, intercept: normal(outcome, intercept, 1.0) + normal(intercept, 0.0, 1.0),
         lambda key, outcome, intercept: {"prediction": jnp.full_like(outcome, intercept)},
-        data=DataBlock(data, scaling=scaling),
+        data=Data(data, scaling=scaling),
         predictive=("prediction",),
     )
 
@@ -155,9 +155,7 @@ def test_reference_roles_are_scaled_snapshots_with_raw_spend_and_observation_per
             "reference_window": jnp.ones((reference_n_periods,)),
         }
 
-    model = Model(
-        {}, lambda reference_outcome: jnp.sum(reference_outcome), generate, data=DataBlock(raw, scaling=scaling)
-    )
+    model = Model({}, lambda reference_outcome: jnp.sum(reference_outcome), generate, data=Data(raw, scaling=scaling))
     raw.arrays["media"][...] = -1
     raw.arrays["spend"][...] = -1
     raw.arrays["outcome"][...] = -1
@@ -219,7 +217,7 @@ def test_outcome_helpers_restore_levels_and_expose_only_marginal_scales(grouped,
             "unit_scale": outcome_scale,
         }
 
-    model = Model({"intercept": Real()}, density, generate, data=DataBlock(raw, scaling=scaling))
+    model = Model({"intercept": Real()}, density, generate, data=Data(raw, scaling=scaling))
     transformation = None if scaling is None else scaling.transformations.get("outcome")
     if transformation is None:
         expected_scale, expected_offset = np.asarray(1.0), np.asarray(0.0)
@@ -283,7 +281,7 @@ def test_outcome_inverse_helper_preserves_grouped_broadcast_shape_guards(shape):
         {},
         lambda: jnp.array(0.0),
         lambda key, unscale_outcome: {"raw_prediction": unscale_outcome(jnp.zeros(shape))},
-        data=DataBlock(raw, scaling=scaling),
+        data=Data(raw, scaling=scaling),
     )
     with pytest.raises(ValueError, match=r"shape|broadcast"):
         jax.jit(model.generate_quantities)(jax.random.key(0), {}, model.data)
@@ -463,8 +461,8 @@ def test_invalid_scaling_options_fail_at_construction(scaling, error):
 
 
 def test_scaling_requires_a_prepared_model():
-    with pytest.raises(TypeError, match="DataBlock data must be PreparedData"):
-        Model({}, lambda data: jnp.array(0.0), data=DataBlock(None, scaling="auto"))
+    with pytest.raises(TypeError, match="Data requires PreparedData"):
+        Model({}, lambda data: jnp.array(0.0), data=Data(None, scaling="auto"))
 
 
 def test_models_cannot_exchange_scaled_input_bundles():
@@ -492,7 +490,7 @@ def test_media_models_reject_changes_to_known_observation_spacing():
     model = Model(
         {},
         lambda media: normal(media.sum(-1), 0.0, 1.0),
-        data=DataBlock(dated_data(7), scaling="auto"),
+        data=Data(dated_data(7), scaling="auto"),
     )
     with pytest.raises(ValueError, match="weekly observation spacing"):
         model.prepare_data(dated_data(1))

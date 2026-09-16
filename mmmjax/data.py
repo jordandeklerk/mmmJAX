@@ -7,7 +7,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from keyword import iskeyword
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal, NamedTuple, TypeAlias, cast, get_args
 
 import jax
 import jax.numpy as jnp
@@ -22,7 +22,34 @@ from numpy.typing import NDArray
 if TYPE_CHECKING:
     from mmmjax.scaling import DataScaling
 
-__all__ = ["DataBlock", "PreparedData", "prepare_data", "select_channels"]
+__all__ = ["Data", "ModelInput", "PreparedData", "prepare_data", "select_channels"]
+
+_TimeInput: TypeAlias = Literal["time", "media_time", "day_of_year", "media_day_of_year"]
+
+
+class ModelInput(NamedTuple):
+    """Describe one name that model functions can request from prepared data.
+
+    Attributes
+    ----------
+    kind : str
+        ``array`` for JAX arrays, ``integer`` for static Python integers,
+        ``function`` for callables such as ``unscale_outcome``, or
+        ``constant`` for declared Python values passed through unchanged.
+    axes : tuple of str
+        Named axes of an array input, empty for scalars. Training references
+        use ``reference_time`` and ``reference_media_time`` for their time
+        axes. Outcome conversions gain a group axis under population scaling.
+    source : str
+        ``data`` for selected roles, ``time`` for positions computed from the
+        observation labels, ``builtin`` for model-supplied values,
+        ``reference`` for training inputs retained when evaluating new data,
+        ``input`` for auxiliary datasets, or ``constant`` for declared values.
+    """
+
+    kind: Literal["array", "integer", "function", "constant"]
+    axes: tuple[str, ...]
+    source: Literal["data", "time", "builtin", "reference", "input", "constant"]
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -66,6 +93,23 @@ class PreparedData:
     frequency : str or None
         Inferred or declared observation spacing. None for numeric labels,
         fewer than three dates without a declared spacing, or disabled checks.
+    time_positions : numpy.ndarray
+        Elapsed positions of the modeling periods from the first period, in
+        days for dates and in label units otherwise. These are the ``time``
+        values that models receive.
+    media_time_positions : numpy.ndarray
+        Elapsed positions of the exposure periods on the same origin, with
+        history periods negative. Empty without exposure inputs. These are
+        the ``media_time`` values that models receive.
+    day_of_year : numpy.ndarray
+        Calendar day of the year for each modeling period, from one through
+        366, matching the ``day_of_year`` model input. Requires dates.
+    media_day_of_year : numpy.ndarray
+        Calendar day of the year for each exposure period, matching the
+        ``media_day_of_year`` model input. Empty without exposure inputs.
+    model_inputs : dict of str to ModelInput
+        Every name that model functions can request from this data, with its
+        kind, axes, and source. Use it to choose ``Data`` variable names.
     """
 
     arrays: dict[str, NDArray[np.generic]]
@@ -82,6 +126,38 @@ class PreparedData:
     frequency: str | None = None
     # Record applied transformations to prevent scaling these arrays twice
     _scaling: "DataScaling | None" = field(default=None, repr=False)
+
+    @property
+    def time_positions(self) -> NDArray[np.float64]:
+        """Return elapsed positions of the modeling periods from the first period."""
+        positions, _ = _time_positions(self.time_values)
+        return positions
+
+    @property
+    def media_time_positions(self) -> NDArray[np.float64]:
+        """Return elapsed positions of the exposure periods, with history negative."""
+        if not self.media_time_values:
+            return np.empty(0, dtype=np.float64)
+        _, origin = _time_positions(self.time_values)
+        positions, _ = _time_positions(self.media_time_values, origin=origin)
+        return positions
+
+    @property
+    def day_of_year(self) -> NDArray[np.float64]:
+        """Return the calendar day of the year for each modeling period."""
+        return _day_of_year(self.time_values)
+
+    @property
+    def media_day_of_year(self) -> NDArray[np.float64]:
+        """Return the calendar day of the year for each exposure period."""
+        if not self.media_time_values:
+            return np.empty(0, dtype=np.float64)
+        return _day_of_year(self.media_time_values)
+
+    @property
+    def model_inputs(self) -> dict[str, ModelInput]:
+        """Return the names model functions can request, with kind, axes, and source."""
+        return _model_inputs(self)
 
     def _to_jax(
         self,
@@ -257,7 +333,7 @@ class PreparedData:
 
 
 @dataclass(frozen=True, slots=True, eq=False, init=False)
-class DataBlock:
+class Data:
     """Declare model data, variable names, and fixed preprocessing together.
 
     Supply this object to ``Model(data=...)``. Observations, variable names,
@@ -269,10 +345,16 @@ class DataBlock:
         Observations and labels returned by :func:`prepare_data`.
     variables : mapping of str to str, optional
         Model function argument names mapped to prepared or auxiliary input
-        names. If omitted, functions use the standard input names. When
-        supplied, only the declared names are available to model functions.
+        names. ``PreparedData.model_inputs`` lists the available names. If
+        omitted, functions use the standard input names. When supplied, only
+        the declared names are available to model functions.
     inputs : xarray.Dataset, optional
         Additional fixed inputs, such as experiment measurements.
+    constants : mapping of str to object, optional
+        Fixed specification values that model functions request by name,
+        such as a carryover length or a prepared HSGP approximation. Values
+        must be hashable and pass through unchanged, so integers stay usable
+        as shapes under ``jax.jit``. They never change across scenarios.
     scaling : DataScaling or {"auto"}, optional
         Fitted transformations or automatic scaling. None uses unchanged data.
 
@@ -284,13 +366,19 @@ class DataBlock:
         A copy of the variable declarations.
     inputs : xarray.Dataset or None
         A copy of the auxiliary inputs.
+    constants : dict of str to object
+        A copy of the declared constants.
     scaling : DataScaling or str or None
         The fitted transformations or requested scaling mode.
+    model_inputs : dict of str to ModelInput
+        Every name model functions can request, combining the prepared
+        observations, auxiliary inputs, and constants.
     """
 
     _observations: PreparedData
     _variables: dict[str, str] | None
     _inputs: xr.Dataset | None
+    _constants: dict[str, object]
     _scaling: "DataScaling | Literal['auto'] | None"
 
     def __init__(
@@ -299,12 +387,13 @@ class DataBlock:
         *,
         variables: Mapping[str, str] | None = None,
         inputs: xr.Dataset | None = None,
+        constants: Mapping[str, object] | None = None,
         scaling: "DataScaling | Literal['auto'] | None" = None,
     ) -> None:
         from mmmjax.scaling import DataScaling
 
         if not isinstance(data, PreparedData):
-            raise TypeError("DataBlock data must be PreparedData returned by prepare_data")
+            raise TypeError("Data requires PreparedData returned by prepare_data")
         if variables is not None:
             if not isinstance(variables, Mapping):
                 raise TypeError("variables must map model function input names to data source names")
@@ -315,6 +404,19 @@ class DataBlock:
                     raise TypeError(f"Source for data variable {name!r} must be a nonempty string")
         if inputs is not None and not isinstance(inputs, xr.Dataset):
             raise TypeError("inputs must be an xarray.Dataset")
+        if constants is not None:
+            if not isinstance(constants, Mapping):
+                raise TypeError("constants must map model function input names to fixed values")
+            for name, value in constants.items():
+                if not isinstance(name, str) or not name.isidentifier() or iskeyword(name):
+                    raise ValueError("Each constant name must be a valid Python identifier")
+                try:
+                    hash(value)
+                except TypeError as error:
+                    raise TypeError(
+                        f"Constant {name!r} must be hashable, such as a number, string, or frozen configuration. "
+                        "Supply arrays through inputs or the prepared data"
+                    ) from error
         if isinstance(scaling, str) and scaling != "auto":
             raise ValueError("scaling must be DataScaling, 'auto', or None")
         if scaling is not None and not isinstance(scaling, (DataScaling, str)):
@@ -325,6 +427,7 @@ class DataBlock:
         object.__setattr__(self, "_observations", observations)
         object.__setattr__(self, "_variables", None if variables is None else dict(variables))
         object.__setattr__(self, "_inputs", None if inputs is None else inputs.copy(deep=True))
+        object.__setattr__(self, "_constants", {} if constants is None else dict(constants))
         object.__setattr__(self, "_scaling", scaling)
 
     @property
@@ -347,16 +450,84 @@ class DataBlock:
         return self._inputs.copy(deep=True)
 
     @property
+    def constants(self) -> dict[str, object]:
+        """Return a copy of the declared constants."""
+        return dict(self._constants)
+
+    @property
     def scaling(self) -> "DataScaling | Literal['auto'] | None":
         """Return the fitted transformations or requested scaling mode."""
         return self._scaling
 
+    @property
+    def model_inputs(self) -> dict[str, ModelInput]:
+        """Return every requestable name across observations, inputs, and constants."""
+        inputs = self._observations.model_inputs
+        if self._inputs is not None:
+            for name, variable in self._inputs.data_vars.items():
+                inputs[str(name)] = ModelInput("array", tuple(str(axis) for axis in variable.dims), "input")
+        for name in self._constants:
+            inputs[name] = ModelInput("constant", (), "constant")
+        return inputs
+
     def _snapshot(
         self,
-    ) -> tuple[PreparedData, dict[str, str] | None, xr.Dataset | None, "DataScaling | Literal['auto'] | None"]:
+    ) -> tuple[
+        PreparedData,
+        dict[str, str] | None,
+        xr.Dataset | None,
+        dict[str, object],
+        "DataScaling | Literal['auto'] | None",
+    ]:
         """Copy declarations together to preserve applied-scaling identity."""
-        snapshot = (self.observations, self.variables, self.inputs, self.scaling)
+        snapshot = (self.observations, self.variables, self.inputs, self.constants, self.scaling)
         return snapshot
+
+
+def _data_dimensions(data: PreparedData) -> dict[str, tuple[str, ...]]:
+    """Name each prepared role's axes independently of their lengths."""
+    group_axes = ("group",) if data.group_columns else ()
+    observation_axes = ("time", *group_axes)
+    exposure_axes = ("media_time", *group_axes)
+    return {
+        "outcome": observation_axes,
+        "revenue_per_outcome": observation_axes,
+        "media": (*exposure_axes, "channel"),
+        "organic_media": (*exposure_axes, "organic_channel"),
+        "reach": (*exposure_axes, "rf_channel"),
+        "media_frequency": (*exposure_axes, "rf_channel"),
+        "organic_reach": (*exposure_axes, "organic_rf_channel"),
+        "organic_frequency": (*exposure_axes, "organic_rf_channel"),
+        "spend": (*observation_axes, "channel"),
+        "rf_spend": (*observation_axes, "rf_channel"),
+        "controls": (*observation_axes, "control"),
+        "treatments": (*observation_axes, "treatment"),
+        "population": group_axes,
+    }
+
+
+def _model_inputs(data: PreparedData) -> dict[str, ModelInput]:
+    """Enumerate the requestable inputs once for models, results, and users."""
+    role_axes = _data_dimensions(data)
+    inputs = {role: ModelInput("array", role_axes[role], "data") for role in data.arrays}
+    dated = any(isinstance(label, (str, date)) for label in data.time_values)
+    for name in get_args(_TimeInput):
+        if name.startswith("media_") and not data.media_time_values:
+            continue
+        if name.endswith("day_of_year") and not dated:
+            continue
+        inputs[name] = ModelInput("array", ("media_time",) if name.startswith("media_") else ("time",), "time")
+    inputs["n_periods"] = ModelInput("integer", (), "builtin")
+    if "outcome" in data.arrays:
+        inputs["outcome_scale"] = ModelInput("array", (), "builtin")
+        inputs["outcome_offset"] = ModelInput("array", (), "builtin")
+        inputs["unscale_outcome"] = ModelInput("function", (), "builtin")
+    for name, spec in list(inputs.items()):
+        if spec.source in ("data", "time"):
+            axes = tuple(f"reference_{axis}" if axis in ("time", "media_time") else axis for axis in spec.axes)
+            inputs[f"reference_{name}"] = ModelInput("array", axes, "reference")
+    inputs["reference_n_periods"] = ModelInput("integer", (), "reference")
+    return inputs
 
 
 @dataclass(frozen=True, slots=True)
@@ -1037,6 +1208,26 @@ def _time_positions(
 
     if origin is not None and not isinstance(origin, datetime):
         raise TypeError("Prediction times must remain numeric and use the training time units")
+    dates = _parse_dates(labels)
+    date_origin = min(dates) if origin is None else origin
+    positions = np.asarray([(value - date_origin).total_seconds() / 86400 for value in dates], dtype=np.float64)
+    return positions, date_origin
+
+
+def _day_of_year(labels: tuple[object, ...]) -> NDArray[np.float64]:
+    """Anchor seasonal features to the calendar rather than to the first observation."""
+    if not labels:
+        raise ValueError("Day of year positions require at least one observation time")
+    if all(
+        isinstance(label, (int, float, np.integer, np.floating)) and not isinstance(label, (bool, np.bool_))
+        for label in labels
+    ):
+        raise ValueError("day_of_year requires calendar dates. Observation times are numeric positions")
+    return np.asarray([float(value.timetuple().tm_yday) for value in _parse_dates(labels)], dtype=np.float64)
+
+
+def _parse_dates(labels: tuple[object, ...]) -> list[datetime]:
+    """Read date labels in the forms accepted by prepare_data."""
     dates = []
     for label in labels:
         if isinstance(label, str):
@@ -1060,9 +1251,7 @@ def _time_positions(
         if timestamp.utcoffset() is not None:
             raise ValueError("Convert timezone-aware timestamps to observation dates in the intended timezone")
         dates.append(timestamp)
-    date_origin = min(dates) if origin is None else origin
-    positions = np.asarray([(value - date_origin).total_seconds() / 86400 for value in dates], dtype=np.float64)
-    return positions, date_origin
+    return dates
 
 
 def _resolve_frequency(labels: Sequence[object], *, time: str, frequency: str | None) -> str | None:

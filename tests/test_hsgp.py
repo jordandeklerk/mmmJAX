@@ -25,7 +25,7 @@ from mmmjax import (
     sample_prior,
 )
 from mmmjax._results import _collect_results
-from mmmjax.hsgp import HSGPConfig, hsgp_basis, hsgp_weights, prepare_hsgp
+from mmmjax.hsgp import HSGPApproximation, hsgp_basis, hsgp_weights, prepare_hsgp
 
 _COVARIANCES = ("expquad", "matern32", "matern52")
 
@@ -116,11 +116,11 @@ def _normal_reference(values):
 
 
 def test_hsgp_helpers_are_exported():
-    assert mmmjax.HSGPConfig is HSGPConfig
+    assert mmmjax.HSGPApproximation is HSGPApproximation
     assert mmmjax.hsgp_basis is hsgp_basis
     assert mmmjax.hsgp_weights is hsgp_weights
     assert mmmjax.prepare_hsgp is prepare_hsgp
-    assert {"HSGPConfig", "hsgp_basis", "hsgp_weights", "prepare_hsgp"} <= set(mmmjax.__all__)
+    assert {"HSGPApproximation", "hsgp_basis", "hsgp_weights", "prepare_hsgp"} <= set(mmmjax.__all__)
 
 
 @pytest.mark.parametrize(
@@ -131,7 +131,7 @@ def test_prepare_matches_hand_calculated_padding_and_resolution(covariance, padd
     padded = prepare_hsgp((2, 10), length_scale_range=(0.5, 2), covariance=covariance)
     span_dominated = prepare_hsgp((-20, 20), length_scale_range=(0.5, 1), covariance=covariance)
 
-    assert isinstance(padded, HSGPConfig)
+    assert isinstance(padded, HSGPApproximation)
     assert padded.center == 6.0
     assert padded.boundary == pytest.approx(padded_boundary)
     assert padded.n_basis == padded_count
@@ -159,7 +159,7 @@ def test_prepare_keeps_at_least_one_basis_function_for_a_small_manual_domain():
 
     assert config.boundary == 1.1
     assert config.n_basis == 1
-    assert config.basis([0.0, 2.0])[0].shape == (2, 1)
+    assert config.basis([0.0, 2.0]).shape == (2, 1)
 
 
 def test_prepared_configuration_is_immutable():
@@ -176,12 +176,12 @@ def test_preparation_and_weighted_curves_preserve_time_reference_and_units():
         config = prepare_hsgp((-3, 5), length_scale_range=(0.4, 1.1), covariance=covariance)
         shifted = prepare_hsgp((3.25, 11.25), length_scale_range=(0.4, 1.1), covariance=covariance)
         daily = prepare_hsgp((-21, 35), length_scale_range=(2.8, 7.7), covariance=covariance)
-        basis, frequencies = config.basis(time)
-        shifted_basis, shifted_frequencies = shifted.basis(time + 6.25)
-        daily_basis, daily_frequencies = daily.basis(time * 7)
+        basis, frequencies = config.basis(time), config.frequencies
+        shifted_basis, shifted_frequencies = shifted.basis(time + 6.25), shifted.frequencies
+        daily_basis = daily.basis(time * 7)
         coefficients = jnp.linspace(-0.3, 0.7, config.n_basis)
-        weekly_weights = config.weights(frequencies, length_scale=0.7, amplitude=1.3)
-        daily_weights = daily.weights(daily_frequencies, length_scale=4.9, amplitude=1.3)
+        weekly_weights = config.weights(length_scale=0.7, amplitude=1.3)
+        daily_weights = daily.weights(length_scale=4.9, amplitude=1.3)
 
         assert config.center == 1.0
         assert shifted.center == 7.25
@@ -203,20 +203,19 @@ def test_prepared_methods_reuse_training_and_forecast_basis_under_jit():
     config = prepare_hsgp((-2, 4), length_scale_range=(0.5, 1.5), covariance="matern32", boundary=6, n_basis=13)
     time = jnp.array([-2.0, -1.25, 0.0, 1.5, 2.5, 4.0])
     basis_function = jax.jit(config.basis)
-    complete, frequencies = basis_function(time)
-    training, training_frequencies = basis_function(time[:4])
-    forecast, forecast_frequencies = basis_function(time[4:])
+    complete = basis_function(time)
+    training = basis_function(time[:4])
+    forecast = basis_function(time[4:])
     expected_basis, expected_frequencies = _basis_reference(time, 1.0, 6.0, 13)
+    frequencies = config.frequencies
     weights_function = jax.jit(config.weights)
 
     np.testing.assert_array_equal(training, complete[:4])
     np.testing.assert_array_equal(forecast, complete[4:])
-    np.testing.assert_array_equal(training_frequencies, frequencies)
-    np.testing.assert_array_equal(forecast_frequencies, frequencies)
     np.testing.assert_allclose(complete, expected_basis, rtol=8e-6, atol=3e-6)
     np.testing.assert_allclose(frequencies, expected_frequencies, rtol=2e-6)
     for length_scale, amplitude in ((0.7, 1.3), (2.0, 0.5)):
-        weights = weights_function(frequencies, length_scale=length_scale, amplitude=amplitude)
+        weights = weights_function(length_scale=length_scale, amplitude=amplitude)
         expected_weights = _weights_from_covariance(frequencies, length_scale, amplitude, "matern32")
         np.testing.assert_allclose(weights, expected_weights, rtol=5e-6, atol=2e-6)
 
@@ -227,8 +226,8 @@ def test_prepared_methods_keep_time_and_covariance_parameter_gradients():
     coefficients = jnp.linspace(-0.5, 0.7, config.n_basis)
 
     def response(values):
-        basis, frequencies = config.basis(values[:1])
-        weights = config.weights(frequencies, length_scale=values[1], amplitude=values[2])
+        basis = config.basis(values[:1])
+        weights = config.weights(length_scale=values[1], amplitude=values[2])
         return basis[0] @ (weights * coefficients)
 
     def reference(values):
@@ -251,13 +250,13 @@ def test_prepared_methods_keep_time_and_covariance_parameter_gradients():
 def test_prepared_resolution_approximates_covariance_across_length_scale_range(covariance):
     time = np.linspace(-1, 1, 13, dtype=np.float32)
     config = prepare_hsgp((-1, 1), length_scale_range=(0.3, 1.3), covariance=covariance, boundary=9)
-    basis, frequencies = config.basis(time)
+    basis = config.basis(time)
     distances = time.astype(np.float64)[:, None] - time.astype(np.float64)[None, :]
 
     # The sizing heuristic leaves its largest spectral truncation error at
     # the shortest scale. The generous domain isolates that source of error.
     for length_scale, tolerance in ((0.3, 0.025), (0.7, 0.0025), (1.3, 0.0005)):
-        weights = config.weights(frequencies, length_scale=length_scale, amplitude=1.3)
+        weights = config.weights(length_scale=length_scale, amplitude=1.3)
         weighted_basis = np.asarray(basis, dtype=np.float64) * np.asarray(weights, dtype=np.float64)
         expected = 1.3**2 * _unit_covariance(distances, length_scale, covariance)
 
@@ -274,8 +273,8 @@ def test_more_basis_functions_cannot_correct_insufficient_domain_padding():
     errors = []
 
     for settings in (config, more_modes, wider):
-        basis, frequencies = settings.basis(time)
-        weights = settings.weights(frequencies, length_scale=0.2)
+        basis = settings.basis(time)
+        weights = settings.weights(length_scale=0.2)
         weighted_basis = np.asarray(basis, dtype=np.float64) * np.asarray(weights, dtype=np.float64)
         errors.append(np.max(np.abs(weighted_basis @ weighted_basis.T - expected)))
 
@@ -297,9 +296,12 @@ def test_prepare_names_nonreal_ranges_in_errors(argument):
 
 @pytest.mark.parametrize("argument", ["time_range", "length_scale_range"])
 def test_prepare_requires_two_finite_increasing_endpoints(argument):
-    invalid = [1, [], [1], [[1, 2]], [1, 2, 3], [1, 1], [2, 1], [np.nan, 2], [1, np.inf], [-np.inf, 2]]
+    invalid = [1, [], [1], [[1, 2]], [1, 1], [2, 1], [np.nan, 2], [1, np.inf], [-np.inf, 2]]
     if argument == "length_scale_range":
-        invalid.extend(([0, 2], [-1, 2]))
+        invalid.extend(([1, 2, 3], [0, 2], [-1, 2]))
+    else:
+        # Observed positions are accepted for time_range, so only degenerate ones fail.
+        invalid.extend(([1, 1, 1], [0, np.nan, 3]))
     for value in invalid:
         arguments = {"time_range": (0, 4), "length_scale_range": (0.5, 2)}
         arguments[argument] = value
@@ -734,12 +736,12 @@ def test_weights_reject_incompatible_parameter_batch_shapes():
 def test_explicit_hsgp_density_counts_priors_and_positive_jacobians_once():
     data = _data([0.0, 1.0, 3.0])
     config = prepare_hsgp((0.0, 3.0), length_scale_range=(1.0, 4.0), boundary=8.0, n_basis=3)
-    basis, frequencies = config.basis([0.0, 1.0, 3.0])
+    basis = config.basis([0.0, 1.0, 3.0])
     basis_mean = basis.mean(0)
 
     def transformed(time, coefficients, length_scale, amplitude):
-        features, _ = config.basis(time)
-        weights = config.weights(frequencies, length_scale=length_scale, amplitude=amplitude)
+        features = config.basis(time)
+        weights = config.weights(length_scale=length_scale, amplitude=amplitude)
         return {"baseline": (features - basis_mean) @ (weights * coefficients)}
 
     def density(outcome, baseline, coefficients, length_scale, amplitude):
@@ -783,12 +785,12 @@ def test_explicit_hsgp_density_counts_priors_and_positive_jacobians_once():
 def test_explicit_hsgp_prior_and_scenario_replay_preserve_axes_and_frozen_centering(channel_specific):
     training = _channel_data([0.0, 1.0, 3.0], groups=("west", "east"))
     config = prepare_hsgp((0.0, 3.0), length_scale_range=(0.5, 4.0), boundary=8.0, n_basis=3)
-    basis, frequencies = config.basis([0.0, 1.0, 3.0])
+    basis = config.basis([0.0, 1.0, 3.0])
     basis_mean = basis.mean(0)
 
     def transformed(time, coefficients, length_scale, amplitude):
-        features, _ = config.basis(time)
-        weights = config.weights(frequencies, length_scale=length_scale, amplitude=amplitude)
+        features = config.basis(time)
+        weights = config.weights(length_scale=length_scale, amplitude=amplitude)
         if channel_specific:
             curves = jnp.einsum("tb,cb->tc", features - basis_mean, coefficients * weights)
             baseline = jnp.broadcast_to(curves[:, None, :], (time.shape[0], 2, 2))
@@ -886,7 +888,7 @@ def test_channel_specific_hsgp_is_a_fixed_time_multiplier_during_media_response_
     )
 
     config = prepare_hsgp((0.0, 3.0), length_scale_range=(0.5, 4.0), boundary=8.0, n_basis=3)
-    features, frequencies = config.basis([0.0, 1.0, 2.0, 3.0])
+    features = config.basis([0.0, 1.0, 2.0, 3.0])
     basis_mean = features.mean(0)
 
     def transformed_parameters(
@@ -901,9 +903,8 @@ def test_channel_specific_hsgp_is_a_fixed_time_multiplier_during_media_response_
     ):
         carried = geometric_adstock(media, alpha=paid_media_retention, max_lag=0)
         paid_media = root_saturation(carried, exponent=paid_media_exponent) * paid_media_coefficient
-        basis, _ = config.basis(time)
+        basis = config.basis(time)
         weights = config.weights(
-            frequencies,
             length_scale=baseline_length_scale,
             amplitude=baseline_amplitude,
         )
@@ -1017,3 +1018,49 @@ def test_channel_specific_hsgp_is_a_fixed_time_multiplier_during_media_response_
     np.testing.assert_allclose(optimized.sum(), 20.0, rtol=0, atol=2e-5)
     np.testing.assert_allclose(np.sum(weights * np.sqrt(optimized)), optimum_response, rtol=5e-6)
     np.testing.assert_allclose(allocation["response"].sel(allocation="optimized").mean(), optimum_response, rtol=5e-6)
+
+
+def test_prepare_hsgp_records_the_length_scale_range():
+    config = prepare_hsgp((0.0, 100.0), length_scale_range=(10.0, 40.0), covariance="matern52")
+
+    assert config.length_scale_range == (10.0, 40.0)
+    assert HSGPApproximation(center=0.0, boundary=10.0, n_basis=5, covariance="matern52").length_scale_range is None
+
+
+def test_prepare_hsgp_accepts_observed_positions_and_uses_their_extent():
+    positions = np.array([0.0, 7.0, 21.0, 35.0])
+    from_positions = prepare_hsgp(positions, length_scale_range=(10.0, 40.0), covariance="matern52")
+    from_range = prepare_hsgp((0.0, 35.0), length_scale_range=(10.0, 40.0), covariance="matern52")
+
+    assert from_positions == from_range
+    with pytest.raises(ValueError, match="at least two"):
+        prepare_hsgp([3.0], length_scale_range=(10.0, 40.0))
+
+
+def test_approximation_exposes_frequencies_and_returns_only_the_basis():
+    approximation = prepare_hsgp((0.0, 16.0), length_scale_range=(2.0, 8.0), covariance="matern32")
+    raw_basis, raw_frequencies = hsgp_basis(
+        [0.0, 1.0, 2.0], center=approximation.center, boundary=approximation.boundary, n_basis=approximation.n_basis
+    )
+
+    np.testing.assert_array_equal(approximation.frequencies, raw_frequencies)
+    np.testing.assert_array_equal(approximation.basis([0.0, 1.0, 2.0]), raw_basis)
+    np.testing.assert_array_equal(
+        approximation.weights(length_scale=3.0, amplitude=0.5),
+        hsgp_weights(raw_frequencies, length_scale=3.0, amplitude=0.5, covariance="matern32"),
+    )
+
+
+def test_prepare_hsgp_can_center_basis_columns_on_the_supplied_positions():
+    positions = np.arange(0.0, 20.0)
+    centered = prepare_hsgp(positions, length_scale_range=(2.0, 8.0), center_columns=True)
+    raw = prepare_hsgp(positions, length_scale_range=(2.0, 8.0))
+    training_means = np.asarray(raw.basis(positions)).mean(axis=0)
+
+    np.testing.assert_allclose(np.asarray(centered.basis(positions)).mean(axis=0), 0.0, atol=1e-6)
+    np.testing.assert_array_equal(np.asarray(centered.column_means), training_means)
+    later = positions + 30.0
+    np.testing.assert_allclose(centered.basis(later), np.asarray(raw.basis(later)) - training_means)
+    assert raw.column_means is None
+    assert centered.frequencies.shape == (centered.n_basis,)
+    assert prepare_hsgp(positions, length_scale_range=(2.0, 8.0), center_columns=True) == centered

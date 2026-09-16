@@ -13,7 +13,7 @@ import xarray as xr
 
 from mmmjax import (
     CorrelationCholesky,
-    DataBlock,
+    Data,
     Model,
     Positive,
     Real,
@@ -130,7 +130,7 @@ def test_labeled_inputs_reach_named_callbacks_and_have_analytic_jit_gradients(au
         {"theta": Real(dims="experiment"), "beta": Real(dims="channel")},
         density,
         generated,
-        data=DataBlock(auxiliary_data, inputs=auxiliary_inputs),
+        data=Data(auxiliary_data, inputs=auxiliary_inputs),
         transformed_parameters=transformed,
         save=("trial_mean",),
     )
@@ -159,7 +159,7 @@ def test_labeled_inputs_reach_named_callbacks_and_have_analytic_jit_gradients(au
 
 
 def test_labeled_inputs_copy_source_values_labels_and_returned_data(auxiliary_data, auxiliary_inputs):
-    model = Model({}, lambda lift: -jnp.square(lift).sum(), data=DataBlock(auxiliary_data, inputs=auxiliary_inputs))
+    model = Model({}, lambda lift: -jnp.square(lift).sum(), data=Data(auxiliary_data, inputs=auxiliary_inputs))
     auxiliary_inputs["lift"].values[:] = 100.0
     auxiliary_inputs["indices"].values[:] = 0
     auxiliary_inputs["experiment"].values[:] = ["other", "value", "names"]
@@ -184,7 +184,7 @@ def test_labeled_inputs_remain_unscaled_and_fixed_in_new_observation_scenarios(a
             "active": active,
             "media": media,
         },
-        data=DataBlock(auxiliary_data, inputs=auxiliary_inputs, scaling="auto"),
+        data=Data(auxiliary_data, inputs=auxiliary_inputs, scaling="auto"),
         transformed_parameters=lambda theta, lift: {"trial_mean": theta + lift},
     )
     future = pl.DataFrame(
@@ -211,14 +211,14 @@ def test_labeled_inputs_remain_unscaled_and_fixed_in_new_observation_scenarios(a
 
 
 def test_labeled_inputs_require_prepared_data(auxiliary_inputs):
-    with pytest.raises(TypeError, match="DataBlock data must be PreparedData"):
-        Model({}, lambda data: jnp.array(0.0), data=DataBlock(None, inputs=auxiliary_inputs))
+    with pytest.raises(TypeError, match="Data requires PreparedData"):
+        Model({}, lambda data: jnp.array(0.0), data=Data(None, inputs=auxiliary_inputs))
 
 
 @pytest.mark.parametrize("inputs", [{"lift": [1.0]}, xr.DataArray([1.0]), [1.0]])
 def test_labeled_inputs_require_an_xarray_dataset(auxiliary_data, inputs):
     with pytest.raises(TypeError, match=r"inputs must be an xarray\.Dataset"):
-        Model({}, lambda: jnp.array(0.0), data=DataBlock(auxiliary_data, inputs=inputs))
+        Model({}, lambda: jnp.array(0.0), data=Data(auxiliary_data, inputs=inputs))
 
 
 @pytest.mark.parametrize(
@@ -243,7 +243,7 @@ def test_labeled_inputs_require_an_xarray_dataset(auxiliary_data, inputs):
 )
 def test_labeled_inputs_cannot_use_prepared_roles_even_when_unselected(auxiliary_data, name):
     with pytest.raises(ValueError, match="conflicts with a data role"):
-        Model({}, lambda: jnp.array(0.0), data=DataBlock(auxiliary_data, inputs=xr.Dataset({name: 1.0})))
+        Model({}, lambda: jnp.array(0.0), data=Data(auxiliary_data, inputs=xr.Dataset({name: 1.0})))
 
 
 @pytest.mark.parametrize("name", ["media", "controls", "group_region", "group_segment"])
@@ -271,7 +271,7 @@ def test_labeled_inputs_reject_role_and_group_label_namespaces(name, placement):
             inputs = inputs.assign_coords({name: ["first", "second"]})
         message = "conflict with prepared data variables"
     with pytest.raises(ValueError, match=message):
-        Model({}, lambda: jnp.array(0.0), data=DataBlock(data, inputs=inputs))
+        Model({}, lambda: jnp.array(0.0), data=Data(data, inputs=inputs))
 
 
 @pytest.mark.parametrize("name", ["theta", "group", "channel", "external_axis"])
@@ -280,7 +280,7 @@ def test_labeled_input_names_cannot_shadow_parameters_or_coordinates(auxiliary_d
         Model(
             {"theta": Real()},
             lambda theta: -(theta**2),
-            data=DataBlock(auxiliary_data, inputs=xr.Dataset({name: 1.0})),
+            data=Data(auxiliary_data, inputs=xr.Dataset({name: 1.0})),
             coords={"external_axis": ["first"]},
         )
 
@@ -288,7 +288,7 @@ def test_labeled_input_names_cannot_shadow_parameters_or_coordinates(auxiliary_d
 @pytest.mark.parametrize("name", ["", "not-valid", "class", 1])
 def test_labeled_input_names_must_be_valid_identifiers(auxiliary_data, name):
     with pytest.raises(ValueError, match=r"nonempty string|valid non-keyword Python identifier"):
-        Model({}, lambda: jnp.array(0.0), data=DataBlock(auxiliary_data, inputs=xr.Dataset({name: 1.0})))
+        Model({}, lambda: jnp.array(0.0), data=Data(auxiliary_data, inputs=xr.Dataset({name: 1.0})))
 
 
 @pytest.mark.parametrize(
@@ -300,7 +300,7 @@ def test_labeled_inputs_require_finite_real_values_or_booleans(auxiliary_data, v
         Model(
             {},
             lambda: jnp.array(0.0),
-            data=DataBlock(auxiliary_data, inputs=xr.Dataset({"lift": ("experiment", values)})),
+            data=Data(auxiliary_data, inputs=xr.Dataset({"lift": ("experiment", values)})),
         )
 
 
@@ -312,7 +312,7 @@ def test_labeled_inputs_normalize_byte_order_without_changing_values(auxiliary_d
     inputs = xr.Dataset({"lift": ("experiment", values)})
 
     with jax.enable_x64(enable_x64):
-        model = Model({}, lambda: jnp.array(0.0), data=DataBlock(auxiliary_data, inputs=inputs))
+        model = Model({}, lambda: jnp.array(0.0), data=Data(auxiliary_data, inputs=inputs))
         converted = model.data.values["lift"]
 
         assert converted.dtype == jax.dtypes.canonicalize_dtype(dtype)
@@ -336,9 +336,9 @@ def test_labeled_inputs_reject_values_that_overflow_jax_precision(auxiliary_data
     value = value.astype(value.dtype.newbyteorder(byteorder))
     inputs = xr.Dataset({"lift": ("experiment", value)})
     with jax.enable_x64(False), pytest.raises(ValueError, match=message):
-        Model({}, lambda: jnp.array(0.0), data=DataBlock(auxiliary_data, inputs=inputs))
+        Model({}, lambda: jnp.array(0.0), data=Data(auxiliary_data, inputs=inputs))
     with jax.enable_x64(True):
-        model = Model({}, lambda: jnp.array(0.0), data=DataBlock(auxiliary_data, inputs=inputs))
+        model = Model({}, lambda: jnp.array(0.0), data=Data(auxiliary_data, inputs=inputs))
         np.testing.assert_array_equal(model.data.values["lift"], value)
 
 
@@ -349,7 +349,7 @@ def test_shared_input_axes_require_exact_labels_without_alignment(auxiliary_data
         {"weights": (("group", "channel"), [[1.0, 2.0], [3.0, 4.0]])},
         coords={"group": ["east", "west"], "channel": ["video", "search"]},
     )
-    model = Model({}, lambda media, weights: -(media * weights).sum(), data=DataBlock(auxiliary_data, inputs=inputs))
+    model = Model({}, lambda media, weights: -(media * weights).sum(), data=Data(auxiliary_data, inputs=inputs))
     expected = -(auxiliary_data.arrays["media"] * inputs["weights"].values).sum()
     np.testing.assert_allclose(jax.jit(model.log_prob)({}), expected)
 
@@ -362,7 +362,7 @@ def test_shared_input_axes_require_exact_labels_without_alignment(auxiliary_data
     else:
         inputs = inputs.isel({axis: [0]})
     with pytest.raises(ValueError, match=f"Input coordinate '{axis}' must match the model labels and ordering"):
-        Model({}, lambda: jnp.array(0.0), data=DataBlock(auxiliary_data, inputs=inputs))
+        Model({}, lambda: jnp.array(0.0), data=Data(auxiliary_data, inputs=inputs))
 
 
 def test_input_axis_labels_must_agree_with_explicit_model_coordinates(auxiliary_data, auxiliary_inputs):
@@ -370,14 +370,14 @@ def test_input_axis_labels_must_agree_with_explicit_model_coordinates(auxiliary_
         Model(
             {},
             lambda: jnp.array(0.0),
-            data=DataBlock(auxiliary_data, inputs=auxiliary_inputs),
+            data=Data(auxiliary_data, inputs=auxiliary_inputs),
             coords={"experiment": ["third", "second", "first"]},
         )
     with pytest.raises(ValueError, match="Dimension 'experiment' must have length 4"):
         Model(
             {"theta": Real(shape=(4,), dims="experiment")},
             lambda theta: -jnp.square(theta).sum(),
-            data=DataBlock(auxiliary_data, inputs=auxiliary_inputs),
+            data=Data(auxiliary_data, inputs=auxiliary_inputs),
         )
 
 
@@ -385,7 +385,7 @@ def test_unlabeled_independent_input_axes_supply_positional_coordinates(auxiliar
     model = Model(
         {"theta": Real(dims="experiment")},
         lambda theta, lift: normal(lift, theta, 1.0),
-        data=DataBlock(auxiliary_data, inputs=xr.Dataset({"lift": ("experiment", [1.0, 2.0, 3.0])})),
+        data=Data(auxiliary_data, inputs=xr.Dataset({"lift": ("experiment", [1.0, 2.0, 3.0])})),
     )
     assert model.parameters["theta"].shape == (3,)
     np.testing.assert_array_equal(model._input_coords["experiment"], [0, 1, 2])
@@ -394,27 +394,27 @@ def test_unlabeled_independent_input_axes_supply_positional_coordinates(auxiliar
 @pytest.mark.parametrize("axis", ["time", "media_time", "chain", "draw", "sample", "pred_id"])
 def test_labeled_inputs_reject_observation_and_sample_axes(auxiliary_data, axis):
     with pytest.raises(ValueError, match=r"fixed across scenarios|sample dimensions"):
-        Model({}, lambda: jnp.array(0.0), data=DataBlock(auxiliary_data, inputs=xr.Dataset({"lift": (axis, [1.0])})))
+        Model({}, lambda: jnp.array(0.0), data=Data(auxiliary_data, inputs=xr.Dataset({"lift": (axis, [1.0])})))
 
 
 @pytest.mark.parametrize("coordinate", [0.5, ("experiment", ["a", "b", "c"])])
 def test_labeled_inputs_reject_auxiliary_coordinates(auxiliary_data, auxiliary_inputs, coordinate):
     inputs = auxiliary_inputs.assign_coords(note=coordinate)
     with pytest.raises(ValueError, match="Input coordinate 'note' must label only its own dimension"):
-        Model({}, lambda: jnp.array(0.0), data=DataBlock(auxiliary_data, inputs=inputs))
+        Model({}, lambda: jnp.array(0.0), data=Data(auxiliary_data, inputs=inputs))
 
 
 def test_labeled_inputs_require_unique_axis_labels(auxiliary_data, auxiliary_inputs):
     inputs = auxiliary_inputs.assign_coords(experiment=["first", "first", "third"])
     with pytest.raises(ValueError, match="Input coordinate 'experiment' must have unique labels"):
-        Model({}, lambda: jnp.array(0.0), data=DataBlock(auxiliary_data, inputs=inputs))
+        Model({}, lambda: jnp.array(0.0), data=Data(auxiliary_data, inputs=inputs))
 
 
 def test_transformed_quantities_cannot_shadow_auxiliary_inputs(auxiliary_data, auxiliary_inputs):
     model = Model(
         {},
         lambda: jnp.array(0.0),
-        data=DataBlock(auxiliary_data, inputs=auxiliary_inputs),
+        data=Data(auxiliary_data, inputs=auxiliary_inputs),
         transformed_parameters=lambda: {"lift": 0.0},
     )
     with pytest.raises(ValueError, match="Transformed quantity 'lift' conflicts"):

@@ -18,7 +18,7 @@ import mmmjax._nuts as nuts
 import mmmjax.sampling as sampling
 from mmmjax import (
     CorrelationCholesky,
-    DataBlock,
+    Data,
     Interval,
     Model,
     Positive,
@@ -1017,7 +1017,7 @@ def test_auxiliary_inputs_keep_evaluated_values_and_experiment_labels(nuts_calls
             "lift_copy": lift,
             "pointwise": normal_logpdf(lift, expected_lift, uncertainty),
         },
-        data=DataBlock(data, inputs=inputs, scaling=fit_data_scaling(data, scale_outcome=True)),
+        data=Data(data, inputs=inputs, scaling=fit_data_scaling(data, scale_outcome=True)),
         transformed_parameters=lambda effect, reference: {"expected_lift": effect * reference},
         save=("expected_lift",),
         predictive=("lift_copy",),
@@ -1292,7 +1292,7 @@ def test_collected_data_uses_model_scaling_and_does_not_rescale_draws_or_generat
         {"location": Real()},
         density,
         generate,
-        data=DataBlock(data, scaling=scaling),
+        data=Data(data, scaling=scaling),
         generated_dims={"mean": ("time",)},
     )
     expected_outcome = np.array(model.data.values["outcome"])

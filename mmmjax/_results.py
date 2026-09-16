@@ -9,7 +9,7 @@ import xarray as xr
 from jax.typing import ArrayLike
 from numpy.typing import NDArray
 
-from mmmjax.data import PreparedData
+from mmmjax.data import PreparedData, _data_dimensions
 
 _Group: TypeAlias = Mapping[str, ArrayLike]
 _Coordinates: TypeAlias = dict[str, NDArray[np.generic]]
@@ -295,25 +295,3 @@ def _prepared_coordinates(
                 auxiliary[f"group_{column}"] = ("group", np.array([values[index] for values in data.group_values]))
 
     return _coordinates(labels), auxiliary
-
-
-def _data_dimensions(data: PreparedData) -> dict[str, tuple[str, ...]]:
-    """Name each prepared role's axes independently of their lengths."""
-    group_axes = ("group",) if data.group_columns else ()
-    observation_axes = ("time", *group_axes)
-    exposure_axes = ("media_time", *group_axes)
-    return {
-        "outcome": observation_axes,
-        "revenue_per_outcome": observation_axes,
-        "media": (*exposure_axes, "channel"),
-        "organic_media": (*exposure_axes, "organic_channel"),
-        "reach": (*exposure_axes, "rf_channel"),
-        "media_frequency": (*exposure_axes, "rf_channel"),
-        "organic_reach": (*exposure_axes, "organic_rf_channel"),
-        "organic_frequency": (*exposure_axes, "organic_rf_channel"),
-        "spend": (*observation_axes, "channel"),
-        "rf_spend": (*observation_axes, "rf_channel"),
-        "controls": (*observation_axes, "control"),
-        "treatments": (*observation_axes, "treatment"),
-        "population": group_axes,
-    }

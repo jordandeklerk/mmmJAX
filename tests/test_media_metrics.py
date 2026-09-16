@@ -9,7 +9,7 @@ import pytest
 import xarray as xr
 
 import mmmjax
-from mmmjax import DataBlock, Model, Positive, Real, fit_data_scaling, media_metrics, prepare_data
+from mmmjax import Data, Model, Positive, Real, fit_data_scaling, media_metrics, prepare_data
 from mmmjax._results import _collect_results
 
 
@@ -73,7 +73,7 @@ def _model(data, *, scaling=None, cross_group=False):
         {"coefficient": Real((2,))},
         density,
         generated,
-        data=DataBlock(data, scaling=scaling),
+        data=Data(data, scaling=scaling),
         transformed_parameters=transformed,
         dims={"coefficient": ("channel",)},
     )
@@ -464,7 +464,7 @@ def test_media_metrics_population_outcome_inversion_restores_revenue_and_roi(alr
     model = Model(
         {"coefficient": Real((2,))},
         density,
-        data=DataBlock(scaling.transform(data) if already_scaled else data, scaling=scaling),
+        data=Data(scaling.transform(data) if already_scaled else data, scaling=scaling),
         transformed_parameters=transformed,
         dims={"coefficient": ("channel",)},
     )
@@ -537,7 +537,7 @@ def test_media_metrics_keep_model_reference_inputs_fixed_when_changing_channel_s
     model = Model(
         {"roi": Positive(dims="channel")},
         density,
-        data=DataBlock(data, scaling=scaling),
+        data=Data(data, scaling=scaling),
         transformed_parameters=quantities,
     )
     roi = np.array([[[1.0, 2.0], [3.0, 4.0]]], dtype=np.float32)
@@ -610,7 +610,7 @@ def _linear_model(*, media=(1, 3), spend=(1.0, 3.0), baseline=0.0, scaling=None)
     model = Model(
         {"coefficient": Real()},
         lambda coefficient: -(coefficient**2),
-        data=DataBlock(data, scaling=scaling),
+        data=Data(data, scaling=scaling),
         transformed_parameters=lambda media, coefficient: {"expected_users": baseline + media[:, 0] * coefficient},
     )
     return model, _collect_results({"coefficient": np.array([[1.0, 2.0]], dtype=np.float32)}, data=data)
@@ -823,7 +823,7 @@ def _rf_case(*, mixed=False, scaled=False):
     model = Model(
         {"coefficient": Real()},
         density,
-        data=DataBlock(data, scaling="auto" if scaled else None),
+        data=Data(data, scaling="auto" if scaled else None),
         transformed_parameters=transformed,
     )
     results = _collect_results(

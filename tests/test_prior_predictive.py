@@ -13,7 +13,7 @@ import mmmjax
 import mmmjax.sampling as sampling
 from mmmjax import (
     CorrelationCholesky,
-    DataBlock,
+    Data,
     Interval,
     Model,
     Positive,
@@ -194,7 +194,7 @@ def _prepared_model(*, scaling=False):
         {"location": Real()},
         forbidden_density,
         generate,
-        data=DataBlock(data, scaling=fit_data_scaling(data, scale_outcome=True) if scaling else None),
+        data=Data(data, scaling=fit_data_scaling(data, scale_outcome=True) if scaling else None),
         predictive=("prediction",),
         log_likelihood=("pointwise",),
         log_prior=("lp_location",),
@@ -439,7 +439,7 @@ def test_prior_auxiliary_inputs_supply_parameter_axes_and_saved_calculations(gen
         forbidden_density,
         lambda key, lift: {"lift_copy": lift},
         prior=lambda key: {"effect": jnp.array([1.0, 2.0, 3.0])},
-        data=DataBlock(data, inputs=inputs),
+        data=Data(data, inputs=inputs),
         transformed_parameters=lambda basis, effect: {"expected_lift": basis @ effect},
         save=("expected_lift",),
         predictive=("lift_copy",),

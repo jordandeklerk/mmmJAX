@@ -8,7 +8,7 @@ import pytest
 import xarray as xr
 
 from mmmjax import (
-    DataBlock,
+    Data,
     Model,
     Real,
     generate_quantities,
@@ -191,7 +191,7 @@ def test_transformed_data_outputs_are_validated_at_construction(transformed_data
 
 def test_transformed_data_uses_declared_variable_names_only():
     data = _data()
-    block = DataBlock(data, variables={"revenue": "outcome", "impressions": "media"})
+    block = Data(data, variables={"revenue": "outcome", "impressions": "media"})
 
     def log_density(revenue, log_impressions, coefficient):
         return normal(revenue, log_impressions @ coefficient, 1.0)

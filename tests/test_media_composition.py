@@ -7,7 +7,7 @@ import polars as pl
 import pytest
 
 from mmmjax import (
-    DataBlock,
+    Data,
     Interval,
     Model,
     Positive,
@@ -515,7 +515,7 @@ def _rf_model(data, *, grouped=False, scaling=None, include_priors=True):
         parameters,
         density,
         generate,
-        data=DataBlock(data, scaling=scaling),
+        data=Data(data, scaling=scaling),
         transformed_parameters=mixed_quantities if mixed else rf_quantities,
         save=saved,
         generated_dims=generated_dims,

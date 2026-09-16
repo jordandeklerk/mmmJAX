@@ -10,7 +10,7 @@ import pytest
 import xarray as xr
 
 from mmmjax import (
-    DataBlock,
+    Data,
     Interval,
     Model,
     Positive,
@@ -112,7 +112,7 @@ def _model(data):
         },
         density,
         generated,
-        data=DataBlock(data, scaling=fit_data_scaling(data, scale_outcome=True)),
+        data=Data(data, scaling=fit_data_scaling(data, scale_outcome=True)),
         transformed_parameters=transformed,
         coords={"annual_mode": ["sin_1", "cos_1"]},
         generated_dims={
@@ -349,7 +349,7 @@ def test_dataframe_scenario_preserves_additional_data_roles_and_channel_labels()
             "population_copy": population,
         }
 
-    model = Model({"intercept": Real()}, density, generated, data=DataBlock(training, scaling=None))
+    model = Model({"intercept": Real()}, density, generated, data=Data(training, scaling=None))
     results = _collect_results({"intercept": jnp.array([[100.0, 110.0]])}, data=training)
     scenario = frame.iloc[::-1, ::-1].copy()
     scenario["video_frequency"] += 1

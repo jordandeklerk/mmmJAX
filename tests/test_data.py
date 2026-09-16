@@ -13,14 +13,25 @@ import pytest
 import xarray as xr
 
 import mmmjax
-from mmmjax import DataBlock, Model, PreparedData, Real, fit_data_scaling, geometric_adstock, normal, prepare_data
+from mmmjax import (
+    Data,
+    Model,
+    ModelInput,
+    PreparedData,
+    Real,
+    fit_data_scaling,
+    geometric_adstock,
+    normal,
+    prepare_data,
+    prepare_hsgp,
+)
 from mmmjax.data import _prepare_frame, _prepare_panel
 
 
 def test_data_api_exports_public_entry_points():
-    assert mmmjax.data.__all__ == ["DataBlock", "PreparedData", "prepare_data", "select_channels"]
-    assert {"DataBlock", "PreparedData", "prepare_data"}.issubset(mmmjax.__all__)
-    assert DataBlock is mmmjax.data.DataBlock
+    assert mmmjax.data.__all__ == ["Data", "ModelInput", "PreparedData", "prepare_data", "select_channels"]
+    assert {"Data", "PreparedData", "prepare_data"}.issubset(mmmjax.__all__)
+    assert Data is mmmjax.data.Data
     assert PreparedData is mmmjax.data.PreparedData
     assert not hasattr(PreparedData, "align_to")
     assert not hasattr(PreparedData, "to_jax")
@@ -35,7 +46,7 @@ def block_observations():
 
 def test_data_block_snapshots_observations_and_names(block_observations):
     variables = {"revenue": "outcome", "impressions": "media"}
-    block = DataBlock(block_observations, variables=variables)
+    block = Data(block_observations, variables=variables)
 
     block_observations.arrays["outcome"][:] = -1
     block_observations.columns["outcome"] = ("changed",)
@@ -57,7 +68,7 @@ def test_data_block_snapshots_observations_and_names(block_observations):
 
 def test_data_block_snapshots_auxiliary_arrays_and_labels(block_observations):
     inputs = xr.Dataset({"lift": ("experiment", [1.0, 2.0])}, coords={"experiment": ["a", "b"]})
-    block = DataBlock(block_observations, inputs=inputs)
+    block = Data(block_observations, inputs=inputs)
 
     inputs["lift"].values[:] = 0
     inputs["experiment"].values[:] = "z"
@@ -72,9 +83,9 @@ def test_data_block_snapshots_auxiliary_arrays_and_labels(block_observations):
 def test_data_block_preserves_fitted_scaling_identity_in_snapshots(block_observations):
     scaling = fit_data_scaling(block_observations, scale_outcome=True)
     scaled = scaling.transform(block_observations)
-    block = DataBlock(scaled, scaling=scaling)
+    block = Data(scaled, scaling=scaling)
 
-    observations, variables, inputs, fitted = block._snapshot()
+    observations, variables, inputs, _, fitted = block._snapshot()
 
     assert variables is None
     assert inputs is None
@@ -83,7 +94,7 @@ def test_data_block_preserves_fitted_scaling_identity_in_snapshots(block_observa
     np.testing.assert_array_equal(observations.arrays["outcome"], scaled.arrays["outcome"])
     observations.arrays["outcome"][:] = -1
 
-    observations, _, _, fitted = block._snapshot()
+    observations, _, _, _, fitted = block._snapshot()
     assert observations._scaling is fitted
     assert "outcome" in fitted._layout.columns
     np.testing.assert_array_equal(observations.arrays["outcome"], scaled.arrays["outcome"])
@@ -91,7 +102,7 @@ def test_data_block_preserves_fitted_scaling_identity_in_snapshots(block_observa
 
 def test_data_block_reuses_fitted_scaling_with_independent_data(block_observations):
     scaling = fit_data_scaling(block_observations)
-    block = DataBlock(block_observations, scaling=scaling)
+    block = Data(block_observations, scaling=scaling)
 
     assert block.scaling is scaling
     assert block.observations is not block_observations
@@ -102,9 +113,9 @@ def test_data_block_preserves_a_distinct_applied_scaler(block_observations):
     applied = fit_data_scaling(block_observations)
     other = fit_data_scaling(block_observations, scale_outcome=True)
     scaled = applied.transform(block_observations)
-    block = DataBlock(scaled, scaling=other)
+    block = Data(scaled, scaling=other)
 
-    observations, _, _, configured = block._snapshot()
+    observations, _, _, _, configured = block._snapshot()
 
     assert observations._scaling is applied
     assert configured is other
@@ -113,7 +124,7 @@ def test_data_block_preserves_a_distinct_applied_scaler(block_observations):
 @pytest.mark.parametrize("variables", [None, {}])
 @pytest.mark.parametrize("scaling", [None, "auto"])
 def test_data_block_retains_optional_declarations(block_observations, variables, scaling):
-    block = DataBlock(block_observations, variables=variables, scaling=scaling)
+    block = Data(block_observations, variables=variables, scaling=scaling)
 
     assert block.variables == variables
     assert block.scaling == scaling
@@ -122,8 +133,8 @@ def test_data_block_retains_optional_declarations(block_observations, variables,
 
 @pytest.mark.parametrize("data", [None, {}, np.ones(3), pl.DataFrame({"x": [1]})])
 def test_data_block_requires_prepared_observations(data):
-    with pytest.raises(TypeError, match="DataBlock data must be PreparedData"):
-        DataBlock(data)
+    with pytest.raises(TypeError, match="Data requires PreparedData"):
+        Data(data)
 
 
 @pytest.mark.parametrize(
@@ -142,7 +153,7 @@ def test_data_block_requires_prepared_observations(data):
 )
 def test_data_block_validates_declarations(block_observations, option, error, message):
     with pytest.raises(error, match=message):
-        DataBlock(block_observations, **option)
+        Data(block_observations, **option)
 
 
 @pytest.fixture(params=["pandas", "pandas_nullable", "pandas_arrow", "polars", "pyarrow"])
@@ -3084,3 +3095,119 @@ def test_prepare_frame_does_not_collect_lazy_inputs():
 def test_prepare_frame_rejects_inputs_that_are_not_dataframes(source):
     with pytest.raises(TypeError):
         _prepare_frame(source, keys=["week"], values=[])
+
+
+def _weekly_media_frames():
+    weeks = [f"2026-01-{day:02d}" for day in (5, 12, 19, 26)]
+    frame = pl.DataFrame({"week": weeks, "video": [1.0, 2.0, 3.0, 4.0], "sales": [5.0, 6.0, 7.0, 8.0]})
+    history = pl.DataFrame({"week": ["2025-12-22", "2025-12-29"], "video": [0.5, 0.7]})
+    return frame, history
+
+
+def test_time_positions_measure_elapsed_days_from_the_first_modeled_date_with_negative_history():
+    frame, history = _weekly_media_frames()
+    data = prepare_data(frame, time="week", outcome="sales", media=["video"], media_history=history)
+
+    np.testing.assert_array_equal(data.time_positions, [0.0, 7.0, 14.0, 21.0])
+    np.testing.assert_array_equal(data.media_time_positions, [-14.0, -7.0, 0.0, 7.0, 14.0, 21.0])
+    assert data.time_positions.dtype == np.float64
+    assert data.media_time_positions.dtype == np.float64
+
+
+def test_time_positions_match_the_model_time_inputs():
+    frame, history = _weekly_media_frames()
+    data = prepare_data(frame, time="week", outcome="sales", media=["video"], media_history=history)
+    model = Model(
+        {"level": Real()},
+        lambda outcome, time, media_time, level: jnp.sum(outcome + time.sum() + media_time.sum() + level),
+        data=data,
+    )
+
+    np.testing.assert_array_equal(model.data.values["time"], data.time_positions)
+    np.testing.assert_array_equal(model.data.values["media_time"], data.media_time_positions)
+
+
+def test_time_positions_use_numeric_labels_relative_to_the_earliest_label_and_are_empty_without_media():
+    data = prepare_data(
+        pl.DataFrame({"time": [10, 11, 13, 15], "sales": [1.0, 2.0, 3.0, 4.0]}), time="time", outcome="sales"
+    )
+
+    np.testing.assert_array_equal(data.time_positions, [0.0, 1.0, 3.0, 5.0])
+    assert data.media_time_positions.shape == (0,)
+    assert data.media_time_positions.dtype == np.float64
+    data.time_positions[0] = 99.0
+    np.testing.assert_array_equal(data.time_positions, [0.0, 1.0, 3.0, 5.0])
+
+
+def test_day_of_year_positions_follow_the_calendar_and_require_dates():
+    frame, history = _weekly_media_frames()
+    data = prepare_data(frame, time="week", outcome="sales", media=["video"], media_history=history)
+
+    np.testing.assert_array_equal(data.day_of_year, [5.0, 12.0, 19.0, 26.0])
+    np.testing.assert_array_equal(data.media_day_of_year, [356.0, 363.0, 5.0, 12.0, 19.0, 26.0])
+    assert data.day_of_year.dtype == data.media_day_of_year.dtype == np.float64
+
+    numeric = prepare_data(pl.DataFrame({"time": [1, 2, 3], "sales": [1.0, 2.0, 3.0]}), time="time", outcome="sales")
+    assert numeric.media_day_of_year.shape == (0,)
+    with pytest.raises(ValueError, match="calendar dates"):
+        _ = numeric.day_of_year
+
+
+def test_model_inputs_list_every_requestable_name_with_kind_and_axes():
+    frame, history = _weekly_media_frames()
+    data = prepare_data(frame, time="week", outcome="sales", media=["video"], media_history=history)
+    inputs = data.model_inputs
+
+    assert list(inputs)[:2] == ["outcome", "media"]
+    assert inputs["media"] == ModelInput(kind="array", axes=("media_time", "channel"), source="data")
+    assert inputs["outcome"] == ModelInput(kind="array", axes=("time",), source="data")
+    assert inputs["time"] == ModelInput(kind="array", axes=("time",), source="time")
+    assert inputs["media_day_of_year"] == ModelInput(kind="array", axes=("media_time",), source="time")
+    assert inputs["n_periods"] == ModelInput(kind="integer", axes=(), source="builtin")
+    assert inputs["unscale_outcome"] == ModelInput(kind="function", axes=(), source="builtin")
+    assert inputs["reference_media"] == ModelInput(
+        kind="array", axes=("reference_media_time", "channel"), source="reference"
+    )
+    assert inputs["reference_day_of_year"].axes == ("reference_time",)
+    assert inputs["reference_n_periods"] == ModelInput(kind="integer", axes=(), source="reference")
+
+    names = [name for name in inputs if name != "unscale_outcome"]
+    copies = ", ".join(f"copy_{name}={name}" for name in names)
+    generate = eval(
+        f"lambda key, unscale_outcome, {', '.join(names)}: dict(restored=unscale_outcome(outcome), {copies})"
+    )
+    model = Model({"level": Real()}, lambda outcome, level: jnp.sum(outcome * level), generate, data=data)
+    outputs = model.generate_quantities(jax.random.key(0), {"level": jnp.array(1.0)}, model.data)
+    assert set(outputs) == {"restored", *(f"copy_{name}" for name in names)}
+    assert outputs["copy_n_periods"] == 4
+
+
+def test_model_inputs_omit_absent_roles_and_calendar_names_for_numeric_labels():
+    data = prepare_data(pl.DataFrame({"time": [1, 2, 3], "sales": [1.0, 2.0, 3.0]}), time="time", outcome="sales")
+    inputs = data.model_inputs
+
+    assert "media" not in inputs and "media_time" not in inputs and "reference_media" not in inputs
+    assert "day_of_year" not in inputs and "media_day_of_year" not in inputs
+    unobserved = prepare_data(pl.DataFrame({"time": [1, 2, 3], "video": [1.0, 2.0, 3.0]}), time="time", media=["video"])
+    assert not {"outcome", "outcome_scale", "outcome_offset", "unscale_outcome"} & unobserved.model_inputs.keys()
+
+
+def test_data_constants_are_validated_copied_and_listed(block_observations):
+    approximation = prepare_hsgp((0.0, 10.0), length_scale_range=(1.0, 4.0))
+    constants = {"max_lag": 3, "annual_order": 2, "approximation": approximation}
+    block = Data(block_observations, constants=constants)
+    constants["max_lag"] = 99
+
+    assert block.constants == {"max_lag": 3, "annual_order": 2, "approximation": approximation}
+    assert Data(block_observations).constants == {}
+    inputs = block.model_inputs
+    assert inputs["max_lag"] == ModelInput(kind="constant", axes=(), source="constant")
+    assert inputs["outcome"] == block_observations.model_inputs["outcome"]
+    for invalid, error, message in (
+        ([("max_lag", 3)], TypeError, "constants must map"),
+        ({"not valid": 3}, ValueError, "valid Python identifier"),
+        ({"weights": [1.0, 2.0]}, TypeError, "hashable"),
+        ({"array": np.zeros(2)}, TypeError, "hashable"),
+    ):
+        with pytest.raises(error, match=message):
+            Data(block_observations, constants=invalid)

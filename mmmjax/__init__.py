@@ -1,7 +1,7 @@
 """Bayesian marketing mix modeling expressed entirely in JAX."""
 
 from mmmjax.adstock import delayed_adstock, geometric_adstock, weibull_cdf_adstock, weibull_pdf_adstock
-from mmmjax.data import DataBlock, PreparedData, prepare_data, select_channels
+from mmmjax.data import Data, ModelInput, PreparedData, prepare_data, select_channels
 from mmmjax.distributions import (
     bernoulli,
     bernoulli_logcdf,
@@ -121,7 +121,7 @@ from mmmjax.distributions import (
     uniform_logsf,
     uniform_rng,
 )
-from mmmjax.hsgp import HSGPConfig, hsgp_basis, hsgp_weights, prepare_hsgp
+from mmmjax.hsgp import HSGPApproximation, hsgp_basis, hsgp_weights, prepare_hsgp
 from mmmjax.media import media_response, reach_frequency_response
 from mmmjax.model import Model
 from mmmjax.optimization import SpendConstraint, optimize_budget
@@ -148,12 +148,13 @@ __version__ = "0.0.1"
 
 __all__ = [
     "CorrelationCholesky",
-    "DataBlock",
+    "Data",
     "DataScaling",
-    "HSGPConfig",
+    "HSGPApproximation",
     "Interval",
     "LowerBound",
     "Model",
+    "ModelInput",
     "Parameterization",
     "Positive",
     "PreparedData",

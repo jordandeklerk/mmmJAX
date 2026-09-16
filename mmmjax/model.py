@@ -16,8 +16,17 @@ import xarray as xr
 from jax.typing import ArrayLike, DTypeLike
 from numpy.typing import NDArray
 
-from mmmjax._results import _coordinates, _data_dimensions, _dimensions, _name, _prepared_coordinates, _same_labels
-from mmmjax.data import DataBlock, PreparedData, _DataLayout, _prepare_model_frame, _time_positions
+from mmmjax._results import _coordinates, _dimensions, _name, _prepared_coordinates, _same_labels
+from mmmjax.data import (
+    Data,
+    PreparedData,
+    _data_dimensions,
+    _DataLayout,
+    _day_of_year,
+    _prepare_model_frame,
+    _time_positions,
+    _TimeInput,
+)
 from mmmjax.parameters import (
     CorrelationCholesky,
     Interval,
@@ -66,6 +75,7 @@ class _ModelData:
     transformed_values: dict[str, jax.Array] = field(default_factory=dict)
     static_values: tuple[tuple[str, int | bool], ...] = field(default=(), metadata={"static": True})
     transformed_sources: _DataVariables = field(default=(), metadata={"static": True})
+    constants: tuple[tuple[str, object], ...] = field(default=(), metadata={"static": True})
 
 
 @dataclass(frozen=True, slots=True, eq=False, init=False)
@@ -80,11 +90,12 @@ class Model:
     a leading positional argument instead.
 
     Prepared data supplies the selected role names, such as ``outcome`` and
-    ``media``, together with elapsed ``time`` and ``media_time``,
+    ``media``, together with elapsed ``time`` and ``media_time``, the calendar
+    ``day_of_year`` and ``media_day_of_year``,
     ``n_periods``, the outcome conversions ``outcome_scale``,
     ``outcome_offset``, and ``unscale_outcome``, and the training inputs
     ``reference_<role>`` and ``reference_n_periods`` when evaluating new
-    data. ``DataBlock`` variables replace these names with declared ones.
+    data. ``Data`` variables replace these names with declared ones.
 
     Inspect derived quantities with ``evaluate`` and the constrained log
     density with ``log_prob`` before fitting. Samplers call ``log_density``
@@ -124,10 +135,11 @@ class Model:
         For dependent or custom draws, supply a JAX-compatible ``prior(key)``
         returning all constrained parameters with their declared shapes.
         A custom sampler does not automatically record log-prior terms.
-    data : DataBlock or PreparedData, optional
-        Fixed model inputs and their declarations. Use ``DataBlock`` for
-        custom names, auxiliary observations, or scaling. Plain prepared data
-        uses standard role names without fitting new transformations.
+    data : Data or PreparedData, optional
+        Fixed model inputs and their declarations. Use ``Data`` for
+        custom names, auxiliary observations, constants, or scaling. Plain
+        prepared data uses standard role names without fitting new
+        transformations.
     transformed_data : callable, optional
         Data-only calculations returning named fixed values. Runs once at
         construction and again for changed data, not per parameter draw.
@@ -192,7 +204,7 @@ class Model:
         *,
         save: Sequence[str] = (),
         prior: Mapping[str, Prior] | PriorSampler | None = None,
-        data: DataBlock | PreparedData | None = None,
+        data: Data | PreparedData | None = None,
         transformed_data: TransformedData | None = None,
         transformed_parameters: TransformedParameters | None = None,
         dims: Mapping[str, Sequence[str]] | None = None,
@@ -207,10 +219,14 @@ class Model:
         parameter_names = tuple(name for name, _ in parameterizations)
         variables: Mapping[str, str] | None = None
         inputs: xr.Dataset | None = None
+        constants: dict[str, object] = {}
         scaling: DataScaling | Literal["auto"] | None = None
-        if isinstance(data, DataBlock):
-            data, variables, inputs, scaling = data._snapshot()
-        variable_declarations = _data_variable_declarations(variables, parameter_names)
+        if isinstance(data, Data):
+            data, variables, inputs, constants, scaling = data._snapshot()
+        conflicts = sorted(set(constants) & set(parameter_names))
+        if conflicts:
+            raise ValueError(f"Constants {conflicts} conflict with declared parameters")
+        variable_declarations = _data_variable_declarations(variables, parameter_names, tuple(constants))
         prepared_data = None
         fitted_scaling = None
         time_inputs: tuple[str, ...] = ()
@@ -220,9 +236,7 @@ class Model:
                 raise ValueError("transformed_data requires prepared data")
         else:
             if not isinstance(data, PreparedData):
-                raise TypeError(
-                    "data must be a DataBlock or PreparedData. Use prepare_data with the observation dataframe"
-                )
+                raise TypeError("data must be Data or PreparedData. Use prepare_data with the observation dataframe")
             if scaling == "auto":
                 fitted_scaling = fit_data_scaling(data)
             elif isinstance(scaling, DataScaling):
@@ -241,7 +255,7 @@ class Model:
                 | _requested_inputs(transformed_data, None, None)
             )
             time_inputs = tuple(
-                name for name in ("time", "media_time") if name in requested or f"reference_{name}" in requested
+                name for name in get_args(_TimeInput) if name in requested or f"reference_{name}" in requested
             )
             values = data._to_jax()
             if time_inputs:
@@ -252,7 +266,7 @@ class Model:
                 for role, value in values.items()
                 if f"reference_{role}" in requested
             }
-            reserved = {f"reference_{role}" for role in (*_data_dimensions(data), "time", "media_time")}
+            reserved = {f"reference_{role}" for role in (*_data_dimensions(data), *get_args(_TimeInput))}
             reserved.update(("outcome_scale", "outcome_offset", "unscale_outcome", "n_periods", "reference_n_periods"))
             conflicts = reserved & set(parameter_names) if variable_declarations is None else set()
             if conflicts:
@@ -276,6 +290,7 @@ class Model:
                 n_periods=len(data.time_values),
                 reference_n_periods=len(data.time_values),
                 reserved_names=tuple(sorted(reserved)) if variable_declarations is None else (),
+                constants=tuple(constants.items()),
             )
 
         result_dims = _dimensions(dims)
@@ -291,11 +306,11 @@ class Model:
                 axis_coordinates[axis] = labels
             reserved_parameters = parameter_names if variable_declarations is None else ()
             input_values, input_dims, input_coords = _prepare_inputs(
-                inputs, data, reserved_parameters, axis_coordinates
+                inputs, data, reserved_parameters, axis_coordinates, tuple(constants)
             )
             axis_coordinates.update(input_coords)
             assert prepared_data is not None
-            conflicts = set(prepared_data.reserved_names) & (set(input_values) | set(axis_coordinates))
+            conflicts = set(prepared_data.reserved_names) & (set(input_values) | set(axis_coordinates) | set(constants))
             if conflicts:
                 raise ValueError(f"Input or coordinate names {sorted(conflicts)} conflict with model-supplied inputs")
             prepared_data.values.update(input_values)
@@ -441,8 +456,10 @@ class Model:
         """
         if self._data is None:
             return {}
+        constants = {name: name for name, _ in self._data.constants}
         if self._data.variable_sources is not None:
-            return {name: source_name for name, _, source_name in self._data.variable_sources}
+            declared = {name: source_name for name, _, source_name in self._data.variable_sources}
+            return declared | constants
         available = set().union(*_data_sources(self._data).values())
         return {name: name for name in sorted(available)}
 
@@ -503,7 +520,7 @@ class Model:
 
         Reuse fitted scaling, the time origin, and parameter declarations
         without changing the model's stored data. Call outside JAX transformations.
-        Auxiliary ``DataBlock`` inputs retain their original values and labels.
+        Auxiliary ``Data`` inputs retain their original values and labels.
 
         Parameters
         ----------
@@ -925,6 +942,7 @@ def _prepare_inputs(
     data: PreparedData,
     parameter_names: tuple[str, ...],
     coordinates: Mapping[str, NDArray[np.generic]],
+    constant_names: tuple[str, ...] = (),
 ) -> tuple[dict[str, jax.Array], dict[str, tuple[str, ...]], dict[str, NDArray[np.generic]]]:
     """Validate fixed labeled inputs without aligning or rescaling their values."""
     if inputs is None:
@@ -935,7 +953,7 @@ def _prepare_inputs(
     dimensions = _dimensions(
         {_name(name): tuple(_name(axis) for axis in value.dims) for name, value in inputs.data_vars.items()}
     )
-    if {"time", "media_time"} & inputs.sizes.keys():
+    if set(get_args(_TimeInput)) & inputs.sizes.keys():
         raise ValueError("Additional inputs remain fixed across scenarios. Use axes other than time or media_time")
     if {"chain", "draw", "sample", "pred_id"} & inputs.sizes.keys():
         raise ValueError("Additional inputs must not contain sample dimensions")
@@ -960,7 +978,8 @@ def _prepare_inputs(
         if axis in coordinates and not _same_labels(coordinates[axis], labels):
             raise ValueError(f"Input coordinate {axis!r} must match the model labels and ordering")
 
-    reserved = role_names | {"time", "media_time"} | set(parameter_names) | set(coordinates) | set(input_coords)
+    reserved = role_names | set(get_args(_TimeInput)) | set(parameter_names) | set(coordinates) | set(input_coords)
+    reserved |= set(constant_names)
     values = {}
     for name in dimensions:
         _validate_name(name, label="input")
@@ -1012,10 +1031,14 @@ def _model_time_inputs(
     """Supply numeric positions without selecting a seasonal or time-varying model."""
     inputs = {}
     for name in names:
-        labels = data.time_values if name == "time" else data.media_time_values
-        if labels:
+        labels = data.media_time_values if name.startswith("media_") else data.time_values
+        if not labels:
+            continue
+        if name.endswith("day_of_year"):
+            positions = _day_of_year(labels)
+        else:
             positions, _ = _time_positions(labels, origin=origin)
-            inputs[name] = jnp.asarray(positions, dtype=dtype)
+        inputs[name] = jnp.asarray(positions, dtype=dtype)
     return inputs
 
 
@@ -1033,15 +1056,18 @@ def _result_names(values: Sequence[str], *, name: str) -> tuple[str, ...]:
 def _data_variable_declarations(
     declarations: Mapping[str, str] | None,
     parameter_names: tuple[str, ...],
+    constant_names: tuple[str, ...] = (),
 ) -> dict[str, str] | None:
     """Copy explicit callback names without changing the underlying data layout."""
     if declarations is None:
         return None
 
-    # DataBlock validates the names and sources before the model receives them.
+    # Data validates the names and sources before the model receives them.
     for name in declarations:
         if name in parameter_names:
             raise ValueError(f"Data variable {name!r} conflicts with a declared parameter")
+        if name in constant_names:
+            raise ValueError(f"Data variable {name!r} conflicts with a constant")
 
     return dict(declarations)
 
@@ -1052,6 +1078,7 @@ def _data_sources(data: _ModelData) -> dict[str, set[str]]:
         "data": set(data.values),
         "reference": set(data.reference_values),
         "builtin": {"n_periods", "reference_n_periods"},
+        "constant": {name for name, _ in data.constants},
     }
     if data.outcome_scaling is not None:
         sources["builtin"].update(("outcome_scale", "outcome_offset", "unscale_outcome"))
@@ -1079,7 +1106,7 @@ def _callback_data_names(data: _ModelData) -> set[str]:
     """Identify data names visible to the model's program blocks."""
     fixed = set(data.transformed_values) | dict(data.static_values).keys()
     if data.variable_sources is not None:
-        return {name for name, _, _ in data.variable_sources} | fixed
+        return {name for name, _, _ in data.variable_sources} | fixed | {name for name, _ in data.constants}
     return set().union(*_data_sources(data).values(), data.reserved_names, fixed)
 
 
@@ -1197,7 +1224,10 @@ def _bind_inputs(
     sources = (
         _data_sources(data)
         if data.variable_sources is None
-        else {"variable": {variable for variable, _, _ in data.variable_sources}}
+        else {
+            "variable": {variable for variable, _, _ in data.variable_sources},
+            "constant": {name for name, _ in data.constants},
+        }
     )
     sources["transformed_data"] = set(data.transformed_values) | dict(data.static_values).keys()
     sources["parameter"] = set(parameter_names)
@@ -1213,7 +1243,7 @@ def _bind_inputs(
             if name == "transformed_data":
                 raise ValueError(
                     f"transformed_data requests unknown data variable {argument.name!r}. "
-                    "Declare its source in DataBlock variables. Sampled parameters are not available here"
+                    "Declare its source in Data variables. Sampled parameters are not available here"
                 )
             if argument.name in data.reserved_names:
                 role = argument.name.removeprefix("reference_") if argument.name.startswith("reference_") else "outcome"
@@ -1223,10 +1253,12 @@ def _bind_inputs(
             if has_transformed:
                 bindings.append((argument.name, "transformed"))
                 continue
+            available = sorted(set().union(*sources.values()))
             if data.variable_sources is not None:
                 raise ValueError(
                     f"{name} requests unknown input {argument.name!r}. "
-                    "Declare its source in DataBlock variables or declare it as a parameter"
+                    "Declare its source in Data variables or declare it as a parameter. "
+                    f"Available inputs are {available}"
                 )
             if argument.name in ("data", "effects"):
                 raise TypeError(
@@ -1234,7 +1266,9 @@ def _bind_inputs(
                     "Request individual inputs by name, such as outcome or a declared parameter"
                 )
             raise ValueError(
-                f"{name} requests unknown input {argument.name!r}. Use a selected data role or declared parameter"
+                f"{name} requests unknown input {argument.name!r}. Use a selected data role or declared parameter. "
+                f"Available inputs are {available}, with time, media_time, day_of_year, media_day_of_year, "
+                "and reference_ inputs on request"
             )
         if len(matches) > 1:
             raise ValueError(
@@ -1266,6 +1300,7 @@ def _callback_inputs(
         "transformed": effects,
         "reference": data.reference_values,
         "transformed_data": {**data.transformed_values, **dict(data.static_values)},
+        "constant": dict(data.constants),
     }
     arguments: dict[str, _CallbackValue] = {}
     for argument, source in bindings:
@@ -1290,7 +1325,7 @@ def _callback_inputs(
                 if data.variable_sources is not None:
                     raise ValueError(
                         f"{name} requires input {argument!r}. "
-                        "Return it from transformed_parameters or declare its source in DataBlock variables"
+                        "Return it from transformed_parameters or declare its source in Data variables"
                     )
                 if argument in ("data", "effects"):
                     raise ValueError(

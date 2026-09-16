@@ -10,7 +10,7 @@ import pytest
 import xarray as xr
 
 from mmmjax import (
-    DataBlock,
+    Data,
     Model,
     Positive,
     Prior,
@@ -360,7 +360,7 @@ def test_aligned_time_history_and_group_metadata_follow_actual_scaled_model_inpu
     model = Model(
         {},
         lambda outcome: -jnp.square(outcome).sum(),
-        data=DataBlock(incoming, scaling=scaling),
+        data=Data(incoming, scaling=scaling),
     )
     assert model._time_values == expected.time_values == (2, 3, 4)
     assert model._media_time_values == expected.media_time_values == (1, 2, 3, 4)
@@ -610,7 +610,7 @@ def test_auxiliary_inputs_remain_fixed_across_shorter_reordered_scenarios():
         {"coefficient": Real(dims="channel")},
         lambda coefficient: -jnp.square(coefficient).sum(),
         lambda key, media, experiment_spend: {"media_copy": media, "experiment_copy": experiment_spend},
-        data=DataBlock(data, inputs=inputs),
+        data=Data(data, inputs=inputs),
         transformed_parameters=lambda experiment_spend, coefficient: {
             "experiment_response": experiment_spend @ coefficient
         },
@@ -680,7 +680,7 @@ def test_generated_reference_inputs_keep_training_labels_for_new_observation_win
         {"level": Real()},
         lambda level: -jnp.square(level),
         generated,
-        data=DataBlock(data, scaling=scaling),
+        data=Data(data, scaling=scaling),
         predictive=("restored_outcome", "original_outcome"),
     )
     results = _collect_results({"level": np.zeros((1, 2), dtype=np.float32)}, data=data)
@@ -768,7 +768,7 @@ def test_generated_population_outcome_scale_retains_group_axis_even_for_one_grou
         {"level": Real()},
         lambda level: -jnp.square(level),
         lambda key, outcome_scale: {"outcome_divisor": outcome_scale},
-        data=DataBlock(data, scaling=scaling),
+        data=Data(data, scaling=scaling),
     )
     results = _collect_results({"level": np.zeros((1, 2), dtype=np.float32)}, data=data)
     generated = generate_quantities(model, results)["generated_quantities"]
@@ -798,7 +798,7 @@ def test_declared_data_variables_keep_prepared_and_auxiliary_result_labels(prior
         {"level": Real()},
         lambda level: -jnp.square(level),
         generated,
-        data=DataBlock(
+        data=Data(
             data,
             inputs=inputs,
             variables={
@@ -856,7 +856,7 @@ def test_declared_outcome_scaling_variables_keep_group_labels(groups):
         {"level": Real()},
         lambda level: -jnp.square(level),
         generated,
-        data=DataBlock(
+        data=Data(
             data,
             scaling=scaling,
             variables={
@@ -896,7 +896,7 @@ def test_declared_reference_variables_keep_original_labels_in_scenarios(periods)
         {"level": Real()},
         lambda level: -jnp.square(level),
         generated,
-        data=DataBlock(
+        data=Data(
             data,
             variables={
                 "impressions": "media",

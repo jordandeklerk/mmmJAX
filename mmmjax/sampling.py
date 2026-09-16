@@ -16,8 +16,8 @@ from jax.typing import ArrayLike
 from numpy.typing import NDArray
 
 from mmmjax._nuts import _NUTSContinuation, _sample_nuts
-from mmmjax._results import _collect_results, _coordinates, _data_dimensions, _prepared_groups, _same_labels
-from mmmjax.data import PreparedData
+from mmmjax._results import _collect_results, _coordinates, _prepared_groups, _same_labels
+from mmmjax.data import PreparedData, _data_dimensions
 from mmmjax.model import (
     Model,
     PriorSampler,
@@ -224,7 +224,7 @@ def sample(
           transformed quantities, are stored in **generated_quantities**.
         - **observed_data** and **constant_data** contain prepared model inputs
           in their evaluated units, including any fitted scaling.
-          Auxiliary ``DataBlock`` inputs are stored in **constant_data**.
+          Auxiliary ``Data`` inputs are stored in **constant_data**.
 
         Declared parameter and data axes retain their labels, including unchanged
         callback inputs. Observation-shaped predictive and likelihood outputs
@@ -637,7 +637,7 @@ def sample_prior(
           generated outputs.
         - **observed_data** and **constant_data** contain prepared model inputs
           in their evaluated units, including fitted scaling.
-          Auxiliary ``DataBlock`` inputs are stored in **constant_data**.
+          Auxiliary ``Data`` inputs are stored in **constant_data**.
 
         Log-likelihood and log-prior outputs are omitted. The chain
         axis is for result compatibility, not an MCMC chain. Without generation,
@@ -795,7 +795,7 @@ def generate_quantities(
         Omit to evaluate stored observations. Earlier exposures are not added
         automatically. Include them through ``prepare_data(media_history=...)``.
         Other models receive this input directly. Omit outcomes only when no
-        evaluated callback needs them. Auxiliary ``DataBlock`` inputs remain
+        evaluated callback needs them. Auxiliary ``Data`` inputs remain
         fixed across scenarios.
     seed : int, default 0
         Random seed for generated quantities, with an independent key per draw.
@@ -1016,12 +1016,13 @@ def _output_dimensions(
     observation_axes: tuple[str, ...] = ()
     outcome_shape: tuple[int, ...] | None = None
     if prepared is not None:
-        role_dimensions = _data_dimensions(prepared)
-        observation_axes = role_dimensions["outcome"]
+        observation_axes = _data_dimensions(prepared)["outcome"]
         outcome_shape = (len(prepared.time_values),)
         if prepared.group_columns:
             outcome_shape += (len(prepared.group_values),)
-        role_dimensions.update(time=("time",), media_time=("media_time",))
+        role_dimensions = {
+            name: spec.axes for name, spec in prepared.model_inputs.items() if spec.source in ("data", "time")
+        }
         role_dimensions.update(model._input_dims)
         for name, source in (*model._generation_inputs, *model._saved_inputs):
             assert model._data is not None

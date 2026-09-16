@@ -10,7 +10,7 @@ import pytest
 import xarray as xr
 
 from mmmjax import (
-    DataBlock,
+    Data,
     Interval,
     Model,
     Positive,
@@ -93,7 +93,7 @@ def test_reference_inputs_and_unit_helpers_compose_through_all_callbacks_without
         {"coefficient": Positive()},
         density,
         generate,
-        data=DataBlock(raw, scaling=scaling),
+        data=Data(raw, scaling=scaling),
         transformed_parameters=transformed,
     )
     assert calls == []
@@ -199,7 +199,7 @@ def test_model_supplied_names_cannot_be_shadowed_by_declared_inputs(source, name
     if source == "parameters":
         arguments[source] = {name: Real()}
     elif source == "inputs":
-        arguments["data"] = DataBlock(_data(), inputs=xr.Dataset({name: xr.DataArray(1.0)}))
+        arguments["data"] = Data(_data(), inputs=xr.Dataset({name: xr.DataArray(1.0)}))
     else:
         arguments[source] = {name: ["baseline"]}
     with pytest.raises(ValueError, match="conflict with model-supplied inputs"):

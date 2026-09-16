@@ -13,7 +13,7 @@ from scipy.optimize import OptimizeResult
 import mmmjax
 import mmmjax.optimization as optimization
 from mmmjax import (
-    DataBlock,
+    Data,
     Interval,
     Model,
     Positive,
@@ -1251,7 +1251,7 @@ def test_optimize_budget_recomputes_media_transformations_with_fitted_group_scal
             "paid_media_slope": Positive(dims="channel"),
         },
         lambda expected: expected.sum(),
-        data=DataBlock(data, scaling=scaling),
+        data=Data(data, scaling=scaling),
         transformed_parameters=transformed,
     )
     parameters = {
