@@ -96,9 +96,7 @@ The program blocks support different likelihoods and hierarchical structures for
 
 ## Distributions
 
-mmmJAX provides a Stan-style suite of continuous, discrete, and multivariate distributions built on TensorFlow Probability’s JAX backend. Their log-density functions support JAX compilation and automatic differentiation within the model blocks.
-
-Each family provides a summed log density for the model block, pointwise log densities, and random draws. Depending on the family, the interface also includes log cumulative distribution and log survival functions, along with log or logit parameterizations for discrete distributions.
+mmmJAX provides Stan-style continuous, discrete, and multivariate distributions built on TensorFlow Probability’s JAX backend, with summed and pointwise log densities that support JAX compilation and automatic differentiation. The suite also includes random draws, log cumulative distribution and log survival functions where applicable, and log or logit parameterizations for supported discrete families.
 
 ```python
 import jax
@@ -112,9 +110,7 @@ tail = mj.normal_logcdf(draws, 0.0, 1.0)       # log cumulative probability
 
 ## Inference
 
-By default, `sample` uses [BlackJAX](https://blackjax-devs.github.io/blackjax/)’s NUTS implementation with window adaptation. It returns an xarray [DataTree](https://docs.xarray.dev/en/stable/user-guide/hierarchical-data.html) containing posterior draws, sampler statistics, predictive draws, and model data, labeled with the coordinates defined during data preparation.
-
-The model also exposes its unconstrained log density, random initialization, and parameter transformations for use with other compatible samplers. The example below fits the same model with [NumPyro](https://num.pyro.ai/en/stable/)’s NUTS implementation, using the negative log density as its potential function.
+By default, `sample` runs [BlackJAX](https://blackjax-devs.github.io/blackjax/)’s NUTS implementation with window adaptation and returns posterior draws, sampler statistics, predictive draws, and model data in an xarray [DataTree](https://docs.xarray.dev/en/stable/user-guide/hierarchical-data.html) labeled with the prepared data’s coordinates. The model exposes its unconstrained log density, random initialization, and parameter transformations for other compatible samplers. The example below uses [NumPyro](https://num.pyro.ai/en/stable/)’s NUTS implementation, with the negative log density as its potential function.
 
 ```python
 import jax
