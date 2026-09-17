@@ -22,26 +22,14 @@ This structure is intended to make models easier to adapt as assumptions and bus
 import numpy as np
 import pandas as pd
 
-from mmmjax import (
-    Interval,
-    Model,
-    Positive,
-    Real,
-    beta,
-    geometric_adstock,
-    half_normal,
-    normal,
-    normal_rng,
-    prepare_data,
-    sample,
-)
+import mmmjax as mj
 
 rng = np.random.default_rng(0)
 tv = rng.gamma(2.0, 1.0, size=52)
 price = rng.normal(size=52)
 y = 1.0 + 0.8 * tv - 0.5 * price + 0.3 * rng.normal(size=52)
 frame = pd.DataFrame({"week": np.arange(52), "y": y, "tv": tv, "price": price})
-data = prepare_data(frame, time="week", outcome="y", media=["tv"], controls=["price"])
+data = mj.prepare_data(frame, time="week", outcome="y", media=["tv"], controls=["price"])
 
 
 def transformed_data(controls):
@@ -50,36 +38,36 @@ def transformed_data(controls):
 
 
 parameters = {
-    "intercept": Real(),
-    "coefficient": Positive(dims="channel"),
-    "retention": Interval(0.0, 1.0, dims="channel"),
-    "slope": Real(dims="control"),
-    "sigma": Positive(),
+    "intercept": mj.Real(),
+    "coefficient": mj.Positive(dims="channel"),
+    "retention": mj.Interval(0.0, 1.0, dims="channel"),
+    "slope": mj.Real(dims="control"),
+    "sigma": mj.Positive(),
 }
 
 
 def transformed_parameters(media, centered, intercept, coefficient, retention, slope):
-    carried = geometric_adstock(media, alpha=retention, max_lag=8)
+    carried = mj.geometric_adstock(media, alpha=retention, max_lag=8)
     mu = intercept + carried @ coefficient + centered @ slope
     return {"mu": mu}
 
 
 def log_density(outcome, mu, intercept, coefficient, retention, slope, sigma):
-    target = normal(intercept, 0.0, 1.0)
-    target += half_normal(coefficient, 1.0)
-    target += beta(retention, 2.0, 4.0)
-    target += normal(slope, 0.0, 1.0)
-    target += half_normal(sigma, 1.0)
-    target += normal(outcome, mu, sigma)
+    target = mj.normal(intercept, 0.0, 1.0)
+    target += mj.half_normal(coefficient, 1.0)
+    target += mj.beta(retention, 2.0, 4.0)
+    target += mj.normal(slope, 0.0, 1.0)
+    target += mj.half_normal(sigma, 1.0)
+    target += mj.normal(outcome, mu, sigma)
     return target
 
 
 def generated_quantities(key, mu, sigma):
-    prediction = normal_rng(key, mu, sigma)
+    prediction = mj.normal_rng(key, mu, sigma)
     return {"predictive": {"prediction": prediction}}
 
 
-model = Model(
+model = mj.Model(
     data,
     transformed_data,
     parameters,
@@ -88,7 +76,7 @@ model = Model(
     generated_quantities,
 )
 
-results = sample(model, draws=1000, warmup=1000, chains=4)
+results = mj.sample(model, draws=1000, warmup=1000, chains=4)
 ```
 
 ## Features
@@ -110,12 +98,12 @@ Each family provides a summed log density for the model block, pointwise log den
 
 ```python
 import jax
-from mmmjax import normal, normal_logcdf, normal_logpdf, normal_rng
+import mmmjax as mj
 
-draws = normal_rng(jax.random.key(0), 0.0, 1.0, sample_shape=(3,))
-term = normal(draws, 0.0, 1.0)              # summed log density for a model block
-pointwise = normal_logpdf(draws, 0.0, 1.0)  # one log density per draw
-tail = normal_logcdf(draws, 0.0, 1.0)       # log cumulative probability
+draws = mj.normal_rng(jax.random.key(0), 0.0, 1.0, sample_shape=(3,))
+term = mj.normal(draws, 0.0, 1.0)              # summed log density for a model block
+pointwise = mj.normal_logpdf(draws, 0.0, 1.0)  # one log density per draw
+tail = mj.normal_logcdf(draws, 0.0, 1.0)       # log cumulative probability
 ```
 
 ## Inference
