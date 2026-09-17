@@ -10,9 +10,13 @@ Data, fitted transformations, and model configuration objects.
    :nosignatures:
 
    PreparedData
+   Data
+   ModelInput
+   Reference
    SyntheticData
    DataScaling
    Scaling
-   HSGPConfig
+   HSGPApproximation
    SpendConstraint
    SamplingState
+   Prior

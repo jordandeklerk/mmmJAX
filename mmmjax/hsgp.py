@@ -8,18 +8,18 @@ import jax.numpy as jnp
 import numpy as np
 from jax.typing import ArrayLike
 
-__all__ = ["HSGPConfig", "hsgp_basis", "hsgp_weights", "prepare_hsgp"]
+__all__ = ["HSGPApproximation", "hsgp_basis", "hsgp_weights", "prepare_hsgp"]
 
 
 @dataclass(frozen=True, slots=True)
-class HSGPConfig:
+class HSGPApproximation:
     """Retain one HSGP approximation for training and prediction.
 
     Use :func:`prepare_hsgp` to choose these settings before defining a
     model. Calling :meth:`basis` for new time positions reuses the same
-    domain and basis count. Calling :meth:`weights` reuses the covariance
-    family while allowing length scales and amplitudes to vary.
-    Direct construction does not validate the supplied settings.
+    domain, basis count, and column centering. Calling :meth:`weights`
+    reuses the frequencies and covariance family while allowing length
+    scales and amplitudes to vary.
 
     Attributes
     ----------
@@ -31,14 +31,32 @@ class HSGPConfig:
         Number of basis functions retained in the approximation.
     covariance : str
         Covariance family used to choose the settings and compute weights.
+    length_scale_range : tuple of float or None
+        Length scales the settings were prepared for.
+    column_means : tuple of float or None
+        Basis column means over the preparation positions, subtracted by
+        :meth:`basis` when the approximation was prepared with centering.
+    frequencies : jax.Array
+        Angular frequencies of the basis functions, fixed by the domain
+        half-width and basis count.
     """
 
     center: float
     boundary: float
     n_basis: int
     covariance: Literal["expquad", "matern32", "matern52"]
+    length_scale_range: tuple[float, float] | None = None
+    column_means: tuple[float, ...] | None = None
 
-    def basis(self, time: ArrayLike) -> tuple[jax.Array, jax.Array]:
+    @property
+    def frequencies(self) -> jax.Array:
+        """Return the angular frequencies shared by every basis evaluation."""
+        _, frequencies = hsgp_basis(
+            jnp.asarray([self.center]), center=self.center, boundary=self.boundary, n_basis=self.n_basis
+        )
+        return frequencies
+
+    def basis(self, time: ArrayLike) -> jax.Array:
         """Evaluate the stored basis without changing its time reference.
 
         Parameters
@@ -49,37 +67,34 @@ class HSGPConfig:
 
         Returns
         -------
-        basis : jax.Array
-            Matrix with shape ``(len(time), n_basis)``. Nonfinite positions
-            or positions outside the domain give ``nan`` rows.
-        frequencies : jax.Array
-            Angular frequencies with shape ``(n_basis,)``. Pass these to
-            :meth:`weights` to compute coefficient standard deviations.
+        jax.Array
+            Matrix with shape ``(len(time), n_basis)``, with the preparation
+            column means subtracted when centering was requested. Nonfinite
+            positions or positions outside the domain give ``nan`` rows.
 
         Examples
         --------
         .. ipython::
 
             In [1]: from mmmjax import prepare_hsgp
-               ...: config = prepare_hsgp((0, 16), length_scale_range=(2, 8))
-               ...: basis, frequencies = config.basis([0.0, 1.0, 2.0])
-               ...: basis.shape
+               ...: approximation = prepare_hsgp((0, 16), length_scale_range=(2, 8))
+               ...: approximation.basis([0.0, 1.0, 2.0]).shape
         """
-        return hsgp_basis(time, center=self.center, boundary=self.boundary, n_basis=self.n_basis)
+        basis, _ = hsgp_basis(time, center=self.center, boundary=self.boundary, n_basis=self.n_basis)
+        if self.column_means is not None:
+            basis = basis - jnp.asarray(self.column_means, dtype=basis.dtype)
+        return basis
 
     def weights(
         self,
-        frequencies: ArrayLike,
         *,
         length_scale: ArrayLike,
         amplitude: ArrayLike = 1.0,
     ) -> jax.Array:
-        """Compute coefficient weights using the stored covariance family.
+        """Compute coefficient weights using the stored frequencies and covariance.
 
         Parameters
         ----------
-        frequencies : array_like
-            One-dimensional angular frequencies returned by :meth:`basis`.
         length_scale : array_like
             Positive, finite length scales in the same units as the time
             positions. The preparation range guides approximation sizing
@@ -92,20 +107,20 @@ class HSGPConfig:
         -------
         jax.Array
             Coefficient standard deviations with shape
-            ``batch_shape + (len(frequencies),)``. Invalid numeric inputs
-            give ``nan`` in affected positions, as in :func:`hsgp_weights`.
+            ``batch_shape + (n_basis,)``. Invalid numeric inputs give
+            ``nan`` in affected positions, as in :func:`hsgp_weights`.
 
         Examples
         --------
         .. ipython::
 
             In [1]: from mmmjax import prepare_hsgp
-               ...: config = prepare_hsgp((0, 16), length_scale_range=(2, 8))
-               ...: basis, frequencies = config.basis([0.0, 1.0, 2.0])
-               ...: weights = config.weights(frequencies, length_scale=4.0)
-               ...: weights.shape
+               ...: approximation = prepare_hsgp((0, 16), length_scale_range=(2, 8))
+               ...: approximation.weights(length_scale=4.0).shape
         """
-        return hsgp_weights(frequencies, length_scale=length_scale, amplitude=amplitude, covariance=self.covariance)
+        return hsgp_weights(
+            self.frequencies, length_scale=length_scale, amplitude=amplitude, covariance=self.covariance
+        )
 
 
 def prepare_hsgp(
@@ -115,7 +130,8 @@ def prepare_hsgp(
     covariance: Literal["expquad", "matern32", "matern52"] = "matern52",
     boundary: float | None = None,
     n_basis: int | None = None,
-) -> HSGPConfig:
+    center_columns: bool = False,
+) -> HSGPApproximation:
     """Choose a fixed domain and basis count for a time-varying process.
 
     Prepare the approximation once before defining the model, outside
@@ -136,6 +152,8 @@ def prepare_hsgp(
         training observations and planned forecasts. For example, use
         ``(0, 116)`` for observations in weeks 0 through 104 and predictions
         through week 116. Keep the same time origin for later predictions.
+        Observed positions such as ``data.time_positions`` may be passed
+        directly, in which case their smallest and largest values are used.
     length_scale_range : array_like
         Two positive, finite endpoints in increasing order, in the same
         units as ``time_range``. Choose a range covering the length scales
@@ -153,10 +171,15 @@ def prepare_hsgp(
         Positive number of basis functions. When omitted, choose a count
         using the domain half-width and shortest expected length scale.
         Supply a larger value to check sensitivity to the approximation.
+    center_columns : bool, default False
+        Subtract each basis column's mean over the supplied positions from
+        every later evaluation, so the process is a zero-mean deviation over
+        the training window and an intercept keeps the level. Requires the
+        observed positions rather than two endpoints.
 
     Returns
     -------
-    HSGPConfig
+    HSGPApproximation
         Reusable settings containing
 
         - **center** — Midpoint of the supplied time range.
@@ -199,8 +222,11 @@ def prepare_hsgp(
             ) from error
         if array.dtype.kind not in "iuf":
             raise TypeError(f"{name} must contain real numeric endpoints, got dtype {array.dtype}")
+        if name == "time_range" and array.ndim == 1 and array.size > 2:
+            # Observed positions stand in for their own extent.
+            array = np.array([array.min(), array.max()])
         if array.shape != (2,):
-            raise ValueError(f"{name} must contain two endpoints, got shape {array.shape}")
+            raise ValueError(f"{name} must contain at least two positions or two endpoints, got shape {array.shape}")
         if not np.all(np.isfinite(array)):
             raise ValueError(f"{name} must contain finite endpoints, got {value!r}")
         lower, upper = float(array[0]), float(array[1])
@@ -244,7 +270,21 @@ def prepare_hsgp(
     if n_basis <= 0:
         raise ValueError(f"n_basis must be at least 1, got {n_basis}")
 
-    return HSGPConfig(center=center, boundary=domain_width, n_basis=n_basis, covariance=covariance)
+    column_means = None
+    if center_columns:
+        positions = np.asarray(time_range, dtype=np.float64)
+        if positions.ndim != 1 or positions.size < 3:
+            raise ValueError("center_columns requires the observed positions rather than two endpoints")
+        training_basis, _ = hsgp_basis(positions, center=center, boundary=domain_width, n_basis=n_basis)
+        column_means = tuple(float(value) for value in np.asarray(training_basis).mean(axis=0))
+    return HSGPApproximation(
+        center=center,
+        boundary=domain_width,
+        n_basis=n_basis,
+        covariance=covariance,
+        length_scale_range=(shortest, longest),
+        column_means=column_means,
+    )
 
 
 def hsgp_basis(

@@ -7,6 +7,7 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 from tensorflow_probability.substrates.jax import distributions as tfd
 
+from mmmjax.distributions._distribution import _bind_distribution
 from mmmjax.distributions._utils import _promote_inexact, _random_shape
 
 
@@ -408,3 +409,6 @@ def _standardize_jvp(
     # The quotient rule avoids forming scale squared in transformed gradients
     standardized_tangent = (residual_tangent - standardized * scale_tangent) / scale
     return standardized, standardized_tangent
+
+
+_bind_distribution(cauchy, cauchy_logpdf, cauchy_rng, tfd.Cauchy, location="loc", scale="scale")

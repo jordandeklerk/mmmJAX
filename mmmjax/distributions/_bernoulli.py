@@ -5,6 +5,7 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 from tensorflow_probability.substrates.jax import distributions as tfd
 
+from mmmjax.distributions._distribution import _bind_distribution
 from mmmjax.distributions._utils import _as_real_array, _promote_inexact, _random_shape
 
 
@@ -513,3 +514,7 @@ def bernoulli_logit_rng(
     )
     samples = jnp.where(logits_array > 0, ~samples, samples)
     return samples.astype(jnp.int32)
+
+
+_bind_distribution(bernoulli, bernoulli_logpmf, bernoulli_rng, tfd.Bernoulli, probability="probs")
+_bind_distribution(bernoulli_logit, bernoulli_logit_logpmf, bernoulli_logit_rng, tfd.Bernoulli, logits="logits")

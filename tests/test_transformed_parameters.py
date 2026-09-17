@@ -1,17 +1,22 @@
 """Tests for deterministic transformed parameters in prepared models."""
 
+from functools import partial
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 import polars as pl
 import pytest
+import xarray as xr
 
 from mmmjax import (
+    Data,
     Interval,
     Model,
     Positive,
     Real,
     beta,
+    fit_data_scaling,
     fourier_features,
     geometric_adstock,
     half_normal,
@@ -39,6 +44,184 @@ def _normal(value, scale=1.0):
     return (-0.5 * (np.asarray(value, dtype=np.float64) / scale) ** 2 - np.log(scale) - 0.5 * np.log(2 * np.pi)).sum()
 
 
+def test_reference_inputs_and_unit_helpers_compose_through_all_callbacks_without_density_adjustments():
+    raw = _data()
+    scaling = fit_data_scaling(raw, scale_outcome=True)
+    scaled = scaling.transform(raw)
+    original_controls = scaled.arrays["controls"].copy()
+    original_outcome = scaled.arrays["outcome"].copy()
+    calls = []
+
+    def transformed(coefficient, controls, reference, outcome_scaling, n_periods):
+        calls.append("transformed")
+        contribution = coefficient * (controls[:, 0] - reference.controls[:, 0].mean())
+        mu = contribution + reference.outcome.mean() * jnp.ones((n_periods,))
+        return {
+            "mu": mu,
+            "raw_mu": outcome_scaling.inverse_transform(mu),
+            "raw_contribution": contribution * outcome_scaling.scale,
+            "original_mean": jnp.full((reference.n_periods,), reference.outcome.mean()),
+        }
+
+    def density(outcome, mu, coefficient, n_periods, reference):
+        calls.append("density")
+        assert isinstance(n_periods, int)
+        assert isinstance(reference.n_periods, int)
+        assert reference.controls.shape[0] == reference.n_periods
+        return normal(outcome, mu * jnp.ones((n_periods,)), 1.0) + normal(coefficient, 0.0, 2.0)
+
+    def generate(key, mu, raw_mu, raw_contribution, original_mean, reference, outcome_scaling):
+        calls.append("generate")
+        return {
+            "prediction": outcome_scaling.inverse_transform(mu),
+            "transformed_prediction": raw_mu,
+            "contribution": raw_contribution,
+            "baseline_controls": reference.controls,
+            "baseline_mean": original_mean,
+        }
+
+    model = Model(
+        parameters={"coefficient": Positive()},
+        log_density=density,
+        generated_quantities=generate,
+        data=Data(raw, scaling=scaling),
+        transformed_parameters=transformed,
+    )
+    assert calls == []
+    position = {"coefficient": jnp.log(jnp.array(0.7))}
+    constrained = model.constrain(position)
+    evaluated = model.evaluate(constrained)
+    assert calls == ["transformed"]
+    assert evaluated["original_mean"].shape == (3,)
+
+    def expected_density(value):
+        coefficient = jnp.exp(value)
+        mu = coefficient * (original_controls[:, 0] - original_controls[:, 0].mean()) + original_outcome.mean()
+        return normal(original_outcome, mu, 1.0) + normal(coefficient, 0.0, 2.0) + value
+
+    value, gradient = jax.jit(jax.value_and_grad(model.log_density))(position, model.data)
+    expected_value, expected_gradient = jax.value_and_grad(expected_density)(position["coefficient"])
+    np.testing.assert_allclose(value, expected_value, rtol=2e-6, atol=2e-6)
+    np.testing.assert_allclose(gradient["coefficient"], expected_gradient, rtol=2e-6, atol=2e-6)
+    np.testing.assert_allclose(model.log_prob(constrained), value - position["coefficient"], rtol=2e-6)
+
+    draws = {"coefficient": jnp.array([0.4, 1.1])}
+    evaluate = jax.jit(jax.vmap(model.evaluate, in_axes=(0, None)))
+    generate_draws = jax.jit(jax.vmap(model.generate_quantities, in_axes=(0, 0, None)))
+    for periods in (1, 5):
+        future_controls = np.column_stack((np.arange(periods) + 2.0, np.arange(periods) - 0.5))
+        future = model.prepare_data(_data(future_controls, observed=False))
+        quantities = evaluate(draws, future)
+        generated = generate_draws(jax.random.split(jax.random.key(0), 2), draws, future)
+        current_controls = np.asarray(future.values["controls"])
+        contribution = np.asarray(draws["coefficient"])[:, None] * (
+            current_controls[:, 0] - original_controls[:, 0].mean()
+        )
+        expected_mu = contribution + original_outcome.mean()
+        expected_raw = scaling.transformations["outcome"].inverse_transform(expected_mu)
+        np.testing.assert_allclose(quantities["mu"], expected_mu, rtol=2e-6, atol=2e-6)
+        np.testing.assert_allclose(generated["prediction"], expected_raw, rtol=2e-6, atol=2e-6)
+        np.testing.assert_allclose(generated["transformed_prediction"], expected_raw, rtol=2e-6, atol=2e-6)
+        np.testing.assert_allclose(
+            generated["contribution"], contribution * scaling.transformations["outcome"].scale, rtol=2e-6
+        )
+        assert quantities["original_mean"].shape == generated["baseline_mean"].shape == (2, 3)
+        np.testing.assert_array_equal(generated["baseline_controls"], np.broadcast_to(original_controls, (2, 3, 2)))
+
+
+@pytest.mark.parametrize("stage", ["transformed_parameters", "log_density", "generated_quantities"])
+def test_outcome_scaling_requires_the_original_outcome_even_with_transformed_outputs(stage):
+    callbacks = {
+        "log_density": lambda: jnp.array(0.0),
+        "generated_quantities": lambda key: {},
+        "transformed_parameters": lambda: {},
+    }
+    callback = lambda key, outcome_scaling: {}  # noqa: E731
+    callbacks[stage] = callback if stage == "generated_quantities" else partial(callback, None)
+    with pytest.raises(ValueError, match=r"requires.*outcome.*original prepared data"):
+        Model(parameters={}, data=_data(observed=False), **callbacks)
+
+
+@pytest.mark.parametrize("stage", ["transformed_parameters", "log_density", "generated_quantities"])
+@pytest.mark.parametrize("role", ["media", "spend", "outcome"])
+def test_absent_reference_roles_are_reported_when_the_block_runs(stage, role):
+    callback = eval(f"lambda key, reference: dict(value=reference.{role}.sum())")
+    callbacks = {
+        "log_density": lambda: jnp.array(0.0),
+        "generated_quantities": lambda key: {},
+        "transformed_parameters": lambda: {},
+    }
+    callbacks[stage] = callback if stage == "generated_quantities" else partial(callback, None)
+    model = Model(parameters={}, data=_data(observed=False), **callbacks)
+    evaluate = {
+        "log_density": lambda: model.log_density({}, model.data),
+        "generated_quantities": lambda: model.generate_quantities(jax.random.key(0), {}, model.data),
+        "transformed_parameters": lambda: model.evaluate({}),
+    }
+    with pytest.raises(AttributeError, match=f"reference has no input {role!r}.*controls.*n_periods"):
+        evaluate[stage]()
+
+
+@pytest.mark.parametrize("generate", [lambda reference: {}, lambda outcome_scaling: {}])
+def test_generate_cannot_place_model_supplied_inputs_in_the_random_key_position(generate):
+    with pytest.raises(TypeError, match=r"generated_quantities.*random key"):
+        Model(
+            parameters={}, log_density=lambda: jnp.array(0.0), generated_quantities=generate, data=_data(observed=False)
+        )
+
+
+def test_period_helpers_work_without_original_or_current_outcomes():
+    def transformed(controls, reference, n_periods):
+        return {
+            "current": controls[:, 0] + jnp.zeros((n_periods,)),
+            "original": reference.controls[:, 0] + jnp.zeros((reference.n_periods,)),
+        }
+
+    raw = _data(observed=False)
+    model = Model(
+        parameters={},
+        log_density=lambda current: current.sum(),
+        data=raw,
+        transformed_parameters=transformed,
+    )
+    evaluate = jax.jit(model.evaluate)
+    for periods in (1, 5):
+        incoming = _data(np.full((periods, 2), 2.0), observed=False)
+        result = evaluate({}, model.prepare_data(incoming))
+        assert result["current"].shape == (periods,)
+        np.testing.assert_array_equal(result["current"], np.full(periods, 2.0))
+        np.testing.assert_array_equal(result["original"], raw.arrays["controls"][:, 0])
+
+
+@pytest.mark.parametrize("source", ["parameters", "inputs", "coords"])
+@pytest.mark.parametrize("name", ["reference", "outcome_scaling", "n_periods"])
+def test_model_supplied_names_cannot_be_shadowed_by_declared_inputs(source, name):
+    arguments = {"parameters": {}, "data": _data()}
+    if source == "parameters":
+        arguments[source] = {name: Real()}
+    elif source == "inputs":
+        arguments["data"] = Data(_data(), inputs=xr.Dataset({name: xr.DataArray(1.0)}))
+    else:
+        arguments[source] = {name: ["baseline"]}
+    with pytest.raises(ValueError, match="conflict with model-supplied inputs"):
+        Model(log_density=lambda: jnp.array(0.0), **arguments)
+
+
+@pytest.mark.parametrize("name", ["reference", "outcome_scaling", "n_periods"])
+def test_transformed_outputs_cannot_shadow_model_supplied_inputs(name):
+    model = Model(
+        parameters={},
+        log_density=lambda: jnp.array(0.0),
+        generated_quantities=lambda key: {},
+        data=_data(),
+        transformed_parameters=lambda: {name: jnp.array(1.0)},
+    )
+    with pytest.raises(ValueError, match=name):
+        model.evaluate({})
+    with pytest.raises(ValueError, match=name):
+        model.generate_quantities(jax.random.key(0), {}, model.data)
+
+
 def _regression(*, save=(), include_generate=True):
     def transformed(scale, controls, beta):
         return {"signal": controls @ beta, "spread": jnp.sqrt(scale**2 + 0.4)}
@@ -55,9 +238,9 @@ def _regression(*, save=(), include_generate=True):
         }
 
     return Model(
-        {"beta": Real(shape=(2,)), "scale": Positive(), "intercept": Real()},
-        density,
-        quantities if include_generate else None,
+        parameters={"beta": Real(shape=(2,)), "scale": Positive(), "intercept": Real()},
+        log_density=density,
+        generated_quantities=quantities if include_generate else None,
         data=_data(),
         transformed_parameters=transformed,
         save=save,
@@ -85,7 +268,7 @@ def test_transformed_regression_has_correct_nonlinear_chain_rule_and_single_jaco
     for name in position:
         np.testing.assert_allclose(gradient[name], expected_gradient[name], rtol=5e-6, atol=3e-6)
     key = jax.random.key(5)
-    generated = jax.jit(model.generate)(key, model.constrain(position), model.data)
+    generated = jax.jit(model.generate_quantities)(key, model.constrain(position), model.data)
     np.testing.assert_allclose(generated["signal"], signal, rtol=3e-6, atol=2e-6)
     np.testing.assert_allclose(generated["spread"], np.sqrt(variance), rtol=3e-6)
     noise = np.asarray(jax.random.normal(key, (3,), dtype=generated["signal"].dtype))
@@ -97,7 +280,7 @@ def test_transformed_outputs_change_with_positions_and_outcome_free_forecasts_un
     position = {"beta": jnp.array([0.3, -0.2]), "scale": jnp.log(jnp.array(0.7)), "intercept": jnp.array(0.25)}
     draws = jax.tree.map(lambda value: jnp.stack((value, value + 0.1)), position)
     constrained = jax.vmap(model.constrain)(draws)
-    generate = jax.jit(jax.vmap(model.generate, in_axes=(0, 0, None)))
+    generate = jax.jit(jax.vmap(model.generate_quantities, in_axes=(0, 0, None)))
     for controls in (np.array([[2.0, 0.5], [0.3, 1.1]]), np.array([[0.4, 1.7], [1.5, 0.2]])):
         future = _data(controls, observed=False)
         actual = generate(jax.random.split(jax.random.key(1), 2), constrained, model.prepare_data(future))
@@ -157,7 +340,7 @@ def _media_model(transformed=None, *, save=(), include_generate=True):
         return {"mu": intercept + total + annual, "paid_media": paid_media, "paid_media_total": total, "annual": annual}
 
     model = Model(
-        {
+        parameters={
             "intercept": Real(),
             "sigma": Positive(),
             "annual_coefficients": Real((2,)),
@@ -166,8 +349,8 @@ def _media_model(transformed=None, *, save=(), include_generate=True):
             "paid_media_half_saturation": Positive(dims="channel"),
             "paid_media_slope": Positive(dims="channel"),
         },
-        density,
-        (lambda key, *, mu: {"mu": mu}) if include_generate else None,
+        log_density=density,
+        generated_quantities=(lambda key, *, mu: {"mu": mu}) if include_generate else None,
         data=data,
         transformed_parameters=media_quantities if transformed is None else transformed,
         save=save,
@@ -203,7 +386,7 @@ def test_transform_combines_media_and_fourier_effects_without_duplicate_priors()
         expected += _normal(np.exp(value), 1.5) + value.size * np.log(2) + value.sum()
 
     np.testing.assert_allclose(jax.jit(model.log_density)(position, model.data), expected, rtol=5e-6, atol=3e-6)
-    generated = jax.jit(model.generate)(jax.random.key(0), model.constrain(position), model.data)
+    generated = jax.jit(model.generate_quantities)(jax.random.key(0), model.constrain(position), model.data)
     np.testing.assert_allclose(generated["mu"], mean, rtol=4e-6, atol=2e-6)
 
 
@@ -215,35 +398,37 @@ def test_construction_does_not_probe_callbacks_and_runs_the_whole_transform_for_
         return {"summary": outcome.mean(), "unused": outcome.sum()}
 
     model = Model(
-        {},
-        lambda *, summary: summary,
-        lambda key: {"constant": jnp.array(1.0)},
+        parameters={},
+        log_density=lambda *, summary: summary,
+        generated_quantities=lambda key: {"constant": jnp.array(1.0)},
         data=_data(),
         transformed_parameters=transformed,
     )
     assert calls == []
     model.log_density({}, model.data)
-    model.generate(jax.random.key(0), {}, model.data)
+    model.generate_quantities(jax.random.key(0), {}, model.data)
     assert calls == ["transformed", "transformed"]
     future = model.prepare_data(_data(observed=False))
     with pytest.raises(ValueError, match="outcome"):
-        model.generate(jax.random.key(0), {}, future)
+        model.generate_quantities(jax.random.key(0), {}, future)
 
 
 def test_unknown_density_and_generation_inputs_are_deferred_to_runtime_even_with_defaults():
     for density in (lambda *, typo: typo, lambda *, typo=1.0: jnp.asarray(typo)):
-        model = Model({}, density, data=_data(), transformed_parameters=lambda: {"actual": jnp.array(0.0)})
+        model = Model(
+            parameters={}, log_density=density, data=_data(), transformed_parameters=lambda: {"actual": jnp.array(0.0)}
+        )
         with pytest.raises(ValueError, match="typo"):
             model.log_density({}, model.data)
     model = Model(
-        {},
-        lambda: jnp.array(0.0),
-        lambda key, *, typo=1.0: {"value": typo},
+        parameters={},
+        log_density=lambda: jnp.array(0.0),
+        generated_quantities=lambda key, *, typo=1.0: {"value": typo},
         data=_data(),
         transformed_parameters=lambda: {"actual": jnp.array(0.0)},
     )
     with pytest.raises(ValueError, match="typo"):
-        model.generate(jax.random.key(0), {}, model.data)
+        model.generate_quantities(jax.random.key(0), {}, model.data)
 
 
 def test_transformed_names_cannot_shadow_sources_even_when_unused_or_absent_in_forecast():
@@ -262,7 +447,7 @@ def test_transformed_names_cannot_shadow_sources_even_when_unused_or_absent_in_f
         pl.DataFrame({"time": [13], "video": [2.0], "search": [1.0]}), time="time", media=["video", "search"]
     )
     with pytest.raises(ValueError, match="outcome"):
-        model.generate(jax.random.key(0), model.constrain(position), model.prepare_data(future))
+        model.generate_quantities(jax.random.key(0), model.constrain(position), model.prepare_data(future))
 
 
 def test_transform_outputs_must_be_a_mapping_of_valid_names_to_array_like_values():
@@ -271,28 +456,30 @@ def test_transform_outputs_must_be_a_mapping_of_valid_names_to_array_like_values
 
     for result in (None, [1.0], {1: 1.0}, {"bad-name": 1.0}, {"class": 1.0}, {"valid": object()}):
         model = Model(
-            {},
-            lambda: jnp.array(0.0),
-            lambda key: {},
+            parameters={},
+            log_density=lambda: jnp.array(0.0),
+            generated_quantities=lambda key: {},
             data=_data(),
             transformed_parameters=make_transform(result),
         )
         with pytest.raises((TypeError, ValueError)):
             model.log_density({}, model.data)
         with pytest.raises((TypeError, ValueError)):
-            model.generate(jax.random.key(0), {}, model.data)
+            model.generate_quantities(jax.random.key(0), {}, model.data)
 
 
 def test_empty_transforms_and_python_scalar_list_boolean_outputs_are_supported():
     empty = Model(
-        {},
-        lambda: jnp.array(1.5),
-        lambda key: {"constant": 2.5},
+        parameters={},
+        log_density=lambda: jnp.array(1.5),
+        generated_quantities=lambda key: {"constant": 2.5},
         data=_data(),
         transformed_parameters=lambda: {},
     )
     np.testing.assert_array_equal(jax.jit(empty.log_density)({}, empty.data), 1.5)
-    np.testing.assert_array_equal(jax.jit(empty.generate)(jax.random.key(0), {}, empty.data)["constant"], 2.5)
+    np.testing.assert_array_equal(
+        jax.jit(empty.generate_quantities)(jax.random.key(0), {}, empty.data)["constant"], 2.5
+    )
 
     def transformed():
         return {"constant": 2.5, "values": [1.0, 2.0], "mask": [True, False]}
@@ -303,9 +490,15 @@ def test_empty_transforms_and_python_scalar_list_boolean_outputs_are_supported()
     def quantities(key, *, constant, values, mask):
         return {"constant": constant, "values": values, "mask": mask}
 
-    model = Model({}, density, quantities, data=_data(), transformed_parameters=transformed)
+    model = Model(
+        parameters={},
+        log_density=density,
+        generated_quantities=quantities,
+        data=_data(),
+        transformed_parameters=transformed,
+    )
     np.testing.assert_array_equal(jax.jit(model.log_density)({}, model.data), 3.5)
-    generated = jax.jit(model.generate)(jax.random.key(0), {}, model.data)
+    generated = jax.jit(model.generate_quantities)(jax.random.key(0), {}, model.data)
     assert generated["constant"].shape == ()
     assert generated["mask"].dtype == jnp.bool_
     np.testing.assert_array_equal(generated["values"], [1.0, 2.0])
@@ -315,9 +508,9 @@ def test_empty_transforms_and_python_scalar_list_boolean_outputs_are_supported()
 def test_parameter_usage_is_checked_across_transform_and_density_not_generation():
     with pytest.raises(ValueError, match="unused"):
         Model(
-            {"unused": Real()},
-            lambda: jnp.array(0.0),
-            lambda key, *, unused: {"unused": unused},
+            parameters={"unused": Real()},
+            log_density=lambda: jnp.array(0.0),
+            generated_quantities=lambda key, *, unused: {"unused": unused},
             data=_data(),
             transformed_parameters=lambda: {},
         )
@@ -325,8 +518,8 @@ def test_parameter_usage_is_checked_across_transform_and_density_not_generation(
         _media_model(lambda *, paid_media_exponent, intercept: {"mu": paid_media_exponent + intercept})
     with pytest.raises(ValueError, match="second_stage"):
         Model(
-            {},
-            lambda *, first_stage: first_stage,
+            parameters={},
+            log_density=lambda *, first_stage: first_stage,
             data=_data(),
             transformed_parameters=lambda *, second_stage: {"first_stage": second_stage},
         )
@@ -335,37 +528,39 @@ def test_parameter_usage_is_checked_across_transform_and_density_not_generation(
 def test_transformed_stage_requires_prepared_named_callbacks_and_one_callable():
     for transformed in ([lambda: {}], 0.5):
         with pytest.raises(TypeError):
-            Model({}, lambda: jnp.array(0.0), data=_data(), transformed_parameters=transformed)
+            Model(parameters={}, log_density=lambda: jnp.array(0.0), data=_data(), transformed_parameters=transformed)
     with pytest.raises((TypeError, ValueError)):
-        Model({}, lambda: jnp.array(0.0), transformed_parameters=lambda: {})
-    model = Model({}, lambda data, effects: jnp.array(0.0), data=_data(), transformed_parameters=lambda: {})
+        Model(parameters={}, log_density=lambda: jnp.array(0.0), transformed_parameters=lambda: {})
+    model = Model(
+        parameters={}, log_density=lambda data, effects: jnp.array(0.0), data=_data(), transformed_parameters=lambda: {}
+    )
     with pytest.raises(ValueError, match="not data or effects bundles"):
         model.log_density({}, model.data)
     model = Model(
-        {},
-        lambda: jnp.array(0.0),
-        lambda key, data, effects: {},
+        parameters={},
+        log_density=lambda: jnp.array(0.0),
+        generated_quantities=lambda key, data, effects: {},
         data=_data(),
         transformed_parameters=lambda: {},
     )
     with pytest.raises(ValueError, match="not data or effects bundles"):
-        model.generate(jax.random.key(0), {}, model.data)
+        model.generate_quantities(jax.random.key(0), {}, model.data)
     for transformed in (lambda controls, /: {}, lambda **values: {}, lambda *values: {}):
         with pytest.raises(TypeError):
-            Model({}, lambda: jnp.array(0.0), data=_data(), transformed_parameters=transformed)
+            Model(parameters={}, log_density=lambda: jnp.array(0.0), data=_data(), transformed_parameters=transformed)
 
 
 def test_transformed_quantities_named_data_or_effects_are_not_legacy_bundles():
     model = Model(
-        {},
-        lambda data, effects: jnp.sum(data + effects),
-        lambda key, effects, data: {"sum": data + effects},
+        parameters={},
+        log_density=lambda data, effects: jnp.sum(data + effects),
+        generated_quantities=lambda key, effects, data: {"sum": data + effects},
         data=_data(),
         transformed_parameters=lambda controls: {"data": controls[:, 0], "effects": controls[:, 1]},
     )
     expected = _data().arrays["controls"].sum(axis=-1)
     np.testing.assert_allclose(jax.jit(model.log_density)({}, model.data), expected.sum(), rtol=1e-6)
-    generated = jax.jit(model.generate)(jax.random.key(0), {}, model.data)
+    generated = jax.jit(model.generate_quantities)(jax.random.key(0), {}, model.data)
     np.testing.assert_allclose(generated["sum"], expected, rtol=1e-6)
 
 
@@ -380,7 +575,7 @@ def test_saved_transformed_quantities_work_without_generate_and_preserve_density
     for name in position:
         np.testing.assert_array_equal(saved_gradient[name], original_gradient[name])
 
-    generated = jax.jit(saved.generate)(jax.random.key(0), saved.constrain(position), saved.data)
+    generated = jax.jit(saved.generate_quantities)(jax.random.key(0), saved.constrain(position), saved.data)
     assert set(generated) == {"signal", "spread"}
     assert set(saved.parameters) == set(original.parameters)
     np.testing.assert_allclose(generated["signal"], _data().arrays["controls"] @ np.asarray(position["beta"]))
@@ -392,7 +587,7 @@ def test_saved_transforms_include_media_totals_and_fourier_curves():
         save=("mu", "paid_media", "paid_media_total", "annual"),
         include_generate=False,
     )
-    generated = jax.jit(model.generate)(jax.random.key(0), model.constrain(position), model.data)
+    generated = jax.jit(model.generate_quantities)(jax.random.key(0), model.constrain(position), model.data)
 
     assert set(generated) == {"mu", "paid_media", "paid_media_total", "annual"}
     assert generated["paid_media"].shape == (3, 2)
@@ -418,9 +613,16 @@ def test_saved_outputs_merge_with_generate_and_evaluate_transform_once():
     def density(signal):
         raise AssertionError("Saving quantities must not evaluate density")
 
-    model = Model({}, density, generate, data=_data(), transformed_parameters=transformed, save=("signal",))
+    model = Model(
+        parameters={},
+        log_density=density,
+        generated_quantities=generate,
+        data=_data(),
+        transformed_parameters=transformed,
+        save=("signal",),
+    )
     assert calls == []
-    result = model.generate(jax.random.key(0), {}, model.data)
+    result = model.generate_quantities(jax.random.key(0), {}, model.data)
 
     assert calls == ["transformed", "generate"]
     assert set(result) == {"signal", "prediction"}
@@ -432,7 +634,7 @@ def test_saved_outputs_reject_generate_name_collisions_even_for_identical_values
     values = {"beta": jnp.ones(2), "scale": jnp.array(1.0), "intercept": jnp.array(0.0)}
 
     with pytest.raises(ValueError, match="signal"):
-        model.generate(jax.random.key(0), values, model.data)
+        model.generate_quantities(jax.random.key(0), values, model.data)
 
 
 def test_saved_unknown_transformed_names_are_checked_only_at_evaluation():
@@ -442,11 +644,17 @@ def test_saved_unknown_transformed_names_are_checked_only_at_evaluation():
         calls.append("transformed")
         return {"actual": jnp.array(1.0)}
 
-    model = Model({}, lambda: jnp.array(0.0), data=_data(), transformed_parameters=transformed, save=("typo",))
+    model = Model(
+        parameters={},
+        log_density=lambda: jnp.array(0.0),
+        data=_data(),
+        transformed_parameters=transformed,
+        save=("typo",),
+    )
     assert calls == []
 
     with pytest.raises(ValueError, match="typo"):
-        model.generate(jax.random.key(0), {}, model.data)
+        model.generate_quantities(jax.random.key(0), {}, model.data)
 
 
 @pytest.mark.parametrize("name", ["annual_coefficients", "paid_media_coefficient", "paid_media_retention"])
@@ -456,14 +664,14 @@ def test_saved_names_cannot_select_parameter_inputs(name):
             save=(name,),
             include_generate=False,
         )
-        model.generate(jax.random.key(0), model.constrain(position), model.data)
+        model.generate_quantities(jax.random.key(0), model.constrain(position), model.data)
 
 
 def test_saved_outputs_follow_changed_parameters_and_scenario_shapes_under_jit_vmap():
     model = _regression(save=("signal",), include_generate=False)
     positions = {"beta": jnp.array([[0.3, -0.2], [0.5, 0.1]]), "scale": jnp.ones(2), "intercept": jnp.zeros(2)}
     keys = jax.random.split(jax.random.key(0), 2)
-    generate = jax.jit(jax.vmap(model.generate, in_axes=(0, 0, None)))
+    generate = jax.jit(jax.vmap(model.generate_quantities, in_axes=(0, 0, None)))
     original_controls = np.array(model.data.values["controls"], copy=True)
 
     for controls in (np.array([[2.0, 0.5]]), np.array([[0.4, 1.7], [1.5, 0.2]])):
@@ -488,7 +696,14 @@ def test_direct_evaluation_returns_all_quantities_without_density_or_generation(
     def generate(key, signal):
         raise AssertionError("Direct evaluation must not generate random quantities")
 
-    model = Model({}, density, generate, data=_data(), transformed_parameters=transformed, save=("signal",))
+    model = Model(
+        parameters={},
+        log_density=density,
+        generated_quantities=generate,
+        data=_data(),
+        transformed_parameters=transformed,
+        save=("signal",),
+    )
     assert calls == []
 
     evaluated = model.evaluate({})

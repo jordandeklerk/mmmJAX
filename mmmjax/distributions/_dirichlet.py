@@ -7,6 +7,7 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 from tensorflow_probability.substrates.jax import distributions as tfd
 
+from mmmjax.distributions._distribution import _bind_distribution
 from mmmjax.distributions._utils import (
     _asymptotic_gamma_shape_log_derivative,
     _asymptotic_gamma_shape_normalizer,
@@ -535,3 +536,8 @@ def _dirichlet_mean_and_total(
         inverse_concentration_sum,
         exact_sum_region,
     )
+
+
+_bind_distribution(
+    dirichlet, dirichlet_logpdf, dirichlet_rng, tfd.Dirichlet, event_ndims=1, concentration="concentration"
+)

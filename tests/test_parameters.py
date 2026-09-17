@@ -74,8 +74,8 @@ def test_correlation_cholesky_named_axes_and_precision():
         _ = declaration.position_shape
 
     model = Model(
-        {"factor": declaration},
-        lambda data, factor: jnp.sum(factor),
+        parameters={"factor": declaration},
+        log_density=lambda data, factor: jnp.sum(factor),
         coords={"effect": ["search", "video"], "effect_to": ["search", "video"]},
     )
     resolved = model.parameters["factor"]
@@ -88,8 +88,8 @@ def test_correlation_cholesky_named_axes_and_precision():
 def test_correlation_cholesky_rejects_nonsquare_resolved_axes_and_repeated_names():
     with pytest.raises(ValueError, match="equal correlation dimensions"):
         Model(
-            {"factor": CorrelationCholesky(dims=("effect", "effect_to"))},
-            lambda data, factor: jnp.sum(factor),
+            parameters={"factor": CorrelationCholesky(dims=("effect", "effect_to"))},
+            log_density=lambda data, factor: jnp.sum(factor),
             coords={"effect": ["a", "b"], "effect_to": ["a", "b", "c"]},
         )
     with pytest.raises(ValueError, match="must not repeat"):

@@ -5,6 +5,7 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 from tensorflow_probability.substrates.jax import distributions as tfd
 
+from mmmjax.distributions._distribution import _bind_distribution
 from mmmjax.distributions._utils import (
     _as_real_array,
     _is_lower_cholesky,
@@ -150,3 +151,14 @@ def lkj_cholesky_rng(
     safe_concentration = jnp.where(valid, concentration, 1)
     result = tfd.CholeskyLKJ(dimension, safe_concentration).sample(sample_shape, seed=key)
     return jnp.where(valid[..., None, None], result, jnp.nan)
+
+
+_bind_distribution(
+    lkj_cholesky,
+    lkj_cholesky_logpdf,
+    lkj_cholesky_rng,
+    tfd.CholeskyLKJ,
+    event_ndims=2,
+    dimension_parameter="dimension",
+    concentration="concentration",
+)

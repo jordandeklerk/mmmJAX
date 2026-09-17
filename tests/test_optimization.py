@@ -13,6 +13,7 @@ from scipy.optimize import OptimizeResult
 import mmmjax
 import mmmjax.optimization as optimization
 from mmmjax import (
+    Data,
     Interval,
     Model,
     Positive,
@@ -63,9 +64,9 @@ def _problem(*, spend_unit=1.0, transformed=None):
         raise AssertionError("Budget allocation must not generate observations")
 
     model = Model(
-        {"coefficient": Real((3,))},
-        density,
-        generated,
+        parameters={"coefficient": Real((3,))},
+        log_density=density,
+        generated_quantities=generated,
         data=data,
         transformed_parameters=quadratic if transformed is None else transformed,
         dims={"coefficient": ("channel",)},
@@ -107,8 +108,8 @@ def _uncertain_linear_problem():
         return {"expected": 10.0 + gain * (0.2 + media[..., 0])}
 
     model = Model(
-        {"gain": Real()},
-        lambda expected: expected.sum(),
+        parameters={"gain": Real()},
+        log_density=lambda expected: expected.sum(),
         data=data,
         transformed_parameters=transformed,
     )
@@ -154,8 +155,8 @@ def _mixed_reach_frequency_problem(*, zero_spend_channels=()):
     dims = {"coefficient": ("effect",)}
     labels = ["search", "video", "audio"]
     model = Model(
-        {"coefficient": Real((3,))},
-        lambda expected: expected.sum(),
+        parameters={"coefficient": Real((3,))},
+        log_density=lambda expected: expected.sum(),
         data=data,
         transformed_parameters=transformed,
         dims=dims,
@@ -584,8 +585,8 @@ def test_optimize_budget_rf_only_distinguishes_reach_and_frequency_response(conv
         return {"expected": (reach * jnp.log1p(media_frequency)) @ gain}
 
     model = Model(
-        {"gain": Positive(dims="rf_channel")},
-        lambda expected: expected.sum(),
+        parameters={"gain": Positive(dims="rf_channel")},
+        log_density=lambda expected: expected.sum(),
         data=data,
         transformed_parameters=transformed,
     )
@@ -1018,8 +1019,8 @@ def test_optimize_budget_ignores_large_terms_constant_under_the_budget_constrain
         return {"expected": response}
 
     model = Model(
-        {"coefficient": Real()},
-        lambda expected: expected.sum(),
+        parameters={"coefficient": Real()},
+        log_density=lambda expected: expected.sum(),
         data=data,
         transformed_parameters=transformed,
     )
@@ -1070,8 +1071,8 @@ def test_optimize_budget_recovers_concave_optimum_when_solver_reaches_zero(
         declarations["paid_media_exponent"] = Interval(0.0, 1.0, dims="channel")
 
     model = Model(
-        declarations,
-        lambda expected: expected.sum(),
+        parameters=declarations,
+        log_density=lambda expected: expected.sum(),
         data=data,
         transformed_parameters=hill_response if saturation is hill_saturation else root_response,
     )
@@ -1110,8 +1111,8 @@ def test_optimize_budget_reallocates_integer_exposures_and_preserves_a_zero_opti
     frame = pl.DataFrame({"week": [1], "video": [1], "search": [1], "video_cost": [1.0], "search_cost": [1.0]})
     data = prepare_data(frame, time="week", media=["video", "search"], spend=["video_cost", "search_cost"])
     model = Model(
-        {"coefficient": Real((2,))},
-        lambda expected: expected.sum(),
+        parameters={"coefficient": Real((2,))},
+        log_density=lambda expected: expected.sum(),
         data=data,
         transformed_parameters=lambda media, coefficient: {"expected": media @ coefficient},
         dims={"coefficient": ("channel",)},
@@ -1150,8 +1151,8 @@ def test_optimize_budget_uses_separate_spending_and_carryover_measurement_period
         return {"expected": jnp.log1p(carried) @ coefficient}
 
     model = Model(
-        {"coefficient": Real((2,))},
-        lambda expected: expected.sum(),
+        parameters={"coefficient": Real((2,))},
+        log_density=lambda expected: expected.sum(),
         data=data,
         transformed_parameters=transformed,
         dims={"coefficient": ("channel",)},
@@ -1243,16 +1244,15 @@ def test_optimize_budget_recomputes_media_transformations_with_fitted_group_scal
         return {"expected": response @ paid_media_coefficient}
 
     model = Model(
-        {
+        parameters={
             "paid_media_coefficient": Positive(dims="channel"),
             "paid_media_retention": Interval(0.0, 1.0, dims="channel"),
             "paid_media_half_saturation": Positive(dims="channel"),
             "paid_media_slope": Positive(dims="channel"),
         },
-        lambda expected: expected.sum(),
-        data=data,
+        log_density=lambda expected: expected.sum(),
+        data=Data(data, scaling=scaling),
         transformed_parameters=transformed,
-        scaling=scaling,
     )
     parameters = {
         "paid_media_coefficient": [[0.8, 1.2], [1.0, 0.9], [1.2, 1.4], [0.9, 1.1]],
@@ -1348,8 +1348,8 @@ def _breakdown_problem(*, compound_groups=False):
         return {"expected": local + 0.1 * spillover}
 
     model = Model(
-        {"coefficient": Real(dims="channel")},
-        lambda expected: expected.sum(),
+        parameters={"coefficient": Real(dims="channel")},
+        log_density=lambda expected: expected.sum(),
         data=data,
         transformed_parameters=transformed,
     )

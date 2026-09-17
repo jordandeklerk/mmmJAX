@@ -11,5 +11,6 @@ Functions for preparing, inspecting, and generating modeling data.
 
    prepare_data
    check_data
+   check_prior
    select_channels
    simulate_data

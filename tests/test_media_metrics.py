@@ -9,7 +9,7 @@ import pytest
 import xarray as xr
 
 import mmmjax
-from mmmjax import Model, Real, fit_data_scaling, media_metrics, prepare_data
+from mmmjax import Data, Model, Positive, Real, fit_data_scaling, media_metrics, prepare_data
 from mmmjax._results import _collect_results
 
 
@@ -70,12 +70,11 @@ def _model(data, *, scaling=None, cross_group=False):
         raise AssertionError("Media metrics must not generate observations")
 
     return Model(
-        {"coefficient": Real((2,))},
-        density,
-        generated,
-        data=data,
+        parameters={"coefficient": Real((2,))},
+        log_density=density,
+        generated_quantities=generated,
+        data=Data(data, scaling=scaling),
         transformed_parameters=transformed,
-        scaling=scaling,
         dims={"coefficient": ("channel",)},
     )
 
@@ -426,6 +425,153 @@ def test_media_metrics_reuse_fitted_scales_and_report_transformed_quantity_units
     _assert_closed_form(metrics, data, results, scaling=scaling)
 
 
+@pytest.mark.parametrize("already_scaled", [False, True])
+@pytest.mark.parametrize("new_scenario", [False, True])
+@pytest.mark.parametrize("by", [(), ("time",), ("group",), ("time", "group")])
+def test_media_metrics_population_outcome_inversion_restores_revenue_and_roi(already_scaled, new_scenario, by):
+    frame = pl.DataFrame(
+        {
+            "week": [0, 0, 1, 1, 2, 2],
+            "region": ["east", "west"] * 3,
+            "population": [100.0, 400.0] * 3,
+            "outcome": [100.0, 1200.0, 200.0, 1600.0, 300.0, 2000.0],
+            "revenue": [2.0, 3.0, 4.0, 2.0, 3.0, 5.0],
+            "video": [10.0, 20.0, 30.0, 60.0, 50.0, 100.0],
+            "search": [5.0, 15.0, 10.0, 30.0, 20.0, 60.0],
+        }
+    ).with_columns(video_cost=pl.col("video") / 2, search_cost=pl.col("search") / 4)
+    data = prepare_data(
+        frame,
+        time="week",
+        groups=["region"],
+        population="population",
+        outcome="outcome",
+        revenue_per_outcome="revenue",
+        media=["video", "search"],
+        spend=["video_cost", "search_cost"],
+    )
+    scaling = fit_data_scaling(data, scale_outcome="population", adjust_population=True)
+    outcome_scaling = scaling.transformations["outcome"]
+
+    def transformed(media, revenue_per_outcome, coefficient):
+        expected_standardized = 0.25 + media @ coefficient
+        expected_outcome = outcome_scaling.inverse_transform(expected_standardized)
+        return {"expected_revenue": expected_outcome * revenue_per_outcome}
+
+    def density(coefficient):
+        raise AssertionError("Media metrics must not evaluate the log density")
+
+    model = Model(
+        parameters={"coefficient": Real((2,))},
+        log_density=density,
+        data=Data(scaling.transform(data) if already_scaled else data, scaling=scaling),
+        transformed_parameters=transformed,
+        dims={"coefficient": ("channel",)},
+    )
+    results = _results(data)
+    reference_data = data
+    new_data = None
+    if new_scenario:
+        arrays = {name: value.copy() for name, value in data.arrays.items()}
+        arrays["media"] *= 1.5
+        arrays["spend"] *= 1.5
+        arrays["outcome"] *= 5.0
+        reference_data = replace(data, arrays=arrays)
+        new_data = scaling.transform(reference_data) if already_scaled else reference_data
+
+    metrics = media_metrics(
+        model,
+        results,
+        quantity="expected_revenue",
+        new_data=new_data,
+        by=by,
+        incremental_increase=0.25,
+        batch_size=4,
+    )
+
+    population = data.arrays["population"]
+    per_person_outcome = data.arrays["outcome"] / population
+    mean, deviation = per_person_outcome.mean(), per_person_outcome.std()
+    median_media = np.median(data.arrays["media"] / population[:, None], axis=(0, 1))
+    scaled_media = reference_data.arrays["media"] / (population[:, None] * median_media)
+    revenue_factor = deviation * population * reference_data.arrays["revenue_per_outcome"]
+    coefficient = results["posterior"]["coefficient"].values
+    lift = np.einsum("tgc,adc->adtgc", scaled_media, coefficient) * revenue_factor[None, None, ..., None]
+    baseline = (mean + 0.25 * deviation) * population * reference_data.arrays["revenue_per_outcome"]
+    reference = baseline[None, None] + lift.sum(axis=-1)
+    spend = reference_data.arrays["spend"].sum(axis=(0, 1))
+    axes = tuple(index + 2 for index, axis in enumerate(("time", "group")) if axis not in by)
+    expected = {
+        "reference_response": reference.sum(axis=axes),
+        "incremental_response": lift.sum(axis=axes),
+        "marginal_response": 0.25 * lift.sum(axis=axes),
+        "reference_spend": spend,
+        "incremental_spend": 0.25 * spend,
+        "roi": lift.sum(axis=(2, 3)) / spend,
+        "marginal_roi": lift.sum(axis=(2, 3)) / spend,
+    }
+    assert metrics["reference_response"].dims == ("chain", "draw", *by)
+    assert metrics["incremental_response"].dims == ("chain", "draw", *by, "channel")
+    for name, values in expected.items():
+        np.testing.assert_allclose(metrics[name], values, rtol=3e-6, atol=3e-3)
+
+
+def test_media_metrics_keep_model_reference_inputs_fixed_when_changing_channel_spend():
+    data = _data(grouped=True)
+    scaling = fit_data_scaling(data, scale_outcome="population", adjust_population=True)
+
+    def quantities(media, reference, outcome_scaling, n_periods, roi):
+        original = reference.media[-reference.n_periods :]
+        reference_response = original / (1.0 + original)
+        denominator = jnp.sum(reference_response * outcome_scaling.scale[None, :, None], axis=(0, 1))
+        coefficient = roi * reference.spend.sum(axis=(0, 1)) / denominator
+        current = media[-n_periods:]
+        standardized = 0.25 + jnp.sum(current / (1.0 + current) * coefficient, axis=-1)
+        return {"expected_revenue": outcome_scaling.inverse_transform(standardized)}
+
+    def density(roi):
+        raise AssertionError("Media metrics must not evaluate the log density")
+
+    model = Model(
+        parameters={"roi": Positive(dims="channel")},
+        log_density=density,
+        data=Data(data, scaling=scaling),
+        transformed_parameters=quantities,
+    )
+    roi = np.array([[[1.0, 2.0], [3.0, 4.0]]], dtype=np.float32)
+    results = _collect_results({"roi": roi}, data=data, dims={"roi": ("channel",)})
+    options = {"quantity": "expected_revenue", "incremental_increase": 0.25, "by": ("time", "group")}
+    baseline = media_metrics(model, results, **options)
+    changed_data = _data(grouped=True, multiplier=2.0)
+    changed = media_metrics(model, results, new_data=changed_data, **options)
+
+    reference_media = scaling.transform(data).arrays["media"][1:]
+    outcome_scale = np.asarray(scaling.transformations["outcome"].scale)[..., None]
+    reference_weight = reference_media / (1.0 + reference_media) * outcome_scale
+    denominator = reference_weight.sum(axis=(0, 1))
+    spend = data.arrays["spend"].sum(axis=(0, 1))
+    coefficient = roi * spend / denominator
+    np.testing.assert_allclose(baseline["roi"], roi, rtol=2e-5)
+    np.testing.assert_allclose(baseline["reference_spend"], spend)
+    np.testing.assert_allclose(
+        baseline["incremental_response"], reference_weight * coefficient[:, :, None, None, :], rtol=2e-5, atol=2e-5
+    )
+
+    changed_media = scaling.transform(changed_data).arrays["media"][1:]
+    changed_weight = changed_media / (1.0 + changed_media) * outcome_scale
+    expected_lift = changed_weight * coefficient[:, :, None, None, :]
+    np.testing.assert_allclose(changed["reference_spend"], 2.0 * spend)
+    np.testing.assert_allclose(changed["incremental_response"], expected_lift, rtol=2e-5, atol=2e-5)
+    np.testing.assert_allclose(changed["roi"], expected_lift.sum(axis=(2, 3)) / (2.0 * spend), rtol=2e-5)
+    marginal_weight = 1.25 * changed_media / (1.0 + 1.25 * changed_media) * outcome_scale - changed_weight
+    expected_marginal = marginal_weight * coefficient[:, :, None, None, :]
+    np.testing.assert_allclose(changed["marginal_response"], expected_marginal, rtol=2e-5, atol=2e-5)
+    assert np.all(changed["reference_response"].values > baseline["reference_response"].values)
+    assert np.all(changed["roi"].values < roi)
+    assert np.all(changed["marginal_roi"].values > 0.0)
+    np.testing.assert_array_equal(model.data.reference.spend, data.arrays["spend"])
+
+
 def test_media_metrics_prepare_new_data_with_existing_fitted_scales(case):
     data, _, results = case
     model = _model(data, scaling="auto")
@@ -460,11 +606,10 @@ def _linear_model(*, media=(1, 3), spend=(1.0, 3.0), baseline=0.0, scaling=None)
         channels=["Video"],
     )
     model = Model(
-        {"coefficient": Real()},
-        lambda coefficient: -(coefficient**2),
-        data=data,
+        parameters={"coefficient": Real()},
+        log_density=lambda coefficient: -(coefficient**2),
+        data=Data(data, scaling=scaling),
         transformed_parameters=lambda media, coefficient: {"expected_users": baseline + media[:, 0] * coefficient},
-        scaling=scaling,
     )
     return model, _collect_results({"coefficient": np.array([[1.0, 2.0]], dtype=np.float32)}, data=data)
 
@@ -674,11 +819,10 @@ def _rf_case(*, mixed=False, scaled=False):
         raise AssertionError("Media metrics must only evaluate transformed quantities")
 
     model = Model(
-        {"coefficient": Real()},
-        density,
-        data=data,
+        parameters={"coefficient": Real()},
+        log_density=density,
+        data=Data(data, scaling="auto" if scaled else None),
         transformed_parameters=transformed,
-        scaling="auto" if scaled else None,
     )
     results = _collect_results(
         {"coefficient": np.array([[0.5, 1.0], [1.5, 2.0]], dtype=np.float32)},

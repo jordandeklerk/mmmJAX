@@ -7,6 +7,7 @@ import polars as pl
 import pytest
 
 from mmmjax import (
+    Data,
     Interval,
     Model,
     Positive,
@@ -175,7 +176,7 @@ def _model(data, *, keyword_only_generation=True, grouped=False, include_priors=
         return {"paid_media": response * paid_media_coefficient, "annual": annual}
 
     return Model(
-        {
+        parameters={
             "intercept": Real(),
             "sigma": Positive(),
             "paid_media_coefficient": Positive(shape=(2, 2) if grouped else (2,)),
@@ -184,8 +185,8 @@ def _model(data, *, keyword_only_generation=True, grouped=False, include_priors=
             "paid_media_slope": Positive(shape=(2,)),
             "annual_coefficients": Real(shape=(2, 2) if grouped else (2,)),
         },
-        density,
-        quantities if keyword_only_generation else ordinary_quantities,
+        log_density=density,
+        generated_quantities=quantities if keyword_only_generation else ordinary_quantities,
         data=data,
         transformed_parameters=transform,
     )
@@ -268,7 +269,7 @@ def test_explicit_media_and_seasonality_match_full_density_gradients_and_generat
         np.testing.assert_allclose(gradient[name], expected, rtol=4e-5, atol=5e-6)
     key = jax.random.key(7)
     constrained = model.constrain(position)
-    generated = jax.jit(model.generate)(key, constrained, model.data)
+    generated = jax.jit(model.generate_quantities)(key, constrained, model.data)
     np.testing.assert_allclose(generated["paid_media"], paid, rtol=4e-6, atol=2e-6)
     np.testing.assert_allclose(generated["annual"], annual, rtol=4e-6, atol=2e-6)
     np.testing.assert_allclose(generated["mean"], mean, rtol=4e-6, atol=2e-6)
@@ -280,7 +281,7 @@ def test_posterior_vmap_evaluates_dynamic_prediction_media_and_parameters(media_
     model = _model(_data(media_values))
     draws = jax.tree.map(lambda value: jnp.stack((value, value + 0.1)), _position())
     evaluate = jax.jit(jax.vmap(model.log_density, in_axes=(0, None)))
-    generate = jax.jit(jax.vmap(model.generate, in_axes=(0, 0, None)))
+    generate = jax.jit(jax.vmap(model.generate_quantities, in_axes=(0, 0, None)))
     keys = jax.random.split(jax.random.key(3), 2)
     constrained = jax.vmap(model.constrain)(draws)
     for multiplier in (0.6, 1.4):
@@ -306,7 +307,7 @@ def test_grouped_prediction_aligns_history_channels_controls_and_preserves_float
     future_media = media[:4] * 0.8
     future = _data(future_media, periods=2, start=6, reverse=True, observed=False)
     with jax.enable_x64(True):
-        generated = jax.jit(model.generate)(jax.random.key(0), parameters, model.prepare_data(future))
+        generated = jax.jit(model.generate_quantities)(jax.random.key(0), parameters, model.prepare_data(future))
     mean, paid, annual, _, _ = _reference(position, future_media, [8, 9])
     controls = np.array([[[0.8, 1.6], [1.8, 0.6]], [[0.9, 1.8], [1.9, 0.8]]])
 
@@ -326,13 +327,13 @@ def test_media_model_snapshots_training_arrays_and_retains_layout_after_source_m
     data.arrays["media"][:] = 99
     data.arrays.clear()
     data.columns.clear()
-    training = jax.jit(model.generate)(jax.random.key(0), parameters, model.data)
+    training = jax.jit(model.generate_quantities)(jax.random.key(0), parameters, model.data)
     np.testing.assert_allclose(training["mean"], _reference(position, media_values, [2, 3, 4])[0], rtol=4e-6, atol=2e-6)
     future_media = media_values * 0.7
     future = _data(future_media, start=5, observed=False)
     inputs = model.prepare_data(future)
     future.arrays["media"][:] = 99
-    forecast = jax.jit(model.generate)(jax.random.key(0), parameters, inputs)
+    forecast = jax.jit(model.generate_quantities)(jax.random.key(0), parameters, inputs)
     np.testing.assert_allclose(forecast["mean"], _reference(position, future_media, [7, 8, 9])[0], rtol=4e-6, atol=2e-6)
 
 
@@ -483,7 +484,11 @@ def _rf_model(data, *, grouped=False, scaling=None, include_priors=True):
         }
 
     def generate(key, mean, paid_rf_coefficient, paid_rf_retention):
-        return {"prediction": mean, "coefficient_copy": paid_rf_coefficient, "retention_copy": paid_rf_retention}
+        return {
+            "predictive": {"prediction": mean},
+            "coefficient_copy": paid_rf_coefficient,
+            "retention_copy": paid_rf_retention,
+        }
 
     parameters = {
         "intercept": Real(),
@@ -511,15 +516,13 @@ def _rf_model(data, *, grouped=False, scaling=None, include_priors=True):
         generated_dims.update(paid_media=(*observation_dims, "channel"), paid_media_total=observation_dims)
 
     return Model(
-        parameters,
-        density,
-        generate,
-        data=data,
-        scaling=scaling,
+        parameters=parameters,
+        log_density=density,
+        generated_quantities=generate,
+        data=Data(data, scaling=scaling),
         transformed_parameters=mixed_quantities if mixed else rf_quantities,
         save=saved,
         generated_dims=generated_dims,
-        predictive=("prediction",),
     )
 
 
@@ -650,7 +653,7 @@ def test_grouped_reach_frequency_predictions_reuse_scaling_and_align_shorter_reo
         np.testing.assert_allclose(inputs.values["media"], future_media / media_divisor, rtol=2e-6)
     draws = jax.tree.map(lambda value: jnp.stack((value, value * 1.1)), parameters)
     actual = jax.jit(jax.vmap(model.evaluate, in_axes=(0, None)))(draws, inputs)
-    generated = jax.jit(jax.vmap(model.generate, in_axes=(0, 0, None)))(
+    generated = jax.jit(jax.vmap(model.generate_quantities, in_axes=(0, 0, None)))(
         jax.random.split(jax.random.key(12), 2), draws, inputs
     )
     assert actual["paid_rf"].shape == (2, 2, 2, 2)
@@ -661,7 +664,7 @@ def test_grouped_reach_frequency_predictions_reuse_scaling_and_align_shorter_reo
         for name, value in expected.items():
             np.testing.assert_allclose(actual[name][draw], value, rtol=5e-6, atol=3e-6)
             np.testing.assert_allclose(generated[name][draw], value, rtol=5e-6, atol=3e-6)
-        np.testing.assert_allclose(generated["prediction"][draw], expected["mean"], rtol=5e-6, atol=3e-6)
+        np.testing.assert_allclose(generated["predictive"]["prediction"][draw], expected["mean"], rtol=5e-6, atol=3e-6)
 
 
 @pytest.mark.parametrize("mixed", [False, True], ids=["rf-only", "mixed"])

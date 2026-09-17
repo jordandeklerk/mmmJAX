@@ -7,6 +7,7 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 from tensorflow_probability.substrates.jax import distributions as tfd
 
+from mmmjax.distributions._distribution import _bind_distribution
 from mmmjax.distributions._utils import _promote_inexact, _random_shape
 
 
@@ -396,3 +397,6 @@ def _uniform_interior_log_probability(
             operand=None,
         ),
     )
+
+
+_bind_distribution(uniform, uniform_logpdf, uniform_rng, tfd.Uniform, lower="low", upper="high")

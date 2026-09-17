@@ -5,6 +5,7 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 from tensorflow_probability.substrates.jax import distributions as tfd
 
+from mmmjax.distributions._distribution import _bind_distribution
 from mmmjax.distributions._utils import (
     _is_lower_cholesky,
     _promote_inexact,
@@ -166,3 +167,14 @@ def _safe_parameters(location: jax.Array, scale_tril: jax.Array) -> tuple[jax.Ar
         valid_scale[..., None, None], scale_tril, jnp.eye(scale_tril.shape[-1], dtype=scale_tril.dtype)
     )
     return safe_location, safe_scale, valid_location & valid_scale
+
+
+_bind_distribution(
+    multivariate_normal,
+    multivariate_normal_logpdf,
+    multivariate_normal_rng,
+    tfd.MultivariateNormalTriL,
+    event_ndims=1,
+    location="loc",
+    scale_tril="scale_tril",
+)

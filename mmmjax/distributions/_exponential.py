@@ -6,6 +6,7 @@ from jax.typing import ArrayLike
 from tensorflow_probability.substrates.jax import distributions as tfd
 from tensorflow_probability.substrates.jax import math as tfm
 
+from mmmjax.distributions._distribution import _bind_distribution
 from mmmjax.distributions._utils import _promote_inexact, _random_shape
 
 
@@ -262,3 +263,6 @@ def exponential_rng(
 
     valid_rate = jnp.isfinite(rate_array) & (rate_array > 0)
     return jnp.where(valid_rate, samples, jnp.nan)
+
+
+_bind_distribution(exponential, exponential_logpdf, exponential_rng, tfd.Exponential, rate="rate")

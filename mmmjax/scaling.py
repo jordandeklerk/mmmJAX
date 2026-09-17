@@ -138,6 +138,7 @@ class DataScaling:
     _fitted: tuple[tuple[str, Scaling], ...]
     _layout: _DataLayout
     _population: NDArray[np.generic] | None
+    _population_roles: tuple[str, ...] = ()
 
     @property
     def transformations(self) -> dict[str, Scaling]:
@@ -206,11 +207,11 @@ class DataScaling:
         if (
             self._population is not None
             and "population" in aligned.arrays
-            and any(name in aligned.arrays for name in ("media", "organic_media", "reach", "organic_reach"))
+            and any(name in aligned.arrays for name in self._population_roles)
             and not np.array_equal(aligned.arrays["population"], self._population)
         ):
             raise ValueError(
-                "population differs from the estimates used to fit media scaling. "
+                "population differs from the estimates used to fit scaling. "
                 "Keep the training population estimates when reusing these transformations"
             )
 
@@ -326,9 +327,29 @@ def fit_scaling(
     if not np.issubdtype(dtype, np.floating):
         dtype = np.dtype(np.float64 if dtype.itemsize == 8 else np.float32)
     dtype = jax.dtypes.canonicalize_dtype(np.promote_types(dtype, np.float32))
-    statistic_shape = tuple(1 if index in axes else size for index, size in enumerate(array.shape))
-
     # Estimate once on the host with a wider accumulator, then store the chosen JAX precision
+    offset, deviation = _scaling_statistics(array.astype(np.float64, copy=False), axes, center=center, scale=scale)
+    with np.errstate(over="ignore", invalid="ignore"):
+        scale_values = deviation.astype(dtype)
+        offset = offset.astype(dtype)
+    if not np.isfinite(offset).all() or not np.isfinite(scale_values).all() or np.any(scale_values <= 0):
+        raise ValueError(
+            f"values do not produce a finite offset and positive scale in {dtype}. "
+            "Rescale the training values or use float64 inputs with JAX 64-bit mode"
+        )
+
+    return Scaling(offset=jnp.asarray(offset), scale=jnp.asarray(scale_values))
+
+
+def _scaling_statistics(
+    array: NDArray[np.float64],
+    axes: tuple[int, ...],
+    *,
+    center: bool = True,
+    scale: bool = True,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Estimate host statistics before converting to the requested storage precision."""
+    statistic_shape = tuple(1 if index in axes else size for index, size in enumerate(array.shape))
     with np.errstate(over="ignore", invalid="ignore"):
         offset = np.mean(array, axis=axes, dtype=np.float64, keepdims=True) if center else np.zeros(statistic_shape)
         deviation = np.std(array, axis=axes, dtype=np.float64, keepdims=True) if scale else np.ones(statistic_shape)
@@ -339,15 +360,7 @@ def fit_scaling(
             deviation = np.where(constant | (deviation == 0), 1.0, deviation)
             if center:
                 offset = np.where(constant, minimum, offset)
-        scale_values = deviation.astype(dtype)
-        offset = offset.astype(dtype)
-    if not np.isfinite(offset).all() or not np.isfinite(scale_values).all() or np.any(scale_values <= 0):
-        raise ValueError(
-            f"values do not produce a finite offset and positive scale in {dtype}. "
-            "Rescale the training values or use float64 inputs with JAX 64-bit mode"
-        )
-
-    return Scaling(offset=jnp.asarray(offset), scale=jnp.asarray(scale_values))
+    return np.asarray(offset), np.asarray(deviation)
 
 
 def fit_media_scaling(
@@ -502,7 +515,7 @@ def fit_data_scaling(
     data: PreparedData,
     *,
     media_method: Literal["median", "mean", "max"] | None = "median",
-    scale_outcome: bool = False,
+    scale_outcome: bool | Literal["population"] = False,
     scale_controls: bool = True,
     scale_treatments: bool = True,
     adjust_population: bool = False,
@@ -524,9 +537,12 @@ def fit_data_scaling(
         Statistic for paid and organic impressions and reach. The median
         excludes zeros and the mean includes them. Each channel needs positive
         exposure. Use ``None`` to preserve original units.
-    scale_outcome : bool, default False
-        Standardize the outcome using its mean and standard deviation.
-        Requires an outcome. Leave disabled for count likelihoods.
+    scale_outcome : bool or {"population"}, default False
+        Use ``True`` to standardize the outcome, or ``"population"`` to first
+        divide it by population. Statistics pool periods and groups.
+        Inverse transformation restores the original outcome units.
+        Requires an outcome and, for ``"population"``, population estimates.
+        Leave disabled for count likelihoods.
     scale_controls : bool, default True
         Standardize each supplied control using its mean and standard deviation.
     scale_treatments : bool, default True
@@ -534,9 +550,10 @@ def fit_data_scaling(
         standard deviation.
     adjust_population : bool, default False
         Divide exposures by population before fitting channel statistics.
-        Requires population and affects exposures only. Stored population
-        factors are reused. New data may omit population, but supplied
-        estimates must match when transforming exposures.
+        Requires population and affects exposures only. Use
+        ``scale_outcome="population"`` to adjust outcomes as well. New data
+        may omit population. Supplied estimates must match the fitted values
+        when transforming population-adjusted inputs.
 
     Returns
     -------
@@ -583,8 +600,11 @@ def fit_data_scaling(
         raise TypeError("data must be PreparedData returned by prepare_data")
     if data._scaling is not None:
         raise ValueError("These inputs have already been scaled. Fit transformations using raw prepared data")
+    population_outcome = isinstance(scale_outcome, str) and scale_outcome == "population"
+    if not isinstance(scale_outcome, bool) and not population_outcome:
+        raise TypeError("scale_outcome must be True, False, or 'population'")
+
     for name, value in (
-        ("scale_outcome", scale_outcome),
         ("scale_controls", scale_controls),
         ("scale_treatments", scale_treatments),
         ("adjust_population", adjust_population),
@@ -598,10 +618,13 @@ def fit_data_scaling(
             raise ValueError(f"media_method must be 'median', 'mean', 'max' or None, got {media_method!r}")
     if scale_outcome and "outcome" not in data.arrays:
         raise ValueError("scale_outcome requires an outcome selected in prepare_data")
+    if population_outcome and "population" not in data.arrays:
+        raise ValueError("scale_outcome='population' requires population selected in prepare_data")
     if adjust_population and "population" not in data.arrays:
         raise ValueError("adjust_population requires population selected in prepare_data")
 
     fitted = {}
+    population_roles = []
     population = data.arrays["population"] if adjust_population else None
     media_inputs = ("media", "organic_media", "reach", "organic_reach")
     if media_method is not None:
@@ -611,13 +634,62 @@ def fit_data_scaling(
                     fitted[name] = fit_media_scaling(data.arrays[name], method=media_method, population=population)
                 except ValueError as error:
                     raise ValueError(f"Cannot fit scaling for {name!r}. {error}") from error
+                if adjust_population:
+                    population_roles.append(name)
 
     observation_axes = (0, 1) if data.group_columns else (0,)
     for name, enabled in (("outcome", scale_outcome), ("controls", scale_controls), ("treatments", scale_treatments)):
         if enabled and name in data.arrays:
-            fitted[name] = fit_scaling(data.arrays[name], axis=observation_axes)
+            if name == "outcome" and population_outcome:
+                fitted[name] = _fit_population_outcome(data.arrays[name], data.arrays["population"])
+                population_roles.append(name)
+            else:
+                fitted[name] = fit_scaling(data.arrays[name], axis=observation_axes)
 
-    stored_population = (
-        population.copy() if population is not None and any(name in fitted for name in media_inputs) else None
+    stored_population = data.arrays["population"].copy() if population_roles else None
+    result = DataScaling(
+        _fitted=tuple(fitted.items()),
+        _layout=data._layout(),
+        _population=stored_population,
+        _population_roles=tuple(population_roles),
     )
-    return DataScaling(_fitted=tuple(fitted.items()), _layout=data._layout(), _population=stored_population)
+    return result
+
+
+def _fit_population_outcome(outcome: NDArray[np.generic], population: NDArray[np.generic]) -> Scaling:
+    """Combine per-person standardization into one original-unit affine transform."""
+    if outcome.dtype.kind not in "biuf" or not np.isfinite(outcome).all():
+        raise ValueError("outcome must contain finite real values for population scaling")
+    if outcome.ndim not in (1, 2) or outcome.size == 0:
+        raise ValueError("outcome must have a nonempty time axis and optional group axis")
+    if population.dtype.kind not in "iuf":
+        raise TypeError("population must contain real numeric estimates, not boolean values")
+    if population.shape != outcome.shape[1:]:
+        raise ValueError(f"population must have shape {outcome.shape[1:]} for outcome shape {outcome.shape}")
+    population_values = population.astype(np.float64)
+    if not np.isfinite(population_values).all() or np.any(population_values <= 0):
+        raise ValueError("population must contain positive finite estimates")
+
+    dtype = jnp.result_type(outcome, population)
+    if not np.issubdtype(dtype, np.floating):
+        dtype = np.dtype(np.float64 if dtype.itemsize == 8 else np.float32)
+    dtype = jax.dtypes.canonicalize_dtype(np.promote_types(dtype, np.float32))
+    factors = population_values.reshape(1, *population.shape)
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        adjusted = outcome.astype(np.float64) / factors
+    if not np.isfinite(adjusted).all():
+        raise ValueError("outcome and population produce nonfinite per-person values. Check their units and magnitudes")
+
+    mean, deviation = _scaling_statistics(adjusted, tuple(range(adjusted.ndim)))
+    # Folding population into both factors lets inversion restore original units directly
+    with np.errstate(over="ignore", invalid="ignore"):
+        offset = (mean * factors).astype(dtype)
+        scale = (deviation * factors).astype(dtype)
+    if not np.isfinite(offset).all() or not np.isfinite(scale).all() or np.any(scale <= 0):
+        raise ValueError(
+            f"outcome and population do not produce a finite offset and positive scale in {dtype}. "
+            "Rescale the inputs or use float64 inputs with JAX 64-bit mode"
+        )
+
+    result = Scaling(offset=jnp.asarray(offset), scale=jnp.asarray(scale))
+    return result

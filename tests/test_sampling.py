@@ -18,9 +18,11 @@ import mmmjax._nuts as nuts
 import mmmjax.sampling as sampling
 from mmmjax import (
     CorrelationCholesky,
+    Data,
     Interval,
     Model,
     Positive,
+    Prior,
     Real,
     SamplingState,
     Simplex,
@@ -44,7 +46,7 @@ from mmmjax import (
 
 @pytest.fixture
 def normal_model():
-    return Model({"location": Real()}, lambda data, location: normal(location, data, 1.0))
+    return Model(parameters={"location": Real()}, log_density=lambda data, location: normal(location, data, 1.0))
 
 
 @pytest.fixture
@@ -155,19 +157,17 @@ def _prepared_model():
     def generate(key, outcome, intercept):
         mean = jnp.full_like(outcome, intercept)
         return {
-            "prediction": normal_rng(key, mean, 10.0),
-            "pointwise": normal_logpdf(outcome, mean, 10.0),
+            "predictive": {"prediction": normal_rng(key, mean, 10.0)},
+            "log_likelihood": {"pointwise": normal_logpdf(outcome, mean, 10.0)},
             "mean": mean,
         }
 
     model = Model(
-        {"intercept": Real()},
-        density,
-        generate,
+        parameters={"intercept": Real()},
+        log_density=density,
+        generated_quantities=generate,
         data=data,
         generated_dims={"mean": ("time",)},
-        predictive=("prediction",),
-        log_likelihood=("pointwise",),
     )
     return model, data
 
@@ -239,7 +239,7 @@ def test_dense_adaptation_learns_correlation_across_parameter_names(adaptation_m
         conditional_mean = location[1] + covariance[0, 1] * (first - location[0])
         return normal(first, location[0], 1.0) + normal(second, conditional_mean, conditional_scale)
 
-    model = Model({"first": Real(), "second": Real()}, density)
+    model = Model(parameters={"first": Real(), "second": Real()}, log_density=density)
     result = sample(model, draws=400, warmup=250, chains=2, seed=23, chain_method="vectorized", mass_matrix="dense")
     values = np.stack([result["posterior"][name].values for name in ("first", "second")], axis=-1).reshape(-1, 2)
     np.testing.assert_allclose(values.mean(axis=0), location, atol=0.2)
@@ -261,8 +261,8 @@ def test_dense_adaptation_learns_correlation_across_parameter_names(adaptation_m
 @pytest.mark.parametrize("named_axes", [False, True])
 def test_nuts_allows_parameters_named_after_sampler_diagnostics(named_axes):
     model = Model(
-        {"energy": Real(shape=(2,))},
-        lambda data, energy: normal(energy, 0.0, 1.0),
+        parameters={"energy": Real(shape=(2,))},
+        log_density=lambda data, energy: normal(energy, 0.0, 1.0),
         dims={"energy": ("feature",)} if named_axes else None,
         coords={"feature": ["first", "second"]} if named_axes else None,
     )
@@ -284,8 +284,10 @@ def test_nuts_allows_parameters_named_after_sampler_diagnostics(named_axes):
 )
 def test_nuts_returns_positive_parameters_and_full_simplex_events(chain_method, mass_matrix, adaptation_metrics):
     model = Model(
-        {"scale": Positive(), "weights": Simplex((3,))},
-        lambda data, scale, weights: half_normal(scale, 1.0) + dirichlet(weights, jnp.array([2.0, 3.0, 4.0])),
+        parameters={"scale": Positive(), "weights": Simplex((3,))},
+        log_density=lambda data, scale, weights: (
+            half_normal(scale, 1.0) + dirichlet(weights, jnp.array([2.0, 3.0, 4.0]))
+        ),
         dims={"weights": ("category",)},
         coords={"category": ["a", "b", "c"]},
     )
@@ -534,7 +536,7 @@ def test_parallel_sampling_requires_enough_devices_before_evaluating_model(monke
     def forbidden_initialize(self, key):
         raise AssertionError("Device validation must run before parameter initialization")
 
-    model = Model({"location": Real()}, forbidden_density)
+    model = Model(parameters={"location": Real()}, log_density=forbidden_density)
     devices = jax.local_devices()
     configuration = {name: os.environ.get(name) for name in ("JAX_PLATFORMS", "JAX_NUM_CPU_DEVICES", "XLA_FLAGS")}
     monkeypatch.setattr(Model, "initialize_random", forbidden_initialize)
@@ -633,10 +635,9 @@ def test_parallel_nuts_on_two_cpu_devices_preserves_targets_generation_and_label
             {"location": Real()},
             lambda data, location: normal(location, data, 1.0),
             lambda key, data, location: {
-                "prediction": location + 0.2 * jax.random.normal(key),
+                "predictive": {"prediction": location + 0.2 * jax.random.normal(key)},
                 "location_copy": location,
             },
-            predictive=("prediction",),
         )
         options = dict(data=observed_location, draws=160, warmup=120, chains=2, seed=19, batch_size=17, chunk_size=37)
         generation_key = jax.random.split(jax.random.key(19), 4)[2]
@@ -828,6 +829,54 @@ def test_prepared_data_and_selected_generated_outputs_are_collected_automaticall
 
 
 @pytest.mark.parametrize("batch_size", [1, 4, 64])
+@pytest.mark.parametrize("registered", [False, True])
+def test_sampling_collects_log_prior_without_sampling_jacobian(nuts_calls, batch_size, registered):
+    prior = Prior(lognormal, location=0.0, scale=1.0)
+
+    def density(data, scale):
+        return prior(scale) + normal(data, scale, 0.5)
+
+    def generate(key, data, scale):
+        output = {"log_likelihood": {"observation": normal(data, scale, 0.5)}}
+        return output if registered else output | {"log_prior": {"lp_scale": prior(scale)}}
+
+    model = Model(
+        parameters={"scale": Positive()},
+        log_density=density,
+        generated_quantities=generate,
+        prior={"scale": prior} if registered else None,
+    )
+    result = sample(model, data=1.5, draws=3, warmup=1, chains=2, initial_values={"scale": 2.0}, batch_size=batch_size)
+    scale = result["posterior"]["scale"].values
+    expected_prior = -0.5 * np.log(scale) ** 2 - np.log(scale) - 0.5 * np.log(2 * np.pi)
+    expected_likelihood = -0.5 * ((1.5 - scale) / 0.5) ** 2 - np.log(0.5) - 0.5 * np.log(2 * np.pi)
+    assert set(result.children) == {"posterior", "sample_stats", "log_likelihood", "log_prior"}
+    prior_name = "log_prior_scale" if registered else "lp_scale"
+    assert result["log_prior"][prior_name].dims == ("chain", "draw")
+    np.testing.assert_allclose(result["log_prior"][prior_name], expected_prior, rtol=2e-6)
+    np.testing.assert_allclose(result["log_likelihood"]["observation"], expected_likelihood, rtol=2e-6)
+    np.testing.assert_allclose(
+        result["sample_stats"]["lp"], expected_prior + expected_likelihood + np.log(scale), rtol=2e-6
+    )
+    assert not np.allclose(result["log_prior"][prior_name], result["sample_stats"]["lp"])
+    assert len(nuts_calls) == 1
+
+
+@pytest.mark.parametrize("generate", [False, True])
+def test_sampling_registered_log_priors_without_a_callback_respects_generation_toggle(nuts_calls, generate):
+    prior = Prior(normal, location=0.0, scale=1.0)
+    model = Model(
+        parameters={"location": Real()}, log_density=lambda data, location: prior(location), prior={"location": prior}
+    )
+    result = sample(model, draws=3, warmup=1, chains=2, initial_values={"location": 1.5}, generate=generate)
+    expected_groups = {"posterior", "sample_stats", "log_prior"} if generate else {"posterior", "sample_stats"}
+    assert set(result.children) == expected_groups
+    if generate:
+        assert result["log_prior"]["log_prior_location"].dims == ("chain", "draw")
+        np.testing.assert_allclose(result["log_prior"]["log_prior_location"], -0.5 * 1.5**2 - 0.5 * np.log(2 * np.pi))
+
+
+@pytest.mark.parametrize("batch_size", [1, 4, 64])
 def test_sampling_batches_preserve_seeded_draws_generation_and_labels(nuts_calls, batch_size):
     model, _ = _prepared_model()
     options = {"draws": 5, "warmup": 3, "chains": 2, "seed": 17}
@@ -846,15 +895,20 @@ def test_sampling_batches_preserve_seeded_draws_generation_and_labels(nuts_calls
         jax.random.split(generation_key, 2)
     )
     posterior = {"intercept": jnp.asarray(result["posterior"]["intercept"].values)}
-    reference = jax.jit(jax.vmap(jax.vmap(lambda key, values: model.generate(key, values, model.data))))(
+    reference = jax.jit(jax.vmap(jax.vmap(lambda key, values: model.generate_quantities(key, values, model.data))))(
         keys, posterior
     )
+    direct = {
+        "prediction": reference["predictive"]["prediction"],
+        "pointwise": reference["log_likelihood"]["pointwise"],
+        "mean": reference["mean"],
+    }
     for group, name in (
         ("posterior_predictive", "prediction"),
         ("log_likelihood", "pointwise"),
         ("generated_quantities", "mean"),
     ):
-        np.testing.assert_allclose(result[group][name], reference[name], rtol=2e-6, atol=2e-6)
+        np.testing.assert_allclose(result[group][name], direct[name], rtol=2e-6, atol=2e-6)
         np.testing.assert_array_equal(result[group]["time"], [10, 11, 12])
         assert result[group][name].dims == ("chain", "draw", "time")
         assert isinstance(result[group][name].data, np.ndarray)
@@ -863,9 +917,12 @@ def test_sampling_batches_preserve_seeded_draws_generation_and_labels(nuts_calls
 @pytest.mark.parametrize("batch_size", [1, 4, 64])
 def test_sampling_batches_keep_constrained_event_shapes_and_exact_draw_keys(nuts_calls, batch_size):
     model = Model(
-        {"scale": Positive(), "weights": Simplex((3,))},
-        lambda data, scale, weights: half_normal(scale, 1.0) + dirichlet(weights, jnp.ones(3)),
-        lambda key, data, scale: {"key_words": jax.random.key_data(key), "squared_scale": scale**2},
+        parameters={"scale": Positive(), "weights": Simplex((3,))},
+        log_density=lambda data, scale, weights: half_normal(scale, 1.0) + dirichlet(weights, jnp.ones(3)),
+        generated_quantities=lambda key, data, scale: {
+            "key_words": jax.random.key_data(key),
+            "squared_scale": scale**2,
+        },
     )
     result = sample(model, draws=5, warmup=3, chains=2, seed=11, batch_size=batch_size)
     positions = jax.tree.map(
@@ -937,7 +994,11 @@ def test_generation_can_be_disabled_without_executing_the_callback(nuts_calls, b
     def forbidden_generate(key, data, location):
         raise AssertionError("Generation was disabled")
 
-    model = Model({"location": Real()}, lambda data, location: normal(location, 0.0, 1.0), forbidden_generate)
+    model = Model(
+        parameters={"location": Real()},
+        log_density=lambda data, location: normal(location, 0.0, 1.0),
+        generated_quantities=forbidden_generate,
+    )
     result = sample(model, draws=3, warmup=3, chains=2, generate=False, batch_size=batch_size)
     assert set(result.children) == {"posterior", "sample_stats"}
 
@@ -949,26 +1010,22 @@ def test_auxiliary_inputs_keep_evaluated_values_and_experiment_labels(nuts_calls
         {
             "lift": ("experiment", np.array([0.1, 0.2, 0.3], dtype=np.float64)),
             "uncertainty": ("experiment", [0.5, 0.25, 0.125]),
-            "reference": 2.0,
+            "baseline": 2.0,
         },
         coords={"experiment": ["north", "south", "national"]},
     )
     model = Model(
-        {"effect": Real(dims="experiment")},
-        lambda lift, expected_lift, uncertainty, effect: (
+        parameters={"effect": Real(dims="experiment")},
+        log_density=lambda lift, expected_lift, uncertainty, effect: (
             normal(lift, expected_lift, uncertainty) + normal(effect, 0.0, 1.0)
         ),
-        lambda key, lift, expected_lift, uncertainty: {
-            "lift_copy": lift,
-            "pointwise": normal_logpdf(lift, expected_lift, uncertainty),
+        generated_quantities=lambda key, lift, expected_lift, uncertainty: {
+            "predictive": {"lift_copy": lift},
+            "log_likelihood": {"pointwise": normal_logpdf(lift, expected_lift, uncertainty)},
         },
-        data=data,
-        inputs=inputs,
-        scaling=fit_data_scaling(data, scale_outcome=True),
-        transformed_parameters=lambda effect, reference: {"expected_lift": effect * reference},
+        data=Data(data, inputs=inputs, scaling=fit_data_scaling(data, scale_outcome=True)),
+        transformed_parameters=lambda effect, baseline: {"expected_lift": effect * baseline},
         save=("expected_lift",),
-        predictive=("lift_copy",),
-        log_likelihood=("pointwise",),
         generated_dims={"expected_lift": ("experiment",), "pointwise": ("experiment",)},
     )
     effect = np.array([1.0, 2.0, 3.0])
@@ -996,7 +1053,9 @@ def test_auxiliary_inputs_keep_evaluated_values_and_experiment_labels(nuts_calls
 
 
 def test_unspecified_vector_axes_receive_parameter_specific_names(nuts_calls):
-    model = Model({"coefficient": Real((2,))}, lambda data, coefficient: normal(coefficient, 0.0, 1.0))
+    model = Model(
+        parameters={"coefficient": Real((2,))}, log_density=lambda data, coefficient: normal(coefficient, 0.0, 1.0)
+    )
     result = sample(model, draws=3, warmup=5, chains=1)
     variable = result["posterior"]["coefficient"]
     assert variable.dims[:2] == ("chain", "draw")
@@ -1006,9 +1065,13 @@ def test_unspecified_vector_axes_receive_parameter_specific_names(nuts_calls):
 
 def test_generated_parameter_aliases_keep_explicit_and_neutral_axes(nuts_calls):
     model = Model(
-        {"coefficient": Real((2,)), "other": Real((2,))},
-        lambda data, coefficient, other: normal(coefficient, 0.0, 1.0) + normal(other, 0.0, 1.0),
-        lambda key, data, coefficient, other: {"copy": coefficient, "other_copy": other, "sum": coefficient + other},
+        parameters={"coefficient": Real((2,)), "other": Real((2,))},
+        log_density=lambda data, coefficient, other: normal(coefficient, 0.0, 1.0) + normal(other, 0.0, 1.0),
+        generated_quantities=lambda key, data, coefficient, other: {
+            "copy": coefficient,
+            "other_copy": other,
+            "sum": coefficient + other,
+        },
         dims={"coefficient": ("feature",)},
         coords={"feature": ["first", "second"]},
     )
@@ -1035,15 +1098,14 @@ def test_custom_generation_does_not_infer_axes_from_names_or_equal_lengths(nuts_
             "controls": controls.T,
             "outcome": outcome[::-1],
             "mean": coefficient + outcome,
-            "prediction": jnp.array([1.0, 2.0, 3.0]),
+            "predictive": {"prediction": jnp.array([1.0, 2.0, 3.0])},
         }
 
     model = Model(
-        {"coefficient": Real((2,))},
-        lambda coefficient: normal(coefficient, 0.0, 1.0),
-        generate,
+        parameters={"coefficient": Real((2,))},
+        log_density=lambda coefficient: normal(coefficient, 0.0, 1.0),
+        generated_quantities=generate,
         data=data,
-        predictive=("prediction",),
     )
     result = sample(model, draws=2, warmup=3, chains=1)
     generated = result["generated_quantities"]
@@ -1059,13 +1121,15 @@ def test_custom_generation_does_not_infer_axes_from_names_or_equal_lengths(nuts_
 def test_generated_dimension_overrides_take_precedence(nuts_calls):
     data = prepare_data(pd.DataFrame({"week": [1, 2], "sales": [3.0, 4.0]}), time="week", outcome="sales")
     model = Model(
-        {"intercept": Real()},
-        lambda intercept: normal(intercept, 0.0, 1.0),
-        lambda key, outcome, intercept: {"copy": outcome, "prediction": outcome + intercept},
+        parameters={"intercept": Real()},
+        log_density=lambda intercept: normal(intercept, 0.0, 1.0),
+        generated_quantities=lambda key, outcome, intercept: {
+            "copy": outcome,
+            "predictive": {"prediction": outcome + intercept},
+        },
         data=data,
         generated_dims={"copy": ("custom",), "prediction": ("custom",)},
         coords={"custom": ["early", "late"]},
-        predictive=("prediction",),
     )
     result = sample(model, draws=2, warmup=3, chains=1)
     assert result["generated_quantities"]["copy"].dims == ("chain", "draw", "custom")
@@ -1076,26 +1140,26 @@ def test_generated_dimension_overrides_take_precedence(nuts_calls):
 def test_predictive_outputs_use_declared_observation_order(nuts_calls):
     data = prepare_data(pd.DataFrame({"week": [1, 2], "sales": [3.0, 4.0]}), time="week", outcome="sales")
     model = Model(
-        {"levels": Real((2,))},
-        lambda levels: normal(levels, 0.0, 1.0),
-        lambda key, levels: {"prediction": levels, "copy": levels},
+        parameters={"levels": Real((2,))},
+        log_density=lambda levels: normal(levels, 0.0, 1.0),
+        generated_quantities=lambda key, levels: {"predictive": {"prediction": levels}, "copy": levels},
         data=data,
-        predictive=("prediction",),
     )
     result = sample(model, draws=2, warmup=3, chains=1)
     assert result["posterior_predictive"]["prediction"].dims == ("chain", "draw", "time")
     assert result["generated_quantities"]["copy"].dims == ("chain", "draw", "levels_dim_0")
 
 
-def test_missing_selected_generated_output_is_reported(nuts_calls):
+def test_missing_labeled_generated_output_is_reported_before_sampling(nuts_calls):
     model = Model(
-        {"location": Real()},
-        lambda data, location: normal(location, 0.0, 1.0),
-        lambda key, data, location: {"mean": location},
-        predictive=("prediction",),
+        parameters={"location": Real()},
+        log_density=lambda data, location: normal(location, 0.0, 1.0),
+        generated_quantities=lambda key, data, location: {"mean": location},
+        generated_dims={"prediction": ("scenario",)},
     )
     with pytest.raises(ValueError, match="prediction"):
         sample(model, draws=2, warmup=3, chains=1)
+    assert not nuts_calls
 
 
 @pytest.mark.parametrize("group_specific", [False, True])
@@ -1141,8 +1205,8 @@ def test_explicit_media_and_fourier_parameters_retain_declared_axes(nuts_calls, 
     def generate(key, outcome, media, paid, paid_total, annual, annual_coefficients, paid_retention):
         mean = paid_total + annual
         return {
-            "prediction": normal_rng(key, mean, 10.0),
-            "pointwise": normal_logpdf(outcome, mean, 10.0),
+            "predictive": {"prediction": normal_rng(key, mean, 10.0)},
+            "log_likelihood": {"pointwise": normal_logpdf(outcome, mean, 10.0)},
             "contribution": paid,
             "total": paid_total,
             "seasonal": annual,
@@ -1171,15 +1235,15 @@ def test_explicit_media_and_fourier_parameters_retain_declared_axes(nuts_calls, 
     coefficient_axes = ("group", "channel") if group_specific else ("channel",)
     annual_axes = ("annual_mode", "group") if group_specific else ("annual_mode",)
     model = Model(
-        {
+        parameters={
             "paid_coefficient": Positive(dims=coefficient_axes),
             "paid_retention": Interval(0.0, 1.0, dims="channel"),
             "paid_half_saturation": Positive(dims="channel"),
             "paid_slope": Positive(dims="channel"),
             "annual_coefficients": Real(dims=annual_axes),
         },
-        density,
-        generate,
+        log_density=density,
+        generated_quantities=generate,
         data=data,
         transformed_parameters=transformed,
         coords={"annual_mode": ["sin_1", "sin_2", "cos_1", "cos_2"]},
@@ -1188,8 +1252,6 @@ def test_explicit_media_and_fourier_parameters_retain_declared_axes(nuts_calls, 
             "total": ("time", "group"),
             "seasonal": ("time", "group"),
         },
-        predictive=("prediction",),
-        log_likelihood=("pointwise",),
     )
     result = sample(model, draws=2, warmup=3, chains=1)
     posterior = result["posterior"]
@@ -1234,11 +1296,10 @@ def test_collected_data_uses_model_scaling_and_does_not_rescale_draws_or_generat
         return {"mean": jnp.full_like(outcome, location)}
 
     model = Model(
-        {"location": Real()},
-        density,
-        generate,
-        data=data,
-        scaling=scaling,
+        parameters={"location": Real()},
+        log_density=density,
+        generated_quantities=generate,
+        data=Data(data, scaling=scaling),
         generated_dims={"mean": ("time",)},
     )
     expected_outcome = np.array(model.data.values["outcome"])
@@ -1327,7 +1388,7 @@ def test_initial_values_must_be_complete_finite_constrained_parameters(normal_mo
 
 @pytest.mark.parametrize("value", [-1.0, 0.0])
 def test_initial_positive_parameters_must_be_in_the_interior(nuts_calls, value):
-    model = Model({"scale": Positive()}, lambda data, scale: half_normal(scale, 1.0))
+    model = Model(parameters={"scale": Positive()}, log_density=lambda data, scale: half_normal(scale, 1.0))
     with pytest.raises(ValueError):
         sample(model, initial_values={"scale": value}, draws=2, warmup=3, chains=1)
     assert not nuts_calls
@@ -1335,8 +1396,8 @@ def test_initial_positive_parameters_must_be_in_the_interior(nuts_calls, value):
 
 def test_nuts_samples_correlation_factors_with_labeled_matrix_axes():
     model = Model(
-        {"factor": CorrelationCholesky(dims=("effect", "effect_to"))},
-        lambda data, factor: lkj_cholesky(factor, 2.0),
+        parameters={"factor": CorrelationCholesky(dims=("effect", "effect_to"))},
+        log_density=lambda data, factor: lkj_cholesky(factor, 2.0),
         coords={"effect": ["search", "video"], "effect_to": ["search", "video"]},
     )
     results = sample(model, draws=20, warmup=60, chains=1, seed=8, initial_values={"factor": jnp.eye(2)})
@@ -1359,7 +1420,9 @@ def test_nuts_samples_correlation_factors_with_labeled_matrix_axes():
     ],
 )
 def test_initial_correlation_factors_cannot_be_projected_into_support(nuts_calls, factor):
-    model = Model({"factor": CorrelationCholesky((2, 2))}, lambda data, factor: lkj_cholesky(factor, 1.0))
+    model = Model(
+        parameters={"factor": CorrelationCholesky((2, 2))}, log_density=lambda data, factor: lkj_cholesky(factor, 1.0)
+    )
     with pytest.raises(ValueError, match="factor"):
         sample(model, initial_values={"factor": factor}, draws=2, warmup=3, chains=1)
     assert not nuts_calls
@@ -1370,8 +1433,8 @@ def test_initial_correlation_factors_cannot_be_projected_into_support(nuts_calls
 )
 def test_initial_simplex_values_cannot_be_renormalized_or_discarded(nuts_calls, weights):
     model = Model(
-        {"weights": Simplex((len(weights),)), "location": Real()},
-        lambda data, weights, location: normal(weights, 0.0, 1.0) + normal(location, 0.0, 1.0),
+        parameters={"weights": Simplex((len(weights),)), "location": Real()},
+        log_density=lambda data, weights, location: normal(weights, 0.0, 1.0) + normal(location, 0.0, 1.0),
     )
     with pytest.raises(ValueError, match="weights"):
         sample(model, initial_values={"weights": weights, "location": 0.0}, draws=2, warmup=3, chains=1)
@@ -1380,8 +1443,8 @@ def test_initial_simplex_values_cannot_be_renormalized_or_discarded(nuts_calls, 
 
 def test_valid_single_category_simplex_is_kept_with_other_free_parameters(nuts_calls):
     model = Model(
-        {"weights": Simplex((1,)), "location": Real()},
-        lambda data, weights, location: normal(weights, 0.0, 1.0) + normal(location, 0.0, 1.0),
+        parameters={"weights": Simplex((1,)), "location": Real()},
+        log_density=lambda data, weights, location: normal(weights, 0.0, 1.0) + normal(location, 0.0, 1.0),
     )
     results = sample(model, initial_values={"weights": [1.0], "location": 0.0}, draws=2, warmup=3, chains=1)
     assert nuts_calls[0]["positions"]["weights"].shape == (1, 0)
@@ -1393,7 +1456,7 @@ def test_nonfinite_initial_density_or_gradient_is_rejected_before_sampling(nuts_
     def density(data, location):
         return jnp.log(-jnp.square(location) - 1.0) if failure == "density" else -jnp.sqrt(jnp.abs(location))
 
-    model = Model({"location": Real()}, density)
+    model = Model(parameters={"location": Real()}, log_density=density)
     with pytest.raises(ValueError, match=r"finite|density|gradient"):
         sample(model, initial_values={"location": 0.0}, draws=2, warmup=3, chains=1)
     assert not nuts_calls
@@ -1417,8 +1480,8 @@ def _saved_model(**options):
 
     settings = {"save": ("mu",), "generated_dims": {"mu": ("time",)}} | options
     return Model(
-        {"intercept": Real()},
-        density,
+        parameters={"intercept": Real()},
+        log_density=density,
         data=data,
         transformed_parameters=transformed,
         **settings,
@@ -1449,8 +1512,8 @@ def test_saved_quantities_are_validated_before_chain_adaptation(nuts_calls, prob
         model = _saved_model(save=("unknown",))
         message = "unknown"
     elif problem == "collision":
-        model = _saved_model(generate=lambda key, mu: {"mu": mu})
-        message = "also returned by generate"
+        model = _saved_model(generated_quantities=lambda key, mu: {"mu": mu})
+        message = "also returned by generated_quantities"
     else:
         model = _saved_model(generated_dims={"mu": ()})
         message = "dims matching"
@@ -1466,8 +1529,8 @@ def test_saved_quantities_are_validated_before_chain_adaptation(nuts_calls, prob
 )
 def test_continuation_matches_one_run_without_reinitializing_or_adapting(monkeypatch, chain_method, mass_matrix):
     model = Model(
-        {"location": Real((2,))},
-        lambda data, location: normal(location[0], 0.0, 1.0) + normal(location[1], 0.5 * location[0], 0.8),
+        parameters={"location": Real((2,))},
+        log_density=lambda data, location: normal(location[0], 0.0, 1.0) + normal(location[1], 0.5 * location[0], 0.8),
     )
     options = {
         "warmup": 60,
@@ -1522,22 +1585,22 @@ def test_continuation_preserves_generated_streams_saved_quantities_and_prepared_
     def density(outcome, mu, location):
         return normal(outcome, mu, 1.0) + normal(location, 0.0, 2.0)
 
-    def generate(key, outcome, mu):
+    def generate(key, outcome, mu, location):
         return {
-            "prediction": normal_rng(key, mu, 1.0),
-            "pointwise": normal_logpdf(outcome, mu, 1.0),
+            "predictive": {"prediction": normal_rng(key, mu, 1.0)},
+            "log_likelihood": {"pointwise": normal_logpdf(outcome, mu, 1.0)},
+            "log_prior": {"lp_location": normal(location, 0.0, 2.0)},
             "key_words": jax.random.key_data(key),
         }
 
     model = Model(
-        {"location": Real()},
-        density,
-        generate,
+        parameters={"location": Real()},
+        log_density=density,
+        generated_quantities=generate,
         data=data,
         transformed_parameters=transformed,
         save=("mu",),
-        predictive=("prediction",),
-        log_likelihood=("pointwise",),
+        prior={"location": Prior(normal, location=0.0, scale=2.0)},
         generated_dims={"mu": ("time",), "key_words": ("word",)},
         coords={"word": ["first", "second"]},
     )
@@ -1551,6 +1614,15 @@ def test_continuation_preserves_generated_streams_saved_quantities_and_prepared_
     assert combined.attrs == first.attrs
     assert combined.attrs["warmup_steps"] == 60
     assert combined.attrs["seed"] == 17
+    assert combined["log_prior"]["lp_location"].dims == ("chain", "draw")
+    assert combined["log_prior"]["log_prior_location"].dims == ("chain", "draw")
+    np.testing.assert_array_equal(combined["log_prior"]["log_prior_location"], combined["log_prior"]["lp_location"])
+    np.testing.assert_array_equal(combined["log_prior"]["draw"], np.arange(7))
+    np.testing.assert_allclose(
+        combined["log_prior"]["lp_location"],
+        normal_logpdf(combined["posterior"]["location"].values, 0.0, 2.0),
+        rtol=2e-6,
+    )
     for group in ("posterior_predictive", "log_likelihood", "generated_quantities"):
         np.testing.assert_array_equal(combined[group].coords["draw"], np.arange(7))
         np.testing.assert_array_equal(combined[group].coords["time"], [10, 11, 12])
@@ -1570,16 +1642,19 @@ def test_continuation_preserves_prepared_inputs_in_wrapped_models():
         outcome="sales",
     )
     prepared_model = Model(
-        {"location": Real()},
-        lambda outcome, location: normal(outcome, location, 1.0) + normal(location, 0.0, 2.0),
-        lambda key, outcome, location: {"prediction": normal_rng(key, location, 1.0, sample_shape=outcome.shape)},
+        parameters={"location": Real()},
+        log_density=lambda outcome, location: normal(outcome, location, 1.0) + normal(location, 0.0, 2.0),
+        generated_quantities=lambda key, outcome, location: {
+            "predictive": {"prediction": normal_rng(key, location, 1.0, sample_shape=outcome.shape)}
+        },
         data=data,
     )
     model = Model(
-        prepared_model.parameters,
-        lambda data, location: prepared_model.log_prob({"location": location}, data=data),
-        lambda key, data, location: prepared_model.generate(key, {"location": location}, data),
-        predictive=("prediction",),
+        parameters=prepared_model.parameters,
+        log_density=lambda data, location: prepared_model.log_prob({"location": location}, data=data),
+        generated_quantities=lambda key, data, location: prepared_model.generate_quantities(
+            key, {"location": location}, data
+        ),
     )
     options = {"data": prepared_model.data, "warmup": 60, "chains": 1, "seed": 29, "progress": False}
 
@@ -1596,9 +1671,12 @@ def test_continuation_preserves_prepared_inputs_in_wrapped_models():
 def test_continuation_snapshots_mutable_data_and_results_and_leaves_old_state_reusable():
     inputs = {"center": np.array([0.0, 0.5])}
     model = Model(
-        {"location": Real((2,))},
-        lambda data, location: normal(location, data["center"], 1.0),
-        lambda key, data, location: {"center": data["center"], "noise": jax.random.normal(key, (2,))},
+        parameters={"location": Real((2,))},
+        log_density=lambda data, location: normal(location, data["center"], 1.0),
+        generated_quantities=lambda key, data, location: {
+            "center": data["center"],
+            "noise": jax.random.normal(key, (2,)),
+        },
     )
     options = {"data": inputs, "warmup": 60, "chains": 1, "seed": 23, "progress": False}
     full = sample(model, draws=7, **options)
@@ -1636,11 +1714,12 @@ def test_continuation_coordinate_edits_do_not_change_previous_or_next_state():
         groups=["country", "market"],
     )
     model = Model(
-        {"location": Real(dims="group")},
-        lambda outcome, location: normal(outcome, location, 1.0) + normal(location, 0.0, 2.0),
-        lambda key, outcome, location: {"prediction": normal_rng(key, jnp.broadcast_to(location, outcome.shape), 1.0)},
+        parameters={"location": Real(dims="group")},
+        log_density=lambda outcome, location: normal(outcome, location, 1.0) + normal(location, 0.0, 2.0),
+        generated_quantities=lambda key, outcome, location: {
+            "predictive": {"prediction": normal_rng(key, jnp.broadcast_to(location, outcome.shape), 1.0)}
+        },
         data=data,
-        predictive=("prediction",),
     )
     options = {"warmup": 60, "chains": 2, "seed": 27, "progress": False}
     full = sample(model, draws=7, **options)
@@ -1674,7 +1753,11 @@ def test_continuation_keeps_generation_disabled_and_only_shows_retained_progress
     def forbidden_generate(key, data, location):
         raise AssertionError("Disabled generation must remain disabled during continuation")
 
-    model = Model({"location": Real()}, lambda data, location: normal(location, 0.0, 1.0), forbidden_generate)
+    model = Model(
+        parameters={"location": Real()},
+        log_density=lambda data, location: normal(location, 0.0, 1.0),
+        generated_quantities=forbidden_generate,
+    )
     _, state = sample(model, draws=2, warmup=60, chains=2, seed=13, return_state=True, generate=False, progress=False)
     result, _ = continue_sampling(state, draws=3, chunk_size=2, progress=True)
     assert set(result.children) == {"posterior", "sample_stats"}

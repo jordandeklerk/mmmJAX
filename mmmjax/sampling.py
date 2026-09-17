@@ -1,12 +1,12 @@
 """Prior and posterior sampling with labeled model results."""
 
 import warnings
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Hashable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from importlib.metadata import version
 from numbers import Integral, Real
-from typing import Literal, cast, overload
+from typing import Literal, TypeVar, cast, get_args, overload
 
 import jax
 import jax.numpy as jnp
@@ -16,9 +16,21 @@ from jax.typing import ArrayLike
 from numpy.typing import NDArray
 
 from mmmjax._nuts import _NUTSContinuation, _sample_nuts
-from mmmjax._results import _collect_results, _data_dimensions, _prepared_groups, _same_labels
-from mmmjax.data import PreparedData
-from mmmjax.model import Model, Prior
+from mmmjax._results import _collect_results, _coordinates, _prepared_groups, _same_labels
+from mmmjax.data import PreparedData, Reference, _data_dimensions, _reference_dimensions
+from mmmjax.model import (
+    Model,
+    PriorSampler,
+    _metadata_source,
+    _OutputGroup,
+    _OutputKey,
+    _ResultGroup,
+    _validate_value_names,
+)
+from mmmjax.priors import _validate_prior_sampler
+from mmmjax.scaling import Scaling
+
+_Key = TypeVar("_Key", bound=Hashable)
 
 __all__ = ["SamplingState", "continue_sampling", "generate_quantities", "sample", "sample_prior"]
 
@@ -180,7 +192,8 @@ def sample(
         Complete constrained parameter values used to start every chain.
         Otherwise, each chain starts from a random unconstrained position.
     generate : bool, default True
-        Evaluate saved quantities and outputs from the generation callback.
+        Evaluate saved quantities, mapped log-prior terms, and outputs from
+        the ``generated_quantities`` callback.
     chunk_size : int, default 100
         Maximum retained draws per chain in a sampling chunk before transfer
         to host memory. Smaller chunks reduce device memory use without
@@ -206,16 +219,16 @@ def sample(
         - **posterior** contains constrained parameter draws.
         - **sample_stats** contains sampler diagnostics, including divergences
           and the unconstrained log density in ``lp``.
-        - **posterior_predictive** and **log_likelihood** contain generated
-          outputs selected by the model. Other outputs, including saved
-          transformed quantities, are stored in
-          **generated_quantities**.
+        - **posterior_predictive**, **log_likelihood**, and **log_prior** contain
+          the outputs returned under those keys by ``generated_quantities``
+          and mapped log-prior terms. Other outputs, including saved
+          transformed quantities, are stored in **generated_quantities**.
         - **observed_data** and **constant_data** contain prepared model inputs
           in their evaluated units, including any fitted scaling.
-          Additional inputs supplied to ``Model`` are stored in **constant_data**.
+          Auxiliary ``Data`` inputs are stored in **constant_data**.
 
         Declared parameter and data axes retain their labels, including unchanged
-        generation inputs. Observation-shaped predictive and likelihood outputs
+        callback inputs. Observation-shaped predictive and likelihood outputs
         inherit outcome labels. Use ``dims``, ``generated_dims``, and ``coords``
         on the model for custom axes. Inspect diagnostics before interpreting results.
         With ``return_state=True``, returns ``(results, state)`` instead.
@@ -342,12 +355,12 @@ def sample(
         batch_size=batch_size,
     )
     del unconstrained
-    generated: dict[str, NDArray[np.generic]] = {}
+    generated: dict[_OutputKey, NDArray[np.generic]] = {}
 
     if generate and model._has_generated_quantities:
         keys = _generation_keys(generation_key, chains, 0, int(draws))
         generated = _evaluate_draws(
-            lambda key, parameters: model.generate(key, parameters, inputs),
+            lambda key, parameters: model._generate_with_inputs(key, parameters, inputs)[0],
             keys,
             posterior,
             sample_shape=(chains, draws),
@@ -469,11 +482,11 @@ def continue_sampling(
         batch_size=batch_size,
     )
     del unconstrained
-    generated: dict[str, NDArray[np.generic]] = {}
+    generated: dict[_OutputKey, NDArray[np.generic]] = {}
     if state._generate and model._has_generated_quantities:
         keys = _generation_keys(state._generation_key, state.chains, state.draws, stop)
         generated = _evaluate_draws(
-            lambda key, parameters: model.generate(key, parameters, inputs),
+            lambda key, parameters: model._generate_with_inputs(key, parameters, inputs)[0],
             keys,
             posterior,
             sample_shape=(state.chains, int(draws)),
@@ -517,26 +530,33 @@ def _generation_keys(key: jax.Array, chains: int, start: int, stop: int) -> jax.
     return jax.vmap(lambda chain_key: jax.vmap(lambda index: jax.random.fold_in(chain_key, index))(indices))(chain_keys)
 
 
+def _grouped_outputs(generated: Mapping[_OutputKey, ArrayLike]) -> dict[_OutputGroup, dict[str, ArrayLike]]:
+    """Separate result groups from the flat callback outputs."""
+    groups: dict[_OutputGroup, dict[str, ArrayLike]] = {"generated": {}}
+    groups.update({group: {} for group in get_args(_ResultGroup)})
+    for (group, name), value in generated.items():
+        groups[group][name] = value
+    return groups
+
+
 def _collect_sampling_results(
     model: Model,
     posterior: Mapping[str, ArrayLike],
-    generated: Mapping[str, ArrayLike],
+    generated: Mapping[_OutputKey, ArrayLike],
     stats: Mapping[str, ArrayLike] | None,
     output_dimensions: dict[str, tuple[str, ...]],
 ) -> xr.DataTree:
     """Use the same result groups and labels for initial and continued draws."""
     dimensions, coordinates = _parameter_metadata(model)
+    groups = _grouped_outputs(generated)
     return _collect_results(
         posterior,
         data=_result_data(model),
         inputs=_result_inputs(model),
-        posterior_predictive={name: value for name, value in generated.items() if name in model._predictive_names},
-        log_likelihood={name: value for name, value in generated.items() if name in model._likelihood_names},
-        generated_quantities={
-            name: value
-            for name, value in generated.items()
-            if name not in (*model._predictive_names, *model._likelihood_names)
-        },
+        posterior_predictive=groups["predictive"],
+        log_likelihood=groups["log_likelihood"],
+        log_prior=groups["log_prior"],
+        generated_quantities=groups["generated"],
         sample_stats=stats,
         dims=dimensions,
         generated_dims=output_dimensions,
@@ -567,7 +587,7 @@ def _warn_sampling(stats: Mapping[str, ArrayLike]) -> None:
 
 def sample_prior(
     model: Model,
-    prior: Prior | None = None,
+    prior: PriorSampler | None = None,
     *,
     data: object = None,
     draws: int = 500,
@@ -577,8 +597,9 @@ def sample_prior(
 ) -> xr.DataTree:
     """Draw explicit priors and inspect their implied outcomes before fitting.
 
-    Use the model's prior-draw function and reuse its transformed parameters
-    and generation callback. No log density or posterior sampler is evaluated.
+    Use the model's prior definitions or prior-draw function and reuse its
+    transformed parameters and ``generated_quantities`` callback.
+    The ``log_density`` callback and posterior sampler are not evaluated.
     Keep the sampling distributions consistent with the priors in ``log_density``.
 
     Parameters
@@ -588,7 +609,8 @@ def sample_prior(
     prior : callable, optional
         Override the prior-draw function attached to ``Model`` for this call.
         The function ``prior(key)`` must return one constrained draw per
-        declared parameter. Required if the model has no prior-draw function.
+        declared parameter. Required if the model has no prior definitions
+        or prior-draw function.
     data : object, optional
         Inputs for a model without prepared data. Prepared models use their
         stored observations and fitted scaling automatically.
@@ -597,7 +619,8 @@ def sample_prior(
     seed : int, default 0
         Random seed for parameters and generated quantities.
     generate : bool, default True
-        Evaluate saved quantities and outputs from the generation callback.
+        Evaluate saved quantities and outputs from the ``generated_quantities``
+        callback.
     batch_size : int, default 64
         Maximum prior draws evaluated together, including generated quantities.
         Smaller batches reduce working memory without reducing the draw count.
@@ -609,17 +632,17 @@ def sample_prior(
         results must fit in host memory.
 
         - **prior** contains constrained parameter draws.
-        - **prior_predictive** contains outputs selected by the model's
-          ``predictive`` argument.
+        - **prior_predictive** contains outputs returned under ``predictive``
+          by ``generated_quantities``.
         - **prior_generated_quantities** contains saved quantities and other
           generated outputs.
         - **observed_data** and **constant_data** contain prepared model inputs
           in their evaluated units, including fitted scaling.
-          Additional inputs supplied to ``Model`` are stored in **constant_data**.
+          Auxiliary ``Data`` inputs are stored in **constant_data**.
 
-        Outputs selected as log likelihoods are omitted. The chain axis is for
-        result compatibility, not an MCMC chain. Without generation, only prior
-        draws and available model inputs are returned.
+        Log-likelihood and log-prior outputs are omitted. The chain
+        axis is for result compatibility, not an MCMC chain. Without generation,
+        only prior draws and available model inputs are returned.
     """
     if not isinstance(model, Model):
         raise TypeError("model must be a Model")
@@ -627,9 +650,8 @@ def sample_prior(
     if prior is None:
         prior = model._prior
     if prior is None:
-        raise ValueError("Provide a prior-draw function on Model or pass prior to sample_prior")
-    if not callable(prior):
-        raise TypeError("prior must be a JAX-compatible function accepting a random key")
+        raise ValueError("Provide prior definitions or a prior-draw function on Model, or pass prior to sample_prior")
+    _validate_prior_sampler(prior)
     if isinstance(draws, bool) or not isinstance(draws, Integral) or draws < 1:
         raise ValueError("draws must be a positive integer")
     if isinstance(seed, bool) or not isinstance(seed, Integral) or seed < 0:
@@ -648,34 +670,29 @@ def sample_prior(
     prepared = _result_data(model)
     prior_key, generation_key, preview_key = jax.random.split(jax.random.key(int(seed)), 3)
     parameters = _prior_draws(model, prior, prior_key, int(draws), batch_size=batch_size)
-    generated: dict[str, NDArray[np.generic]] = {}
+    generated: dict[_OutputKey, NDArray[np.generic]] = {}
     output_dimensions: dict[str, tuple[str, ...]] = {}
 
-    if generate and model._has_generated_quantities:
+    if generate and (model._generate is not None or model._saved_inputs):
         initial = {name: value[0] for name, value in parameters.items()}
         outputs, arguments = model._generate_with_inputs(preview_key, initial, inputs)
         output_dimensions = _output_dimensions(model, outputs, arguments, dimensions, prepared)
         keys = jax.random.split(generation_key, draws)
         generated = _evaluate_draws(
-            lambda key, values: model.generate(key, values, inputs),
+            lambda key, values: model._generate_with_inputs(key, values, inputs)[0],
             keys,
             parameters,
             sample_shape=(draws,),
             batch_size=batch_size,
         )
 
+    groups = _grouped_outputs(generated)
     results = _collect_results(
         {name: value[None] for name, value in parameters.items()},
         data=prepared,
         inputs=_result_inputs(model),
-        posterior_predictive={
-            name: value[None] for name, value in generated.items() if name in model._predictive_names
-        },
-        generated_quantities={
-            name: value[None]
-            for name, value in generated.items()
-            if name not in (*model._predictive_names, *model._likelihood_names)
-        },
+        posterior_predictive={name: value[None] for name, value in groups["predictive"].items()},
+        generated_quantities={name: value[None] for name, value in groups["generated"].items()},
         dims=dimensions,
         generated_dims=output_dimensions,
         coords=coordinates,
@@ -692,7 +709,7 @@ def sample_prior(
 
 def _prior_draws(
     model: Model,
-    prior: Prior,
+    prior: PriorSampler,
     key: jax.Array,
     draws: int,
     *,
@@ -703,13 +720,22 @@ def _prior_draws(
     def draw_parameters(draw_key: jax.Array) -> dict[str, jax.Array]:
         values = prior(draw_key)
         if not isinstance(values, Mapping):
-            raise TypeError("prior must return a mapping of parameter names to constrained draws")
-        if set(values) != set(model.parameters):
-            raise ValueError("Prior parameter names must match all model declarations")
+            raise TypeError(
+                "prior(key) must return a mapping of parameter names to constrained draws, not a log density. "
+                "Return custom log-prior terms under log_prior in generated_quantities"
+            )
+        _validate_value_names(values, model._parameterizations, name="Prior draws")
 
         parameters = {}
         for name, declaration in model.parameters.items():
-            value = jnp.asarray(values[name])
+            try:
+                value = jnp.asarray(values[name])
+            except (TypeError, ValueError) as exc:
+                raise TypeError(
+                    f"Prior draw for {name!r} must be a real array-like value. "
+                    "Return constrained draws from prior(key). "
+                    "Pass Prior definitions through Model(prior=...) or return log-prior terms under log_prior"
+                ) from exc
             if value.shape != declaration.shape:
                 raise ValueError(f"Prior draw shape for {name!r} must match its declared shape {declaration.shape}")
             if not (jnp.issubdtype(value.dtype, jnp.floating) or jnp.issubdtype(value.dtype, jnp.integer)):
@@ -751,15 +777,16 @@ def generate_quantities(
 ) -> xr.DataTree:
     """Evaluate generated quantities from existing posterior draws without refitting.
 
-    Evaluate saved quantities and any generation callback for every draw.
-    Priors, likelihood evaluation in ``log_density``, and sampling are not
-    rerun. Scenario calculations remain defined by the model.
+    Evaluate saved quantities, mapped log-prior terms, and any
+    ``generated_quantities`` callback for every draw. The ``log_density``
+    callback and sampling are not rerun. Scenario calculations remain
+    defined by the model.
 
     Parameters
     ----------
     model : Model
-        Model with saved quantities or a generation callback and the fitted
-        parameter declarations.
+        Model with saved quantities, mapped priors, or a ``generated_quantities``
+        callback and the fitted parameter declarations.
     results : xarray.DataTree
         Results containing constrained posterior draws with the model's parameter
         names, shapes, and axis labels. Draws may be sliced or thinned.
@@ -769,8 +796,8 @@ def generate_quantities(
         Omit to evaluate stored observations. Earlier exposures are not added
         automatically. Include them through ``prepare_data(media_history=...)``.
         Other models receive this input directly. Omit outcomes only when no
-        evaluated callback needs them. Additional inputs supplied to ``Model``
-        remain fixed across scenarios.
+        evaluated callback needs them. Auxiliary ``Data`` inputs remain
+        fixed across scenarios.
     seed : int, default 0
         Random seed for generated quantities, with an independent key per draw.
     batch_size : int, default 64
@@ -784,9 +811,9 @@ def generate_quantities(
         The complete results must fit in host memory.
 
         - **posterior** contains the reused draws and sample labels.
-        - **posterior_predictive**, **log_likelihood**, and
-          **generated_quantities** contain newly evaluated outputs, classified
-          by the model's result settings.
+        - **posterior_predictive**, **log_likelihood**, **log_prior**, and
+          **generated_quantities** contain newly evaluated outputs, grouped
+          as returned by the model.
         - **observed_data** and **constant_data** contain the evaluated inputs
           in model units. Original sampler diagnostics are not copied.
     """
@@ -794,7 +821,9 @@ def generate_quantities(
         raise TypeError("model must be a Model")
     _validate_batch_size(batch_size)
     if not model._has_generated_quantities:
-        raise ValueError("The model must define a generation callback or select quantities with save")
+        raise ValueError(
+            "The model must define a generated_quantities callback, select quantities with save, or map priors"
+        )
     if isinstance(seed, bool) or not isinstance(seed, Integral) or seed < 0:
         raise ValueError("seed must be a nonnegative integer")
 
@@ -815,23 +844,21 @@ def generate_quantities(
     chains, draws = next(iter(posterior.values())).shape[:2]
     keys = jax.random.split(generation_key, (chains, draws))
     generated = _evaluate_draws(
-        lambda key, parameters: model.generate(key, parameters, inputs),
+        lambda key, parameters: model._generate_with_inputs(key, parameters, inputs)[0],
         keys,
         posterior,
         sample_shape=(chains, draws),
         batch_size=batch_size,
     )
+    groups = _grouped_outputs(generated)
     evaluated = _collect_results(
         posterior,
         data=prepared,
         inputs=_result_inputs(model),
-        posterior_predictive={name: value for name, value in generated.items() if name in model._predictive_names},
-        log_likelihood={name: value for name, value in generated.items() if name in model._likelihood_names},
-        generated_quantities={
-            name: value
-            for name, value in generated.items()
-            if name not in (*model._predictive_names, *model._likelihood_names)
-        },
+        posterior_predictive=groups["predictive"],
+        log_likelihood=groups["log_likelihood"],
+        log_prior=groups["log_prior"],
+        generated_quantities=groups["generated"],
         dims=dimensions,
         generated_dims=output_dimensions,
         coords=coordinates,
@@ -918,16 +945,16 @@ def _validate_batch_size(batch_size: int) -> None:
 
 
 def _evaluate_draws(
-    function: Callable[..., dict[str, jax.Array]],
+    function: Callable[..., Mapping[_Key, jax.Array]],
     *arguments: jax.Array | Mapping[str, jax.Array | NDArray[np.generic]],
     sample_shape: tuple[int, ...],
     batch_size: int,
-) -> dict[str, NDArray[np.generic]]:
+) -> dict[_Key, NDArray[np.generic]]:
     """Evaluate flattened draw batches into preallocated host-side results."""
     total = int(np.prod(sample_shape))
     flattened = jax.tree.map(lambda value: value.reshape((total, *value.shape[len(sample_shape) :])), arguments)
     evaluate = jax.jit(jax.vmap(function))
-    buffers: dict[str, NDArray[np.generic]] = {}
+    buffers: dict[_Key, NDArray[np.generic]] = {}
 
     for start in range(0, total, batch_size):
         stop = min(start + batch_size, total)
@@ -950,6 +977,23 @@ def _parameter_metadata(model: Model) -> tuple[dict[str, tuple[str, ...]], dict[
     dimensions: dict[str, tuple[str, ...]] = {}
     coordinates = {name: labels.copy() for name, labels in model._input_coords.items()}
     coordinates.update({name: labels.copy() for name, labels in model._result_coords.items()})
+    bindings = (
+        *model._transformed_data_inputs,
+        *model._transform_inputs,
+        *model._density_inputs,
+        *model._generation_inputs,
+        *model._saved_inputs,
+    )
+    if model._data is not None and any(
+        _metadata_source(name, source, model._data)[0] == "reference" for name, source in bindings
+    ):
+        reference_coordinates = _coordinates(
+            {"reference_time": model._time_values, "reference_media_time": model._media_time_values}
+        )
+        for axis, labels in reference_coordinates.items():
+            if axis in coordinates and not _same_labels(coordinates[axis], labels):
+                raise ValueError(f"Coordinate {axis!r} conflicts with the training reference labels")
+            coordinates[axis] = labels
     dimensions.update(model._result_dims)
     for name, parameter in model.parameters.items():
         dimensions.setdefault(name, tuple(f"{name}_dim_{index}" for index in range(len(parameter.shape))))
@@ -958,54 +1002,106 @@ def _parameter_metadata(model: Model) -> tuple[dict[str, tuple[str, ...]], dict[
 
 def _output_dimensions(
     model: Model,
-    outputs: dict[str, jax.Array],
-    arguments: dict[str, ArrayLike],
+    outputs: Mapping[_OutputKey, jax.Array],
+    arguments: Mapping[str, object],
     parameter_dimensions: dict[str, tuple[str, ...]],
     prepared: PreparedData | None,
 ) -> dict[str, tuple[str, ...]]:
-    """Label known generation inputs and declared observations without shape guessing."""
-    requested = set(model._generated_dims) | set(model._predictive_names) | set(model._likelihood_names)
-    missing = requested - outputs.keys()
+    """Label known callback inputs and declared observations without shape guessing."""
+    missing = set(model._generated_dims) - {name for _, name in outputs}
     if missing:
         raise ValueError(f"Generated result metadata refers to missing outputs {sorted(missing)}")
     input_dimensions: dict[str, tuple[str, ...]] = {}
+    reference_inputs: set[str] = set()
+    reference_namespaces: set[str] = set()
+    scaling_inputs: set[str] = set()
+    auxiliary_inputs: set[str] = set()
     observation_axes: tuple[str, ...] = ()
     outcome_shape: tuple[int, ...] | None = None
+    role_dimensions: dict[str, tuple[str, ...]] = {}
+    reference_dimensions: dict[str, tuple[str, ...]] = {}
+    grouped_scale = False
+
+    def reference_axes(member: str) -> tuple[str, ...]:
+        # Training arrays keep their own time axes even when new data lacks the role.
+        return tuple(
+            f"reference_{axis}" if axis in ("time", "media_time") else axis for axis in reference_dimensions[member]
+        )
+
     if prepared is not None:
-        role_dimensions = _data_dimensions(prepared)
-        observation_axes = role_dimensions["outcome"]
+        assert model._data is not None
+        observation_axes = _data_dimensions(prepared)["outcome"]
+        reference_dimensions = _reference_dimensions(prepared)
         outcome_shape = (len(prepared.time_values),)
         if prepared.group_columns:
             outcome_shape += (len(prepared.group_values),)
-        role_dimensions.update(time=("time",), media_time=("media_time",))
+        role_dimensions = {
+            name: spec.axes for name, spec in prepared.model_inputs.items() if spec.source in ("data", "time")
+        }
         role_dimensions.update(model._input_dims)
+        grouped_scale = model._data.outcome_group_scale
         for name, source in (*model._generation_inputs, *model._saved_inputs):
+            source, source_name = _metadata_source(name, source, model._data)
             if source == "data":
-                input_dimensions[name] = role_dimensions[name]
+                input_dimensions[name] = role_dimensions[source_name]
+                if source_name in model._input_dims:
+                    auxiliary_inputs.add(name)
+            elif source == "reference" and source_name == "reference":
+                reference_namespaces.add(name)
+            elif source == "reference":
+                # A transformed data output that passed a training array through.
+                input_dimensions[name] = reference_axes(source_name)
+                reference_inputs.add(name)
+            elif source == "builtin" and source_name == "outcome_scaling":
+                scaling_inputs.add(name)
+            elif source == "builtin":
+                input_dimensions[name] = ()
             elif source == "parameter":
                 input_dimensions[name] = parameter_dimensions[name]
     else:
         input_dimensions.update(parameter_dimensions)
 
-    observation_names = set(model._predictive_names) | set(model._likelihood_names)
-    dimensions = {}
-    for name, value in outputs.items():
-        if name in model._generated_dims:
-            dimensions[name] = model._generated_dims[name]
-            continue
-        input_axes = {axes for argument, axes in model._input_dims.items() if value is arguments.get(argument)}
-        if len(input_axes) == 1:
-            dimensions[name] = input_axes.pop()
-            continue
-        if name in observation_names and value.shape == outcome_shape:
-            dimensions[name] = observation_axes
-            continue
-        # Equal values or equal shapes do not establish a shared axis or ordering.
+    prior_dimensions = {}
+    for parameter_name, prior in model._priors:
+        axes = parameter_dimensions[parameter_name]
+        prior_dimensions[f"log_prior_{parameter_name}"] = axes[: -prior.event_ndims] if prior.event_ndims else axes
+
+    dimensions: dict[str, tuple[str, ...]] = {}
+    for (group, name), value in outputs.items():
+        fallback = tuple(f"{name}_dim_{index}" for index in range(value.ndim))
         inherited = {axes for argument, axes in input_dimensions.items() if value is arguments.get(argument)}
-        if len(inherited) == 1:
-            dimensions[name] = inherited.pop()
+        input_axes = {input_dimensions[argument] for argument in auxiliary_inputs if value is arguments.get(argument)}
+        # Unchanged members of the reference namespace keep their training axes, and the
+        # outcome transform's factors keep the group axis under population scaling.
+        member_axes: set[tuple[str, ...]] = set()
+        for argument in reference_namespaces:
+            namespace = arguments.get(argument)
+            if isinstance(namespace, Reference):
+                member_axes.update(
+                    reference_axes(member) for member, array in namespace.values.items() if value is array
+                )
+        for argument in scaling_inputs:
+            transform = arguments.get(argument)
+            if isinstance(transform, Scaling) and (value is transform.scale or value is transform.offset):
+                member_axes.add(("group",) if grouped_scale else ())
+        if name in model._generated_dims:
+            axes = model._generated_dims[name]
+        elif group == "log_prior" and name in prior_dimensions:
+            axes = prior_dimensions[name]
+        elif member_axes or any(value is arguments.get(argument) for argument in reference_inputs):
+            candidates = inherited | member_axes
+            axes = candidates.pop() if len(candidates) == 1 else fallback
+        elif len(input_axes) == 1:
+            axes = input_axes.pop()
+        elif group in ("predictive", "log_likelihood") and value.shape == outcome_shape:
+            axes = observation_axes
+        elif len(inherited) == 1:
+            # Equal values or equal shapes do not establish a shared axis or ordering.
+            axes = inherited.pop()
         else:
-            dimensions[name] = tuple(f"{name}_dim_{index}" for index in range(value.ndim))
+            axes = fallback
+        if dimensions.setdefault(name, axes) != axes:
+            raise ValueError(f"Generated output {name!r} has different axes across result groups. Use generated_dims")
     return dimensions
 
 

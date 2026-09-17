@@ -134,7 +134,7 @@ def test_geometric_adstock_composes_with_model_parameters() -> None:
         prediction = geometric_adstock(data["media"], alpha, max_lag=2).sum(axis=-1)
         return mmmjax.normal(data["target"], prediction, 1.0)
 
-    specification = mmmjax.Model({"alpha": mmmjax.Interval(0.0, 1.0, shape=(2,))}, log_density)
+    specification = mmmjax.Model(parameters={"alpha": mmmjax.Interval(0.0, 1.0, shape=(2,))}, log_density=log_density)
     value, gradient = jax.jit(jax.value_and_grad(specification.log_density))({"alpha": jnp.zeros(2)}, data)
     prediction = _convolution_reference(data["media"], np.full(2, 0.5), max_lag=2, normalize=True).sum(axis=-1)
     normal_log_density = (-0.5 * (np.asarray(data["target"]) - prediction) ** 2 - 0.5 * np.log(2 * np.pi)).sum()
@@ -442,12 +442,12 @@ def test_delayed_adstock_composes_with_batched_model_parameters(normalize) -> No
         return {"prediction": predict(data, alpha, theta)}
 
     specification = mmmjax.Model(
-        {
+        parameters={
             "alpha": mmmjax.Interval(0.0, 1.0, shape=(3,)),
             "theta": mmmjax.Interval(0.0, 3.0, shape=(2, 1)),
         },
-        log_density,
-        generate,
+        log_density=log_density,
+        generated_quantities=generate,
     )
 
     def reference(unconstrained):
@@ -464,7 +464,7 @@ def test_delayed_adstock_composes_with_batched_model_parameters(normalize) -> No
         return density, prediction
 
     value, gradient = jax.jit(jax.value_and_grad(specification.log_density))(position, data)
-    generated = jax.jit(specification.generate)(jax.random.key(0), specification.constrain(position), data)
+    generated = jax.jit(specification.generate_quantities)(jax.random.key(0), specification.constrain(position), data)
     expected_density, expected_prediction = reference(position)
 
     np.testing.assert_allclose(value, expected_density, rtol=3e-6, atol=1e-6)

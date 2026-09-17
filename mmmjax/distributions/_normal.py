@@ -7,6 +7,7 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 from tensorflow_probability.substrates.jax import distributions as tfd
 
+from mmmjax.distributions._distribution import _bind_distribution
 from mmmjax.distributions._utils import _promote_inexact, _random_shape
 
 
@@ -374,3 +375,6 @@ def _standardize_jvp(
     difference_tangent = value_tangent - location_tangent
     standardized_tangent = difference_tangent / scale - standardized * (scale_tangent / scale)
     return standardized, standardized_tangent
+
+
+_bind_distribution(normal, normal_logpdf, normal_rng, tfd.Normal, location="loc", scale="scale")

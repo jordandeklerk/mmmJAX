@@ -10,6 +10,7 @@ import pytest
 import xarray as xr
 
 from mmmjax import (
+    Data,
     Interval,
     Model,
     Positive,
@@ -96,11 +97,11 @@ def _model(data):
             "contribution": paid_media,
             "seasonal": annual,
             "control_values": controls,
-            "prediction": normal_rng(key, mean, sigma),
+            "predictive": {"prediction": normal_rng(key, mean, sigma)},
         }
 
     return Model(
-        {
+        parameters={
             "intercept": Real(),
             "sigma": Positive(),
             "paid_media_coefficient": Positive(dims=("group", "channel")),
@@ -109,18 +110,16 @@ def _model(data):
             "paid_media_slope": Positive(dims="channel"),
             "annual_coefficients": Real(dims=("annual_mode", "group")),
         },
-        density,
-        generated,
-        data=data,
+        log_density=density,
+        generated_quantities=generated,
+        data=Data(data, scaling=fit_data_scaling(data, scale_outcome=True)),
         transformed_parameters=transformed,
-        scaling=fit_data_scaling(data, scale_outcome=True),
         coords={"annual_mode": ["sin_1", "cos_1"]},
         generated_dims={
             "mean": ("time", "group"),
             "contribution": ("time", "group", "channel"),
             "seasonal": ("time", "group"),
         },
-        predictive=("prediction",),
     )
 
 
@@ -167,7 +166,7 @@ def _assert_direct_quantities(model, results, scenario, generated):
                 name: jnp.asarray(variable.values[chain, draw])
                 for name, variable in results["posterior"].data_vars.items()
             }
-            expected = model.generate(jax.random.key(0), parameters, inputs)
+            expected = model.generate_quantities(jax.random.key(0), parameters, inputs)
             for name in ("mean", "contribution", "seasonal", "control_values"):
                 np.testing.assert_allclose(
                     generated["generated_quantities"][name].values[chain, draw],
@@ -349,7 +348,12 @@ def test_dataframe_scenario_preserves_additional_data_roles_and_channel_labels()
             "population_copy": population,
         }
 
-    model = Model({"intercept": Real()}, density, generated, data=training, scaling=None)
+    model = Model(
+        parameters={"intercept": Real()},
+        log_density=density,
+        generated_quantities=generated,
+        data=Data(training, scaling=None),
+    )
     results = _collect_results({"intercept": jnp.array([[100.0, 110.0]])}, data=training)
     scenario = frame.iloc[::-1, ::-1].copy()
     scenario["video_frequency"] += 1
@@ -471,19 +475,17 @@ def test_missing_outcome_is_rejected_when_any_evaluated_callback_requires_it(req
         return normal(outcome, intercept, 1.0)
 
     def generate(key, outcome, intercept):
-        return {"pointwise": normal_logpdf(outcome, intercept, 1.0)}
+        return {"log_likelihood": {"pointwise": normal_logpdf(outcome, intercept, 1.0)}}
 
     def independent_generate(key, controls, intercept):
-        return {"prediction": controls[..., 0] + intercept}
+        return {"predictive": {"prediction": controls[..., 0] + intercept}}
 
     model = Model(
-        {"intercept": Real()},
-        density,
-        generate if required_by == "generate" else independent_generate,
+        parameters={"intercept": Real()},
+        log_density=density,
+        generated_quantities=generate if required_by == "generate" else independent_generate,
         data=training,
         transformed_parameters=transform if required_by == "transformed_parameters" else None,
-        log_likelihood=("pointwise",) if required_by == "generate" else (),
-        predictive=("prediction",) if required_by == "transformed_parameters" else (),
     )
     results = _collect_results({"intercept": jnp.ones((1, 2))}, data=training)
     scenario = _data(_media(6), start=40, observed=False)
@@ -504,15 +506,9 @@ def test_default_data_uses_stored_inputs_and_recomputes_likelihood_outputs():
         return normal(outcome, intercept, 1.0)
 
     def generated(key, outcome, intercept):
-        return {"pointwise": normal_logpdf(outcome, intercept, 1.0), "outcome_copy": outcome}
+        return {"log_likelihood": {"pointwise": normal_logpdf(outcome, intercept, 1.0)}, "outcome_copy": outcome}
 
-    model = Model(
-        {"intercept": Real()},
-        density,
-        generated,
-        data=training,
-        log_likelihood=("pointwise",),
-    )
+    model = Model(parameters={"intercept": Real()}, log_density=density, generated_quantities=generated, data=training)
     results = _collect_results(
         {"intercept": jnp.array([[0.5, 1.5]])},
         data=training,
@@ -571,9 +567,9 @@ def test_multicolumn_group_posterior_requires_matching_auxiliary_identities(coor
         return {"mean": jnp.broadcast_to(intercept, outcome.shape)}
 
     model = Model(
-        {"intercept": Real((2,))},
-        density,
-        generated,
+        parameters={"intercept": Real((2,))},
+        log_density=density,
+        generated_quantities=generated,
         data=training,
         dims={"intercept": ("group",)},
         generated_dims={"mean": ("time", "group")},

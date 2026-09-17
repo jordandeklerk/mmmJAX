@@ -9,7 +9,7 @@ import xarray as xr
 from jax.typing import ArrayLike
 from numpy.typing import NDArray
 
-from mmmjax.data import PreparedData
+from mmmjax.data import PreparedData, _data_dimensions
 
 _Group: TypeAlias = Mapping[str, ArrayLike]
 _Coordinates: TypeAlias = dict[str, NDArray[np.generic]]
@@ -22,6 +22,7 @@ def _collect_results(
     inputs: xr.Dataset | None = None,
     posterior_predictive: _Group | None = None,
     log_likelihood: _Group | None = None,
+    log_prior: _Group | None = None,
     sample_stats: _Group | None = None,
     generated_quantities: _Group | None = None,
     dims: Mapping[str, Sequence[str]] | None = None,
@@ -33,8 +34,8 @@ def _collect_results(
     """Collect labeled groups, copying draws unless the caller transfers ownership."""
     if sample_group not in ("posterior", "prior"):
         raise ValueError("sample_group must be posterior or prior")
-    if sample_group == "prior" and (log_likelihood is not None or sample_stats is not None):
-        raise ValueError("Prior draws must not contain posterior likelihoods or sampler diagnostics")
+    if sample_group == "prior" and (log_likelihood is not None or log_prior is not None or sample_stats is not None):
+        raise ValueError("Prior draws must not contain posterior log densities or sampler diagnostics")
     predictive_group = f"{sample_group}_predictive"
     generated_group = "prior_generated_quantities" if sample_group == "prior" else "generated_quantities"
 
@@ -93,6 +94,7 @@ def _collect_results(
     for name, values in (
         (predictive_group, posterior_predictive),
         ("log_likelihood", log_likelihood),
+        ("log_prior", log_prior),
         ("sample_stats", sample_stats),
         (generated_group, generated_quantities),
         ("observed_data", observed_data),
@@ -101,13 +103,13 @@ def _collect_results(
         if values is None:
             continue
         # Diagnostics do not inherit model parameter axes. Prepared datasets already have labels.
-        axes = output_dimensions if name in (predictive_group, "log_likelihood", generated_group) else {}
+        axes = output_dimensions if name in (predictive_group, "log_likelihood", "log_prior", generated_group) else {}
         dataset = _dataset(
             values, name, axes, coordinates, copy=copy_draws or name in ("observed_data", "constant_data")
         )
         if not dataset.data_vars:
             continue
-        if name in (predictive_group, "log_likelihood", generated_group, "sample_stats"):
+        if name in (predictive_group, "log_likelihood", "log_prior", generated_group, "sample_stats"):
             for axis in ("chain", "draw"):
                 if axis in dataset.dims and not _same_labels(dataset.coords[axis].values, coordinates[axis]):
                     raise ValueError(f"{name} must match {sample_group} {axis} coordinates")
@@ -193,6 +195,7 @@ def _dataset(
         "posterior",
         "posterior_predictive",
         "log_likelihood",
+        "log_prior",
         "generated_quantities",
         "sample_stats",
         "prior",
@@ -292,25 +295,3 @@ def _prepared_coordinates(
                 auxiliary[f"group_{column}"] = ("group", np.array([values[index] for values in data.group_values]))
 
     return _coordinates(labels), auxiliary
-
-
-def _data_dimensions(data: PreparedData) -> dict[str, tuple[str, ...]]:
-    """Name each prepared role's axes independently of their lengths."""
-    group_axes = ("group",) if data.group_columns else ()
-    observation_axes = ("time", *group_axes)
-    exposure_axes = ("media_time", *group_axes)
-    return {
-        "outcome": observation_axes,
-        "revenue_per_outcome": observation_axes,
-        "media": (*exposure_axes, "channel"),
-        "organic_media": (*exposure_axes, "organic_channel"),
-        "reach": (*exposure_axes, "rf_channel"),
-        "media_frequency": (*exposure_axes, "rf_channel"),
-        "organic_reach": (*exposure_axes, "organic_rf_channel"),
-        "organic_frequency": (*exposure_axes, "organic_rf_channel"),
-        "spend": (*observation_axes, "channel"),
-        "rf_spend": (*observation_axes, "rf_channel"),
-        "controls": (*observation_axes, "control"),
-        "treatments": (*observation_axes, "treatment"),
-        "population": group_axes,
-    }

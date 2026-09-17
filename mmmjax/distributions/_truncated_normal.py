@@ -9,6 +9,7 @@ from jax.scipy.stats import truncnorm as jax_truncnorm
 from jax.typing import ArrayLike
 from tensorflow_probability.substrates.jax import distributions as tfd
 
+from mmmjax.distributions._distribution import _bind_distribution
 from mmmjax.distributions._normal import (
     _normal_logcdf_kernel,
     _normal_logpdf_kernel,
@@ -734,3 +735,15 @@ def _inverse_normal_logcdf(log_probability: jax.Array) -> jax.Array:
     )
     value = jnp.where(jnp.isneginf(log_probability), -jnp.inf, value)
     return jnp.where(log_probability <= 0, value, jnp.nan)
+
+
+_bind_distribution(
+    truncated_normal,
+    truncated_normal_logpdf,
+    truncated_normal_rng,
+    tfd.TruncatedNormal,
+    location="loc",
+    scale="scale",
+    lower="low",
+    upper="high",
+)

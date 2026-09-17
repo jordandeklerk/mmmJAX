@@ -6,7 +6,8 @@ from datetime import datetime
 from inspect import Parameter as SignatureParameter
 from inspect import signature
 from keyword import iskeyword
-from typing import Literal, TypeAlias
+from numbers import Integral
+from typing import Any, Literal, TypeAlias, get_args
 
 import jax
 import jax.numpy as jnp
@@ -15,8 +16,19 @@ import xarray as xr
 from jax.typing import ArrayLike, DTypeLike
 from numpy.typing import NDArray
 
-from mmmjax._results import _coordinates, _data_dimensions, _dimensions, _name, _prepared_coordinates, _same_labels
-from mmmjax.data import PreparedData, _DataLayout, _prepare_model_frame, _time_positions
+from mmmjax._results import _coordinates, _dimensions, _name, _prepared_coordinates, _same_labels
+from mmmjax.data import (
+    Data,
+    PreparedData,
+    Reference,
+    _data_dimensions,
+    _DataLayout,
+    _day_of_year,
+    _prepare_model_frame,
+    _time_input_names,
+    _time_positions,
+    _TimeInput,
+)
 from mmmjax.parameters import (
     CorrelationCholesky,
     Interval,
@@ -28,17 +40,24 @@ from mmmjax.parameters import (
     UpperBound,
     _as_array,
 )
-from mmmjax.scaling import DataScaling, fit_data_scaling
+from mmmjax.priors import Prior, _validate_prior_sampler
+from mmmjax.scaling import DataScaling, Scaling, fit_data_scaling
 
 __all__ = ["Model"]
 
 LogDensity: TypeAlias = Callable[..., ArrayLike]
-Generate: TypeAlias = Callable[..., Mapping[str, ArrayLike]]
-Prior: TypeAlias = Callable[[jax.Array], Mapping[str, ArrayLike]]
+GeneratedQuantities: TypeAlias = Callable[..., Mapping[str, ArrayLike]]
+PriorSampler: TypeAlias = Callable[[jax.Array], Mapping[str, ArrayLike]]
 TransformedParameters: TypeAlias = Callable[..., Mapping[str, ArrayLike]]
+TransformedData: TypeAlias = Callable[..., Mapping[str, ArrayLike]]
 ParameterValues: TypeAlias = Mapping[str, ArrayLike]
+_CallbackValue: TypeAlias = object
 _InputBindings: TypeAlias = tuple[tuple[str, str], ...]
+_DataVariables: TypeAlias = tuple[tuple[str, str, str], ...]
 _BuiltinParameter: TypeAlias = Real | Positive | LowerBound | UpperBound | Interval | Simplex | CorrelationCholesky
+_ResultGroup: TypeAlias = Literal["predictive", "log_likelihood", "log_prior"]
+_OutputGroup: TypeAlias = Literal["generated"] | _ResultGroup
+_OutputKey: TypeAlias = tuple[_OutputGroup, str]
 
 
 @jax.tree_util.register_dataclass
@@ -48,72 +67,94 @@ class _ModelData:
 
     values: dict[str, jax.Array]
     owner: object = field(default_factory=object, metadata={"static": True})
+    reference: Reference | None = None
+    outcome_scaling: Scaling | None = None
+    outcome_group_scale: bool = field(default=False, metadata={"static": True})
+    n_periods: int = field(default=0, metadata={"static": True})
+    reserved_names: tuple[str, ...] = field(default=(), metadata={"static": True})
+    variable_sources: _DataVariables | None = field(default=None, metadata={"static": True})
+    transformed_values: dict[str, jax.Array] = field(default_factory=dict)
+    static_values: tuple[tuple[str, int | bool], ...] = field(default=(), metadata={"static": True})
+    transformed_sources: _DataVariables = field(default=(), metadata={"static": True})
+    constants: tuple[tuple[str, object], ...] = field(default=(), metadata={"static": True})
 
 
 @dataclass(frozen=True, slots=True, eq=False, init=False)
 class Model:
-    """Compose parameter declarations with density and generation functions.
+    """Compose parameter declarations, log density, and generated quantities.
 
-    Write all priors and likelihood terms in ``log_density``. Prepared models
-    supply callback inputs by name. Ordinary and keyword-only arguments are
-    supported for data roles, parameters, and transformed quantities.
-    Models without prepared data retain a data-first callback.
+    A model evaluates its program blocks in order, from ``data`` and
+    ``transformed_data`` through ``parameters``, ``transformed_parameters``,
+    and ``log_density`` to ``generated_quantities``. Each function requests the
+    inputs it needs by argument name from data inputs, the outputs of earlier
+    blocks, and parameters. Models without prepared data receive the data as
+    a leading positional argument instead.
 
-    Declare every sampled parameter and compute effects explicitly in
-    ``transformed_parameters`` using ordinary JAX functions.
+    Prepared data supplies the selected role names, such as ``outcome`` and
+    ``media``, together with elapsed ``time`` and ``media_time``, the calendar
+    ``day_of_year`` and ``media_day_of_year``, the period count ``n_periods``,
+    the fitted outcome transform ``outcome_scaling`` with its ``scale``,
+    ``offset``, and ``inverse_transform``, and the ``reference`` namespace
+    holding every training input, such as ``reference.spend``, for evaluating
+    new data. ``Data`` variables replace these names with declared ones.
 
     Inspect derived quantities with ``evaluate`` and the constrained log
-    density with ``log_prob`` before fitting. ``log_density`` instead accepts
-    unconstrained inference positions and adds parameterization adjustments.
+    density with ``log_prob`` before fitting. Samplers call ``log_density``
+    on unconstrained positions and add parameterization adjustments.
 
     Parameters
     ----------
+    data : Data or PreparedData, optional
+        Fixed model inputs and their declarations. Use ``Data`` for
+        custom names, auxiliary observations, constants, or scaling. Plain
+        prepared data uses standard role names without fitting new
+        transformations.
+    transformed_data : callable, optional
+        Data-only calculations returning named fixed values. Runs once at
+        construction and again for changed data, not per parameter draw.
+        Inputs must be declared data variables and outputs must have distinct
+        names from inputs and parameters. Return finite real arrays or scalars.
+        Python integers remain static for array shapes. Requires prepared data.
+        Use pure JAX-compatible operations for response analysis and optimization.
     parameters : mapping of str to Parameterization
-        All named parameter declarations and constraints. Use declaration
+        Required. All named parameter declarations and constraints. Use declaration
         dimensions, such as ``Real(dims="control")``, to infer shapes and
         result labels from prepared data or ``coords``.
+    transformed_parameters : callable, optional
+        Pure JAX-compatible function returning a mapping of names to derived
+        arrays shared by the density and generated-quantities callbacks.
+        Evaluated for density and output calculations. Requires prepared data
+        and named inputs. Names must not shadow declared inputs or parameters.
+        Outputs are not sampled parameters. Use ``save`` to retain them.
+        All requested inputs are needed for output evaluation.
     log_density : callable
-        Scalar log density for constrained parameters. Every user-declared
+        Required. Scalar log density for constrained parameters. Every user-declared
         parameter must be requested here or by ``transformed_parameters``.
         Only parameterization adjustments are added automatically.
-    generate : callable, optional
-        Function returning a mapping of names to array-like generated quantities.
+    generated_quantities : callable, optional
+        Function returning named reporting quantities or simulated observations.
+        Outputs do not contribute to the log density.
         Receives a JAX random key first, followed by the model inputs it needs.
+        Entries under the keys ``predictive``, ``log_likelihood``, and
+        ``log_prior`` are mappings of named outputs stored in the matching
+        result groups, and all other entries are ordinary generated quantities.
+        Predictive draws and pointwise log likelihoods matching the outcome
+        shape inherit its observation labels. Pointwise log likelihoods exclude
+        priors and adjustments. Mapped prior definitions already record
+        ``log_prior_<parameter>`` terms, so return only additional prior
+        factors, each once and without constraint adjustments.
     save : sequence of str, default ()
         Transformed quantities to retain in results,
         such as ``("mu", "paid_media", "paid_media_total")``. These are evaluated
-        for each draw without a ``generate`` callback. Names must differ from
-        outputs returned by ``generate``. Requires prepared data.
-    prior : callable, optional
-        JAX-compatible function ``prior(key)`` returning one constrained draw
-        for every name in ``model.parameters``, with its declared shape.
-        Used by :func:`sample_prior` only. Keep its distributions consistent
-        with the priors written in ``log_density``.
-    data : PreparedData, optional
-        Observations from ``prepare_data``. Enables named callback inputs,
-        using data roles such as ``outcome``, not source column names.
-        Request ``time`` or ``media_time`` for one-dimensional elapsed positions
-        from the first modeling period. Dates use days and numeric labels
-        retain their units. New observations reuse the same time origin.
-    inputs : xarray.Dataset, optional
-        Additional numeric inputs requested by variable name in callbacks.
-        Dimensions and labels travel with the dataset, for example an
-        ``experiment`` axis. Shared axes must match the model's labels and order.
-        Requires prepared data. Inputs are not scaled and remain fixed across
-        scenarios. Use axes other than ``time`` or ``media_time``.
-        Construct a new model to replace them.
-    scaling : DataScaling, "auto", or None, default None
-        Apply supplied transformations or fit :func:`fit_data_scaling` defaults
-        with ``"auto"``. Automatic scaling leaves outcomes unchanged.
-        ``None`` preserves supplied inputs. Fitted scales remain available
-        through ``model.scaling`` and are reused on new data.
-    transformed_parameters : callable, optional
-        Pure JAX-compatible function returning a mapping of names to derived
-        array-like quantities shared by both callbacks. Requires prepared data
-        and named inputs. Output names must not shadow data roles or
-        parameters. Outputs are not sampled parameters.
-        The whole function runs for generation, so all its requested inputs
-        are needed for prediction.
+        for each draw without a ``generated_quantities`` callback. Names must
+        differ from its returned outputs. Requires prepared data.
+    prior : mapping of str to Prior or callable, optional
+        Reusable prior definitions for every declared parameter. The mapping
+        supplies independent prior draws and records named log-prior terms
+        at posterior draws. Include these priors explicitly in ``log_density``.
+        For dependent or custom draws, supply a JAX-compatible ``prior(key)``
+        returning all constrained parameters with their declared shapes.
+        A custom sampler does not automatically record log-prior terms.
     dims : mapping of str to sequence of str, optional
         Named axes for constrained parameter arrays, excluding chain and draw.
         Use for custom parameterizations or explicit-shape declarations.
@@ -123,22 +164,18 @@ class Model:
     generated_dims : mapping of str to sequence of str, optional
         Axis labels for saved or generated arrays, excluding chain and draw.
         Overrides labels inherited from unchanged data or parameter
-        inputs and from observation-shaped predictive and likelihood outputs.
-    predictive : sequence of str, default ()
-        Generated output names to store as prior or posterior predictive observations.
-        Outputs matching the outcome shape use its observation order and labels
-        unless ``generated_dims`` specifies otherwise.
-    log_likelihood : sequence of str, default ()
-        Generated output names containing pointwise log likelihoods. Do not use
-        the scalar model density, which also contains priors and adjustments.
-        Observation-shaped outputs inherit outcome labels as for ``predictive``.
+        inputs and from observation-shaped predictive and log-likelihood
+        outputs. A name shared by several result groups receives the same axes.
     """
 
     _parameterizations: tuple[tuple[str, Parameterization], ...]
     _log_density: LogDensity
-    _generate: Generate | None
-    _prior: Prior | None
+    _generate: GeneratedQuantities | None
+    _prior: PriorSampler | None
+    _priors: tuple[tuple[str, Prior], ...]
     _transformed_parameters: TransformedParameters | None
+    _transformed_data: TransformedData | None
+    _transformed_data_inputs: _InputBindings
     _transform_inputs: _InputBindings
     _saved_inputs: _InputBindings
     _generate_parameter_names: tuple[str, ...] | None
@@ -159,50 +196,53 @@ class Model:
     _result_dims: dict[str, tuple[str, ...]]
     _result_coords: dict[str, NDArray[np.generic]]
     _generated_dims: dict[str, tuple[str, ...]]
-    _predictive_names: tuple[str, ...]
-    _likelihood_names: tuple[str, ...]
 
     def __init__(
         self,
-        parameters: Mapping[str, Parameterization],
-        log_density: LogDensity,
-        generate: Generate | None = None,
+        data: Data | PreparedData | None = None,
+        transformed_data: TransformedData | None = None,
+        parameters: Mapping[str, Parameterization] | None = None,
+        transformed_parameters: TransformedParameters | None = None,
+        log_density: LogDensity | None = None,
+        generated_quantities: GeneratedQuantities | None = None,
         *,
         save: Sequence[str] = (),
-        prior: Prior | None = None,
-        data: PreparedData | None = None,
-        inputs: xr.Dataset | None = None,
-        transformed_parameters: TransformedParameters | None = None,
-        scaling: DataScaling | Literal["auto"] | None = None,
+        prior: Mapping[str, Prior] | PriorSampler | None = None,
         dims: Mapping[str, Sequence[str]] | None = None,
         coords: Mapping[str, object] | None = None,
         generated_dims: Mapping[str, Sequence[str]] | None = None,
-        predictive: Sequence[str] = (),
-        log_likelihood: Sequence[str] = (),
     ) -> None:
-        """Create a model from named parameter declarations and plain functions."""
-        if prior is not None and not callable(prior):
-            raise TypeError("prior must be a JAX-compatible function accepting a random key")
+        """Create a model from its program blocks in evaluation order."""
+        required = {"parameters": parameters, "log_density": log_density}
+        missing = [name for name, value in required.items() if value is None]
+        if missing:
+            raise TypeError(f"Model requires {' and '.join(missing)}")
+        assert parameters is not None and log_density is not None
+        if prior is not None and not isinstance(prior, Mapping):
+            _validate_prior_sampler(prior)
 
         parameterizations = _prepare_parameterizations(parameters)
         parameter_names = tuple(name for name, _ in parameterizations)
+        variables: Mapping[str, str] | None = None
+        inputs: xr.Dataset | None = None
+        constants: dict[str, object] = {}
+        scaling: DataScaling | Literal["auto"] | None = None
+        if isinstance(data, Data):
+            data, variables, inputs, constants, scaling = data._snapshot()
+        constant_conflicts = sorted(set(constants) & set(parameter_names))
+        if constant_conflicts:
+            raise ValueError(f"Constants {constant_conflicts} conflict with declared parameters")
+        variable_declarations = _data_variable_declarations(variables, parameter_names, tuple(constants))
         prepared_data = None
         fitted_scaling = None
         time_inputs: tuple[str, ...] = ()
         time_origin = None
-        if isinstance(scaling, str):
-            if scaling != "auto":
-                raise ValueError("scaling must be 'auto', a fitted DataScaling, or None")
-        elif scaling is not None and not isinstance(scaling, DataScaling):
-            raise TypeError("scaling must be 'auto', a fitted DataScaling, or None")
         if data is None:
-            if scaling is not None:
-                raise ValueError("Model scaling requires prepared data")
-            if inputs is not None:
-                raise ValueError("Additional inputs require prepared data")
+            if transformed_data is not None:
+                raise ValueError("transformed_data requires prepared data")
         else:
             if not isinstance(data, PreparedData):
-                raise TypeError("data must be PreparedData. Use prepare_data with the observation dataframe")
+                raise TypeError("data must be Data or PreparedData. Use prepare_data with the observation dataframe")
             if scaling == "auto":
                 fitted_scaling = fit_data_scaling(data)
             elif isinstance(scaling, DataScaling):
@@ -214,12 +254,46 @@ class Model:
                     data = data._align_to(fitted_scaling._layout)
                 else:
                     data = fitted_scaling.transform(data)
-            time_inputs = _requested_time_inputs(log_density, transformed_parameters, generate)
             values = data._to_jax()
+            time_inputs = _time_input_names(data)
             if time_inputs:
                 _, time_origin = _time_positions(data.time_values)
                 values.update(_model_time_inputs(data, time_inputs, time_origin))
-            prepared_data = _ModelData(values)
+            # Copies keep the training references distinct from the current inputs,
+            # so unchanged outputs can be labeled by which one they came from.
+            reference = Reference(
+                values={role: jnp.array(value, copy=True) for role, value in values.items()},
+                n_periods=len(data.time_values),
+            )
+            reserved = {"n_periods", "outcome_scaling", "reference"}
+            conflicts = reserved & set(parameter_names) if variable_declarations is None else set()
+            if conflicts:
+                raise ValueError(f"Parameter names {sorted(conflicts)} conflict with model-supplied inputs")
+
+            population_outcome = (
+                fitted_scaling is not None
+                and "outcome" in fitted_scaling._population_roles
+                and bool(data.group_columns)
+            )
+            outcome_scaling = None
+            if "outcome" in values:
+                fitted = Scaling(offset=jnp.asarray(0.0), scale=jnp.asarray(1.0))
+                if fitted_scaling is not None:
+                    fitted = fitted_scaling.transformations.get("outcome", fitted)
+                # Blocks receive one scale and offset per region, or scalars.
+                factor_shape = (-1,) if population_outcome else ()
+                outcome_scaling = Scaling(
+                    offset=fitted.offset.reshape(factor_shape), scale=fitted.scale.reshape(factor_shape)
+                )
+            prepared_data = _ModelData(
+                values,
+                reference=reference,
+                outcome_scaling=outcome_scaling,
+                outcome_group_scale=population_outcome,
+                n_periods=len(data.time_values),
+                reserved_names=tuple(sorted(reserved)) if variable_declarations is None else (),
+                constants=tuple(constants.items()),
+            )
 
         result_dims = _dimensions(dims)
         result_coords = _coordinates(coords)
@@ -232,11 +306,46 @@ class Model:
                 if axis in axis_coordinates and not _same_labels(axis_coordinates[axis], labels):
                     raise ValueError(f"Coordinate {axis!r} conflicts with prepared data labels")
                 axis_coordinates[axis] = labels
-            input_values, input_dims, input_coords = _prepare_inputs(inputs, data, parameter_names, axis_coordinates)
+            reserved_parameters = parameter_names if variable_declarations is None else ()
+            input_values, input_dims, input_coords = _prepare_inputs(
+                inputs, data, reserved_parameters, axis_coordinates, tuple(constants)
+            )
             axis_coordinates.update(input_coords)
             assert prepared_data is not None
+            conflicts = set(prepared_data.reserved_names) & (set(input_values) | set(axis_coordinates) | set(constants))
+            if conflicts:
+                raise ValueError(f"Input or coordinate names {sorted(conflicts)} conflict with model-supplied inputs")
             prepared_data.values.update(input_values)
+            if variable_declarations is not None:
+                prepared_data = replace(
+                    prepared_data,
+                    variable_sources=_resolve_data_variables(variable_declarations, prepared_data),
+                )
         parameterizations = _resolve_parameter_dimensions(parameterizations, result_dims, axis_coordinates)
+
+        transformed_data_inputs: _InputBindings = ()
+        if transformed_data is not None:
+            assert prepared_data is not None
+            transformed_data_inputs = _bind_inputs(transformed_data, (), prepared_data, name="transformed_data")
+            prepared_data = _compute_transformed_data(
+                transformed_data, transformed_data_inputs, prepared_data, parameter_names
+            )
+
+        prior_definitions: tuple[tuple[str, Prior], ...] = ()
+        if isinstance(prior, Mapping):
+            _validate_value_names(prior, parameterizations, name="prior")
+            for name, declaration in parameterizations:
+                if not isinstance(prior[name], Prior):
+                    raise TypeError(
+                        f"Prior definition for {name!r} must be a Prior object with fixed distribution settings. "
+                        "Use a prior-draw function for dependent draws. "
+                        "Return additional log-prior terms under log_prior in generated_quantities"
+                    )
+                try:
+                    prior[name]._validate_shape(declaration.shape)
+                except ValueError as exc:
+                    raise ValueError(f"Invalid prior shape for parameter {name!r}. {exc}") from exc
+            prior_definitions = tuple((name, prior[name]) for name in parameter_names)
 
         transform_inputs: _InputBindings = ()
         if transformed_parameters is not None:
@@ -261,15 +370,15 @@ class Model:
             )
         generate_parameter_names = None
         generation_inputs: _InputBindings = ()
-        if generate is not None:
+        if generated_quantities is not None:
             if prepared_data is None:
-                generate_parameter_names = _validate_generate_signature(generate, parameter_names)
+                generate_parameter_names = _validate_generate_signature(generated_quantities, parameter_names)
             else:
                 generation_inputs = _bind_inputs(
-                    generate,
+                    generated_quantities,
                     parameter_names,
                     prepared_data,
-                    name="generate",
+                    name="generated_quantities",
                     has_transformed=transformed_parameters is not None,
                 )
 
@@ -278,7 +387,7 @@ class Model:
         if saved_names:
             if prepared_data is None:
                 raise ValueError("save requires prepared data")
-            reserved = set(prepared_data.values) | set(parameter_names)
+            reserved = _callback_data_names(prepared_data) | set(parameter_names)
             for name in saved_names:
                 _validate_name(name, label="saved quantity")
                 if name in reserved or transformed_parameters is None:
@@ -286,12 +395,8 @@ class Model:
                 saved_inputs.append((name, "transformed"))
 
         output_dims = _dimensions(generated_dims)
-        predictive_names = _result_names(predictive, name="predictive")
-        likelihood_names = _result_names(log_likelihood, name="log_likelihood")
-        if set(predictive_names) & set(likelihood_names):
-            raise ValueError("predictive and log_likelihood must identify different generated outputs")
-        if generate is None and not saved_inputs and (output_dims or predictive_names or likelihood_names):
-            raise ValueError("Generated result metadata requires a generate callback or saved quantities")
+        if generated_quantities is None and not saved_inputs and not prior_definitions and output_dims:
+            raise ValueError("Generated result metadata requires a generated_quantities callback or saved quantities")
         declarations = dict(parameterizations)
         dimension_sizes = {axis: len(labels) for axis, labels in axis_coordinates.items()}
         for name, axes in result_dims.items():
@@ -307,9 +412,12 @@ class Model:
 
         object.__setattr__(self, "_parameterizations", parameterizations)
         object.__setattr__(self, "_log_density", log_density)
-        object.__setattr__(self, "_generate", generate)
-        object.__setattr__(self, "_prior", prior)
+        object.__setattr__(self, "_generate", generated_quantities)
+        object.__setattr__(self, "_priors", prior_definitions)
+        object.__setattr__(self, "_prior", self._draw_prior if isinstance(prior, Mapping) else prior)
         object.__setattr__(self, "_transformed_parameters", transformed_parameters)
+        object.__setattr__(self, "_transformed_data", transformed_data)
+        object.__setattr__(self, "_transformed_data_inputs", transformed_data_inputs)
         object.__setattr__(self, "_transform_inputs", transform_inputs)
         object.__setattr__(self, "_saved_inputs", tuple(saved_inputs))
         object.__setattr__(self, "_generate_parameter_names", generate_parameter_names)
@@ -330,8 +438,6 @@ class Model:
         object.__setattr__(self, "_result_dims", result_dims)
         object.__setattr__(self, "_result_coords", result_coords)
         object.__setattr__(self, "_generated_dims", output_dims)
-        object.__setattr__(self, "_predictive_names", predictive_names)
-        object.__setattr__(self, "_likelihood_names", likelihood_names)
 
     @property
     def parameters(self) -> dict[str, Parameterization]:
@@ -339,9 +445,39 @@ class Model:
         return dict(self._parameterizations)
 
     @property
+    def data_variables(self) -> dict[str, str]:
+        """Return the available model input names and their declared sources.
+
+        Returns
+        -------
+        dict of str to str
+            A copy of the input declarations, with constants mapped to their
+            own names. Without explicit declarations, every standard name maps
+            to itself. Models without prepared data return an empty mapping.
+        """
+        if self._data is None:
+            return {}
+        constants = {name: name for name, _ in self._data.constants}
+        if self._data.variable_sources is not None:
+            declared = {name: source_name for name, _, source_name in self._data.variable_sources}
+            return declared | constants
+        available = set().union(*_data_sources(self._data).values())
+        return {name: name for name in sorted(available)}
+
+    @property
     def _has_generated_quantities(self) -> bool:
-        """Indicate whether evaluation has saved or callback-generated outputs."""
-        return self._generate is not None or bool(self._saved_inputs)
+        """Indicate whether evaluation has saved, generated, or prior outputs."""
+        return self._generate is not None or bool(self._saved_inputs) or bool(self._priors)
+
+    def _draw_prior(self, key: jax.Array) -> dict[str, jax.Array]:
+        """Draw independent prior definitions in declared parameter shapes."""
+        keys = jax.random.split(key, len(self._priors))
+        declarations = self.parameters
+        values = {}
+        for (name, prior), draw_key in zip(self._priors, keys, strict=True):
+            declaration = declarations[name]
+            values[name] = prior._sample(draw_key, declaration.shape, declaration.dtype)
+        return values
 
     @property
     def scaling(self) -> DataScaling | None:
@@ -361,7 +497,7 @@ class Model:
     def data(self) -> object:
         """Return prepared training inputs for density and generation calls.
 
-        Pass to ``log_density`` or ``generate``, including under JIT.
+        Pass to ``log_density`` or ``generate_quantities``, including under JIT.
         Arrays are copied at construction, independent of later source edits.
 
         Returns
@@ -373,14 +509,19 @@ class Model:
         """
         if self._data is None:
             raise RuntimeError("This model has no prepared data. Pass your data directly when evaluating it")
-        return _ModelData(dict(self._data.values), self._data.owner)
+        return replace(
+            self._data,
+            values=dict(self._data.values),
+            reference=_copy_reference(self._data.reference),
+            transformed_values=dict(self._data.transformed_values),
+        )
 
     def prepare_data(self, data: object) -> object:
         """Prepare new observations using the model's training configuration.
 
         Reuse fitted scaling, the time origin, and parameter declarations
         without changing the model's stored data. Call outside JAX transformations.
-        Additional ``inputs`` retain their original values and labels.
+        Auxiliary ``Data`` inputs retain their original values and labels.
 
         Parameters
         ----------
@@ -394,7 +535,7 @@ class Model:
         Returns
         -------
         object
-            JAX-compatible inputs for ``log_density`` or ``generate`` in the
+            JAX-compatible inputs for ``log_density`` or ``generate_quantities`` in the
             fitted group and channel order, covering the supplied periods.
             Independent of stored model data and later source edits.
         """
@@ -430,7 +571,31 @@ class Model:
         if self._time_origin is not None:
             values.update(_model_time_inputs(aligned, self._time_inputs, self._time_origin, dtype=self._dtype))
         values.update({name: self._data.values[name] for name in self._input_dims})
-        return _ModelData(values, self._data.owner), aligned
+        prepared = replace(
+            self._data,
+            values=values,
+            reference=_copy_reference(self._data.reference),
+            n_periods=len(aligned.time_values),
+        )
+        return self._refresh_transformed_data(prepared), aligned
+
+    def _refresh_transformed_data(self, inputs: _ModelData) -> _ModelData:
+        """Recompute fixed calculations when the supplied observations change."""
+        if self._transformed_data is None:
+            return inputs
+        assert self._data is not None
+        expected_names = set(self._data.transformed_values) | dict(self._data.static_values).keys()
+        return _compute_transformed_data(
+            self._transformed_data,
+            self._transformed_data_inputs,
+            inputs,
+            tuple(self.parameters),
+            expected_names=expected_names,
+        )
+
+    def _replace_data_values(self, inputs: _ModelData, values: dict[str, jax.Array]) -> _ModelData:
+        """Prepare differentiable scenario inputs before evaluating parameter draws."""
+        return self._refresh_transformed_data(replace(inputs, values=values))
 
     def constrain(self, position: ParameterValues) -> dict[str, jax.Array]:
         """Map a complete unconstrained position into model space.
@@ -613,22 +778,22 @@ class Model:
 
         return density
 
-    def generate(
+    def generate_quantities(
         self,
         key: jax.Array,
         parameters: ParameterValues,
         data: object,
-    ) -> dict[str, jax.Array]:
+    ) -> dict[str, jax.Array | dict[str, jax.Array]]:
         """Evaluate saved and generated quantities from constrained model parameters.
 
         Parameters
         ----------
         key : jax.Array
-            JAX random key passed to the generation callback. The callback
+            JAX random key passed to the ``generated_quantities`` callback. The callback
             must split it when drawing multiple independent samples.
         parameters : mapping of str to array_like
             Constrained values for every declared parameter. Only the names
-            requested by the generation callback are passed to it.
+            requested by the ``generated_quantities`` callback are passed to it.
         data : object
             For a prepared model, pass ``model.data`` or the result of
             ``model.prepare_data``. Otherwise, pass a JAX-compatible PyTree
@@ -636,61 +801,105 @@ class Model:
 
         Returns
         -------
-        dict of str to jax.Array
-            Saved transformed quantities alongside
-            outputs from the generation callback, each mapped to a JAX array.
+        dict of str to jax.Array or dict of str to jax.Array
+            Saved transformed quantities and ordinary callback outputs by name.
+            Outputs returned under ``predictive``, ``log_likelihood``, and
+            ``log_prior``, together with mapped log-prior terms, appear as
+            mappings under those keys when present.
         """
-        return self._generate_with_inputs(key, parameters, data)[0]
+        quantities = self._generate_with_inputs(key, parameters, data)[0]
+        outputs: dict[str, jax.Array | dict[str, jax.Array]] = {
+            name: value for (group, name), value in quantities.items() if group == "generated"
+        }
+        for group in get_args(_ResultGroup):
+            grouped = {name: value for (kind, name), value in quantities.items() if kind == group}
+            if grouped:
+                outputs[group] = grouped
+        return outputs
 
     def _generate_with_inputs(
         self,
         key: jax.Array,
         parameters: ParameterValues,
         data: object,
-    ) -> tuple[dict[str, jax.Array], dict[str, ArrayLike]]:
-        """Retain callback inputs so sampling can label unchanged generated arrays."""
+    ) -> tuple[dict[_OutputKey, jax.Array], dict[str, object]]:
+        """Return outputs keyed by result group and name, with the callback inputs for labeling."""
         if not self._has_generated_quantities:
             raise RuntimeError(
-                "generated quantities are unavailable because this model has no generate callback or save selection"
+                "Generated quantities are unavailable because this model has no generated_quantities callback, "
+                "save selection, or mapped prior definitions"
             )
 
         constrained = self._constrained_values(parameters)
         saved: dict[str, ArrayLike] = {}
-        arguments: dict[str, ArrayLike]
+        arguments: dict[str, object]
         if self._data is None:
-            assert self._generate is not None
             names = parameters if self._generate_parameter_names is None else self._generate_parameter_names
             arguments = {name: constrained[name] for name in names}
-            generated = self._generate(key, data, **arguments)
+            generated = {} if self._generate is None else self._generate(key, data, **arguments)
         else:
             inputs = self._validated_data(data)
             effects = self._evaluate_quantities(inputs, constrained)
             bindings = tuple(dict((*self._generation_inputs, *self._saved_inputs)).items())
-            arguments = _callback_inputs(bindings, inputs, effects, constrained, name="generate")
-            saved = {name: arguments[name] for name, _ in self._saved_inputs}
+            arguments = _callback_inputs(bindings, inputs, effects, constrained, name="generated_quantities")
+            saved = {name: effects[name] for name, _ in self._saved_inputs}
             callback_arguments = {name: arguments[name] for name, _ in self._generation_inputs}
             generated = {} if self._generate is None else self._generate(key, **callback_arguments)
         if not isinstance(generated, Mapping):
             raise TypeError(
-                f"generate must return a mapping from quantity names to values, got {type(generated).__name__}"
+                "generated_quantities must return a mapping from quantity names to values, "
+                f"got {type(generated).__name__}"
             )
 
-        for name in generated:
-            _validate_name(name, label="generated quantity")
+        outputs: dict[_OutputKey, ArrayLike] = {}
+        result_groups: tuple[_ResultGroup, ...] = get_args(_ResultGroup)
+        for group in result_groups:
+            if group not in generated:
+                continue
+            grouped = generated[group]
+            if not isinstance(grouped, Mapping):
+                raise TypeError(
+                    f"generated_quantities must return a mapping of named outputs under {group!r}, "
+                    f"got {type(grouped).__name__}"
+                )
+            for output_name, output in grouped.items():
+                self._validate_generated_name(output_name, label=f"{group} quantity")
+                outputs[(group, output_name)] = output
+        for name, value in generated.items():
+            if name in result_groups:
+                continue
+            self._validate_generated_name(name, label="generated quantity")
+            outputs[("generated", name)] = value
 
-        conflicts = saved.keys() & generated.keys()
+        conflicts = {name for name in saved if ("generated", name) in outputs}
         if conflicts:
             raise ValueError(
-                f"Saved quantities {sorted(conflicts)} are also returned by generate. Choose one place to retain them"
+                f"Saved quantities {sorted(conflicts)} are also returned by generated_quantities. "
+                "Choose one place to retain them"
             )
+        outputs.update({("generated", name): value for name, value in saved.items()})
 
-        quantities: dict[str, jax.Array] = {}
-        for name, value in sorted((saved | dict(generated)).items()):
+        for name, prior in self._priors:
+            output_name = f"log_prior_{name}"
+            if ("log_prior", output_name) in outputs or ("generated", output_name) in outputs:
+                raise ValueError(f"Generated quantity {output_name!r} conflicts with a mapped prior output")
+            outputs[("log_prior", output_name)] = prior.logpdf(constrained[name])
+
+        quantities: dict[_OutputKey, jax.Array] = {}
+        for output_key, value in sorted(outputs.items()):
             try:
-                quantities[name] = jnp.asarray(value)
+                quantities[output_key] = jnp.asarray(value)
             except (TypeError, ValueError) as exc:
-                raise TypeError(f"generated quantity {name!r} must be array-like, got {type(value).__name__}") from exc
-        return quantities, arguments
+                raise TypeError(
+                    f"generated quantity {output_key[1]!r} must be array-like, got {type(value).__name__}"
+                ) from exc
+        return quantities, dict(arguments)
+
+    def _validate_generated_name(self, name: object, *, label: str) -> None:
+        """Reject output names that would shadow model-supplied inputs."""
+        _validate_name(name, label=label)
+        if self._data is not None and name in self._data.reserved_names:
+            raise ValueError(f"Generated quantity {name!r} conflicts with a model-supplied input")
 
     def _evaluate_quantities(self, inputs: _ModelData, parameters: ParameterValues) -> dict[str, jax.Array]:
         """Evaluate the shared deterministic calculations with current inputs."""
@@ -705,7 +914,7 @@ class Model:
 
         # Retain training names even when prediction omits their observation arrays.
         assert self._data is not None
-        reserved = set(self._data.values) | set(parameters)
+        reserved = _callback_data_names(self._data) | set(parameters)
         for name in transformed:
             _validate_name(name, label="transformed quantity")
             if name in reserved:
@@ -733,6 +942,7 @@ def _prepare_inputs(
     data: PreparedData,
     parameter_names: tuple[str, ...],
     coordinates: Mapping[str, NDArray[np.generic]],
+    constant_names: tuple[str, ...] = (),
 ) -> tuple[dict[str, jax.Array], dict[str, tuple[str, ...]], dict[str, NDArray[np.generic]]]:
     """Validate fixed labeled inputs without aligning or rescaling their values."""
     if inputs is None:
@@ -743,7 +953,7 @@ def _prepare_inputs(
     dimensions = _dimensions(
         {_name(name): tuple(_name(axis) for axis in value.dims) for name, value in inputs.data_vars.items()}
     )
-    if {"time", "media_time"} & inputs.sizes.keys():
+    if set(get_args(_TimeInput)) & inputs.sizes.keys():
         raise ValueError("Additional inputs remain fixed across scenarios. Use axes other than time or media_time")
     if {"chain", "draw", "sample", "pred_id"} & inputs.sizes.keys():
         raise ValueError("Additional inputs must not contain sample dimensions")
@@ -768,7 +978,8 @@ def _prepare_inputs(
         if axis in coordinates and not _same_labels(coordinates[axis], labels):
             raise ValueError(f"Input coordinate {axis!r} must match the model labels and ordering")
 
-    reserved = role_names | {"time", "media_time"} | set(parameter_names) | set(coordinates) | set(input_coords)
+    reserved = role_names | set(get_args(_TimeInput)) | set(parameter_names) | set(coordinates) | set(input_coords)
+    reserved |= set(constant_names)
     values = {}
     for name in dimensions:
         _validate_name(name, label="input")
@@ -792,24 +1003,6 @@ def _prepare_inputs(
     return values, dimensions, input_coords
 
 
-def _requested_time_inputs(
-    density: LogDensity,
-    transformed: TransformedParameters | None,
-    generate: Generate | None,
-) -> tuple[str, ...]:
-    """Convert time labels only for callbacks that explicitly request them."""
-    names: set[str] = set()
-    for function, skip in ((density, 0), (transformed, 0), (generate, 1)):
-        if function is None:
-            continue
-        try:
-            names.update(list(signature(function).parameters)[skip:])
-        except (TypeError, ValueError):
-            # Callback validation supplies the function-specific error.
-            continue
-    return tuple(sorted(names & {"time", "media_time"}))
-
-
 def _model_time_inputs(
     data: PreparedData,
     names: tuple[str, ...],
@@ -820,10 +1013,14 @@ def _model_time_inputs(
     """Supply numeric positions without selecting a seasonal or time-varying model."""
     inputs = {}
     for name in names:
-        labels = data.time_values if name == "time" else data.media_time_values
-        if labels:
+        labels = data.media_time_values if name.startswith("media_") else data.time_values
+        if not labels:
+            continue
+        if name.endswith("day_of_year"):
+            positions = _day_of_year(labels)
+        else:
             positions, _ = _time_positions(labels, origin=origin)
-            inputs[name] = jnp.asarray(positions, dtype=dtype)
+        inputs[name] = jnp.asarray(positions, dtype=dtype)
     return inputs
 
 
@@ -836,6 +1033,151 @@ def _result_names(values: Sequence[str], *, name: str) -> tuple[str, ...]:
     if len(set(values)) != len(values):
         raise ValueError(f"{name} must not contain duplicate output names")
     return tuple(values)
+
+
+def _data_variable_declarations(
+    declarations: Mapping[str, str] | None,
+    parameter_names: tuple[str, ...],
+    constant_names: tuple[str, ...] = (),
+) -> dict[str, str] | None:
+    """Copy explicit callback names without changing the underlying data layout."""
+    if declarations is None:
+        return None
+
+    # Data validates the names and sources before the model receives them.
+    for name in declarations:
+        if name in parameter_names:
+            raise ValueError(f"Data variable {name!r} conflicts with a declared parameter")
+        if name in constant_names:
+            raise ValueError(f"Data variable {name!r} conflicts with a constant")
+
+    return dict(declarations)
+
+
+def _copy_reference(reference: Reference | None) -> Reference | None:
+    """Give each bundle its own reference mapping so edits never reach the model."""
+    if reference is None:
+        return None
+    return replace(reference, values=dict(reference.values))
+
+
+def _data_sources(data: _ModelData) -> dict[str, set[str]]:
+    """List physical data sources separately from user-chosen function names."""
+    sources = {
+        "data": set(data.values),
+        "reference": {"reference"} if data.reference is not None else set(),
+        "builtin": {"n_periods"},
+        "constant": {name for name, _ in data.constants},
+    }
+    if data.outcome_scaling is not None:
+        sources["builtin"].add("outcome_scaling")
+    return sources
+
+
+def _resolve_data_variables(declarations: Mapping[str, str], data: _ModelData) -> _DataVariables:
+    """Validate declarations against prepared and auxiliary data sources."""
+    sources = _data_sources(data)
+    resolved = []
+    for name, source_name in declarations.items():
+        matches = [kind for kind, names in sources.items() if source_name in names]
+        if not matches:
+            raise ValueError(
+                f"Data variable {name!r} refers to unavailable source {source_name!r}. "
+                "Select it in prepare_data or supply it through inputs"
+            )
+        if len(matches) != 1:
+            raise ValueError(f"Source {source_name!r} for data variable {name!r} is ambiguous")
+        resolved.append((name, matches[0], source_name))
+    return tuple(resolved)
+
+
+def _callback_data_names(data: _ModelData) -> set[str]:
+    """Identify data names visible to the model's program blocks."""
+    fixed = set(data.transformed_values) | dict(data.static_values).keys()
+    if data.variable_sources is not None:
+        return {name for name, _, _ in data.variable_sources} | fixed | {name for name, _ in data.constants}
+    return set().union(*_data_sources(data).values(), data.reserved_names, fixed)
+
+
+def _input_source(name: str, source: str, data: _ModelData) -> tuple[str, str]:
+    """Resolve a declared argument to its physical source for evaluation and labels."""
+    if source != "variable":
+        return source, name
+    assert data.variable_sources is not None
+    for argument, kind, source_name in data.variable_sources:
+        if name == argument:
+            return kind, source_name
+    raise ValueError(f"Unknown declared data variable {name!r}")
+
+
+def _metadata_source(name: str, source: str, data: _ModelData) -> tuple[str, str]:
+    """Retain labels for unchanged inputs returned by transformed_data."""
+    source, name = _input_source(name, source, data)
+    if source == "transformed_data":
+        for output, kind, source_name in data.transformed_sources:
+            if name == output:
+                return kind, source_name
+    return source, name
+
+
+def _compute_transformed_data(
+    function: TransformedData,
+    bindings: _InputBindings,
+    data: _ModelData,
+    parameter_names: tuple[str, ...],
+    *,
+    expected_names: set[str] | None = None,
+) -> _ModelData:
+    """Evaluate and validate data-only calculations outside the parameter loop."""
+    base = replace(data, transformed_values={}, static_values=(), transformed_sources=())
+    arguments = _callback_inputs(bindings, base, {}, {}, name="transformed_data")
+    outputs = function(**arguments)
+    if not isinstance(outputs, Mapping):
+        raise TypeError("transformed_data must return a mapping from names to fixed values")
+
+    reserved = _callback_data_names(base) | set(parameter_names)
+    arrays = {}
+    static = []
+    origins = []
+    for name, value in outputs.items():
+        _validate_name(name, label="transformed data")
+        if name in reserved:
+            raise ValueError(f"Transformed data {name!r} conflicts with an input or parameter")
+        if isinstance(value, (bool, np.bool_)):
+            static.append((name, bool(value)))
+        elif isinstance(value, Integral):
+            static.append((name, int(value)))
+        else:
+            if value is None or callable(value):
+                raise TypeError(f"Transformed data {name!r} must contain real numeric values")
+            try:
+                array = jnp.array(value, copy=not isinstance(value, jax.Array))
+            except (TypeError, ValueError) as error:
+                raise TypeError(f"Transformed data {name!r} must contain real numeric values") from error
+            if array.dtype.kind not in "biuf":
+                raise TypeError(f"Transformed data {name!r} must contain real numeric values")
+            if not isinstance(array, jax.core.Tracer) and not np.isfinite(np.asarray(array)).all():
+                raise ValueError(f"Transformed data {name!r} must contain finite values")
+            arrays[name] = array
+
+        inherited = {
+            _input_source(argument, source, base) for argument, source in bindings if value is arguments[argument]
+        }
+        # Members of the reference namespace keep their training identity.
+        if base.reference is not None:
+            inherited.update(("reference", member) for member, array in base.reference.values.items() if value is array)
+        if len(inherited) == 1:
+            source, source_name = inherited.pop()
+            origins.append((name, source, source_name))
+
+    if expected_names is not None and set(outputs) != expected_names:
+        raise ValueError("transformed_data must return the same names for each dataset")
+    return replace(
+        data,
+        transformed_values=arrays,
+        static_values=tuple(sorted(static)),
+        transformed_sources=tuple(sorted(origins)),
+    )
 
 
 def _bind_inputs(
@@ -856,12 +1198,12 @@ def _bind_inputs(
         raise TypeError(f"{name} must expose an inspectable Python signature") from error
 
     key_argument = None
-    if name == "generate":
+    if name == "generated_quantities":
         if not arguments or arguments[0].kind not in (
             SignatureParameter.POSITIONAL_ONLY,
             SignatureParameter.POSITIONAL_OR_KEYWORD,
         ):
-            raise TypeError("generate must accept a random key as its first positional argument")
+            raise TypeError("generated_quantities must accept a random key as its first positional argument")
         key_argument = arguments.pop(0)
     if any(
         argument.kind not in (SignatureParameter.POSITIONAL_OR_KEYWORD, SignatureParameter.KEYWORD_ONLY)
@@ -871,28 +1213,47 @@ def _bind_inputs(
             f"Inputs for {name} must be named arguments without positional-only parameters, *args or **kwargs"
         )
 
-    sources = {
-        "data": set(data.values),
-        "parameter": set(parameter_names),
-    }
-    if key_argument is not None and any(key_argument.name in names for names in sources.values()):
-        raise TypeError(f"generate places input {key_argument.name!r} where the random key is required")
+    sources = (
+        _data_sources(data)
+        if data.variable_sources is None
+        else {
+            "variable": {variable for variable, _, _ in data.variable_sources},
+            "constant": {name for name, _ in data.constants},
+        }
+    )
+    sources["transformed_data"] = set(data.transformed_values) | dict(data.static_values).keys()
+    sources["parameter"] = set(parameter_names)
+    if key_argument is not None and (
+        key_argument.name in data.reserved_names or any(key_argument.name in names for names in sources.values())
+    ):
+        raise TypeError(f"generated_quantities places input {key_argument.name!r} where the random key is required")
 
     bindings = []
     for argument in arguments:
         matches = [source for source, names in sources.items() if argument.name in names]
         if not matches:
+            if name == "transformed_data":
+                available = sorted(set().union(*sources.values()) - set(parameter_names))
+                raise ValueError(
+                    _unknown_input_message(name, argument.name, available, declared=data.variable_sources is not None)
+                    + " Sampled parameters are not available in transformed_data."
+                )
+            if argument.name in data.reserved_names:
+                raise ValueError(
+                    f"{name} requests {argument.name!r}, which requires 'outcome' in the original prepared data"
+                )
             if has_transformed:
                 bindings.append((argument.name, "transformed"))
                 continue
+            available = sorted(set().union(*sources.values()))
+            if data.variable_sources is not None:
+                raise ValueError(_unknown_input_message(name, argument.name, available, declared=True))
             if argument.name in ("data", "effects"):
                 raise TypeError(
                     f"{name} no longer receives data or effects bundles in prepared models. "
                     "Request individual inputs by name, such as outcome or a declared parameter"
                 )
-            raise ValueError(
-                f"{name} requests unknown input {argument.name!r}. Use a selected data role or declared parameter"
-            )
+            raise ValueError(_unknown_input_message(name, argument.name, available, declared=False))
         if len(matches) > 1:
             raise ValueError(
                 f"{name} input {argument.name!r} is ambiguous across {matches}. "
@@ -908,6 +1269,16 @@ def _bind_inputs(
     return tuple(bindings)
 
 
+def _unknown_input_message(block: str, argument: str, available: list[str], *, declared: bool) -> str:
+    """Explain an unbound argument with the names that would have bound."""
+    guidance = (
+        "Declare its source in Data variables or declare it as a parameter"
+        if declared
+        else "Use a selected data role, declared constant, or declared parameter"
+    )
+    return f"{block} requests unknown input {argument!r}. {guidance}. Available inputs are {', '.join(available)}."
+
+
 def _callback_inputs(
     bindings: _InputBindings,
     data: _ModelData,
@@ -915,17 +1286,33 @@ def _callback_inputs(
     parameters: ParameterValues,
     *,
     name: str,
-) -> dict[str, ArrayLike]:
-    """Supply the requested numerical inputs from the current model evaluation."""
-    sources: dict[str, ParameterValues] = {
+) -> dict[str, _CallbackValue]:
+    """Supply current inputs, fixed references, and explicit unit conversions."""
+    sources: dict[str, Mapping[str, Any]] = {
         "data": data.values,
         "parameter": parameters,
         "transformed": effects,
+        "reference": {"reference": data.reference} if data.reference is not None else {},
+        "transformed_data": {**data.transformed_values, **dict(data.static_values)},
+        "constant": dict(data.constants),
     }
-    arguments: dict[str, ArrayLike] = {}
+    arguments: dict[str, _CallbackValue] = {}
     for argument, source in bindings:
-        if argument not in sources[source]:
+        source, source_name = _input_source(argument, source, data)
+        if source == "builtin":
+            if source_name == "n_periods":
+                arguments[argument] = data.n_periods
+            else:
+                assert data.outcome_scaling is not None
+                arguments[argument] = data.outcome_scaling
+            continue
+        if source_name not in sources[source]:
             if source == "transformed":
+                if data.variable_sources is not None:
+                    raise ValueError(
+                        f"{name} requires input {argument!r}. "
+                        "Return it from transformed_parameters or declare its source in Data variables"
+                    )
                 if argument in ("data", "effects"):
                     raise ValueError(
                         f"{name} requires transformed quantity {argument!r}. "
@@ -935,7 +1322,7 @@ def _callback_inputs(
                     f"{name} requires transformed quantity {argument!r}. Return it from transformed_parameters"
                 )
             raise ValueError(f"{name} requires input {argument!r}. Include it when preparing data for this evaluation")
-        arguments[argument] = sources[source][argument]
+        arguments[argument] = sources[source][source_name]
     return arguments
 
 
@@ -1020,7 +1407,7 @@ def _validate_generate_signature(
     actual_names = _model_parameter_names(
         function,
         expected_names,
-        name="generate",
+        name="generated_quantities",
         leading_arguments=("key", "data"),
     )
     if actual_names is None:
@@ -1029,7 +1416,7 @@ def _validate_generate_signature(
     unexpected = sorted(set(actual_names) - set(expected_names))
     if unexpected:
         details = _name_mismatch_details([], unexpected)
-        raise ValueError(f"generate requests undeclared model parameters: {details}")
+        raise ValueError(f"generated_quantities requests undeclared model parameters. {details}")
 
     requested_names = set(actual_names)
     return tuple(name for name in expected_names if name in requested_names)
@@ -1107,7 +1494,7 @@ def _model_parameter_names(
 
 
 def _validate_value_names(
-    values: ParameterValues,
+    values: Mapping[str, object],
     parameterizations: tuple[tuple[str, Parameterization], ...],
     *,
     name: str,
@@ -1127,7 +1514,7 @@ def _validate_value_names(
     unexpected = sorted(actual - expected)
     if missing or unexpected:
         details = _name_mismatch_details(missing, unexpected)
-        raise ValueError(f"{name} does not match the model parameters: {details}")
+        raise ValueError(f"{name} does not match the model parameters. {details}")
 
 
 def _name_mismatch_details(missing: list[str], unexpected: list[str]) -> str:
@@ -1136,7 +1523,7 @@ def _name_mismatch_details(missing: list[str], unexpected: list[str]) -> str:
         details.append(f"missing {missing}")
     if unexpected:
         details.append(f"unexpected {unexpected}")
-    return "; ".join(details)
+    return ". ".join(details)
 
 
 def _as_scalar(value: ArrayLike, *, name: str) -> jax.Array:

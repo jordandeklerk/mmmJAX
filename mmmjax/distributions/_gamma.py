@@ -9,6 +9,7 @@ from jax.scipy.stats import gamma as gamma_distribution
 from jax.typing import ArrayLike
 from tensorflow_probability.substrates.jax import distributions as tfd
 
+from mmmjax.distributions._distribution import _bind_distribution
 from mmmjax.distributions._utils import (
     _gamma_shape_log_derivative,
     _gamma_shape_normalizer,
@@ -792,3 +793,6 @@ def _gamma_upper_tail_fraction(
             initial_state,
         )[3],
     )
+
+
+_bind_distribution(gamma, gamma_logpdf, gamma_rng, tfd.Gamma, shape="concentration", rate="rate")

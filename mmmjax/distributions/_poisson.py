@@ -4,8 +4,10 @@ import jax
 import jax.numpy as jnp
 from jax.scipy.special import digamma
 from jax.typing import ArrayLike
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 from mmmjax.distributions._discrete import _prepare_nonnegative_count
+from mmmjax.distributions._distribution import _bind_distribution
 from mmmjax.distributions._gamma import _gamma_log_probability, gamma_logcdf, gamma_logsf
 from mmmjax.distributions._utils import (
     _as_real_array,
@@ -651,3 +653,7 @@ def _poisson_stable_log_mass(
         - jnp.log(count)
         + _weighted_log_ratio_deviance(count, log_ratio, linear_deviation)
     )
+
+
+_bind_distribution(poisson, poisson_logpmf, poisson_rng, tfd.Poisson, rate="rate")
+_bind_distribution(poisson_log, poisson_log_logpmf, poisson_log_rng, tfd.Poisson, log_rate="log_rate")

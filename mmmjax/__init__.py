@@ -1,7 +1,7 @@
 """Bayesian marketing mix modeling expressed entirely in JAX."""
 
 from mmmjax.adstock import delayed_adstock, geometric_adstock, weibull_cdf_adstock, weibull_pdf_adstock
-from mmmjax.data import PreparedData, prepare_data, select_channels
+from mmmjax.data import Data, ModelInput, PreparedData, Reference, prepare_data, select_channels
 from mmmjax.distributions import (
     bernoulli,
     bernoulli_logcdf,
@@ -121,7 +121,7 @@ from mmmjax.distributions import (
     uniform_logsf,
     uniform_rng,
 )
-from mmmjax.hsgp import HSGPConfig, hsgp_basis, hsgp_weights, prepare_hsgp
+from mmmjax.hsgp import HSGPApproximation, hsgp_basis, hsgp_weights, prepare_hsgp
 from mmmjax.media import media_response, reach_frequency_response
 from mmmjax.model import Model
 from mmmjax.optimization import SpendConstraint, optimize_budget
@@ -135,7 +135,8 @@ from mmmjax.parameters import (
     Simplex,
     UpperBound,
 )
-from mmmjax.eda import check_data
+from mmmjax.eda import check_data, check_prior
+from mmmjax.priors import Prior
 from mmmjax.response import frequency_curves, media_metrics, response_curves
 from mmmjax.saturation import hill_saturation, log_saturation, logistic_saturation, root_saturation
 from mmmjax.scaling import DataScaling, Scaling, fit_data_scaling, fit_media_scaling, fit_scaling
@@ -147,15 +148,19 @@ __version__ = "0.0.1"
 
 __all__ = [
     "CorrelationCholesky",
+    "Data",
     "DataScaling",
-    "HSGPConfig",
+    "HSGPApproximation",
     "Interval",
     "LowerBound",
     "Model",
+    "ModelInput",
     "Parameterization",
     "Positive",
     "PreparedData",
+    "Prior",
     "Real",
+    "Reference",
     "SamplingState",
     "Scaling",
     "Simplex",
@@ -197,6 +202,7 @@ __all__ = [
     "cauchy_logsf",
     "cauchy_rng",
     "check_data",
+    "check_prior",
     "continue_sampling",
     "delayed_adstock",
     "dirichlet",

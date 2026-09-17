@@ -7,8 +7,8 @@ import pyarrow as pa
 import pytest
 import xarray as xr
 
-from mmmjax import fit_data_scaling, prepare_data
-from mmmjax.eda import _predictor_checks, check_data
+from mmmjax import Data, Model, Real, fit_data_scaling, normal_rng, prepare_data, sample_prior
+from mmmjax.eda import _predictor_checks, check_data, check_prior
 
 
 def _pair(report, first, second):
@@ -893,3 +893,335 @@ def test_check_data_computes_robust_variability_separately_by_group_and_excludes
     np.testing.assert_allclose(series["interquartile_range"], [0, 200])
     np.testing.assert_allclose(series["std_without_outliers"], [0, np.sqrt(20000)])
     np.testing.assert_array_equal(series["outlier_driven_variation"], [True, False])
+
+
+def test_check_prior_is_exported_from_the_package():
+    import mmmjax
+    import mmmjax.eda
+
+    assert mmmjax.check_prior is check_prior
+    assert "check_prior" in mmmjax.__all__
+    assert "check_prior" in mmmjax.eda.__all__
+
+
+def test_check_prior_reports_hand_calculated_probabilities_and_inclusive_bounds():
+    draws = xr.DataArray(
+        [[-1, 0], [0, 1], [2, 4], [4, 2]],
+        dims=("draw", "channel"),
+        coords={"channel": ["video", "search"]},
+        name="roi",
+    )
+
+    report = check_prior(draws, lower=0, upper=2)
+
+    assert isinstance(report, xr.Dataset)
+    assert set(report.data_vars) == {
+        "finite_draws",
+        "nonfinite_fraction",
+        "probability_below",
+        "probability_above",
+        "probability_outside",
+        "lower",
+        "upper",
+    }
+    assert report.attrs["sample_count"] == 4
+    assert report.attrs["quantity"] == "roi"
+    assert report.attrs["probability_scope"] == "finite draws only"
+    np.testing.assert_array_equal(report["channel"], ["video", "search"])
+    np.testing.assert_array_equal(report["finite_draws"], [4, 4])
+    np.testing.assert_array_equal(report["nonfinite_fraction"], [0, 0])
+    np.testing.assert_allclose(report["probability_below"], [0.25, 0])
+    np.testing.assert_allclose(report["probability_above"], [0.25, 0.25])
+    np.testing.assert_allclose(report["probability_outside"], [0.5, 0.25])
+    np.testing.assert_array_equal(report["lower"], [0, 0])
+    np.testing.assert_array_equal(report["upper"], [2, 2])
+
+
+@pytest.mark.parametrize("bound", ["lower", "upper"])
+def test_check_prior_supports_one_sided_scalar_and_boolean_quantities(bound):
+    draws = xr.DataArray([False, True, True, False], dims="draw")
+
+    report = check_prior(draws, **{bound: 0.5})
+
+    assert report.attrs["quantity"] == "unnamed"
+    assert report.sizes == {}
+    assert report["probability_outside"].item() == 0.5
+    assert report["finite_draws"].item() == 4
+    assert report[bound].item() == 0.5
+    absent = ("upper", "probability_above") if bound == "lower" else ("lower", "probability_below")
+    assert not set(absent) & set(report.data_vars)
+
+
+def test_check_prior_uses_both_sampling_axes_regardless_of_dimension_order():
+    values = np.arange(24).reshape(2, 4, 3)
+    draws = xr.DataArray(
+        values,
+        dims=("chain", "draw", "channel"),
+        coords={"chain": [7, 9], "draw": [10, 20, 30, 40], "channel": ["search", "video", "tv"]},
+        name="contribution",
+    )
+
+    report = check_prior(draws.transpose("channel", "draw", "chain"), lower=5, upper=17)
+    expected = check_prior(draws, lower=5, upper=17)
+
+    xr.testing.assert_identical(report, expected)
+    assert report.attrs["sample_count"] == 8
+    np.testing.assert_allclose(report["probability_below"], (values < 5).mean(axis=(0, 1)))
+    np.testing.assert_allclose(report["probability_above"], (values > 17).mean(axis=(0, 1)))
+    assert "draw" not in report.coords
+    assert "chain" not in report.coords
+
+
+def test_check_prior_preserves_pointwise_axes_and_leaves_aggregation_to_the_user():
+    draws = xr.DataArray([[-2, 2], [2, -2]], dims=("draw", "time"), coords={"time": [1, 2]})
+
+    pointwise = check_prior(draws, lower=0)
+    total = check_prior(draws.sum("time"), lower=0)
+
+    np.testing.assert_array_equal(pointwise["probability_below"], [0.5, 0.5])
+    assert total["probability_below"].item() == 0
+
+
+def test_check_prior_excludes_nonfinite_draws_from_probabilities_but_reports_their_fraction():
+    draws = xr.DataArray(
+        [[np.nan, np.nan, -1], [1, np.inf, np.inf], [3, -np.inf, 2], [np.inf, np.nan, 4]],
+        dims=("draw", "channel"),
+        coords={"channel": ["search", "video", "tv"]},
+    )
+
+    report = check_prior(draws, lower=0, upper=2)
+
+    np.testing.assert_array_equal(report["finite_draws"], [2, 0, 3])
+    np.testing.assert_allclose(report["nonfinite_fraction"], [0.5, 1, 0.25])
+    np.testing.assert_allclose(report["probability_below"], [0, np.nan, 1 / 3], equal_nan=True)
+    np.testing.assert_allclose(report["probability_above"], [0.5, np.nan, 1 / 3], equal_nan=True)
+    np.testing.assert_allclose(report["probability_outside"], [0.5, np.nan, 2 / 3], equal_nan=True)
+
+
+def test_check_prior_aligns_labeled_bounds_and_preserves_auxiliary_coordinates_without_mutation():
+    draws = xr.DataArray(
+        np.arange(24).reshape(4, 2, 3),
+        dims=("draw", "geo", "channel"),
+        coords={
+            "geo": ["east", "west"],
+            "channel": ["search", "video", "tv"],
+            "region": ("geo", ["coastal", "inland"]),
+            "family": ("channel", ["digital", "digital", "offline"]),
+            "currency": "USD",
+        },
+        name="revenue",
+    )
+    lower = xr.DataArray([3, 1, 2], dims="channel", coords={"channel": ["tv", "search", "video"]})
+    upper = xr.DataArray([20, 15], dims="geo", coords={"geo": ["west", "east"]})
+    original, original_lower, original_upper = draws.copy(deep=True), lower.copy(deep=True), upper.copy(deep=True)
+
+    report = check_prior(draws, lower=lower, upper=upper)
+
+    assert report["probability_outside"].dims == ("geo", "channel")
+    for name in draws.coords:
+        xr.testing.assert_identical(report.coords[name], draws.coords[name])
+    np.testing.assert_array_equal(report["lower"], [[1, 2, 3], [1, 2, 3]])
+    np.testing.assert_array_equal(report["upper"], [[15, 15, 15], [20, 20, 20]])
+    np.testing.assert_allclose(report["probability_below"], (draws.values < np.array([1, 2, 3])).mean(axis=0))
+    np.testing.assert_allclose(report["probability_above"], (draws.values > np.array([[15], [20]])).mean(axis=0))
+    xr.testing.assert_identical(draws, original)
+    xr.testing.assert_identical(lower, original_lower)
+    xr.testing.assert_identical(upper, original_upper)
+
+
+def test_check_prior_accepts_equal_bounds_and_scalar_dataarray_bounds():
+    draws = xr.DataArray([-1, 0, 1], dims="draw")
+
+    report = check_prior(draws, lower=xr.DataArray(0.0), upper=np.float64(0.0))
+
+    assert report["probability_outside"].item() == pytest.approx(2 / 3)
+    assert report["probability_below"].item() == pytest.approx(1 / 3)
+    assert report["probability_above"].item() == pytest.approx(1 / 3)
+
+
+@pytest.mark.parametrize("draws", [[1, 2], np.array([1, 2]), xr.Dataset(), xr.DataTree(), 1.0])
+def test_check_prior_requires_a_dataarray(draws):
+    with pytest.raises(TypeError):
+        check_prior(draws, lower=0)
+
+
+@pytest.mark.parametrize("dims,shape", [((), ()), (("chain",), (2,)), (("time", "channel"), (2, 3))])
+def test_check_prior_requires_a_draw_axis(dims, shape):
+    draws = xr.DataArray(np.ones(shape), dims=dims)
+
+    with pytest.raises(ValueError):
+        check_prior(draws, lower=0)
+
+
+@pytest.mark.parametrize("shape", [(0, 2), (2, 0)])
+def test_check_prior_rejects_empty_sampling_axes(shape):
+    draws = xr.DataArray(np.empty(shape), dims=("chain", "draw"))
+
+    with pytest.raises(ValueError):
+        check_prior(draws, lower=0)
+
+
+@pytest.mark.parametrize(
+    "values", [["1", "2"], [1 + 2j], np.array([1], dtype=object), np.array(["2026-01-01"], dtype="datetime64[D]")]
+)
+def test_check_prior_requires_real_numeric_draws(values):
+    with pytest.raises(TypeError):
+        check_prior(xr.DataArray(values, dims="draw"), lower=0)
+
+
+def test_check_prior_requires_at_least_one_bound():
+    with pytest.raises(ValueError):
+        check_prior(xr.DataArray([1, 2], dims="draw"))
+
+
+@pytest.mark.parametrize("bound", ["lower", "upper"])
+@pytest.mark.parametrize("value", [True, "1", 1 + 2j, [0, 1], np.array([0, 1]), np.array(0)])
+def test_check_prior_rejects_invalid_or_unlabeled_bounds(bound, value):
+    with pytest.raises(TypeError):
+        check_prior(xr.DataArray([0, 1], dims="draw"), **{bound: value})
+
+
+@pytest.mark.parametrize("bound", ["lower", "upper"])
+@pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf])
+def test_check_prior_rejects_nonfinite_scalar_bounds(bound, value):
+    with pytest.raises(ValueError):
+        check_prior(xr.DataArray([0, 1], dims="draw"), **{bound: value})
+
+
+@pytest.mark.parametrize("values", [[True, False], ["0", "1"], [0j, 1j], np.array([0, 1], dtype=object)])
+def test_check_prior_rejects_nonnumeric_or_boolean_labeled_bounds(values):
+    draws = xr.DataArray([[0, 1]], dims=("draw", "channel"), coords={"channel": ["video", "search"]})
+    lower = xr.DataArray(values, dims="channel", coords={"channel": ["video", "search"]})
+
+    with pytest.raises(TypeError):
+        check_prior(draws, lower=lower)
+
+
+@pytest.mark.parametrize("values", [[0, np.nan], [0, np.inf], [-np.inf, 1]])
+def test_check_prior_rejects_nonfinite_labeled_bounds(values):
+    draws = xr.DataArray([[0, 1]], dims=("draw", "channel"), coords={"channel": ["video", "search"]})
+    upper = xr.DataArray(values, dims="channel", coords={"channel": ["video", "search"]})
+
+    with pytest.raises(ValueError):
+        check_prior(draws, upper=upper)
+
+
+@pytest.mark.parametrize("labels", [["video"], ["video", "radio"], ["video", "search", "tv"], ["video", "video"]])
+def test_check_prior_rejects_missing_extra_or_duplicate_bound_labels(labels):
+    draws = xr.DataArray([[0, 1]], dims=("draw", "channel"), coords={"channel": ["video", "search"]})
+    lower = xr.DataArray(np.zeros(len(labels)), dims="channel", coords={"channel": labels})
+
+    with pytest.raises(ValueError):
+        check_prior(draws, lower=lower)
+
+
+@pytest.mark.parametrize("dim", ["draw", "chain", "unrelated"])
+def test_check_prior_rejects_bounds_over_sampling_or_unrelated_axes(dim):
+    draws = xr.DataArray(np.zeros((2, 2, 2)), dims=("chain", "draw", "channel"))
+    lower = xr.DataArray([0, 0], dims=dim, coords={dim: [0, 1]})
+
+    with pytest.raises(ValueError):
+        check_prior(draws, lower=lower)
+
+
+@pytest.mark.parametrize("labeled_draws", [False, True])
+def test_check_prior_rejects_bounds_without_axis_labels(labeled_draws):
+    draws = xr.DataArray([[0, 1]], dims=("draw", "channel"))
+    if labeled_draws:
+        draws = draws.assign_coords(channel=["video", "search"])
+    lower = xr.DataArray([0, 0], dims="channel")
+
+    with pytest.raises(ValueError):
+        check_prior(draws, lower=lower)
+
+
+def test_check_prior_rejects_ambiguous_duplicate_labels_on_checked_draws():
+    draws = xr.DataArray([[0, 1]], dims=("draw", "channel"), coords={"channel": ["video", "video"]})
+    lower = xr.DataArray([0, 1], dims="channel", coords={"channel": ["video", "search"]})
+
+    with pytest.raises(ValueError):
+        check_prior(draws, lower=lower)
+
+
+def test_check_prior_rejects_crossed_bounds_after_label_alignment():
+    draws = xr.DataArray([[0, 1]], dims=("draw", "channel"), coords={"channel": ["video", "search"]})
+    lower = xr.DataArray([3, 1], dims="channel", coords={"channel": ["search", "video"]})
+    upper = xr.DataArray([2, 2], dims="channel", coords={"channel": ["video", "search"]})
+
+    with pytest.raises(ValueError):
+        check_prior(draws, lower=lower, upper=upper)
+
+
+def test_check_prior_checks_original_unit_quantities_saved_from_actual_prior_draws():
+    data = prepare_data(pl.DataFrame({"week": [1, 2, 3], "sales": [100.0, 110.0, 120.0]}), time="week", outcome="sales")
+    scaling = fit_data_scaling(data, scale_outcome=True)
+
+    def density(location):
+        raise AssertionError("Prior checks must not evaluate the likelihood")
+
+    def quantities(location):
+        return {"expected_sales": scaling.transformations["outcome"].inverse_transform(location[None])[0]}
+
+    def prior(key):
+        return {"location": normal_rng(key, location=0, scale=1)}
+
+    model = Model(
+        parameters={"location": Real()},
+        log_density=density,
+        data=Data(data, scaling=scaling),
+        transformed_parameters=quantities,
+        prior=prior,
+        save=("expected_sales",),
+    )
+    results = sample_prior(model, draws=8, seed=4)
+    draws = results["prior_generated_quantities"]["expected_sales"]
+
+    report = check_prior(draws, lower=105, upper=115)
+
+    assert report.attrs["sample_count"] == 8
+    assert report.attrs["quantity"] == "expected_sales"
+    assert report["finite_draws"].item() == 8
+    assert report["probability_below"].item() == pytest.approx((draws.values < 105).mean())
+    assert report["probability_above"].item() == pytest.approx((draws.values > 115).mean())
+    expected = 110 + np.std([100, 110, 120]) * results["prior"]["location"].values
+    np.testing.assert_allclose(draws, expected, rtol=2e-6)
+
+
+@pytest.mark.parametrize("reverse_limits", [False, True])
+def test_check_prior_aligns_stacked_location_bounds_and_preserves_index_levels(reverse_limits):
+    draws = xr.DataArray(
+        np.arange(24).reshape(4, 3, 2),
+        dims=("draw", "time", "geo"),
+        coords={"time": [1, 2, 3], "geo": ["east", "west"]},
+        name="revenue",
+    ).stack(location=("time", "geo"))
+    lower = draws.isel(draw=0, drop=True) + 6
+    upper = lower + 6
+    if reverse_limits:
+        lower = lower.isel(location=slice(None, None, -1))
+        upper = upper.isel(location=slice(None, None, -1))
+    original_lower = lower.copy(deep=True)
+
+    report = check_prior(draws, lower=lower, upper=upper)
+
+    assert report["probability_outside"].dims == ("location",)
+    assert report.indexes["location"].equals(draws.indexes["location"])
+    for name in ("location", "time", "geo"):
+        xr.testing.assert_identical(report.coords[name], draws.coords[name])
+    np.testing.assert_array_equal(report["lower"], np.arange(6, 12))
+    np.testing.assert_array_equal(report["upper"], np.arange(12, 18))
+    np.testing.assert_allclose(report["probability_below"], 0.25)
+    np.testing.assert_allclose(report["probability_above"], 0.25)
+    np.testing.assert_allclose(report["probability_outside"], 0.5)
+    xr.testing.assert_identical(lower, original_lower)
+
+
+@pytest.mark.parametrize("reserved", ["probability_outside", "lower"])
+@pytest.mark.parametrize("coordinate_only", [False, True])
+def test_check_prior_rejects_output_names_used_as_retained_coordinates_or_dimensions(reserved, coordinate_only):
+    dim = "channel" if coordinate_only else reserved
+    draws = xr.DataArray([[0, 1], [1, 2]], dims=("draw", dim))
+    draws = draws.assign_coords({reserved: (dim, ["video", "search"])})
+
+    with pytest.raises(ValueError, match="reserved"):
+        check_prior(draws, lower=0, upper=2)

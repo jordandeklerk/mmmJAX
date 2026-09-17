@@ -8,6 +8,7 @@ from jax.scipy.special import gammaln
 from jax.typing import ArrayLike
 from tensorflow_probability.substrates.jax import distributions as tfd
 
+from mmmjax.distributions._distribution import _bind_distribution
 from mmmjax.distributions._utils import _promote_inexact, _random_shape
 
 
@@ -362,3 +363,14 @@ def student_t_rng(
     samples = location_array + centered_samples
     valid_parameters = valid_degrees & valid_location & valid_scale
     return jnp.where(valid_parameters, samples, jnp.nan)
+
+
+_bind_distribution(
+    student_t,
+    student_t_logpdf,
+    student_t_rng,
+    tfd.StudentT,
+    degrees_of_freedom="df",
+    location="loc",
+    scale="scale",
+)
