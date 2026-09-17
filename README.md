@@ -65,7 +65,10 @@ def log_density(outcome, mu, intercept, coefficient, retention, slope, sigma):
 def generated_quantities(key, outcome, mu, sigma):
     prediction = mj.normal_rng(key, mu, sigma)
     pointwise = mj.normal_logpdf(outcome, mu, sigma)
-    return {"predictive": {"prediction": prediction}, "log_likelihood": {"pointwise": pointwise}}
+    return {
+        "predictive": {"prediction": prediction},
+        "log_likelihood": {"pointwise": pointwise}
+        }
 
 
 model = mj.Model(
