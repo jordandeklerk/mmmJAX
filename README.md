@@ -91,6 +91,17 @@ model = Model(
 results = sample(model, draws=1000, warmup=1000, chains=4)
 ```
 
+## Features
+
+The program blocks support different likelihoods and hierarchical structures for an outcome observed over time. mmmJAX adds tools for preparing marketing data, defining media effects, and interpreting fitted models. You choose which tools to use and how to combine them.
+
+* **Data preparation.** Select outcome, media, spending, and control columns and fit their scaling, with support for paid media, organic media, and reach and frequency channels.
+* **Adstock and saturation.** Model media effects with geometric, delayed, and Weibull adstock and Hill, logistic, log, and root response curves.
+* **Seasonality and baselines.** Add calendar seasonality with Fourier features and smooth trends with a Hilbert space Gaussian process.
+* **Channel ROI, response curves, and budget allocation.** Use posterior draws from the fitted model to estimate channel returns, construct response curves, and optimize budgets.
+* **Prior predictive checks.** Simulate outcomes from the declared priors to assess their implications before fitting.
+* **Scenarios.** Re-evaluate the model on new data using the scaling and reference values established from the training data.
+
 ## Distributions
 
 mmmJAX provides a Stan-style suite of continuous, discrete, and multivariate distributions built on TensorFlow Probability’s JAX backend. Their log-density functions support JAX compilation and automatic differentiation within the model blocks.
@@ -106,17 +117,6 @@ term = normal(draws, 0.0, 1.0)              # summed log density for a model blo
 pointwise = normal_logpdf(draws, 0.0, 1.0)  # one log density per draw
 tail = normal_logcdf(draws, 0.0, 1.0)       # log cumulative probability
 ```
-
-## Features
-
-The program blocks support different likelihoods and hierarchical structures for an outcome observed over time. mmmJAX adds tools for preparing marketing data, defining media effects, and interpreting fitted models. You choose which tools to use and how to combine them.
-
-* **Data preparation.** Select outcome, media, spending, and control columns and fit their scaling, with support for paid media, organic media, and reach and frequency channels.
-* **Adstock and saturation.** Model media effects with geometric, delayed, and Weibull adstock and Hill, logistic, log, and root response curves.
-* **Seasonality and baselines.** Add calendar seasonality with Fourier features and smooth trends with a Hilbert space Gaussian process.
-* **Channel ROI, response curves, and budget allocation.** Use posterior draws from the fitted model to estimate channel returns, construct response curves, and optimize budgets.
-* **Prior predictive checks.** Simulate outcomes from the declared priors to assess their implications before fitting.
-* **Scenarios.** Re-evaluate the model on new data using the scaling and reference values established from the training data.
 
 ## Inference
 
