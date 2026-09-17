@@ -20,6 +20,7 @@ from mmmjax._results import _coordinates, _dimensions, _name, _prepared_coordina
 from mmmjax.data import (
     Data,
     PreparedData,
+    Reference,
     _data_dimensions,
     _DataLayout,
     _day_of_year,
@@ -50,7 +51,7 @@ PriorSampler: TypeAlias = Callable[[jax.Array], Mapping[str, ArrayLike]]
 TransformedParameters: TypeAlias = Callable[..., Mapping[str, ArrayLike]]
 TransformedData: TypeAlias = Callable[..., Mapping[str, ArrayLike]]
 ParameterValues: TypeAlias = Mapping[str, ArrayLike]
-_CallbackValue: TypeAlias = ArrayLike | Callable[[ArrayLike], jax.Array]
+_CallbackValue: TypeAlias = object
 _InputBindings: TypeAlias = tuple[tuple[str, str], ...]
 _DataVariables: TypeAlias = tuple[tuple[str, str, str], ...]
 _BuiltinParameter: TypeAlias = Real | Positive | LowerBound | UpperBound | Interval | Simplex | CorrelationCholesky
@@ -66,11 +67,10 @@ class _ModelData:
 
     values: dict[str, jax.Array]
     owner: object = field(default_factory=object, metadata={"static": True})
-    reference_values: dict[str, jax.Array] = field(default_factory=dict)
+    reference: Reference | None = None
     outcome_scaling: Scaling | None = None
     outcome_group_scale: bool = field(default=False, metadata={"static": True})
     n_periods: int = field(default=0, metadata={"static": True})
-    reference_n_periods: int = field(default=0, metadata={"static": True})
     reserved_names: tuple[str, ...] = field(default=(), metadata={"static": True})
     variable_sources: _DataVariables | None = field(default=None, metadata={"static": True})
     transformed_values: dict[str, jax.Array] = field(default_factory=dict)
@@ -92,11 +92,11 @@ class Model:
 
     Prepared data supplies the selected role names, such as ``outcome`` and
     ``media``, together with elapsed ``time`` and ``media_time``, the calendar
-    ``day_of_year`` and ``media_day_of_year``,
-    ``n_periods``, the outcome conversions ``outcome_scale``,
-    ``outcome_offset``, and ``unscale_outcome``, and the training inputs
-    ``reference_<role>`` and ``reference_n_periods`` when evaluating new
-    data. ``Data`` variables replace these names with declared ones.
+    ``day_of_year`` and ``media_day_of_year``, the period count ``n_periods``,
+    the fitted outcome transform ``outcome_scaling`` with its ``scale``,
+    ``offset``, and ``inverse_transform``, and the ``reference`` namespace
+    holding every training input, such as ``reference.spend``, for evaluating
+    new data. ``Data`` variables replace these names with declared ones.
 
     Inspect derived quantities with ``evaluate`` and the constrained log
     density with ``log_prob`` before fitting. Samplers call ``log_density``
@@ -256,30 +256,36 @@ class Model:
                 values.update(_model_time_inputs(data, time_inputs, time_origin))
             # Copies keep the training references distinct from the current inputs,
             # so unchanged outputs can be labeled by which one they came from.
-            reference_values = {f"reference_{role}": jnp.array(value, copy=True) for role, value in values.items()}
-            reserved = {f"reference_{role}" for role in (*_data_dimensions(data), *get_args(_TimeInput))}
-            reserved.update(("outcome_scale", "outcome_offset", "unscale_outcome", "n_periods", "reference_n_periods"))
+            reference = Reference(
+                values={role: jnp.array(value, copy=True) for role, value in values.items()},
+                n_periods=len(data.time_values),
+            )
+            reserved = {"n_periods", "outcome_scaling", "reference"}
             conflicts = reserved & set(parameter_names) if variable_declarations is None else set()
             if conflicts:
                 raise ValueError(f"Parameter names {sorted(conflicts)} conflict with model-supplied inputs")
 
-            outcome_scaling = None
-            if "outcome" in values:
-                outcome_scaling = Scaling(offset=jnp.asarray(0.0), scale=jnp.asarray(1.0))
-                if fitted_scaling is not None:
-                    outcome_scaling = fitted_scaling.transformations.get("outcome", outcome_scaling)
             population_outcome = (
                 fitted_scaling is not None
                 and "outcome" in fitted_scaling._population_roles
                 and bool(data.group_columns)
             )
+            outcome_scaling = None
+            if "outcome" in values:
+                fitted = Scaling(offset=jnp.asarray(0.0), scale=jnp.asarray(1.0))
+                if fitted_scaling is not None:
+                    fitted = fitted_scaling.transformations.get("outcome", fitted)
+                # Blocks receive one scale and offset per region, or scalars.
+                factor_shape = (-1,) if population_outcome else ()
+                outcome_scaling = Scaling(
+                    offset=fitted.offset.reshape(factor_shape), scale=fitted.scale.reshape(factor_shape)
+                )
             prepared_data = _ModelData(
                 values,
-                reference_values=reference_values,
+                reference=reference,
                 outcome_scaling=outcome_scaling,
                 outcome_group_scale=population_outcome,
                 n_periods=len(data.time_values),
-                reference_n_periods=len(data.time_values),
                 reserved_names=tuple(sorted(reserved)) if variable_declarations is None else (),
                 constants=tuple(constants.items()),
             )
@@ -501,7 +507,7 @@ class Model:
         return replace(
             self._data,
             values=dict(self._data.values),
-            reference_values=dict(self._data.reference_values),
+            reference=_copy_reference(self._data.reference),
             transformed_values=dict(self._data.transformed_values),
         )
 
@@ -563,7 +569,7 @@ class Model:
         prepared = replace(
             self._data,
             values=values,
-            reference_values=dict(self._data.reference_values),
+            reference=_copy_reference(self._data.reference),
             n_periods=len(aligned.time_values),
         )
         return self._refresh_transformed_data(prepared), aligned
@@ -811,7 +817,7 @@ class Model:
         key: jax.Array,
         parameters: ParameterValues,
         data: object,
-    ) -> tuple[dict[_OutputKey, jax.Array], dict[str, ArrayLike]]:
+    ) -> tuple[dict[_OutputKey, jax.Array], dict[str, object]]:
         """Return outputs keyed by result group and name, with the callback inputs for labeling."""
         if not self._has_generated_quantities:
             raise RuntimeError(
@@ -821,7 +827,7 @@ class Model:
 
         constrained = self._constrained_values(parameters)
         saved: dict[str, ArrayLike] = {}
-        arguments: dict[str, _CallbackValue]
+        arguments: dict[str, object]
         if self._data is None:
             names = parameters if self._generate_parameter_names is None else self._generate_parameter_names
             arguments = {name: constrained[name] for name in names}
@@ -882,8 +888,7 @@ class Model:
                 raise TypeError(
                     f"generated quantity {output_key[1]!r} must be array-like, got {type(value).__name__}"
                 ) from exc
-        numeric_arguments = {name: value for name, value in arguments.items() if not callable(value)}
-        return quantities, numeric_arguments
+        return quantities, dict(arguments)
 
     def _validate_generated_name(self, name: object, *, label: str) -> None:
         """Reject output names that would shadow model-supplied inputs."""
@@ -1044,16 +1049,23 @@ def _data_variable_declarations(
     return dict(declarations)
 
 
+def _copy_reference(reference: Reference | None) -> Reference | None:
+    """Give each bundle its own reference mapping so edits never reach the model."""
+    if reference is None:
+        return None
+    return replace(reference, values=dict(reference.values))
+
+
 def _data_sources(data: _ModelData) -> dict[str, set[str]]:
     """List physical data sources separately from user-chosen function names."""
     sources = {
         "data": set(data.values),
-        "reference": set(data.reference_values),
-        "builtin": {"n_periods", "reference_n_periods"},
+        "reference": {"reference"} if data.reference is not None else set(),
+        "builtin": {"n_periods"},
         "constant": {name for name, _ in data.constants},
     }
     if data.outcome_scaling is not None:
-        sources["builtin"].update(("outcome_scale", "outcome_offset", "unscale_outcome"))
+        sources["builtin"].add("outcome_scaling")
     return sources
 
 
@@ -1146,6 +1158,9 @@ def _compute_transformed_data(
         inherited = {
             _input_source(argument, source, base) for argument, source in bindings if value is arguments[argument]
         }
+        # Members of the reference namespace keep their training identity.
+        if base.reference is not None:
+            inherited.update(("reference", member) for member, array in base.reference.values.items() if value is array)
         if len(inherited) == 1:
             source, source_name = inherited.pop()
             origins.append((name, source, source_name))
@@ -1219,9 +1234,8 @@ def _bind_inputs(
                     + " Sampled parameters are not available in transformed_data."
                 )
             if argument.name in data.reserved_names:
-                role = argument.name.removeprefix("reference_") if argument.name.startswith("reference_") else "outcome"
                 raise ValueError(
-                    f"{name} requests {argument.name!r}, which requires {role!r} in the original prepared data"
+                    f"{name} requests {argument.name!r}, which requires 'outcome' in the original prepared data"
                 )
             if has_transformed:
                 bindings.append((argument.name, "transformed"))
@@ -1273,7 +1287,7 @@ def _callback_inputs(
         "data": data.values,
         "parameter": parameters,
         "transformed": effects,
-        "reference": data.reference_values,
+        "reference": {"reference": data.reference} if data.reference is not None else {},
         "transformed_data": {**data.transformed_values, **dict(data.static_values)},
         "constant": dict(data.constants),
     }
@@ -1283,17 +1297,9 @@ def _callback_inputs(
         if source == "builtin":
             if source_name == "n_periods":
                 arguments[argument] = data.n_periods
-            elif source_name == "reference_n_periods":
-                arguments[argument] = data.reference_n_periods
             else:
                 assert data.outcome_scaling is not None
-                if source_name == "unscale_outcome":
-                    arguments[argument] = data.outcome_scaling.inverse_transform
-                else:
-                    value = (
-                        data.outcome_scaling.offset if source_name == "outcome_offset" else data.outcome_scaling.scale
-                    )
-                    arguments[argument] = value.reshape(-1) if data.outcome_group_scale else value.reshape(())
+                arguments[argument] = data.outcome_scaling
             continue
         if source_name not in sources[source]:
             if source == "transformed":

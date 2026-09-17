@@ -520,16 +520,14 @@ def test_media_metrics_keep_model_reference_inputs_fixed_when_changing_channel_s
     data = _data(grouped=True)
     scaling = fit_data_scaling(data, scale_outcome="population", adjust_population=True)
 
-    def quantities(
-        media, reference_media, reference_spend, outcome_scale, unscale_outcome, n_periods, reference_n_periods, roi
-    ):
-        original = reference_media[-reference_n_periods:]
+    def quantities(media, reference, outcome_scaling, n_periods, roi):
+        original = reference.media[-reference.n_periods :]
         reference_response = original / (1.0 + original)
-        denominator = jnp.sum(reference_response * outcome_scale[None, :, None], axis=(0, 1))
-        coefficient = roi * reference_spend.sum(axis=(0, 1)) / denominator
+        denominator = jnp.sum(reference_response * outcome_scaling.scale[None, :, None], axis=(0, 1))
+        coefficient = roi * reference.spend.sum(axis=(0, 1)) / denominator
         current = media[-n_periods:]
         standardized = 0.25 + jnp.sum(current / (1.0 + current) * coefficient, axis=-1)
-        return {"expected_revenue": unscale_outcome(standardized)}
+        return {"expected_revenue": outcome_scaling.inverse_transform(standardized)}
 
     def density(roi):
         raise AssertionError("Media metrics must not evaluate the log density")
@@ -571,7 +569,7 @@ def test_media_metrics_keep_model_reference_inputs_fixed_when_changing_channel_s
     assert np.all(changed["reference_response"].values > baseline["reference_response"].values)
     assert np.all(changed["roi"].values < roi)
     assert np.all(changed["marginal_roi"].values > 0.0)
-    np.testing.assert_array_equal(model.data.reference_values["reference_spend"], data.arrays["spend"])
+    np.testing.assert_array_equal(model.data.reference.spend, data.arrays["spend"])
 
 
 def test_media_metrics_prepare_new_data_with_existing_fitted_scales(case):

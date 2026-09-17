@@ -12,6 +12,7 @@ Data, fitted transformations, and model configuration objects.
    PreparedData
    Data
    ModelInput
+   Reference
    SyntheticData
    DataScaling
    Scaling

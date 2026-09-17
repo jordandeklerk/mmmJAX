@@ -52,40 +52,31 @@ def test_reference_inputs_and_unit_helpers_compose_through_all_callbacks_without
     original_outcome = scaled.arrays["outcome"].copy()
     calls = []
 
-    def transformed(
-        coefficient,
-        controls,
-        reference_controls,
-        reference_outcome,
-        outcome_scale,
-        unscale_outcome,
-        n_periods,
-        reference_n_periods,
-    ):
+    def transformed(coefficient, controls, reference, outcome_scaling, n_periods):
         calls.append("transformed")
-        contribution = coefficient * (controls[:, 0] - reference_controls[:, 0].mean())
-        mu = contribution + reference_outcome.mean() * jnp.ones((n_periods,))
+        contribution = coefficient * (controls[:, 0] - reference.controls[:, 0].mean())
+        mu = contribution + reference.outcome.mean() * jnp.ones((n_periods,))
         return {
             "mu": mu,
-            "raw_mu": unscale_outcome(mu),
-            "raw_contribution": contribution * outcome_scale,
-            "original_mean": jnp.full((reference_n_periods,), reference_outcome.mean()),
+            "raw_mu": outcome_scaling.inverse_transform(mu),
+            "raw_contribution": contribution * outcome_scaling.scale,
+            "original_mean": jnp.full((reference.n_periods,), reference.outcome.mean()),
         }
 
-    def density(outcome, mu, coefficient, n_periods, reference_n_periods, reference_controls):
+    def density(outcome, mu, coefficient, n_periods, reference):
         calls.append("density")
         assert isinstance(n_periods, int)
-        assert isinstance(reference_n_periods, int)
-        assert reference_controls.shape[0] == reference_n_periods
+        assert isinstance(reference.n_periods, int)
+        assert reference.controls.shape[0] == reference.n_periods
         return normal(outcome, mu * jnp.ones((n_periods,)), 1.0) + normal(coefficient, 0.0, 2.0)
 
-    def generate(key, mu, raw_mu, raw_contribution, original_mean, reference_controls, unscale_outcome):
+    def generate(key, mu, raw_mu, raw_contribution, original_mean, reference, outcome_scaling):
         calls.append("generate")
         return {
-            "prediction": unscale_outcome(mu),
+            "prediction": outcome_scaling.inverse_transform(mu),
             "transformed_prediction": raw_mu,
             "contribution": raw_contribution,
-            "baseline_controls": reference_controls,
+            "baseline_controls": reference.controls,
             "baseline_mean": original_mean,
         }
 
@@ -139,38 +130,49 @@ def test_reference_inputs_and_unit_helpers_compose_through_all_callbacks_without
 
 
 @pytest.mark.parametrize("stage", ["transformed_parameters", "log_density", "generated_quantities"])
-@pytest.mark.parametrize(
-    "callback,role",
-    [
-        (lambda key, reference_media: {}, "media"),
-        (lambda key, reference_spend: {}, "spend"),
-        (lambda key, reference_outcome: {}, "outcome"),
-        (lambda key, outcome_scale: {}, "outcome"),
-        (lambda key, unscale_outcome: {}, "outcome"),
-    ],
-)
-def test_model_supplied_inputs_require_original_roles_even_with_transformed_outputs(stage, callback, role):
+def test_outcome_scaling_requires_the_original_outcome_even_with_transformed_outputs(stage):
+    callbacks = {
+        "log_density": lambda: jnp.array(0.0),
+        "generated_quantities": lambda key: {},
+        "transformed_parameters": lambda: {},
+    }
+    callback = lambda key, outcome_scaling: {}  # noqa: E731
+    callbacks[stage] = callback if stage == "generated_quantities" else partial(callback, None)
+    with pytest.raises(ValueError, match=r"requires.*outcome.*original prepared data"):
+        Model({}, data=_data(observed=False), **callbacks)
+
+
+@pytest.mark.parametrize("stage", ["transformed_parameters", "log_density", "generated_quantities"])
+@pytest.mark.parametrize("role", ["media", "spend", "outcome"])
+def test_absent_reference_roles_are_reported_when_the_block_runs(stage, role):
+    callback = eval(f"lambda key, reference: dict(value=reference.{role}.sum())")
     callbacks = {
         "log_density": lambda: jnp.array(0.0),
         "generated_quantities": lambda key: {},
         "transformed_parameters": lambda: {},
     }
     callbacks[stage] = callback if stage == "generated_quantities" else partial(callback, None)
-    with pytest.raises(ValueError, match=f"requires.*{role}.*original prepared data"):
-        Model({}, data=_data(observed=False), **callbacks)
+    model = Model({}, data=_data(observed=False), **callbacks)
+    evaluate = {
+        "log_density": lambda: model.log_density({}, model.data),
+        "generated_quantities": lambda: model.generate_quantities(jax.random.key(0), {}, model.data),
+        "transformed_parameters": lambda: model.evaluate({}),
+    }
+    with pytest.raises(AttributeError, match=f"reference has no input {role!r}.*controls.*n_periods"):
+        evaluate[stage]()
 
 
-@pytest.mark.parametrize("generate", [lambda reference_media: {}, lambda unscale_outcome: {}])
+@pytest.mark.parametrize("generate", [lambda reference: {}, lambda outcome_scaling: {}])
 def test_generate_cannot_place_model_supplied_inputs_in_the_random_key_position(generate):
     with pytest.raises(TypeError, match=r"generated_quantities.*random key"):
         Model({}, lambda: jnp.array(0.0), generate, data=_data(observed=False))
 
 
 def test_period_helpers_work_without_original_or_current_outcomes():
-    def transformed(controls, reference_controls, n_periods, reference_n_periods):
+    def transformed(controls, reference, n_periods):
         return {
             "current": controls[:, 0] + jnp.zeros((n_periods,)),
-            "original": reference_controls[:, 0] + jnp.zeros((reference_n_periods,)),
+            "original": reference.controls[:, 0] + jnp.zeros((reference.n_periods,)),
         }
 
     raw = _data(observed=False)
@@ -190,10 +192,7 @@ def test_period_helpers_work_without_original_or_current_outcomes():
 
 
 @pytest.mark.parametrize("source", ["parameters", "inputs", "coords"])
-@pytest.mark.parametrize(
-    "name",
-    ["reference_media", "reference_controls", "outcome_scale", "unscale_outcome", "n_periods", "reference_n_periods"],
-)
+@pytest.mark.parametrize("name", ["reference", "outcome_scaling", "n_periods"])
 def test_model_supplied_names_cannot_be_shadowed_by_declared_inputs(source, name):
     arguments = {"parameters": {}, "data": _data()}
     if source == "parameters":
@@ -206,9 +205,7 @@ def test_model_supplied_names_cannot_be_shadowed_by_declared_inputs(source, name
         Model(log_density=lambda: jnp.array(0.0), **arguments)
 
 
-@pytest.mark.parametrize(
-    "name", ["reference_controls", "outcome_scale", "unscale_outcome", "n_periods", "reference_n_periods"]
-)
+@pytest.mark.parametrize("name", ["reference", "outcome_scaling", "n_periods"])
 def test_transformed_outputs_cannot_shadow_model_supplied_inputs(name):
     model = Model(
         {},

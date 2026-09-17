@@ -1,7 +1,7 @@
 """Bayesian marketing mix modeling expressed entirely in JAX."""
 
 from mmmjax.adstock import delayed_adstock, geometric_adstock, weibull_cdf_adstock, weibull_pdf_adstock
-from mmmjax.data import Data, ModelInput, PreparedData, prepare_data, select_channels
+from mmmjax.data import Data, ModelInput, PreparedData, Reference, prepare_data, select_channels
 from mmmjax.distributions import (
     bernoulli,
     bernoulli_logcdf,
@@ -160,6 +160,7 @@ __all__ = [
     "PreparedData",
     "Prior",
     "Real",
+    "Reference",
     "SamplingState",
     "Scaling",
     "Simplex",

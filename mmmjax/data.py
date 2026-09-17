@@ -22,7 +22,7 @@ from numpy.typing import NDArray
 if TYPE_CHECKING:
     from mmmjax.scaling import DataScaling
 
-__all__ = ["Data", "ModelInput", "PreparedData", "prepare_data", "select_channels"]
+__all__ = ["Data", "ModelInput", "PreparedData", "Reference", "prepare_data", "select_channels"]
 
 _TimeInput: TypeAlias = Literal["time", "media_time", "day_of_year", "media_day_of_year"]
 
@@ -34,8 +34,9 @@ class ModelInput(NamedTuple):
     ----------
     kind : str
         ``array`` for JAX arrays, ``integer`` for static Python integers,
-        ``function`` for callables such as ``unscale_outcome``, or
-        ``constant`` for declared Python values passed through unchanged.
+        ``object`` for the ``outcome_scaling`` transform and the ``reference``
+        namespace, or ``constant`` for declared Python values passed through
+        unchanged.
     axes : tuple of str
         Named axes of an array input, empty for scalars. Training references
         use ``reference_time`` and ``reference_media_time`` for their time
@@ -47,9 +48,41 @@ class ModelInput(NamedTuple):
         ``input`` for auxiliary datasets, or ``constant`` for declared values.
     """
 
-    kind: Literal["array", "integer", "function", "constant"]
+    kind: Literal["array", "integer", "object", "constant"]
     axes: tuple[str, ...]
     source: Literal["data", "time", "builtin", "reference", "input", "constant"]
+
+
+@jax.tree_util.register_dataclass
+@dataclass(frozen=True, eq=False)
+class Reference:
+    """Training inputs retained while a model evaluates new data.
+
+    Request ``reference`` in a program block and read the training arrays as
+    attributes, such as ``reference.spend`` or ``reference.time``, together
+    with the training period count ``reference.n_periods``. These never
+    change for scenarios, forecasts, or response curves, so calculations
+    that must stay anchored to the fitted data use them in place of the
+    current inputs.
+
+    Attributes
+    ----------
+    values : dict of str to jax.Array
+        Training arrays by role and time input name.
+    n_periods : int
+        Number of training periods.
+    """
+
+    values: dict[str, jax.Array]
+    n_periods: int = field(default=0, metadata={"static": True})
+
+    def __getattr__(self, name: str) -> jax.Array:
+        """Return the training array stored under ``name`` or explain which roles exist."""
+        values: dict[str, jax.Array] = object.__getattribute__(self, "values")
+        if name in values:
+            return values[name]
+        available = ", ".join((*sorted(values), "n_periods"))
+        raise AttributeError(f"reference has no input {name!r}. Available reference inputs are {available}")
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -532,14 +565,8 @@ def _model_inputs(data: PreparedData) -> dict[str, ModelInput]:
         inputs[name] = ModelInput("array", ("media_time",) if name.startswith("media_") else ("time",), "time")
     inputs["n_periods"] = ModelInput("integer", (), "builtin")
     if "outcome" in data.arrays:
-        inputs["outcome_scale"] = ModelInput("array", (), "builtin")
-        inputs["outcome_offset"] = ModelInput("array", (), "builtin")
-        inputs["unscale_outcome"] = ModelInput("function", (), "builtin")
-    for input_name, spec in list(inputs.items()):
-        if spec.source in ("data", "time"):
-            axes = tuple(f"reference_{axis}" if axis in ("time", "media_time") else axis for axis in spec.axes)
-            inputs[f"reference_{input_name}"] = ModelInput("array", axes, "reference")
-    inputs["reference_n_periods"] = ModelInput("integer", (), "reference")
+        inputs["outcome_scaling"] = ModelInput("object", (), "builtin")
+    inputs["reference"] = ModelInput("object", (), "reference")
     return inputs
 
 

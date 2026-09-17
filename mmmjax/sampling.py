@@ -17,7 +17,7 @@ from numpy.typing import NDArray
 
 from mmmjax._nuts import _NUTSContinuation, _sample_nuts
 from mmmjax._results import _collect_results, _coordinates, _prepared_groups, _same_labels
-from mmmjax.data import PreparedData, _data_dimensions
+from mmmjax.data import PreparedData, Reference, _data_dimensions
 from mmmjax.model import (
     Model,
     PriorSampler,
@@ -28,6 +28,7 @@ from mmmjax.model import (
     _validate_value_names,
 )
 from mmmjax.priors import _validate_prior_sampler
+from mmmjax.scaling import Scaling
 
 _Key = TypeVar("_Key", bound=Hashable)
 
@@ -1002,7 +1003,7 @@ def _parameter_metadata(model: Model) -> tuple[dict[str, tuple[str, ...]], dict[
 def _output_dimensions(
     model: Model,
     outputs: Mapping[_OutputKey, jax.Array],
-    arguments: dict[str, ArrayLike],
+    arguments: Mapping[str, object],
     parameter_dimensions: dict[str, tuple[str, ...]],
     prepared: PreparedData | None,
 ) -> dict[str, tuple[str, ...]]:
@@ -1012,10 +1013,21 @@ def _output_dimensions(
         raise ValueError(f"Generated result metadata refers to missing outputs {sorted(missing)}")
     input_dimensions: dict[str, tuple[str, ...]] = {}
     reference_inputs: set[str] = set()
+    reference_namespaces: set[str] = set()
+    scaling_inputs: set[str] = set()
     auxiliary_inputs: set[str] = set()
     observation_axes: tuple[str, ...] = ()
     outcome_shape: tuple[int, ...] | None = None
+    role_dimensions: dict[str, tuple[str, ...]] = {}
+    grouped_scale = False
+
+    def reference_axes(member: str) -> tuple[str, ...]:
+        return tuple(
+            f"reference_{axis}" if axis in ("time", "media_time") else axis for axis in role_dimensions[member]
+        )
+
     if prepared is not None:
+        assert model._data is not None
         observation_axes = _data_dimensions(prepared)["outcome"]
         outcome_shape = (len(prepared.time_values),)
         if prepared.group_columns:
@@ -1024,22 +1036,23 @@ def _output_dimensions(
             name: spec.axes for name, spec in prepared.model_inputs.items() if spec.source in ("data", "time")
         }
         role_dimensions.update(model._input_dims)
+        grouped_scale = model._data.outcome_group_scale
         for name, source in (*model._generation_inputs, *model._saved_inputs):
-            assert model._data is not None
             source, source_name = _metadata_source(name, source, model._data)
             if source == "data":
                 input_dimensions[name] = role_dimensions[source_name]
                 if source_name in model._input_dims:
                     auxiliary_inputs.add(name)
+            elif source == "reference" and source_name == "reference":
+                reference_namespaces.add(name)
             elif source == "reference":
-                input_dimensions[name] = tuple(
-                    f"reference_{axis}" if axis in ("time", "media_time") else axis
-                    for axis in role_dimensions[source_name.removeprefix("reference_")]
-                )
+                # A transformed data output that passed a training array through.
+                input_dimensions[name] = reference_axes(source_name)
                 reference_inputs.add(name)
+            elif source == "builtin" and source_name == "outcome_scaling":
+                scaling_inputs.add(name)
             elif source == "builtin":
-                grouped_scale = source_name in ("outcome_scale", "outcome_offset") and model._data.outcome_group_scale
-                input_dimensions[name] = ("group",) if grouped_scale else ()
+                input_dimensions[name] = ()
             elif source == "parameter":
                 input_dimensions[name] = parameter_dimensions[name]
     else:
@@ -1055,12 +1068,26 @@ def _output_dimensions(
         fallback = tuple(f"{name}_dim_{index}" for index in range(value.ndim))
         inherited = {axes for argument, axes in input_dimensions.items() if value is arguments.get(argument)}
         input_axes = {input_dimensions[argument] for argument in auxiliary_inputs if value is arguments.get(argument)}
+        # Unchanged members of the reference namespace keep their training axes, and the
+        # outcome transform's factors keep the group axis under population scaling.
+        member_axes: set[tuple[str, ...]] = set()
+        for argument in reference_namespaces:
+            namespace = arguments.get(argument)
+            if isinstance(namespace, Reference):
+                member_axes.update(
+                    reference_axes(member) for member, array in namespace.values.items() if value is array
+                )
+        for argument in scaling_inputs:
+            transform = arguments.get(argument)
+            if isinstance(transform, Scaling) and (value is transform.scale or value is transform.offset):
+                member_axes.add(("group",) if grouped_scale else ())
         if name in model._generated_dims:
             axes = model._generated_dims[name]
         elif group == "log_prior" and name in prior_dimensions:
             axes = prior_dimensions[name]
-        elif any(value is arguments.get(argument) for argument in reference_inputs):
-            axes = inherited.pop() if len(inherited) == 1 else fallback
+        elif member_axes or any(value is arguments.get(argument) for argument in reference_inputs):
+            candidates = inherited | member_axes
+            axes = candidates.pop() if len(candidates) == 1 else fallback
         elif len(input_axes) == 1:
             axes = input_axes.pop()
         elif group in ("predictive", "log_likelihood") and value.shape == outcome_shape:

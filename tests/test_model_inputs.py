@@ -504,16 +504,16 @@ def test_empty_data_variables_declares_no_inputs():
 
 
 def test_undeclared_source_identifiers_can_be_used_as_parameter_names():
-    def density(revenue, outcome, outcome_scale, n_periods, reference_outcome):
-        mean = outcome + outcome_scale + n_periods + reference_outcome
+    def density(revenue, outcome, outcome_scaling, n_periods, reference):
+        mean = outcome + outcome_scaling + n_periods + reference
         target = normal(outcome, 0.0, 1.0)
-        target += normal(outcome_scale, 0.0, 1.0)
+        target += normal(outcome_scaling, 0.0, 1.0)
         target += normal(n_periods, 0.0, 1.0)
-        target += normal(reference_outcome, 0.0, 1.0)
+        target += normal(reference, 0.0, 1.0)
         target += normal(revenue, mean, 1.0)
         return target
 
-    names = ("outcome", "outcome_scale", "n_periods", "reference_outcome")
+    names = ("outcome", "outcome_scaling", "n_periods", "reference")
     model = Model({name: Real() for name in names}, density, data=Data(_data(), variables={"revenue": "outcome"}))
     position = {name: jnp.array(0.25) for name in names}
     expected = _normal(np.full(4, 0.25)) + _normal(_data().arrays["outcome"] - 1.0)
@@ -563,13 +563,13 @@ def test_generated_quantities_key_cannot_replace_an_explicit_data_variable():
 
 
 @pytest.mark.parametrize("scaled", [False, True])
-def test_aliased_outcome_scale_and_offset_restore_units_under_jit(scaled):
+def test_aliased_outcome_scaling_restores_units_under_jit(scaled):
     data = _data()
     scaling = fit_data_scaling(data, scale_outcome=True) if scaled else None
 
-    def generated_quantities(key, standardized_revenue, revenue_scale, revenue_offset):
-        revenue = standardized_revenue * revenue_scale + revenue_offset
-        return {"revenue": revenue, "scale": revenue_scale, "offset": revenue_offset}
+    def generated_quantities(key, standardized_revenue, revenue_scaling):
+        revenue = revenue_scaling.inverse_transform(standardized_revenue)
+        return {"revenue": revenue, "scale": revenue_scaling.scale, "offset": revenue_scaling.offset}
 
     model = Model(
         {},
@@ -578,11 +578,7 @@ def test_aliased_outcome_scale_and_offset_restore_units_under_jit(scaled):
         data=Data(
             data,
             scaling=scaling,
-            variables={
-                "standardized_revenue": "outcome",
-                "revenue_scale": "outcome_scale",
-                "revenue_offset": "outcome_offset",
-            },
+            variables={"standardized_revenue": "outcome", "revenue_scaling": "outcome_scaling"},
         ),
     )
     outputs = jax.jit(model.generate_quantities)(jax.random.key(0), {}, model.data)
@@ -605,17 +601,15 @@ def test_aliased_population_unit_conversions_preserve_the_group_axis(groups):
     data = prepare_data(pl.DataFrame(rows), time="time", groups=["region"], outcome="sales", population="population")
     scaling = fit_data_scaling(data, scale_outcome="population")
 
-    def generated_quantities(key, y, scale, offset):
-        original_units = y * scale + offset
-        return {"original_units": original_units, "scale": scale, "offset": offset}
+    def generated_quantities(key, y, units):
+        original_units = units.inverse_transform(y)
+        return {"original_units": original_units, "scale": units.scale, "offset": units.offset}
 
     model = Model(
         {},
         lambda y: jnp.sum(y),
         generated_quantities,
-        data=Data(
-            data, scaling=scaling, variables={"y": "outcome", "scale": "outcome_scale", "offset": "outcome_offset"}
-        ),
+        data=Data(data, scaling=scaling, variables={"y": "outcome", "units": "outcome_scaling"}),
     )
     outputs = jax.jit(model.generate_quantities)(jax.random.key(0), {}, model.data)
 
@@ -633,12 +627,12 @@ def test_declared_current_inputs_update_for_scenarios_while_references_remain_fi
     )
     scenario = prepare_data(pl.DataFrame({"time": [4, 5], "video": [40.0, 50.0]}), time="time", media=["video"])
 
-    def generated_quantities(key, exposure, original_exposure, elapsed, period_count, original_period_count):
+    def generated_quantities(key, exposure, original, elapsed, period_count):
         window = jnp.ones(period_count)
-        original_window = jnp.ones(original_period_count)
+        original_window = jnp.ones(original.n_periods)
         return {
             "exposure": exposure,
-            "original_exposure": original_exposure,
+            "original_exposure": original.media,
             "elapsed": elapsed,
             "window": window,
             "original_window": original_window,
@@ -653,10 +647,9 @@ def test_declared_current_inputs_update_for_scenarios_while_references_remain_fi
             variables={
                 "revenue": "outcome",
                 "exposure": "media",
-                "original_exposure": "reference_media",
+                "original": "reference",
                 "elapsed": "time",
                 "period_count": "n_periods",
-                "original_period_count": "reference_n_periods",
             },
         ),
     )
@@ -703,7 +696,8 @@ def test_day_of_year_inputs_anchor_seasonality_to_the_calendar_for_new_data():
 def test_unknown_input_errors_list_the_available_names():
     data = _data()
     with pytest.raises(
-        ValueError, match=r"(?s)unknown input 'sales'.*Available inputs.*n_periods.*outcome.*reference_outcome.*time"
+        ValueError,
+        match=r"(?s)unknown input 'sales'.*Available inputs.*n_periods.*outcome.*outcome_scaling.*reference.*time",
     ):
         Model({"level": Real()}, lambda sales, level: jnp.sum(sales * level), data=data)
     with pytest.raises(ValueError, match=r"(?s)unknown input 'sales'.*Available inputs.*revenue"):
@@ -810,23 +804,105 @@ def test_time_inputs_and_training_references_exist_without_being_requested():
     inputs = model.data
 
     assert {"time", "media_time", "day_of_year", "media_day_of_year"} <= inputs.values.keys()
-    assert {
-        "reference_outcome",
-        "reference_media",
-        "reference_time",
-        "reference_day_of_year",
-    } <= inputs.reference_values.keys()
-    assert inputs.reference_values["reference_media"] is not inputs.values["media"]
-    np.testing.assert_array_equal(inputs.reference_values["reference_media"], inputs.values["media"])
+    assert {"outcome", "media", "time", "day_of_year"} <= inputs.reference.values.keys()
+    assert inputs.reference.n_periods == 3
+    assert inputs.reference.media is not inputs.values["media"]
+    np.testing.assert_array_equal(inputs.reference.media, inputs.values["media"])
     np.testing.assert_array_equal(inputs.values["day_of_year"], data.day_of_year)
 
     scenario = model.prepare_data(
         prepare_data(pl.DataFrame({"week": ["2026-07-06"], "video": [1.0]}), time="week", media=["video"])
     )
     np.testing.assert_array_equal(scenario.values["time"], [182.0])
-    np.testing.assert_array_equal(scenario.reference_values["reference_media"], inputs.values["media"])
+    np.testing.assert_array_equal(scenario.reference.media, inputs.values["media"])
 
     numeric = prepare_data(pl.DataFrame({"time": [1, 2], "sales": [1.0, 2.0]}), time="time", outcome="sales")
     numeric_model = Model({"level": Real()}, lambda outcome, level: jnp.sum(outcome * level), data=numeric)
     assert "day_of_year" not in numeric_model.data.values
     assert "media_time" not in numeric_model.data.values
+
+
+def _grouped_media_data(periods, spend):
+    rows = [
+        {
+            "week": week,
+            "region": region,
+            "video": spend * (index + 1),
+            "cost": spend,
+            "sales": 10.0 + week + index,
+            "residents": 100.0 * (index + 1),
+        }
+        for week in periods
+        for index, region in enumerate(("east", "west"))
+    ]
+    return prepare_data(
+        pl.DataFrame(rows),
+        time="week",
+        groups=["region"],
+        outcome="sales",
+        population="residents",
+        media=["video"],
+        spend=["cost"],
+    )
+
+
+def test_reference_namespace_and_outcome_scaling_object_reach_the_blocks():
+    data = _grouped_media_data([1, 2, 3, 4], spend=2.0)
+    scaling = fit_data_scaling(data, adjust_population=True, scale_outcome="population")
+
+    def transformed_data(spend, reference):
+        return {"channel_spend": jnp.sum(reference.spend, axis=(0, 1)), "current_spend": jnp.sum(spend, axis=(0, 1))}
+
+    def transformed_parameters(media, outcome_scaling, reference, coefficient):
+        mean = media[:, :, 0] * coefficient
+        return {
+            "mean": mean,
+            "restored": outcome_scaling.inverse_transform(mean),
+            "scale": outcome_scaling.scale,
+            "training_periods": jnp.asarray(reference.n_periods),
+            "training_media": reference.media,
+        }
+
+    model = Model(
+        {"coefficient": Real()},
+        lambda outcome, mean, coefficient: normal(outcome, mean, 1.0),
+        data=Data(data, scaling=scaling),
+        transformed_data=transformed_data,
+        transformed_parameters=transformed_parameters,
+    )
+    parameters = {"coefficient": jnp.array(0.5)}
+    outputs = jax.jit(model.evaluate)(parameters, model.data)
+    transform = scaling.transformations["outcome"]
+    np.testing.assert_allclose(
+        outputs["restored"],
+        np.asarray(outputs["mean"]) * np.asarray(transform.scale).reshape(-1)
+        + np.asarray(transform.offset).reshape(-1),
+    )
+    assert outputs["scale"].shape == (2,)
+    assert model.data.transformed_values["channel_spend"].shape == (1,)
+
+    scenario = model.prepare_data(_grouped_media_data([5, 6], spend=5.0))
+    scenario_outputs = jax.jit(model.evaluate)(parameters, scenario)
+    np.testing.assert_array_equal(scenario_outputs["training_media"], outputs["training_media"])
+    assert scenario_outputs["training_periods"] == 4
+    np.testing.assert_allclose(
+        scenario.transformed_values["channel_spend"], model.data.transformed_values["channel_spend"]
+    )
+    assert float(scenario.transformed_values["current_spend"][0]) == 20.0
+
+    assert {"reference", "outcome_scaling", "n_periods"} <= model.data_variables.keys()
+    assert not [name for name in model.data_variables if name.startswith("reference_")]
+    with pytest.raises(AttributeError, match=r"reference has no input 'nothing'.*media"):
+        _ = model.data.reference.nothing
+
+
+def test_outcome_scaling_object_is_scalar_without_population_scaling():
+    data = prepare_data(pl.DataFrame({"week": [1, 2, 3], "sales": [1.0, 2.0, 4.0]}), time="week", outcome="sales")
+    model = Model(
+        {"level": Real()},
+        lambda outcome, outcome_scaling, level: normal(outcome, level, 1.0) + 0.0 * outcome_scaling.scale,
+        data=Data(data, scaling="auto"),
+    )
+    values = model.data
+    assert values.outcome_scaling.scale.shape == () and values.outcome_scaling.offset.shape == ()
+    assert jnp.isfinite(jax.jit(model.log_prob)({"level": jnp.array(0.0)}, values))

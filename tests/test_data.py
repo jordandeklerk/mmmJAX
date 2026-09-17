@@ -29,7 +29,7 @@ from mmmjax.data import _prepare_frame, _prepare_panel
 
 
 def test_data_api_exports_public_entry_points():
-    assert mmmjax.data.__all__ == ["Data", "ModelInput", "PreparedData", "prepare_data", "select_channels"]
+    assert mmmjax.data.__all__ == ["Data", "ModelInput", "PreparedData", "Reference", "prepare_data", "select_channels"]
     assert {"Data", "PreparedData", "prepare_data"}.issubset(mmmjax.__all__)
     assert Data is mmmjax.data.Data
     assert PreparedData is mmmjax.data.PreparedData
@@ -3164,32 +3164,39 @@ def test_model_inputs_list_every_requestable_name_with_kind_and_axes():
     assert inputs["time"] == ModelInput(kind="array", axes=("time",), source="time")
     assert inputs["media_day_of_year"] == ModelInput(kind="array", axes=("media_time",), source="time")
     assert inputs["n_periods"] == ModelInput(kind="integer", axes=(), source="builtin")
-    assert inputs["unscale_outcome"] == ModelInput(kind="function", axes=(), source="builtin")
-    assert inputs["reference_media"] == ModelInput(
-        kind="array", axes=("reference_media_time", "channel"), source="reference"
-    )
-    assert inputs["reference_day_of_year"].axes == ("reference_time",)
-    assert inputs["reference_n_periods"] == ModelInput(kind="integer", axes=(), source="reference")
+    assert inputs["outcome_scaling"] == ModelInput(kind="object", axes=(), source="builtin")
+    assert inputs["reference"] == ModelInput(kind="object", axes=(), source="reference")
+    assert not [name for name in inputs if name.startswith("reference_") or name.startswith("unscale")]
 
-    names = [name for name in inputs if name != "unscale_outcome"]
-    copies = ", ".join(f"copy_{name}={name}" for name in names)
+    arrays = [name for name, spec in inputs.items() if spec.kind == "array"]
+    copies = ", ".join(f"copy_{name}={name}" for name in arrays)
     generate = eval(
-        f"lambda key, unscale_outcome, {', '.join(names)}: dict(restored=unscale_outcome(outcome), {copies})"
+        f"lambda key, n_periods, outcome_scaling, reference, {', '.join(arrays)}: "
+        f"dict(periods=jnp.asarray(n_periods), scale=outcome_scaling.scale, "
+        f"training_media=reference.media, training_periods=jnp.asarray(reference.n_periods), {copies})"
     )
     model = Model({"level": Real()}, lambda outcome, level: jnp.sum(outcome * level), generate, data=data)
     outputs = model.generate_quantities(jax.random.key(0), {"level": jnp.array(1.0)}, model.data)
-    assert set(outputs) == {"restored", *(f"copy_{name}" for name in names)}
-    assert outputs["copy_n_periods"] == 4
+    assert set(outputs) == {
+        "periods",
+        "scale",
+        "training_media",
+        "training_periods",
+        *(f"copy_{name}" for name in arrays),
+    }
+    assert outputs["periods"] == 4 and outputs["training_periods"] == 4
+    np.testing.assert_allclose(outputs["training_media"], data.arrays["media"], rtol=1e-6)
 
 
 def test_model_inputs_omit_absent_roles_and_calendar_names_for_numeric_labels():
     data = prepare_data(pl.DataFrame({"time": [1, 2, 3], "sales": [1.0, 2.0, 3.0]}), time="time", outcome="sales")
     inputs = data.model_inputs
 
-    assert "media" not in inputs and "media_time" not in inputs and "reference_media" not in inputs
+    assert "media" not in inputs and "media_time" not in inputs
     assert "day_of_year" not in inputs and "media_day_of_year" not in inputs
     unobserved = prepare_data(pl.DataFrame({"time": [1, 2, 3], "video": [1.0, 2.0, 3.0]}), time="time", media=["video"])
-    assert not {"outcome", "outcome_scale", "outcome_offset", "unscale_outcome"} & unobserved.model_inputs.keys()
+    assert not {"outcome", "outcome_scaling"} & unobserved.model_inputs.keys()
+    assert "reference" in unobserved.model_inputs
 
 
 def test_data_constants_are_validated_copied_and_listed(block_observations):

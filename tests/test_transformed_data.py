@@ -94,8 +94,8 @@ def test_transformed_data_runs_once_and_feeds_every_program_block_under_jit():
 def test_transformed_data_is_recomputed_for_new_observations_while_references_stay_fixed():
     data = _data()
 
-    def transformed_data(media, reference_media):
-        return {"cumulative": jnp.cumsum(media, axis=0), "reference_total": reference_media.sum()}
+    def transformed_data(media, reference):
+        return {"cumulative": jnp.cumsum(media, axis=0), "reference_total": reference.media.sum()}
 
     def generated_quantities(key, cumulative, reference_total):
         return {"cumulative": cumulative, "reference_total": reference_total}
@@ -308,6 +308,7 @@ def test_data_variables_list_every_standard_name_without_being_requested():
     variables = model.data_variables
 
     assert variables == {name: name for name in variables}
-    assert {"outcome", "media", "spend", "n_periods", "outcome_scale", "unscale_outcome"} <= variables.keys()
-    assert {"time", "media_time", "reference_outcome", "reference_media", "reference_time"} <= variables.keys()
+    assert {"outcome", "media", "spend", "n_periods", "outcome_scaling", "reference"} <= variables.keys()
+    assert {"time", "media_time"} <= variables.keys()
+    assert not [name for name in variables if name.startswith("reference_") or name.startswith("unscale")]
     assert variables.keys() == data.model_inputs.keys()

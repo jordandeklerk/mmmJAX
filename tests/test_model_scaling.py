@@ -129,33 +129,21 @@ def test_reference_roles_are_scaled_snapshots_with_raw_spend_and_observation_per
     expected = scaling.transform(raw)
     original_spend = raw.arrays["spend"].copy()
 
-    def generate(
-        key,
-        media,
-        spend,
-        reference_media,
-        reference_spend,
-        reference_outcome,
-        reference_population,
-        reference_time,
-        reference_media_time,
-        n_periods,
-        reference_n_periods,
-    ):
+    def generate(key, media, spend, reference, n_periods):
         return {
             "current_media": media,
             "current_spend": spend,
-            "baseline_media": reference_media,
-            "baseline_spend": reference_spend,
-            "baseline_outcome": reference_outcome,
-            "baseline_population": reference_population,
-            "baseline_time": reference_time,
-            "baseline_media_time": reference_media_time,
+            "baseline_media": reference.media,
+            "baseline_spend": reference.spend,
+            "baseline_outcome": reference.outcome,
+            "baseline_population": reference.population,
+            "baseline_time": reference.time,
+            "baseline_media_time": reference.media_time,
             "current_window": jnp.ones((n_periods,)),
-            "reference_window": jnp.ones((reference_n_periods,)),
+            "reference_window": jnp.ones((reference.n_periods,)),
         }
 
-    model = Model({}, lambda reference_outcome: jnp.sum(reference_outcome), generate, data=Data(raw, scaling=scaling))
+    model = Model({}, lambda reference: jnp.sum(reference.outcome), generate, data=Data(raw, scaling=scaling))
     raw.arrays["media"][...] = -1
     raw.arrays["spend"][...] = -1
     raw.arrays["outcome"][...] = -1
@@ -167,9 +155,7 @@ def test_reference_roles_are_scaled_snapshots_with_raw_spend_and_observation_per
     np.testing.assert_array_equal(edited["current_spend"], 0.0)
     for role in ("media", "spend", "outcome", "population"):
         np.testing.assert_array_equal(edited[f"baseline_{role}"], expected.arrays[role])
-    edited_bundle.reference_values["reference_media"] = jnp.zeros_like(
-        edited_bundle.reference_values["reference_media"]
-    )
+    edited_bundle.reference.values["media"] = jnp.zeros_like(edited_bundle.reference.media)
 
     generate_compiled = jax.jit(model.generate_quantities)
     for periods in (1, 5):
@@ -201,20 +187,20 @@ def test_outcome_helpers_restore_levels_and_expose_only_marginal_scales(grouped,
     raw = _reference_data(grouped=grouped)
     scaling = None if mode is None else fit_data_scaling(raw, scale_outcome=mode)
 
-    def density(outcome, intercept, outcome_scale, unscale_outcome):
+    def density(outcome, intercept, outcome_scaling):
         prediction = jnp.full_like(outcome, intercept)
-        return normal(unscale_outcome(outcome), unscale_outcome(prediction), outcome_scale) + normal(
-            intercept, 0.0, 2.0
-        )
+        raw_outcome = outcome_scaling.inverse_transform(outcome)
+        raw_prediction = outcome_scaling.inverse_transform(prediction)
+        return normal(raw_outcome, raw_prediction, outcome_scaling.scale) + normal(intercept, 0.0, 2.0)
 
-    def generate(key, intercept, reference_outcome, outcome_scale, unscale_outcome, n_periods):
-        prediction = jnp.full((n_periods, *reference_outcome.shape[1:]), intercept)
+    def generate(key, intercept, reference, outcome_scaling, n_periods):
+        prediction = jnp.full((n_periods, *reference.outcome.shape[1:]), intercept)
         return {
             "prediction": prediction,
-            "raw_prediction": unscale_outcome(prediction),
-            "raw_reference": unscale_outcome(reference_outcome),
-            "batched_raw_prediction": unscale_outcome(jnp.stack((prediction, prediction + 1))),
-            "unit_scale": outcome_scale,
+            "raw_prediction": outcome_scaling.inverse_transform(prediction),
+            "raw_reference": outcome_scaling.inverse_transform(reference.outcome),
+            "batched_raw_prediction": outcome_scaling.inverse_transform(jnp.stack((prediction, prediction + 1))),
+            "unit_scale": outcome_scaling.scale,
         }
 
     model = Model({"intercept": Real()}, density, generate, data=Data(raw, scaling=scaling))
@@ -280,7 +266,7 @@ def test_outcome_inverse_helper_preserves_grouped_broadcast_shape_guards(shape):
     model = Model(
         {},
         lambda: jnp.array(0.0),
-        lambda key, unscale_outcome: {"raw_prediction": unscale_outcome(jnp.zeros(shape))},
+        lambda key, outcome_scaling: {"raw_prediction": outcome_scaling.inverse_transform(jnp.zeros(shape))},
         data=Data(raw, scaling=scaling),
     )
     with pytest.raises(ValueError, match=r"shape|broadcast"):

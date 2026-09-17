@@ -651,29 +651,17 @@ def test_generated_reference_inputs_keep_training_labels_for_new_observation_win
     data = _prepared_data()
     scaling = fit_data_scaling(data, scale_outcome=True)
 
-    def generated(
-        key,
-        media,
-        outcome,
-        reference_media,
-        reference_outcome,
-        reference_time,
-        reference_media_time,
-        outcome_scale,
-        unscale_outcome,
-        n_periods,
-        reference_n_periods,
-    ):
+    def generated(key, media, outcome, reference, outcome_scaling, n_periods):
         return {
             "current_media": media,
-            "original_media": reference_media,
-            "original_outcome": reference_outcome,
-            "original_elapsed": reference_time,
-            "original_media_elapsed": reference_media_time,
-            "restored_outcome": unscale_outcome(outcome),
-            "outcome_divisor": outcome_scale,
+            "original_media": reference.media,
+            "original_outcome": reference.outcome,
+            "original_elapsed": reference.time,
+            "original_media_elapsed": reference.media_time,
+            "restored_outcome": outcome_scaling.inverse_transform(outcome),
+            "outcome_divisor": outcome_scaling.scale,
             "current_count": jnp.asarray(n_periods),
-            "original_count": jnp.asarray(reference_n_periods),
+            "original_count": jnp.asarray(reference.n_periods),
         }
 
     model = Model(
@@ -734,7 +722,7 @@ def test_generated_training_arrays_distinguish_current_and_reference_provenance(
     model = Model(
         {"level": Real()},
         lambda level: -jnp.square(level),
-        lambda key, media, reference_media: {"current_media": media, "original_media": reference_media},
+        lambda key, media, reference: {"current_media": media, "original_media": reference.media},
         data=data,
         prior=lambda key: {"level": jnp.asarray(0.0)},
     )
@@ -767,7 +755,7 @@ def test_generated_population_outcome_scale_retains_group_axis_even_for_one_grou
     model = Model(
         {"level": Real()},
         lambda level: -jnp.square(level),
-        lambda key, outcome_scale: {"outcome_divisor": outcome_scale},
+        lambda key, outcome_scaling: {"outcome_divisor": outcome_scaling.scale},
         data=Data(data, scaling=scaling),
     )
     results = _collect_results({"level": np.zeros((1, 2), dtype=np.float32)}, data=data)
@@ -847,9 +835,9 @@ def test_declared_outcome_scaling_variables_keep_group_labels(groups):
     data = prepare_data(frame, time="week", groups=["region"], outcome="sales", population="population")
     scaling = fit_data_scaling(data, scale_outcome="population")
 
-    def generated(key, revenue, revenue_scale, revenue_offset):
-        restored = revenue * revenue_scale + revenue_offset
-        quantities = {"divisor": revenue_scale, "offset": revenue_offset, "restored": restored}
+    def generated(key, revenue, revenue_scaling):
+        restored = revenue_scaling.inverse_transform(revenue)
+        quantities = {"divisor": revenue_scaling.scale, "offset": revenue_scaling.offset, "restored": restored}
         return quantities
 
     model = Model(
@@ -859,11 +847,7 @@ def test_declared_outcome_scaling_variables_keep_group_labels(groups):
         data=Data(
             data,
             scaling=scaling,
-            variables={
-                "revenue": "outcome",
-                "revenue_scale": "outcome_scale",
-                "revenue_offset": "outcome_offset",
-            },
+            variables={"revenue": "outcome", "revenue_scaling": "outcome_scaling"},
         ),
         predictive=("restored",),
     )
@@ -883,12 +867,12 @@ def test_declared_outcome_scaling_variables_keep_group_labels(groups):
 def test_declared_reference_variables_keep_original_labels_in_scenarios(periods):
     data = _prepared_data()
 
-    def generated(key, impressions, original_impressions, original_revenue, original_elapsed):
+    def generated(key, impressions, training):
         quantities = {
             "current": impressions,
-            "original": original_impressions,
-            "original_sales": original_revenue,
-            "original_elapsed": original_elapsed,
+            "original": training.media,
+            "original_sales": training.outcome,
+            "original_elapsed": training.time,
         }
         return quantities
 
@@ -898,12 +882,7 @@ def test_declared_reference_variables_keep_original_labels_in_scenarios(periods)
         generated,
         data=Data(
             data,
-            variables={
-                "impressions": "media",
-                "original_impressions": "reference_media",
-                "original_revenue": "reference_outcome",
-                "original_elapsed": "reference_time",
-            },
+            variables={"impressions": "media", "training": "reference"},
         ),
         predictive=("original_sales",),
     )
