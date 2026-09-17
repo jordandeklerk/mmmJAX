@@ -93,8 +93,6 @@ results = sample(model, draws=1000, warmup=1000, chains=4)
 
 ## Distributions
 
-## Distributions
-
 mmmJAX provides a Stan-style suite of continuous, discrete, and multivariate distributions built on TensorFlow Probability’s JAX backend. Their log-density functions support JAX compilation and automatic differentiation within the model blocks.
 
 Each family provides a summed log density for the model block, pointwise log densities, and random draws. Depending on the family, the interface also includes log cumulative distribution and log survival functions, along with log or logit parameterizations for discrete distributions.
