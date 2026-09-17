@@ -753,8 +753,8 @@ def test_explicit_hsgp_density_counts_priors_and_positive_jacobians_once():
         )
 
     model = Model(
-        {"coefficients": Real(shape=(3,)), "length_scale": Positive(), "amplitude": Positive()},
-        density,
+        parameters={"coefficients": Real(shape=(3,)), "length_scale": Positive(), "amplitude": Positive()},
+        log_density=density,
         data=data,
         transformed_parameters=transformed,
     )
@@ -803,7 +803,7 @@ def test_explicit_hsgp_prior_and_scenario_replay_preserve_axes_and_frozen_center
         return normal(outcome[..., None] if channel_specific else outcome, baseline, 1.0)
 
     def generate(key, baseline, coefficients):
-        return {"prediction": baseline, "coefficient_copy": coefficients}
+        return {"predictive": {"prediction": baseline}, "coefficient_copy": coefficients}
 
     coefficient_shape = (2, 3) if channel_specific else (3,)
 
@@ -818,19 +818,18 @@ def test_explicit_hsgp_prior_and_scenario_replay_preserve_axes_and_frozen_center
     coefficient_dims = ("channel", "basis") if channel_specific else ("basis",)
     observation_dims = ("time", "group", "channel") if channel_specific else ("time", "group")
     model = Model(
-        {
+        parameters={
             "coefficients": Real(dims=coefficient_dims),
             "length_scale": Positive(),
             "amplitude": Positive(),
         },
-        density,
-        generate,
+        log_density=density,
+        generated_quantities=generate,
         prior=prior,
         data=training,
         transformed_parameters=transformed,
         coords={"basis": [1, 2, 3]},
         generated_dims={"prediction": observation_dims},
-        predictive=("prediction",),
     )
     draws = sample_prior(model, draws=3, seed=7)
     assert draws["prior"]["coefficients"].dims == ("chain", "draw", *coefficient_dims)
@@ -913,7 +912,7 @@ def test_channel_specific_hsgp_is_a_fixed_time_multiplier_during_media_response_
         return {"expected": time_varying_media.sum(axis=-1), "baseline": baseline}
 
     model = Model(
-        {
+        parameters={
             "paid_media_coefficient": Positive(dims="channel"),
             "paid_media_retention": mmmjax.Interval(0.0, 1.0, dims="channel"),
             "paid_media_exponent": Positive(dims="channel"),
@@ -921,7 +920,7 @@ def test_channel_specific_hsgp_is_a_fixed_time_multiplier_during_media_response_
             "baseline_length_scale": Positive(),
             "baseline_amplitude": Positive(),
         },
-        lambda expected: expected.sum(),
+        log_density=lambda expected: expected.sum(),
         data=data,
         transformed_parameters=transformed_parameters,
         coords={"baseline_basis": [1, 2, 3]},

@@ -17,7 +17,7 @@ from numpy.typing import NDArray
 
 from mmmjax._nuts import _NUTSContinuation, _sample_nuts
 from mmmjax._results import _collect_results, _coordinates, _prepared_groups, _same_labels
-from mmmjax.data import PreparedData, Reference, _data_dimensions
+from mmmjax.data import PreparedData, Reference, _data_dimensions, _reference_dimensions
 from mmmjax.model import (
     Model,
     PriorSampler,
@@ -1019,16 +1019,19 @@ def _output_dimensions(
     observation_axes: tuple[str, ...] = ()
     outcome_shape: tuple[int, ...] | None = None
     role_dimensions: dict[str, tuple[str, ...]] = {}
+    reference_dimensions: dict[str, tuple[str, ...]] = {}
     grouped_scale = False
 
     def reference_axes(member: str) -> tuple[str, ...]:
+        # Training arrays keep their own time axes even when new data lacks the role.
         return tuple(
-            f"reference_{axis}" if axis in ("time", "media_time") else axis for axis in role_dimensions[member]
+            f"reference_{axis}" if axis in ("time", "media_time") else axis for axis in reference_dimensions[member]
         )
 
     if prepared is not None:
         assert model._data is not None
         observation_axes = _data_dimensions(prepared)["outcome"]
+        reference_dimensions = _reference_dimensions(prepared)
         outcome_shape = (len(prepared.time_values),)
         if prepared.group_columns:
             outcome_shape += (len(prepared.group_values),)

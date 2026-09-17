@@ -40,8 +40,8 @@ def _problem(*, spend_unit=1.0, fail_evaluation=False):
         return {"expected": jnp.full(media.shape[0], response / media.shape[0])}
 
     model = Model(
-        {"target": Real((3,))},
-        lambda expected: expected.sum(),
+        parameters={"target": Real((3,))},
+        log_density=lambda expected: expected.sum(),
         data=data,
         transformed_parameters=transformed,
         dims={"target": ("channel",)},
@@ -76,8 +76,8 @@ def _four_channel_problem(*, fail_evaluation=False, transformed=None):
         return {"expected": jnp.full(media.shape[0], response / media.shape[0])}
 
     model = Model(
-        {"target": Real((4,))},
-        lambda expected: expected.sum(),
+        parameters={"target": Real((4,))},
+        log_density=lambda expected: expected.sum(),
         data=data,
         transformed_parameters=quadratic if transformed is None else transformed,
         dims={"target": ("channel",)},
@@ -560,8 +560,8 @@ def test_optimize_budget_scales_gradients_with_a_constant_group_response():
         return {"expected": jnp.stack([1000.0 * totals[:2].sum(), -0.5 * jnp.sum((totals - target) ** 2)])}
 
     model = Model(
-        {"target": Real((4,))},
-        lambda expected: expected.sum(),
+        parameters={"target": Real((4,))},
+        log_density=lambda expected: expected.sum(),
         data=data,
         transformed_parameters=transformed,
         dims={"target": ("channel",)},

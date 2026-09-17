@@ -104,12 +104,31 @@ class Model:
 
     Parameters
     ----------
+    data : Data or PreparedData, optional
+        Fixed model inputs and their declarations. Use ``Data`` for
+        custom names, auxiliary observations, constants, or scaling. Plain
+        prepared data uses standard role names without fitting new
+        transformations.
+    transformed_data : callable, optional
+        Data-only calculations returning named fixed values. Runs once at
+        construction and again for changed data, not per parameter draw.
+        Inputs must be declared data variables and outputs must have distinct
+        names from inputs and parameters. Return finite real arrays or scalars.
+        Python integers remain static for array shapes. Requires prepared data.
+        Use pure JAX-compatible operations for response analysis and optimization.
     parameters : mapping of str to Parameterization
-        All named parameter declarations and constraints. Use declaration
+        Required. All named parameter declarations and constraints. Use declaration
         dimensions, such as ``Real(dims="control")``, to infer shapes and
         result labels from prepared data or ``coords``.
+    transformed_parameters : callable, optional
+        Pure JAX-compatible function returning a mapping of names to derived
+        arrays shared by the density and generated-quantities callbacks.
+        Evaluated for density and output calculations. Requires prepared data
+        and named inputs. Names must not shadow declared inputs or parameters.
+        Outputs are not sampled parameters. Use ``save`` to retain them.
+        All requested inputs are needed for output evaluation.
     log_density : callable
-        Scalar log density for constrained parameters. Every user-declared
+        Required. Scalar log density for constrained parameters. Every user-declared
         parameter must be requested here or by ``transformed_parameters``.
         Only parameterization adjustments are added automatically.
     generated_quantities : callable, optional
@@ -136,25 +155,6 @@ class Model:
         For dependent or custom draws, supply a JAX-compatible ``prior(key)``
         returning all constrained parameters with their declared shapes.
         A custom sampler does not automatically record log-prior terms.
-    data : Data or PreparedData, optional
-        Fixed model inputs and their declarations. Use ``Data`` for
-        custom names, auxiliary observations, constants, or scaling. Plain
-        prepared data uses standard role names without fitting new
-        transformations.
-    transformed_data : callable, optional
-        Data-only calculations returning named fixed values. Runs once at
-        construction and again for changed data, not per parameter draw.
-        Inputs must be declared data variables and outputs must have distinct
-        names from inputs and parameters. Return finite real arrays or scalars.
-        Python integers remain static for array shapes. Requires prepared data.
-        Use pure JAX-compatible operations for response analysis and optimization.
-    transformed_parameters : callable, optional
-        Pure JAX-compatible function returning a mapping of names to derived
-        arrays shared by the density and generated-quantities callbacks.
-        Evaluated for density and output calculations. Requires prepared data
-        and named inputs. Names must not shadow declared inputs or parameters.
-        Outputs are not sampled parameters. Use ``save`` to retain them.
-        All requested inputs are needed for output evaluation.
     dims : mapping of str to sequence of str, optional
         Named axes for constrained parameter arrays, excluding chain and draw.
         Use for custom parameterizations or explicit-shape declarations.
@@ -199,20 +199,25 @@ class Model:
 
     def __init__(
         self,
-        parameters: Mapping[str, Parameterization],
-        log_density: LogDensity,
+        data: Data | PreparedData | None = None,
+        transformed_data: TransformedData | None = None,
+        parameters: Mapping[str, Parameterization] | None = None,
+        transformed_parameters: TransformedParameters | None = None,
+        log_density: LogDensity | None = None,
         generated_quantities: GeneratedQuantities | None = None,
         *,
         save: Sequence[str] = (),
         prior: Mapping[str, Prior] | PriorSampler | None = None,
-        data: Data | PreparedData | None = None,
-        transformed_data: TransformedData | None = None,
-        transformed_parameters: TransformedParameters | None = None,
         dims: Mapping[str, Sequence[str]] | None = None,
         coords: Mapping[str, object] | None = None,
         generated_dims: Mapping[str, Sequence[str]] | None = None,
     ) -> None:
-        """Create a model from named parameter declarations and plain functions."""
+        """Create a model from its program blocks in evaluation order."""
+        required = {"parameters": parameters, "log_density": log_density}
+        missing = [name for name, value in required.items() if value is None]
+        if missing:
+            raise TypeError(f"Model requires {' and '.join(missing)}")
+        assert parameters is not None and log_density is not None
         if prior is not None and not isinstance(prior, Mapping):
             _validate_prior_sampler(prior)
 

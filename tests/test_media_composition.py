@@ -176,7 +176,7 @@ def _model(data, *, keyword_only_generation=True, grouped=False, include_priors=
         return {"paid_media": response * paid_media_coefficient, "annual": annual}
 
     return Model(
-        {
+        parameters={
             "intercept": Real(),
             "sigma": Positive(),
             "paid_media_coefficient": Positive(shape=(2, 2) if grouped else (2,)),
@@ -185,8 +185,8 @@ def _model(data, *, keyword_only_generation=True, grouped=False, include_priors=
             "paid_media_slope": Positive(shape=(2,)),
             "annual_coefficients": Real(shape=(2, 2) if grouped else (2,)),
         },
-        density,
-        quantities if keyword_only_generation else ordinary_quantities,
+        log_density=density,
+        generated_quantities=quantities if keyword_only_generation else ordinary_quantities,
         data=data,
         transformed_parameters=transform,
     )
@@ -484,7 +484,11 @@ def _rf_model(data, *, grouped=False, scaling=None, include_priors=True):
         }
 
     def generate(key, mean, paid_rf_coefficient, paid_rf_retention):
-        return {"prediction": mean, "coefficient_copy": paid_rf_coefficient, "retention_copy": paid_rf_retention}
+        return {
+            "predictive": {"prediction": mean},
+            "coefficient_copy": paid_rf_coefficient,
+            "retention_copy": paid_rf_retention,
+        }
 
     parameters = {
         "intercept": Real(),
@@ -512,14 +516,13 @@ def _rf_model(data, *, grouped=False, scaling=None, include_priors=True):
         generated_dims.update(paid_media=(*observation_dims, "channel"), paid_media_total=observation_dims)
 
     return Model(
-        parameters,
-        density,
-        generate,
+        parameters=parameters,
+        log_density=density,
+        generated_quantities=generate,
         data=Data(data, scaling=scaling),
         transformed_parameters=mixed_quantities if mixed else rf_quantities,
         save=saved,
         generated_dims=generated_dims,
-        predictive=("prediction",),
     )
 
 
@@ -661,7 +664,7 @@ def test_grouped_reach_frequency_predictions_reuse_scaling_and_align_shorter_reo
         for name, value in expected.items():
             np.testing.assert_allclose(actual[name][draw], value, rtol=5e-6, atol=3e-6)
             np.testing.assert_allclose(generated[name][draw], value, rtol=5e-6, atol=3e-6)
-        np.testing.assert_allclose(generated["prediction"][draw], expected["mean"], rtol=5e-6, atol=3e-6)
+        np.testing.assert_allclose(generated["predictive"]["prediction"][draw], expected["mean"], rtol=5e-6, atol=3e-6)
 
 
 @pytest.mark.parametrize("mixed", [False, True], ids=["rf-only", "mixed"])

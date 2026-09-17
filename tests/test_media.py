@@ -75,7 +75,8 @@ def test_media_history_composes_with_scaling_and_learned_model_parameters(prepar
         return mmmjax.normal(data["outcome"], (response * jnp.array([0.7, 1.3])).sum(axis=-1), 1.0)
 
     model = mmmjax.Model(
-        {"alpha": mmmjax.Interval(0.0, 1.0, shape=(2,)), "half": mmmjax.Positive(shape=(2,))}, log_density
+        parameters={"alpha": mmmjax.Interval(0.0, 1.0, shape=(2,)), "half": mmmjax.Positive(shape=(2,))},
+        log_density=log_density,
     )
 
     def objective(position, data):

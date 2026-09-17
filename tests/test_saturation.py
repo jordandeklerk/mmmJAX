@@ -207,7 +207,8 @@ def test_hill_saturation_composes_with_prepared_data_scaling_adstock_and_model()
         return mmmjax.normal(data["outcome"], prediction, 1.0)
 
     model = mmmjax.Model(
-        {"half_saturation": mmmjax.Positive(shape=(2,)), "slope": mmmjax.Positive(shape=(2,))}, log_density
+        parameters={"half_saturation": mmmjax.Positive(shape=(2,)), "slope": mmmjax.Positive(shape=(2,))},
+        log_density=log_density,
     )
     position = {"half_saturation": jnp.zeros(2), "slope": jnp.zeros(2)}
     value, gradients = jax.jit(jax.value_and_grad(model.log_density))(position, scaled._to_jax())
@@ -387,7 +388,7 @@ def test_logistic_saturation_composes_with_prepared_data_scaling_adstock_and_mod
         prediction = logistic_saturation(carried, half_saturation).sum(axis=-1)
         return mmmjax.normal(data["outcome"], prediction, 1.0)
 
-    model = mmmjax.Model({"half_saturation": mmmjax.Positive(shape=(2,))}, log_density)
+    model = mmmjax.Model(parameters={"half_saturation": mmmjax.Positive(shape=(2,))}, log_density=log_density)
     value, gradients = jax.jit(jax.value_and_grad(model.log_density))(
         {"half_saturation": jnp.zeros(2)}, scaled._to_jax()
     )

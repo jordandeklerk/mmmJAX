@@ -34,7 +34,7 @@ def _plain_model(parameters=None, generate=None, **metadata):
     def density(data, **values):
         return -sum((jnp.square(value).sum() for value in values.values()), start=jnp.array(0.0))
 
-    return Model(declarations, density, generate, **metadata)
+    return Model(parameters=declarations, log_density=density, generated_quantities=generate, **metadata)
 
 
 def _generate(key, data, **parameters):
@@ -73,9 +73,6 @@ def test_empty_metadata_preserves_existing_models():
     assert model._result_dims == {}
     assert model._result_coords == {}
     assert model._generated_dims == {}
-    assert model._predictive_names == ()
-    assert model._likelihood_names == ()
-    assert model._log_prior_names == ()
     assert model._time_values == ()
     assert model._media_time_values == ()
 
@@ -110,8 +107,8 @@ def test_registered_priors_do_not_implicitly_change_jitted_density_or_gradient(i
         likelihood = normal(data, scale, 0.5)
         return likelihood + prior(scale) if include_prior else likelihood
 
-    plain = Model({"scale": Positive()}, density)
-    registered = Model({"scale": Positive()}, density, prior={"scale": prior})
+    plain = Model(parameters={"scale": Positive()}, log_density=density)
+    registered = Model(parameters={"scale": Positive()}, log_density=density, prior={"scale": prior})
     values = {"scale": jnp.array(2.0)}
     position = {"scale": jnp.log(values["scale"])}
     for method, arguments in (("log_prob", values), ("log_density", position)):
@@ -121,42 +118,18 @@ def test_registered_priors_do_not_implicitly_change_jitted_density_or_gradient(i
             np.testing.assert_array_equal(actual_array, expected_array)
 
 
-@pytest.mark.parametrize("selection", ["predictive", "log_likelihood"])
-def test_registered_log_priors_cannot_be_selected_as_other_generated_groups(selection):
-    with pytest.raises(ValueError, match=r"log_prior|outputs"):
-        _plain_model(
-            parameters={"coefficient": Real()},
-            prior={"coefficient": Prior(normal, location=0.0, scale=1.0)},
-            **{selection: ("log_prior_coefficient",)},
-        )
-
-
 def test_result_metadata_copies_mappings_axes_coordinates_and_output_names():
     dims = {"coefficient": ["channel"], "intercept": []}
     labels = np.array(["video", "search"])
     coords = {"channel": labels, "time": [date(2026, 1, 1), date(2026, 1, 8), date(2026, 1, 15)]}
     generated_dims = {"outcome": ["time"], "pointwise": ["time"], "mean": ["time"]}
-    predictive = ["outcome"]
-    likelihood = ["pointwise"]
-    prior = ["lp_coefficient"]
-    model = _plain_model(
-        generate=_generate,
-        dims=dims,
-        coords=coords,
-        generated_dims=generated_dims,
-        predictive=predictive,
-        log_likelihood=likelihood,
-        log_prior=prior,
-    )
+    model = _plain_model(generate=_generate, dims=dims, coords=coords, generated_dims=generated_dims)
     dims["coefficient"].append("another")
     dims["extra"] = []
     labels[:] = "edited"
     coords["time"].clear()
     coords["extra"] = [1]
     generated_dims["outcome"].clear()
-    predictive.append("mean")
-    likelihood.clear()
-    prior.clear()
 
     assert model._result_dims == {"coefficient": ("channel",), "intercept": ()}
     np.testing.assert_array_equal(model._result_coords["channel"], ["video", "search"])
@@ -165,9 +138,6 @@ def test_result_metadata_copies_mappings_axes_coordinates_and_output_names():
     )
     assert set(model._result_coords) == {"channel", "time"}
     assert model._generated_dims == {"outcome": ("time",), "pointwise": ("time",), "mean": ("time",)}
-    assert model._predictive_names == ("outcome",)
-    assert model._likelihood_names == ("pointwise",)
-    assert model._log_prior_names == ("lp_coefficient",)
 
 
 @pytest.mark.parametrize(
@@ -219,7 +189,6 @@ def test_simplex_metadata_uses_constrained_shape():
         )
 
 
-@pytest.mark.parametrize("option", ["predictive", "log_likelihood", "log_prior", "save"])
 @pytest.mark.parametrize(
     "value,error,message",
     [
@@ -231,9 +200,26 @@ def test_simplex_metadata_uses_constrained_shape():
         (["outcome", "outcome"], ValueError, "duplicate"),
     ],
 )
-def test_generated_group_names_are_validated(option, value, error, message):
+def test_save_names_are_validated(value, error, message):
     with pytest.raises(error, match=message):
-        _plain_model(generate=_generate, **{option: value})
+        _plain_model(generate=_generate, save=value)
+
+
+@pytest.mark.parametrize("group", ["predictive", "log_likelihood", "log_prior"])
+@pytest.mark.parametrize(
+    "value,error,message",
+    [
+        (jnp.ones(3), TypeError, "mapping"),
+        (["outcome"], TypeError, "mapping"),
+        ({"": jnp.ones(3)}, ValueError, "identifier"),
+        ({1: jnp.ones(3)}, TypeError, "string"),
+    ],
+)
+def test_generated_group_values_are_validated_when_returned(group, value, error, message):
+    model = _plain_model(generate=lambda key, data, **parameters: {group: value})
+    position = {"coefficient": jnp.zeros(2), "intercept": jnp.array(0.0)}
+    with pytest.raises(error, match=message):
+        model.generate_quantities(jax.random.key(0), position, None)
 
 
 def test_save_requires_prepared_data():
@@ -247,8 +233,8 @@ def test_save_selection_is_copied_without_probing_callbacks():
 
     selection = ["mu"]
     model = Model(
-        {},
-        lambda mu: mu.sum(),
+        parameters={},
+        log_density=lambda mu: mu.sum(),
         data=_prepared_data(),
         transformed_parameters=transformed,
         save=selection,
@@ -262,8 +248,8 @@ def test_save_selection_is_copied_without_probing_callbacks():
 def test_save_rejects_data_parameter_and_invalid_names(name):
     with pytest.raises(ValueError, match=r"save|saved"):
         Model(
-            {"intercept": Real()},
-            lambda intercept: -(intercept**2),
+            parameters={"intercept": Real()},
+            log_density=lambda intercept: -(intercept**2),
             data=_prepared_data(),
             transformed_parameters=lambda: {"mu": jnp.zeros(3)},
             save=(name,),
@@ -272,29 +258,25 @@ def test_save_rejects_data_parameter_and_invalid_names(name):
 
 def test_save_requires_transformed_parameters():
     with pytest.raises(ValueError, match="transformed quantity"):
-        Model({}, lambda: jnp.array(0.0), data=_prepared_data(), save=("missing",))
+        Model(parameters={}, log_density=lambda: jnp.array(0.0), data=_prepared_data(), save=("missing",))
 
 
-@pytest.mark.parametrize(
-    "first,second", [("predictive", "log_likelihood"), ("predictive", "log_prior"), ("log_likelihood", "log_prior")]
-)
-def test_generated_group_names_cannot_overlap(first, second):
-    with pytest.raises(ValueError, match="outputs"):
-        _plain_model(generate=_generate, **{first: ["outcome"], second: ["outcome"]})
+def test_the_same_output_name_can_be_returned_in_several_groups():
+    def generate(key, data, **parameters):
+        value = jnp.ones(3)
+        return {"outcome": value, "predictive": {"outcome": value}, "log_likelihood": {"outcome": -value}}
+
+    model = _plain_model(generate=generate)
+    position = {"coefficient": jnp.zeros(2), "intercept": jnp.array(0.0)}
+    outputs = model.generate_quantities(jax.random.key(0), position, None)
+    np.testing.assert_array_equal(outputs["outcome"], np.ones(3))
+    np.testing.assert_array_equal(outputs["predictive"]["outcome"], np.ones(3))
+    np.testing.assert_array_equal(outputs["log_likelihood"]["outcome"], -np.ones(3))
 
 
-@pytest.mark.parametrize(
-    "metadata",
-    [
-        {"predictive": ["outcome"]},
-        {"log_likelihood": ["pointwise"]},
-        {"log_prior": ["lp_coefficient"]},
-        {"generated_dims": {"mean": ("time",)}},
-    ],
-)
-def test_generated_metadata_requires_generation_callback(metadata):
+def test_generated_dimensions_require_a_generation_callback():
     with pytest.raises(ValueError, match="requires a generated_quantities callback"):
-        _plain_model(**metadata)
+        _plain_model(generated_dims={"mean": ("time",)})
 
 
 @pytest.mark.parametrize(
@@ -313,12 +295,8 @@ def test_metadata_does_not_execute_generated_quantities_at_construction():
     model = _plain_model(
         generate=unavailable_until_evaluation,
         generated_dims={"later_output": ("new_axis",)},
-        predictive=["later_output"],
-        log_likelihood=["pointwise"],
-        log_prior=["lp_coefficient"],
     )
     assert model._generated_dims == {"later_output": ("new_axis",)}
-    assert model._predictive_names == ("later_output",)
 
 
 def test_parameters_and_generated_names_have_separate_dimension_maps():
@@ -331,9 +309,9 @@ def test_parameters_and_generated_names_have_separate_dimension_maps():
         return {"annual": fourier_features(time, period=52, order=2) @ annual}
 
     model = Model(
-        {"annual": Real((4, 2)), "paid_media_coefficient": Real((2, 2))},
-        density,
-        generate,
+        parameters={"annual": Real((4, 2)), "paid_media_coefficient": Real((2, 2))},
+        log_density=density,
+        generated_quantities=generate,
         data=data,
         dims={"annual": ("annual_mode", "group"), "paid_media_coefficient": ("group", "channel")},
         coords={"annual_mode": ["sin_1", "sin_2", "cos_1", "cos_2"]},
@@ -345,8 +323,8 @@ def test_parameters_and_generated_names_have_separate_dimension_maps():
     assert model.parameters["paid_media_coefficient"].shape == (2, 2)
     with pytest.raises(ValueError, match="undeclared parameter 'annual_coefficients'"):
         Model(
-            {"annual": Real((4,))},
-            lambda annual: jnp.sum(annual),
+            parameters={"annual": Real((4,))},
+            log_density=lambda annual: jnp.sum(annual),
             data=data,
             dims={"annual_coefficients": ("annual_mode",)},
         )
@@ -358,8 +336,8 @@ def test_aligned_time_history_and_group_metadata_follow_actual_scaled_model_inpu
     scaling = fit_data_scaling(reference, scale_outcome=True)
     expected = scaling.transform(incoming)
     model = Model(
-        {},
-        lambda outcome: -jnp.square(outcome).sum(),
+        parameters={},
+        log_density=lambda outcome: -jnp.square(outcome).sum(),
         data=Data(incoming, scaling=scaling),
     )
     assert model._time_values == expected.time_values == (2, 3, 4)
@@ -386,8 +364,6 @@ def test_result_labels_do_not_change_density_gradients_or_generation():
         dims={"coefficient": ("channel",)},
         coords={"channel": ["video", "search"], "time": [1, 2, 3]},
         generated_dims={"outcome": ("time",), "pointwise": ("time",), "mean": ("time",)},
-        predictive=["outcome"],
-        log_likelihood=["pointwise"],
     )
     position = {"coefficient": jnp.array([0.2, -0.3]), "intercept": jnp.array(0.4)}
     expected = jax.jit(jax.value_and_grad(plain.log_density))(position, None)
@@ -454,8 +430,8 @@ def _named_axis_data():
 def test_parameter_axes_infer_shapes_and_labels_from_prepared_data(axis, labels):
     data = _named_axis_data()
     model = Model(
-        {"coefficient": Real(dims=axis)},
-        lambda coefficient: -jnp.square(coefficient).sum(),
+        parameters={"coefficient": Real(dims=axis)},
+        log_density=lambda coefficient: -jnp.square(coefficient).sum(),
         data=data,
     )
 
@@ -473,8 +449,8 @@ def test_parameter_axes_infer_shapes_and_labels_from_prepared_data(axis, labels)
 
 def test_named_simplex_axes_resolve_constrained_and_unconstrained_batch_shapes():
     model = Model(
-        {"weights": Simplex(dims=("group", "channel"))},
-        lambda weights: jnp.log(weights).sum(),
+        parameters={"weights": Simplex(dims=("group", "channel"))},
+        log_density=lambda weights: jnp.log(weights).sum(),
         data=_prepared_data(),
     )
 
@@ -525,8 +501,8 @@ def test_model_dimensions_cannot_relabel_declared_axes_even_when_lengths_match()
 def test_explicit_parameter_shape_must_agree_with_declared_coordinate_length():
     with pytest.raises(ValueError, match=r"channel|coefficient"):
         Model(
-            {"coefficient": Real(shape=(3,), dims="channel")},
-            lambda coefficient: coefficient.sum(),
+            parameters={"coefficient": Real(shape=(3,), dims="channel")},
+            log_density=lambda coefficient: coefficient.sum(),
             data=_prepared_data(),
         )
 
@@ -535,8 +511,8 @@ def test_explicit_parameter_shape_must_agree_with_declared_coordinate_length():
 def test_declared_axes_must_be_available_at_model_construction(axis):
     with pytest.raises(ValueError, match=axis):
         Model(
-            {"coefficient": Real(dims=axis)},
-            lambda coefficient: coefficient.sum(),
+            parameters={"coefficient": Real(dims=axis)},
+            log_density=lambda coefficient: coefficient.sum(),
             data=_prepared_data(),
         )
 
@@ -561,8 +537,8 @@ def test_unresolved_named_shape_cannot_borrow_another_parameters_shape():
 def test_explicit_coordinates_cannot_reorder_prepared_channel_labels():
     with pytest.raises(ValueError, match="channel"):
         Model(
-            {"coefficient": Real(dims="channel")},
-            lambda coefficient: coefficient.sum(),
+            parameters={"coefficient": Real(dims="channel")},
+            log_density=lambda coefficient: coefficient.sum(),
             data=_prepared_data(),
             coords={"channel": ["search", "video"]},
         )
@@ -571,9 +547,9 @@ def test_explicit_coordinates_cannot_reorder_prepared_channel_labels():
 def test_named_parameter_axes_survive_reordered_scenario_inputs():
     data = _prepared_data()
     model = Model(
-        {"coefficient": Real(dims=("group", "channel"))},
-        lambda coefficient: -jnp.square(coefficient).sum(),
-        lambda key, media, coefficient: {
+        parameters={"coefficient": Real(dims=("group", "channel"))},
+        log_density=lambda coefficient: -jnp.square(coefficient).sum(),
+        generated_quantities=lambda key, media, coefficient: {
             "coefficient_copy": coefficient,
             "response": media[-3:] * coefficient,
         },
@@ -607,9 +583,12 @@ def test_auxiliary_inputs_remain_fixed_across_shorter_reordered_scenarios():
         coords={"experiment": ["north", "south", "national"], "channel": ["video", "search"]},
     )
     model = Model(
-        {"coefficient": Real(dims="channel")},
-        lambda coefficient: -jnp.square(coefficient).sum(),
-        lambda key, media, experiment_spend: {"media_copy": media, "experiment_copy": experiment_spend},
+        parameters={"coefficient": Real(dims="channel")},
+        log_density=lambda coefficient: -jnp.square(coefficient).sum(),
+        generated_quantities=lambda key, media, experiment_spend: {
+            "media_copy": media,
+            "experiment_copy": experiment_spend,
+        },
         data=Data(data, inputs=inputs),
         transformed_parameters=lambda experiment_spend, coefficient: {
             "experiment_response": experiment_spend @ coefficient
@@ -652,24 +631,26 @@ def test_generated_reference_inputs_keep_training_labels_for_new_observation_win
     scaling = fit_data_scaling(data, scale_outcome=True)
 
     def generated(key, media, outcome, reference, outcome_scaling, n_periods):
+        predictive = {
+            "restored_outcome": outcome_scaling.inverse_transform(outcome),
+            "original_outcome": reference.outcome,
+        }
         return {
             "current_media": media,
             "original_media": reference.media,
-            "original_outcome": reference.outcome,
             "original_elapsed": reference.time,
             "original_media_elapsed": reference.media_time,
-            "restored_outcome": outcome_scaling.inverse_transform(outcome),
             "outcome_divisor": outcome_scaling.scale,
             "current_count": jnp.asarray(n_periods),
             "original_count": jnp.asarray(reference.n_periods),
+            "predictive": predictive,
         }
 
     model = Model(
-        {"level": Real()},
-        lambda level: -jnp.square(level),
-        generated,
+        parameters={"level": Real()},
+        log_density=lambda level: -jnp.square(level),
+        generated_quantities=generated,
         data=Data(data, scaling=scaling),
-        predictive=("restored_outcome", "original_outcome"),
     )
     results = _collect_results({"level": np.zeros((1, 2), dtype=np.float32)}, data=data)
     scenario = pl.DataFrame(
@@ -720,9 +701,9 @@ def test_generated_reference_inputs_keep_training_labels_for_new_observation_win
 def test_generated_training_arrays_distinguish_current_and_reference_provenance(prior):
     data = _prepared_data()
     model = Model(
-        {"level": Real()},
-        lambda level: -jnp.square(level),
-        lambda key, media, reference: {"current_media": media, "original_media": reference.media},
+        parameters={"level": Real()},
+        log_density=lambda level: -jnp.square(level),
+        generated_quantities=lambda key, media, reference: {"current_media": media, "original_media": reference.media},
         data=data,
         prior=lambda key: {"level": jnp.asarray(0.0)},
     )
@@ -753,9 +734,9 @@ def test_generated_population_outcome_scale_retains_group_axis_even_for_one_grou
     data = prepare_data(frame, time="week", groups=["region"], outcome="sales", population="population")
     scaling = fit_data_scaling(data, scale_outcome="population")
     model = Model(
-        {"level": Real()},
-        lambda level: -jnp.square(level),
-        lambda key, outcome_scaling: {"outcome_divisor": outcome_scaling.scale},
+        parameters={"level": Real()},
+        log_density=lambda level: -jnp.square(level),
+        generated_quantities=lambda key, outcome_scaling: {"outcome_divisor": outcome_scaling.scale},
         data=Data(data, scaling=scaling),
     )
     results = _collect_results({"level": np.zeros((1, 2), dtype=np.float32)}, data=data)
@@ -775,17 +756,14 @@ def test_declared_data_variables_keep_prepared_and_auxiliary_result_labels(prior
     )
 
     def generated(key, revenue, impressions, experiment_costs):
-        quantities = {
-            "sales": revenue,
-            "exposure": impressions,
-            "experiment_costs": experiment_costs,
-        }
+        predictive = {"sales": revenue, "experiment_costs": experiment_costs}
+        quantities = {"exposure": impressions, "predictive": predictive}
         return quantities
 
     model = Model(
-        {"level": Real()},
-        lambda level: -jnp.square(level),
-        generated,
+        parameters={"level": Real()},
+        log_density=lambda level: -jnp.square(level),
+        generated_quantities=generated,
         data=Data(
             data,
             inputs=inputs,
@@ -796,7 +774,6 @@ def test_declared_data_variables_keep_prepared_and_auxiliary_result_labels(prior
             },
         ),
         prior={"level": Prior(normal, location=0.0, scale=1.0)},
-        predictive=("sales", "experiment_costs"),
     )
     if prior:
         evaluated = sample_prior(model, draws=2, batch_size=1)
@@ -837,19 +814,22 @@ def test_declared_outcome_scaling_variables_keep_group_labels(groups):
 
     def generated(key, revenue, revenue_scaling):
         restored = revenue_scaling.inverse_transform(revenue)
-        quantities = {"divisor": revenue_scaling.scale, "offset": revenue_scaling.offset, "restored": restored}
+        quantities = {
+            "divisor": revenue_scaling.scale,
+            "offset": revenue_scaling.offset,
+            "predictive": {"restored": restored},
+        }
         return quantities
 
     model = Model(
-        {"level": Real()},
-        lambda level: -jnp.square(level),
-        generated,
+        parameters={"level": Real()},
+        log_density=lambda level: -jnp.square(level),
+        generated_quantities=generated,
         data=Data(
             data,
             scaling=scaling,
             variables={"revenue": "outcome", "revenue_scaling": "outcome_scaling"},
         ),
-        predictive=("restored",),
     )
     results = _collect_results({"level": np.zeros((1, 2), dtype=np.float32)}, data=data)
     evaluated = generate_quantities(model, results, batch_size=1)
@@ -871,20 +851,19 @@ def test_declared_reference_variables_keep_original_labels_in_scenarios(periods)
         quantities = {
             "current": impressions,
             "original": training.media,
-            "original_sales": training.outcome,
             "original_elapsed": training.time,
+            "predictive": {"original_sales": training.outcome},
         }
         return quantities
 
     model = Model(
-        {"level": Real()},
-        lambda level: -jnp.square(level),
-        generated,
+        parameters={"level": Real()},
+        log_density=lambda level: -jnp.square(level),
+        generated_quantities=generated,
         data=Data(
             data,
             variables={"impressions": "media", "training": "reference"},
         ),
-        predictive=("original_sales",),
     )
     results = _collect_results({"level": np.zeros((1, 2), dtype=np.float32)}, data=data)
     scenario = pl.DataFrame(

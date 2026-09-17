@@ -40,11 +40,12 @@ def test_generated_time_inputs_retain_date_labels_without_becoming_observed_data
         return -jnp.sum((outcome - level) ** 2)
 
     def generate(key, time, media_time, level):
-        return {"elapsed": time, "exposure_elapsed": media_time, "prediction": time + level}
+        return {"elapsed": time, "exposure_elapsed": media_time, "predictive": {"prediction": time + level}}
 
-    callbacks = (generate,) if callback_binding == "positional" else ()
-    options = {"generated_quantities": generate} if callback_binding == "keyword" else {}
-    model = Model({"level": Real()}, density, *callbacks, data=data, predictive=("prediction",), **options)
+    if callback_binding == "positional":
+        model = Model(data, None, {"level": Real()}, None, density, generate)
+    else:
+        model = Model(data=data, parameters={"level": Real()}, log_density=density, generated_quantities=generate)
     results = _collect_results({"level": np.zeros((1, 2), dtype=np.float32)})
     for new_data in (None, frame.slice(1)):
         evaluated = generate_quantities(model, results, new_data=new_data)
@@ -63,19 +64,18 @@ def _unused_density(data, scale):
 
 def _generate(key, data, scale):
     mean = data["value"] * scale
-    return {"mean": mean, "prediction": mean + jax.random.normal(key, mean.shape)}
+    return {"mean": mean, "predictive": {"prediction": mean + jax.random.normal(key, mean.shape)}}
 
 
 @pytest.fixture
 def model():
     return Model(
-        {"scale": Positive((2,))},
-        _unused_density,
-        _generate,
+        parameters={"scale": Positive((2,))},
+        log_density=_unused_density,
+        generated_quantities=_generate,
         dims={"scale": ("channel",)},
         coords={"channel": ["search", "video"]},
         generated_dims={"mean": ("channel",), "prediction": ("channel",)},
-        predictive=("prediction",),
     )
 
 
@@ -142,8 +142,9 @@ def test_generated_batches_preserve_key_assignment_draw_order_and_labels(model, 
     reference = jax.jit(jax.vmap(jax.vmap(lambda key, values: model.generate_quantities(key, values, new_data))))(
         keys, posterior
     )
+    direct = {"mean": reference["mean"], "prediction": reference["predictive"]["prediction"]}
     for group, name in (("generated_quantities", "mean"), ("posterior_predictive", "prediction")):
-        np.testing.assert_allclose(evaluated[group][name], reference[name], rtol=2e-6, atol=2e-6)
+        np.testing.assert_allclose(evaluated[group][name], direct[name], rtol=2e-6, atol=2e-6)
         assert evaluated[group][name].dims == ("chain", "draw", "channel")
         assert isinstance(evaluated[group][name].data, np.ndarray)
         np.testing.assert_array_equal(evaluated[group]["chain"], [4, 8])
@@ -179,7 +180,7 @@ def test_generated_batch_sizes_require_positive_integers(model, results, batch_s
 def test_generate_quantities_requires_model_callback_and_result_tree(model, results):
     with pytest.raises(TypeError, match="model must be a Model"):
         generate_quantities(None, results)
-    no_callback = Model({"scale": Positive((2,))}, _unused_density)
+    no_callback = Model(parameters={"scale": Positive((2,))}, log_density=_unused_density)
     with pytest.raises(ValueError, match="generated_quantities callback"):
         generate_quantities(no_callback, results)
     with pytest.raises(TypeError, match=r"xarray\.DataTree"):
@@ -238,9 +239,9 @@ def test_generate_quantities_keeps_custom_parameter_and_output_axes(model, resul
         return {"scale_copy": scale, "average": jnp.mean(scale)}
 
     custom = Model(
-        {"scale": Positive((2,))},
-        _unused_density,
-        generate,
+        parameters={"scale": Positive((2,))},
+        log_density=_unused_density,
+        generated_quantities=generate,
         dims={"scale": ("channel",)},
         coords={"channel": ["search", "video"]},
     )
@@ -249,15 +250,14 @@ def test_generate_quantities_keeps_custom_parameter_and_output_axes(model, resul
     assert evaluated["generated_quantities"]["average"].dims == ("chain", "draw")
 
 
-@pytest.mark.parametrize("selection", ["predictive", "log_likelihood", "log_prior"])
-def test_generate_quantities_does_not_silently_drop_missing_declared_outputs(results, selection):
+def test_generate_quantities_does_not_silently_drop_missing_declared_outputs(results):
     model = Model(
-        {"scale": Positive((2,))},
-        _unused_density,
-        lambda key, data, scale: {"scale_copy": scale},
+        parameters={"scale": Positive((2,))},
+        log_density=_unused_density,
+        generated_quantities=lambda key, data, scale: {"scale_copy": scale},
         dims={"scale": ("channel",)},
         coords={"channel": ["search", "video"]},
-        **{selection: ("pointwise",)},
+        generated_dims={"pointwise": ("channel",)},
     )
     with pytest.raises(ValueError, match="missing outputs"):
         generate_quantities(model, results)
@@ -269,21 +269,20 @@ def test_hierarchical_log_prior_terms_preserve_draw_values_and_labels(batch_size
         raise AssertionError("Generating log prior terms must not evaluate the model density")
 
     def generate(key, data, location, scale, coefficient):
-        return {
+        log_prior = {
             "lp_location": normal(location, 0.0, 2.0),
             "lp_scale": -scale,
             "lp_coefficient": normal_logpdf(coefficient, location, scale),
-            "mean": jnp.mean(coefficient),
         }
+        return {"log_prior": log_prior, "mean": jnp.mean(coefficient)}
 
     model = Model(
-        {"location": Real(), "scale": Positive(), "coefficient": Real((2,))},
-        forbidden_density,
-        generate,
+        parameters={"location": Real(), "scale": Positive(), "coefficient": Real((2,))},
+        log_density=forbidden_density,
+        generated_quantities=generate,
         dims={"coefficient": ("region",)},
         coords={"region": ["west", "east"]},
         generated_dims={"lp_coefficient": ("region",)},
-        log_prior=("lp_location", "lp_scale", "lp_coefficient"),
     )
     location = np.arange(6, dtype=np.float32).reshape(2, 3) / 4
     scale = 0.5 + location
@@ -321,13 +320,12 @@ def test_hierarchical_log_prior_terms_preserve_draw_values_and_labels(batch_size
 @pytest.mark.parametrize("explicit_dims", [False, True])
 def test_log_prior_axes_do_not_inherit_matching_parameter_shapes(results, explicit_dims):
     model = Model(
-        {"scale": Positive((2,))},
-        _unused_density,
-        lambda key, data, scale: {"scale": -scale, "lp_scale": -scale},
+        parameters={"scale": Positive((2,))},
+        log_density=_unused_density,
+        generated_quantities=lambda key, data, scale: {"log_prior": {"scale": -scale, "lp_scale": -scale}},
         dims={"scale": ("channel",)},
         coords={"channel": ["search", "video"]},
         generated_dims={"scale": ("channel",), "lp_scale": ("channel",)} if explicit_dims else None,
-        log_prior=("scale", "lp_scale"),
     )
     evaluated = generate_quantities(model, results)
     for name in ("scale", "lp_scale"):
@@ -362,14 +360,14 @@ def test_registered_log_priors_preserve_batch_axes_and_reduce_distribution_event
         "channel_to": ["search", "video", "radio"],
     }
     model = Model(
-        {
+        parameters={
             "scale": Positive(),
             "independent": Real(dims=("group", "channel")),
             "coefficient": Real(dims=("group", "channel")),
             "weights": Simplex(dims=("group", "channel")),
             "factor": CorrelationCholesky(dims=("group", "channel", "channel_to")),
         },
-        forbidden_density,
+        log_density=forbidden_density,
         prior=priors,
         coords=coords,
     )
@@ -412,13 +410,15 @@ def test_registered_log_priors_preserve_batch_axes_and_reduce_distribution_event
 
 def test_registered_log_priors_allow_additional_explicit_terms_and_deduplicate_auto_names(results):
     model = Model(
-        {"scale": Positive((2,))},
-        _unused_density,
-        lambda key, data, scale: {"manual": normal(scale, 0.0, 1.0), "mean": jnp.mean(scale)},
+        parameters={"scale": Positive((2,))},
+        log_density=_unused_density,
+        generated_quantities=lambda key, data, scale: {
+            "log_prior": {"manual": normal(scale, 0.0, 1.0)},
+            "mean": jnp.mean(scale),
+        },
         prior={"scale": Prior(lognormal, location=0.2, scale=0.9)},
         dims={"scale": ("channel",)},
         coords={"channel": ["search", "video"]},
-        log_prior=("log_prior_scale", "manual"),
     )
     evaluated = generate_quantities(model, results)
     assert set(evaluated["log_prior"].data_vars) == {"log_prior_scale", "manual"}
@@ -440,8 +440,8 @@ def test_registered_log_prior_names_cannot_shadow_saved_or_generated_outputs(res
     )
     with pytest.raises(ValueError, match="log_prior_scale"):
         model = Model(
-            {"scale": Positive((2,))},
-            (lambda scale: -scale.sum()) if saved else (lambda data, scale: -scale.sum()),
+            parameters={"scale": Positive((2,))},
+            log_density=(lambda scale: -scale.sum()) if saved else (lambda data, scale: -scale.sum()),
             prior={"scale": Prior(lognormal, location=0.2, scale=0.9)},
             dims={"scale": ("channel",)},
             coords={"channel": ["search", "video"]},
@@ -466,7 +466,7 @@ def _saved_data(*, start=0, observations=3):
     )
 
 
-def _saved_model(*, generated_dims=None, predictive=(), log_likelihood=()):
+def _saved_model(*, generated_dims=None, generate=None, save=("signal", "pointwise", "total")):
     def forbidden_density(signal):
         raise AssertionError("Saving quantities must not evaluate the model density")
 
@@ -478,17 +478,16 @@ def _saved_model(*, generated_dims=None, predictive=(), log_likelihood=()):
         return {"signal": signal, "pointwise": -0.5 * (outcome - signal) ** 2, "total": signal.sum()}
 
     return Model(
-        {"scale": Positive((2,))},
-        forbidden_density,
+        parameters={"scale": Positive((2,))},
+        log_density=forbidden_density,
+        generated_quantities=generate,
         data=_saved_data(),
         transformed_parameters=transformed,
         prior=forbidden_prior,
-        save=("signal", "pointwise", "total"),
+        save=save,
         dims={"scale": ("channel",)},
         coords={"channel": ["search", "video"]},
         generated_dims=generated_dims,
-        predictive=predictive,
-        log_likelihood=log_likelihood,
     )
 
 
@@ -520,8 +519,11 @@ def test_generate_quantities_saves_transforms_without_callback_and_recomputes_sc
     np.testing.assert_array_equal(model.data.values["controls"], original_controls)
 
 
-def test_saved_outputs_support_predictive_and_likelihood_groups_with_observation_labels(results):
-    model = _saved_model(predictive=("signal",), log_likelihood=("pointwise",))
+def test_transformed_outputs_routed_to_result_groups_keep_observation_labels(results):
+    def generate(key, signal, pointwise):
+        return {"predictive": {"signal": signal}, "log_likelihood": {"pointwise": pointwise}}
+
+    model = _saved_model(generate=generate, save=("total",))
     result = generate_quantities(model, results)
 
     assert result["posterior_predictive"]["signal"].dims == ("chain", "draw", "time")
@@ -533,16 +535,15 @@ def test_saved_outputs_support_predictive_and_likelihood_groups_with_observation
         np.testing.assert_array_equal(result[group]["draw"], results["posterior"]["draw"])
 
 
-def test_saved_log_prior_terms_are_collected_without_a_generation_callback(results):
+def test_transformed_log_prior_terms_are_collected_through_the_generation_callback(results):
     model = Model(
-        {"scale": Positive((2,))},
-        lambda scale: -scale.sum(),
+        parameters={"scale": Positive((2,))},
+        log_density=lambda scale: -scale.sum(),
+        generated_quantities=lambda key, lp_scale: {"log_prior": {"lp_scale": lp_scale}},
         data=_saved_data(),
         transformed_parameters=lambda scale: {"lp_scale": -scale.sum()},
-        save=("lp_scale",),
         dims={"scale": ("channel",)},
         coords={"channel": ["search", "video"]},
-        log_prior=("lp_scale",),
     )
     evaluated = generate_quantities(model, results)
     assert evaluated["log_prior"]["lp_scale"].dims == ("chain", "draw")

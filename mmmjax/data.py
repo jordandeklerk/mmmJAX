@@ -557,12 +557,24 @@ def _time_input_names(data: PreparedData) -> tuple[_TimeInput, ...]:
     return tuple(names)
 
 
+def _time_input_axes(name: _TimeInput) -> tuple[str, ...]:
+    """Name the axis of a time input by whether it follows the media periods."""
+    return ("media_time",) if name.startswith("media_") else ("time",)
+
+
+def _reference_dimensions(data: PreparedData) -> dict[str, tuple[str, ...]]:
+    """Name the axes of every training array the reference namespace can hold."""
+    dimensions = _data_dimensions(data)
+    dimensions.update({name: _time_input_axes(name) for name in get_args(_TimeInput)})
+    return dimensions
+
+
 def _model_inputs(data: PreparedData) -> dict[str, ModelInput]:
     """Enumerate the requestable inputs once for models, results, and users."""
     role_axes = _data_dimensions(data)
     inputs = {role: ModelInput("array", role_axes[role], "data") for role in data.arrays}
     for name in _time_input_names(data):
-        inputs[name] = ModelInput("array", ("media_time",) if name.startswith("media_") else ("time",), "time")
+        inputs[name] = ModelInput("array", _time_input_axes(name), "time")
     inputs["n_periods"] = ModelInput("integer", (), "builtin")
     if "outcome" in data.arrays:
         inputs["outcome_scaling"] = ModelInput("object", (), "builtin")

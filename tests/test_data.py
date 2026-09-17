@@ -2294,7 +2294,7 @@ def test_prepare_data_works_with_model_densities_and_gradients():
     def log_density(data, beta):
         return normal(data["outcome"], data["media"] @ beta, 1.0)
 
-    model = Model({"beta": Real(shape=(2,))}, log_density)
+    model = Model(parameters={"beta": Real(shape=(2,))}, log_density=log_density)
     position = {"beta": jnp.array([0.5, 1.0])}
     value, gradient = jax.jit(jax.value_and_grad(model.log_density))(position, data._to_jax())
 
@@ -2328,7 +2328,9 @@ def test_prepared_treatments_work_with_grouped_model_densities_and_gradients():
         mean += jnp.sum(inputs["treatments"] * treatment_beta, axis=-1)
         return normal(inputs["outcome"], mean, 2.0)
 
-    model = Model({"media_beta": Real(shape=(2, 1)), "treatment_beta": Real(shape=(2, 2))}, log_density)
+    model = Model(
+        parameters={"media_beta": Real(shape=(2, 1)), "treatment_beta": Real(shape=(2, 2))}, log_density=log_density
+    )
     media_beta = np.array([[0.5], [1.0]])
     treatment_beta = np.array([[2.0, -1.0], [3.0, 0.5]])
     position = {"media_beta": jnp.asarray(media_beta), "treatment_beta": jnp.asarray(treatment_beta)}
@@ -2383,14 +2385,14 @@ def test_paid_and_organic_history_work_with_adstock_and_model_gradients():
         return {"mean": expected_sales(inputs, **parameters)}
 
     model = Model(
-        {
+        parameters={
             "media_decay": Real(),
             "organic_decay": Real(shape=(2,)),
             "media_beta": Real(),
             "organic_beta": Real(shape=(2,)),
         },
-        log_density,
-        generate,
+        log_density=log_density,
+        generated_quantities=generate,
     )
     position = {
         "media_decay": jnp.asarray(0.5),
@@ -2481,14 +2483,14 @@ def test_reach_frequency_history_works_with_grouped_model_and_adstock_gradients(
         return {"mean": expected_sales(inputs, **parameters)}
 
     model = Model(
-        {
+        parameters={
             "paid_decay": Real(shape=(2,)),
             "organic_decay": Real(),
             "paid_beta": Real(shape=(2, 2)),
             "organic_beta": Real(shape=(2, 1)),
         },
-        log_density,
-        generate,
+        log_density=log_density,
+        generated_quantities=generate,
     )
     paid_beta = np.array([[0.5, 1.5], [2.0, 0.25]])
     organic_beta = np.array([[1.25], [0.5]])
@@ -3118,8 +3120,8 @@ def test_time_positions_match_the_model_time_inputs():
     frame, history = _weekly_media_frames()
     data = prepare_data(frame, time="week", outcome="sales", media=["video"], media_history=history)
     model = Model(
-        {"level": Real()},
-        lambda outcome, time, media_time, level: jnp.sum(outcome + time.sum() + media_time.sum() + level),
+        parameters={"level": Real()},
+        log_density=lambda outcome, time, media_time, level: jnp.sum(outcome + time.sum() + media_time.sum() + level),
         data=data,
     )
 
@@ -3175,7 +3177,12 @@ def test_model_inputs_list_every_requestable_name_with_kind_and_axes():
         f"dict(periods=jnp.asarray(n_periods), scale=outcome_scaling.scale, "
         f"training_media=reference.media, training_periods=jnp.asarray(reference.n_periods), {copies})"
     )
-    model = Model({"level": Real()}, lambda outcome, level: jnp.sum(outcome * level), generate, data=data)
+    model = Model(
+        parameters={"level": Real()},
+        log_density=lambda outcome, level: jnp.sum(outcome * level),
+        generated_quantities=generate,
+        data=data,
+    )
     outputs = model.generate_quantities(jax.random.key(0), {"level": jnp.array(1.0)}, model.data)
     assert set(outputs) == {
         "periods",

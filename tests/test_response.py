@@ -90,9 +90,9 @@ def _model(data, *, scaling=None, cross_group=False):
         raise AssertionError("Response curves must not evaluate generated observations")
 
     return Model(
-        {"coefficient": Real((2,))},
-        density,
-        generated,
+        parameters={"coefficient": Real((2,))},
+        log_density=density,
+        generated_quantities=generated,
         data=Data(data, scaling=scaling),
         transformed_parameters=transformed,
         dims={"coefficient": ("channel",)},
@@ -115,8 +115,8 @@ def integer_media_model():
     frame = pl.DataFrame({"week": [0, 1], "views": [1, 3], "cost": [1.0, 3.0]})
     data = prepare_data(frame, time="week", media=["views"], spend=["cost"])
     return Model(
-        {"coefficient": Real()},
-        lambda coefficient: -(coefficient**2),
+        parameters={"coefficient": Real()},
+        log_density=lambda coefficient: -(coefficient**2),
         data=data,
         transformed_parameters=lambda media, coefficient: {"expected": media[:, 0] * coefficient},
     )
@@ -179,8 +179,8 @@ def test_response_curves_retain_fixed_inputs_during_budget_changes(new_data):
         return {"expected": media[-spend.shape[0] :] @ (coefficient * weights.mean(axis=0))}
 
     model = Model(
-        {"coefficient": Real(dims="channel")},
-        lambda expected: -expected.sum(),
+        parameters={"coefficient": Real(dims="channel")},
+        log_density=lambda expected: -expected.sum(),
         data=Data(data, inputs=inputs),
         transformed_parameters=transformed,
     )
@@ -322,13 +322,13 @@ def test_response_curves_recompute_adstock_and_saturation_without_a_generation_c
         return {"expected": jnp.exp(response @ paid_media_coefficient)}
 
     model = Model(
-        {
+        parameters={
             "paid_media_coefficient": Positive(dims="channel"),
             "paid_media_retention": Interval(0.0, 1.0, dims="channel"),
             "paid_media_half_saturation": Positive(dims="channel"),
             "paid_media_slope": Positive(dims="channel"),
         },
-        lambda expected: expected.sum(),
+        log_density=lambda expected: expected.sum(),
         data=data,
         transformed_parameters=transformed,
     )
@@ -507,8 +507,8 @@ def test_response_curves_subtract_paired_observations_before_aggregation():
         return {"expected": 1_000_000.0 + media[:, 0] * coefficient}
 
     model = Model(
-        {"coefficient": Real()},
-        lambda expected: expected.sum(),
+        parameters={"coefficient": Real()},
+        log_density=lambda expected: expected.sum(),
         data=data,
         transformed_parameters=transformed,
     )
@@ -594,8 +594,8 @@ def test_response_curves_require_paid_media_and_spend():
         return {"expected": media[1:] @ coefficient}
 
     model = Model(
-        {"coefficient": Real((2,))},
-        lambda expected: expected.sum(),
+        parameters={"coefficient": Real((2,))},
+        log_density=lambda expected: expected.sum(),
         data=no_spend,
         transformed_parameters=transformed,
         dims={"coefficient": ("channel",)},
@@ -634,8 +634,8 @@ def test_response_curves_accept_dataframes_and_evaluate_the_supplied_periods_onl
     frame = pl.DataFrame({"week": [0, 1, 2], "views": [10.0, 20.0, 40.0], "cost": [2.0, 4.0, 8.0]})
     data = prepare_data(frame, time="week", media=["views"], spend=["cost"])
     model = Model(
-        {"coefficient": Real()},
-        lambda coefficient: -(coefficient**2),
+        parameters={"coefficient": Real()},
+        log_density=lambda coefficient: -(coefficient**2),
         data=Data(data, scaling="auto"),
         transformed_parameters=lambda media, coefficient: {"expected": media[:, 0] * coefficient},
     )
@@ -889,8 +889,8 @@ def test_response_curves_measure_carryover_after_spending_has_ended():
         return {"expected": (media[1:] + 0.5 * media[:-1]) @ coefficient}
 
     model = Model(
-        {"coefficient": Real((2,))},
-        lambda expected: expected.sum(),
+        parameters={"coefficient": Real((2,))},
+        log_density=lambda expected: expected.sum(),
         data=data,
         transformed_parameters=transformed,
         dims={"coefficient": ("channel",)},
@@ -973,8 +973,8 @@ def test_response_curves_accept_iso_selections_for_native_datetime_labels(time_t
     frame = pl.DataFrame({"week": labels, "views": [10.0, 20.0, 40.0], "cost": [2.0, 4.0, 8.0]})
     data = prepare_data(frame, time="week", media=["views"], spend=["cost"])
     model = Model(
-        {"coefficient": Real()},
-        lambda coefficient: -(coefficient**2),
+        parameters={"coefficient": Real()},
+        log_density=lambda coefficient: -(coefficient**2),
         data=data,
         transformed_parameters=lambda media, coefficient: {"expected": media[:, 0] * coefficient},
     )
@@ -995,8 +995,8 @@ def test_response_curves_resolve_period_labels_from_new_data():
     frame = pl.DataFrame({"week": [0, 1, 2], "views": [10.0, 20.0, 40.0], "cost": [2.0, 4.0, 8.0]})
     data = prepare_data(frame, time="week", media=["views"], spend=["cost"])
     model = Model(
-        {"coefficient": Real()},
-        lambda coefficient: -(coefficient**2),
+        parameters={"coefficient": Real()},
+        log_density=lambda coefficient: -(coefficient**2),
         data=Data(data, scaling="auto"),
         transformed_parameters=lambda media, coefficient: {"expected": media[:, 0] * coefficient},
     )
@@ -1091,8 +1091,8 @@ def test_budget_response_differentiates_carryover_with_a_separate_response_windo
         return {"expected": (media[1:] + 0.5 * media[:-1]) @ coefficient}
 
     model = Model(
-        {"coefficient": Real((2,))},
-        lambda expected: expected.sum(),
+        parameters={"coefficient": Real((2,))},
+        log_density=lambda expected: expected.sum(),
         data=data,
         transformed_parameters=transformed,
         dims={"coefficient": ("channel",)},
@@ -1197,7 +1197,12 @@ def _rf_model(data, *, scaling=None):
     def density(expected):
         raise AssertionError("Response curves must only evaluate transformed quantities")
 
-    return Model({"coefficient": Real()}, density, data=Data(data, scaling=scaling), transformed_parameters=transformed)
+    return Model(
+        parameters={"coefficient": Real()},
+        log_density=density,
+        data=Data(data, scaling=scaling),
+        transformed_parameters=transformed,
+    )
 
 
 def _rf_results():
@@ -1560,7 +1565,10 @@ def test_response_curves_rf_integer_inputs_preserve_fractional_scenarios_and_gra
         return {"expected": coefficient * reach[:, 0] * media_frequency[:, 0] / (1.0 + media_frequency[:, 0])}
 
     model = Model(
-        {"coefficient": Real()}, lambda expected: expected.sum(), data=data, transformed_parameters=transformed
+        parameters={"coefficient": Real()},
+        log_density=lambda expected: expected.sum(),
+        data=data,
+        transformed_parameters=transformed,
     )
     results = _collect_results({"coefficient": np.ones((1, 1), dtype=np.float32)})
     context = _prepare_response(model, results, quantity="expected", spend_to_media="proportional", spend_to_rf=mode)
@@ -1704,7 +1712,13 @@ def test_frequency_curves_recover_hill_optimum_and_average_posterior_responses(h
     def generated(key, expected):
         raise AssertionError("Frequency curves must not evaluate generated observations")
 
-    model = Model({"half_saturation": Positive()}, density, generated, data=data, transformed_parameters=transformed)
+    model = Model(
+        parameters={"half_saturation": Positive()},
+        log_density=density,
+        generated_quantities=generated,
+        data=data,
+        transformed_parameters=transformed,
+    )
     results = _collect_results({"half_saturation": np.asarray(half_saturation, dtype=np.float32)})
     frequencies = np.array([4.0, 1.0, 2.0, 7.0])
     curves = frequency_curves(model, results, quantity="expected", frequencies=frequencies, channels=["Video"])
@@ -1772,7 +1786,10 @@ def test_frequency_curves_preserve_zero_impression_cells_and_all_fixed_inputs_ex
         return {"expected": jnp.where(valid, expected, jnp.nan)}
 
     model = Model(
-        {"coefficient": Real()}, lambda expected: expected.sum(), data=data, transformed_parameters=transformed
+        parameters={"coefficient": Real()},
+        log_density=lambda expected: expected.sum(),
+        data=data,
+        transformed_parameters=transformed,
     )
     curves = frequency_curves(
         model, _rf_results(), quantity="expected", frequencies=[0.125, 2.5], channels=["Video"], periods=[1, 2]
@@ -1809,8 +1826,8 @@ def test_frequency_curves_constant_frequency_reference_and_batching():
 def test_frequency_curves_exact_ties_choose_first_supplied_frequency():
     data = _rf_data()
     model = Model(
-        {"coefficient": Real()},
-        lambda coefficient: -(coefficient**2),
+        parameters={"coefficient": Real()},
+        log_density=lambda coefficient: -(coefficient**2),
         data=data,
         transformed_parameters=lambda rf_spend, coefficient: {"expected": coefficient * rf_spend.sum(axis=-1)},
     )
@@ -1828,8 +1845,8 @@ def test_frequency_curves_subtract_paired_observations_before_aggregation():
         rf_spend=["cost"],
     )
     model = Model(
-        {"coefficient": Real()},
-        lambda coefficient: -(coefficient**2),
+        parameters={"coefficient": Real()},
+        log_density=lambda coefficient: -(coefficient**2),
         data=data,
         transformed_parameters=lambda media_frequency, coefficient: {
             "expected": 1_000_000.0 + coefficient * media_frequency[:, 0]
@@ -1854,8 +1871,8 @@ def test_frequency_curves_preserve_date_labels_and_fractional_reach_from_integer
         rf_spend=["cost"],
     )
     model = Model(
-        {"coefficient": Real()},
-        lambda coefficient: -(coefficient**2),
+        parameters={"coefficient": Real()},
+        log_density=lambda coefficient: -(coefficient**2),
         data=data,
         transformed_parameters=lambda reach, media_frequency, coefficient: {
             "expected": coefficient * (reach * media_frequency / (1 + media_frequency))[:, 0]
@@ -1886,8 +1903,8 @@ def integer_frequency_data():
 
 def _integer_frequency_model(data):
     return Model(
-        {"coefficient": Real()},
-        lambda coefficient: -(coefficient**2),
+        parameters={"coefficient": Real()},
+        log_density=lambda coefficient: -(coefficient**2),
         data=data,
         transformed_parameters=lambda reach, media_frequency, coefficient: {
             "expected": coefficient * reach[1:, 1] + coefficient * media_frequency[1:, 1]
@@ -1967,8 +1984,8 @@ def test_frequency_curves_evaluate_reference_with_original_integer_arithmetic(in
     data.arrays["media_frequency"][:, 1] = 1
     with jax.enable_x64(False):
         model = Model(
-            {"coefficient": Real()},
-            lambda coefficient: -(coefficient**2),
+            parameters={"coefficient": Real()},
+            log_density=lambda coefficient: -(coefficient**2),
             data=data,
             transformed_parameters=lambda reach, media_frequency, coefficient: {
                 "expected": coefficient * ((reach[1:, 1] + media_frequency[1:, 1]) % 3)
@@ -2011,7 +2028,10 @@ def test_frequency_curves_require_an_observation_shaped_transformed_quantity(qua
         return {"expected": coefficient * reach[1:, 0], "aggregate": reach.sum(), "exposure": reach}
 
     model = Model(
-        {"coefficient": Real()}, lambda expected: expected.sum(), data=data, transformed_parameters=transformed
+        parameters={"coefficient": Real()},
+        log_density=lambda expected: expected.sum(),
+        data=data,
+        transformed_parameters=transformed,
     )
     with pytest.raises((TypeError, ValueError), match=r"quantity|shape"):
         frequency_curves(model, _rf_results(), quantity=quantity, frequencies=[1.0])
@@ -2057,8 +2077,8 @@ def test_frequency_curves_reject_unrepresentable_exposures(scenario):
         rf_spend=["cost"],
     )
     model = Model(
-        {"coefficient": Real()},
-        lambda coefficient: -(coefficient**2),
+        parameters={"coefficient": Real()},
+        log_density=lambda coefficient: -(coefficient**2),
         data=Data(data, scaling=fit_data_scaling(data) if scenario == "scaled_overflow" else None),
         transformed_parameters=lambda reach, media_frequency, coefficient: {
             "expected": coefficient * (jnp.tanh(reach) * media_frequency)[:, 0]

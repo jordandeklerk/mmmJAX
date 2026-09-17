@@ -42,7 +42,7 @@ def _normal(values, scale=1.0):
 @pytest.mark.parametrize("keyword", ["inputs", "scaling", "data_variables"])
 def test_model_data_options_are_declared_in_the_data_block(keyword):
     with pytest.raises(TypeError, match=f"unexpected keyword argument '{keyword}'"):
-        Model({}, lambda: jnp.array(0.0), data=_data(), **{keyword: None})
+        Model(parameters={}, log_density=lambda: jnp.array(0.0), data=_data(), **{keyword: None})
 
 
 def _density(outcome, annual, annual_coefficients, intercept, sigma):
@@ -53,9 +53,9 @@ def _density(outcome, annual, annual_coefficients, intercept, sigma):
 
 def _model(density=_density, generate=None):
     return Model(
-        {"intercept": Real(), "sigma": Positive(), "annual_coefficients": Real((2,))},
-        density,
-        generate,
+        parameters={"intercept": Real(), "sigma": Positive(), "annual_coefficients": Real((2,))},
+        log_density=density,
+        generated_quantities=generate,
         data=_data(),
         transformed_parameters=lambda time, annual_coefficients: {
             "annual": fourier_features(time, period=8, order=1) @ annual_coefficients
@@ -160,9 +160,13 @@ def test_named_forecast_inputs_align_groups_channels_controls_and_retain_trainin
         return {"mean": mean(annual, media, controls, media_beta, control_beta), "annual": annual}
 
     model = Model(
-        {"media_beta": Real(shape=(2, 2)), "control_beta": Real(shape=(2, 2)), "annual_coefficients": Real((2, 2))},
-        density,
-        quantities,
+        parameters={
+            "media_beta": Real(shape=(2, 2)),
+            "control_beta": Real(shape=(2, 2)),
+            "annual_coefficients": Real((2, 2)),
+        },
+        log_density=density,
+        generated_quantities=quantities,
         data=training,
         transformed_parameters=lambda time, annual_coefficients: {
             "annual": fourier_features(time, period=8, order=1) @ annual_coefficients
@@ -210,7 +214,7 @@ def test_named_callbacks_require_requested_inputs_despite_defaults():
     def quantities(key, outcome=0.0):
         return {"observed": outcome}
 
-    model = Model({}, density, quantities, data=_data())
+    model = Model(parameters={}, log_density=density, generated_quantities=quantities, data=_data())
     np.testing.assert_allclose(jax.jit(model.log_density)({}, model.data), _normal([0.4, 1.0, 1.4, 0.7]), rtol=3e-6)
     future = model.prepare_data(prepare_data(pl.DataFrame({"time": [17, 18]}), time="time"))
     with pytest.raises(ValueError, match="outcome"):
@@ -221,26 +225,31 @@ def test_named_callbacks_require_requested_inputs_despite_defaults():
 
 def test_named_density_must_request_every_user_parameter():
     with pytest.raises(ValueError, match="intercept"):
-        Model({"intercept": Real()}, lambda *, outcome: normal(outcome, 0.0, 1.0), data=_data())
+        Model(parameters={"intercept": Real()}, log_density=lambda *, outcome: normal(outcome, 0.0, 1.0), data=_data())
 
 
 def test_undeclared_names_are_rejected_even_when_defaulted_or_matching_source_columns():
     for density in (lambda *, sales: jnp.array(0.0), lambda *, outcome, unknown=0.0: jnp.array(0.0)):
         with pytest.raises(ValueError, match=r"sales|unknown"):
-            Model({}, density, data=_data())
+            Model(parameters={}, log_density=density, data=_data())
     with pytest.raises(ValueError, match="unknown"):
-        Model({}, lambda *, outcome: jnp.array(0.0), lambda key, *, unknown=0.0: {}, data=_data())
+        Model(
+            parameters={},
+            log_density=lambda *, outcome: jnp.array(0.0),
+            generated_quantities=lambda key, *, unknown=0.0: {},
+            data=_data(),
+        )
 
 
 def test_named_binding_rejects_collisions_between_data_and_parameters():
     with pytest.raises(ValueError, match=r"ambig|colli|conflict"):
-        Model({"outcome": Real()}, lambda outcome: jnp.sum(outcome), data=_data())
+        Model(parameters={"outcome": Real()}, log_density=lambda outcome: jnp.sum(outcome), data=_data())
 
     with pytest.raises(ValueError, match=r"ambig|colli|conflict"):
         Model(
-            {"outcome": Real()},
-            lambda outcome: normal(outcome, 0.0, 1.0),
-            lambda key, outcome: {"value": outcome},
+            parameters={"outcome": Real()},
+            log_density=lambda outcome: normal(outcome, 0.0, 1.0),
+            generated_quantities=lambda key, outcome: {"value": outcome},
             data=_data(),
         )
 
@@ -253,7 +262,7 @@ def test_named_callbacks_reject_variadic_parameters_and_a_keyword_only_random_ke
     )
     for density in densities:
         with pytest.raises(TypeError):
-            Model({}, density, data=_data())
+            Model(parameters={}, log_density=density, data=_data())
     generators = (
         lambda key, *, outcome, **values: {},
         lambda key, *values, outcome: {},
@@ -263,12 +272,17 @@ def test_named_callbacks_reject_variadic_parameters_and_a_keyword_only_random_ke
     )
     for generate in generators:
         with pytest.raises(TypeError, match="generated_quantities"):
-            Model({}, lambda *, outcome: jnp.array(0.0), generated_quantities=generate, data=_data())
+            Model(
+                parameters={},
+                log_density=lambda *, outcome: jnp.array(0.0),
+                generated_quantities=generate,
+                data=_data(),
+            )
 
 
 def test_keyword_only_input_resolution_is_not_enabled_for_legacy_models():
     with pytest.raises(TypeError):
-        Model({}, lambda *, outcome: normal(outcome, 0.0, 1.0))
+        Model(parameters={}, log_density=lambda *, outcome: normal(outcome, 0.0, 1.0))
 
 
 def test_prepared_callbacks_cannot_request_raw_data_or_effects():
@@ -276,14 +290,14 @@ def test_prepared_callbacks_cannot_request_raw_data_or_effects():
         return normal(data["outcome"], effects["annual"], 1.0)
 
     with pytest.raises(TypeError, match="no longer receives data or effects"):
-        Model({}, density, data=_data())
+        Model(parameters={}, log_density=density, data=_data())
 
 
 def test_prepared_callbacks_may_request_no_inputs_without_hidden_priors():
     model = Model(
-        {},
-        lambda: jnp.array(1.25),
-        lambda key: {"constant": jnp.array(3.0)},
+        parameters={},
+        log_density=lambda: jnp.array(1.25),
+        generated_quantities=lambda key: {"constant": jnp.array(3.0)},
         data=_data(),
     )
     value, gradient = jax.jit(jax.value_and_grad(model.log_density))({}, model.data)
@@ -295,9 +309,9 @@ def test_prepared_callbacks_may_request_no_inputs_without_hidden_priors():
 
 def test_transformed_outputs_cannot_shadow_declared_parameters():
     model = Model(
-        {"annual_coefficients": Real((2,))},
-        lambda summary: jnp.sum(summary),
-        lambda key, summary: {"summary": summary},
+        parameters={"annual_coefficients": Real((2,))},
+        log_density=lambda summary: jnp.sum(summary),
+        generated_quantities=lambda key, summary: {"summary": summary},
         data=_data(),
         transformed_parameters=lambda annual_coefficients: {
             "summary": jnp.ones(4),
@@ -314,9 +328,9 @@ def test_transformed_outputs_cannot_shadow_declared_parameters():
 def test_parameter_names_cannot_replace_the_generation_random_key():
     with pytest.raises(TypeError, match=r"annual_coefficients.*random key"):
         Model(
-            {"annual_coefficients": Real((2,))},
-            lambda annual_coefficients: normal(annual_coefficients, 0.0, 1.0),
-            lambda annual_coefficients: {},
+            parameters={"annual_coefficients": Real((2,))},
+            log_density=lambda annual_coefficients: normal(annual_coefficients, 0.0, 1.0),
+            generated_quantities=lambda annual_coefficients: {},
             data=_data(),
         )
 
@@ -340,9 +354,9 @@ def test_explicit_data_variables_bind_user_names_in_all_program_blocks_under_jit
         return {"residual": residual, "mean": mean}
 
     model = Model(
-        {"level": Real(), "seasonal_coefficients": Real((2,))},
-        log_density,
-        generated_quantities,
+        parameters={"level": Real(), "seasonal_coefficients": Real((2,))},
+        log_density=log_density,
+        generated_quantities=generated_quantities,
         data=Data(data, variables={"revenue": "outcome", "elapsed": "time"}),
         transformed_parameters=transformed_parameters,
     )
@@ -372,9 +386,9 @@ def test_explicit_data_variables_alias_auxiliary_inputs_and_keep_their_snapshot(
         return target
 
     model = Model(
-        {"location": Real()},
-        density,
-        lambda key, experiment_lift: {"lift": experiment_lift},
+        parameters={"location": Real()},
+        log_density=density,
+        generated_quantities=lambda key, experiment_lift: {"lift": experiment_lift},
         data=Data(_data(), inputs=inputs, variables={"experiment_lift": "measured_lift"}),
     )
     inputs["measured_lift"].values[:] = 100
@@ -396,9 +410,9 @@ def test_auxiliary_source_may_share_a_parameter_name_when_declared_under_a_diffe
         return target
 
     model = Model(
-        {"roi": Real()},
-        density,
-        lambda key, roi, measured_roi: {"estimated_roi": roi, "measured_roi": measured_roi},
+        parameters={"roi": Real()},
+        log_density=density,
+        generated_quantities=lambda key, roi, measured_roi: {"estimated_roi": roi, "measured_roi": measured_roi},
         data=Data(_data(), inputs=inputs, variables={"measured_roi": "roi"}),
     )
     value = jax.jit(model.log_density)({"roi": jnp.array(0.25)}, model.data)
@@ -418,7 +432,9 @@ def test_auxiliary_source_may_share_a_parameter_name_when_declared_under_a_diffe
 
 def test_explicit_data_variable_mapping_is_copied_at_construction_and_inspection():
     declarations = {"revenue": "outcome"}
-    model = Model({}, lambda revenue: jnp.sum(revenue), data=Data(_data(), variables=declarations))
+    model = Model(
+        parameters={}, log_density=lambda revenue: jnp.sum(revenue), data=Data(_data(), variables=declarations)
+    )
     declarations["revenue"] = "media"
     inspected = model.data_variables
     inspected["revenue"] = "spend"
@@ -430,37 +446,37 @@ def test_explicit_data_variable_mapping_is_copied_at_construction_and_inspection
 @pytest.mark.parametrize("declarations", ["outcome", [("revenue", "outcome")], 1])
 def test_data_variables_requires_a_mapping(declarations):
     with pytest.raises(TypeError, match="variables must map"):
-        Model({}, lambda: jnp.array(0.0), data=Data(_data(), variables=declarations))
+        Model(parameters={}, log_density=lambda: jnp.array(0.0), data=Data(_data(), variables=declarations))
 
 
 @pytest.mark.parametrize("name", ["", "weekly sales", "class", 1])
 def test_data_variable_names_must_be_valid_function_argument_names(name):
     with pytest.raises(ValueError, match="data variable name must be a valid Python identifier"):
-        Model({}, lambda: jnp.array(0.0), data=Data(_data(), variables={name: "outcome"}))
+        Model(parameters={}, log_density=lambda: jnp.array(0.0), data=Data(_data(), variables={name: "outcome"}))
 
 
 @pytest.mark.parametrize("source", ["", 1, np.ones(4)])
 def test_data_variable_sources_must_be_nonempty_names(source):
     with pytest.raises((TypeError, ValueError), match="Source for data variable 'revenue'"):
-        Model({}, lambda: jnp.array(0.0), data=Data(_data(), variables={"revenue": source}))
+        Model(parameters={}, log_density=lambda: jnp.array(0.0), data=Data(_data(), variables={"revenue": source}))
 
 
 @pytest.mark.parametrize("source", ["media", "sales", "reference_media", "unknown"])
 def test_unavailable_data_variable_sources_are_rejected_even_if_unused(source):
     with pytest.raises(ValueError, match="exposure"):
-        Model({}, lambda: jnp.array(0.0), data=Data(_data(), variables={"exposure": source}))
+        Model(parameters={}, log_density=lambda: jnp.array(0.0), data=Data(_data(), variables={"exposure": source}))
 
 
 def test_explicit_data_variables_require_prepared_data():
     with pytest.raises(TypeError, match="Data requires PreparedData"):
-        Model({}, lambda data: jnp.array(0.0), data=Data(None, variables={"revenue": "outcome"}))
+        Model(parameters={}, log_density=lambda data: jnp.array(0.0), data=Data(None, variables={"revenue": "outcome"}))
 
 
 def test_declared_data_variables_cannot_share_parameter_names():
     with pytest.raises(ValueError, match="revenue"):
         Model(
-            {"revenue": Real()},
-            lambda revenue: normal(revenue, 0.0, 1.0),
+            parameters={"revenue": Real()},
+            log_density=lambda revenue: normal(revenue, 0.0, 1.0),
             data=Data(_data(), variables={"revenue": "outcome"}),
         )
 
@@ -480,13 +496,13 @@ def test_explicit_data_variables_do_not_fall_back_to_implicit_source_names(block
         callbacks[block] = lambda key, outcome: {"observed": outcome}
 
     with pytest.raises(ValueError, match="outcome"):
-        Model({}, data=Data(_data(), variables={"revenue": "outcome"}), **callbacks)
+        Model(parameters={}, data=Data(_data(), variables={"revenue": "outcome"}), **callbacks)
 
 
 def test_missing_transformed_quantity_does_not_fall_back_to_an_undeclared_data_source():
     model = Model(
-        {},
-        lambda outcome: jnp.sum(outcome),
+        parameters={},
+        log_density=lambda outcome: jnp.sum(outcome),
         data=Data(_data(), variables={"revenue": "outcome"}),
         transformed_parameters=lambda revenue: {"mean": revenue},
     )
@@ -495,12 +511,12 @@ def test_missing_transformed_quantity_does_not_fall_back_to_an_undeclared_data_s
 
 
 def test_empty_data_variables_declares_no_inputs():
-    model = Model({}, lambda: jnp.array(1.25), data=Data(_data(), variables={}))
+    model = Model(parameters={}, log_density=lambda: jnp.array(1.25), data=Data(_data(), variables={}))
     assert model.data_variables == {}
     np.testing.assert_array_equal(jax.jit(model.log_density)({}, model.data), 1.25)
 
     with pytest.raises(ValueError, match="outcome"):
-        Model({}, lambda outcome: jnp.sum(outcome), data=Data(_data(), variables={}))
+        Model(parameters={}, log_density=lambda outcome: jnp.sum(outcome), data=Data(_data(), variables={}))
 
 
 def test_undeclared_source_identifiers_can_be_used_as_parameter_names():
@@ -514,7 +530,11 @@ def test_undeclared_source_identifiers_can_be_used_as_parameter_names():
         return target
 
     names = ("outcome", "outcome_scaling", "n_periods", "reference")
-    model = Model({name: Real() for name in names}, density, data=Data(_data(), variables={"revenue": "outcome"}))
+    model = Model(
+        parameters={name: Real() for name in names},
+        log_density=density,
+        data=Data(_data(), variables={"revenue": "outcome"}),
+    )
     position = {name: jnp.array(0.25) for name in names}
     expected = _normal(np.full(4, 0.25)) + _normal(_data().arrays["outcome"] - 1.0)
     np.testing.assert_allclose(jax.jit(model.log_density)(position, model.data), expected, rtol=4e-6)
@@ -522,8 +542,8 @@ def test_undeclared_source_identifiers_can_be_used_as_parameter_names():
 
 def test_undeclared_source_identifiers_can_be_used_as_transformed_output_names():
     model = Model(
-        {},
-        lambda outcome: jnp.sum(outcome),
+        parameters={},
+        log_density=lambda outcome: jnp.sum(outcome),
         data=Data(_data(), variables={"revenue": "outcome"}),
         transformed_parameters=lambda revenue: {"outcome": revenue * 2},
     )
@@ -532,8 +552,8 @@ def test_undeclared_source_identifiers_can_be_used_as_transformed_output_names()
 
 def test_transformed_outputs_cannot_shadow_explicit_data_variables():
     model = Model(
-        {},
-        lambda revenue: jnp.sum(revenue),
+        parameters={},
+        log_density=lambda revenue: jnp.sum(revenue),
         data=Data(_data(), variables={"revenue": "outcome"}),
         transformed_parameters=lambda revenue: {"revenue": revenue * 2},
     )
@@ -543,9 +563,9 @@ def test_transformed_outputs_cannot_shadow_explicit_data_variables():
 
 def test_generated_quantities_key_may_use_an_undeclared_source_identifier():
     model = Model(
-        {},
-        lambda revenue: jnp.sum(revenue),
-        lambda outcome, revenue: {"observed": revenue},
+        parameters={},
+        log_density=lambda revenue: jnp.sum(revenue),
+        generated_quantities=lambda outcome, revenue: {"observed": revenue},
         data=Data(_data(), variables={"revenue": "outcome"}),
     )
     output = jax.jit(model.generate_quantities)(jax.random.key(0), {}, model.data)
@@ -555,9 +575,9 @@ def test_generated_quantities_key_may_use_an_undeclared_source_identifier():
 def test_generated_quantities_key_cannot_replace_an_explicit_data_variable():
     with pytest.raises(TypeError, match=r"revenue.*random key"):
         Model(
-            {},
-            lambda revenue: jnp.sum(revenue),
-            lambda revenue: {},
+            parameters={},
+            log_density=lambda revenue: jnp.sum(revenue),
+            generated_quantities=lambda revenue: {},
             data=Data(_data(), variables={"revenue": "outcome"}),
         )
 
@@ -572,9 +592,9 @@ def test_aliased_outcome_scaling_restores_units_under_jit(scaled):
         return {"revenue": revenue, "scale": revenue_scaling.scale, "offset": revenue_scaling.offset}
 
     model = Model(
-        {},
-        lambda standardized_revenue: jnp.sum(standardized_revenue),
-        generated_quantities,
+        parameters={},
+        log_density=lambda standardized_revenue: jnp.sum(standardized_revenue),
+        generated_quantities=generated_quantities,
         data=Data(
             data,
             scaling=scaling,
@@ -606,9 +626,9 @@ def test_aliased_population_unit_conversions_preserve_the_group_axis(groups):
         return {"original_units": original_units, "scale": units.scale, "offset": units.offset}
 
     model = Model(
-        {},
-        lambda y: jnp.sum(y),
-        generated_quantities,
+        parameters={},
+        log_density=lambda y: jnp.sum(y),
+        generated_quantities=generated_quantities,
         data=Data(data, scaling=scaling, variables={"y": "outcome", "units": "outcome_scaling"}),
     )
     outputs = jax.jit(model.generate_quantities)(jax.random.key(0), {}, model.data)
@@ -639,9 +659,9 @@ def test_declared_current_inputs_update_for_scenarios_while_references_remain_fi
         }
 
     model = Model(
-        {},
-        lambda revenue: jnp.sum(revenue),
-        generated_quantities,
+        parameters={},
+        log_density=lambda revenue: jnp.sum(revenue),
+        generated_quantities=generated_quantities,
         data=Data(
             training,
             variables={
@@ -675,7 +695,12 @@ def test_day_of_year_inputs_anchor_seasonality_to_the_calendar_for_new_data():
     def generated_quantities(key, day_of_year, media_day_of_year, level):
         return {"season": fourier_features(day_of_year, period=365.25, order=1), "media_days": media_day_of_year}
 
-    model = Model({"level": Real()}, lambda outcome, level: jnp.sum(outcome * level), generated_quantities, data=data)
+    model = Model(
+        parameters={"level": Real()},
+        log_density=lambda outcome, level: jnp.sum(outcome * level),
+        generated_quantities=generated_quantities,
+        data=data,
+    )
     outputs = jax.jit(model.generate_quantities)(jax.random.key(0), {"level": jnp.array(1.0)}, model.data)
     np.testing.assert_allclose(outputs["season"], fourier_features(np.array([5.0, 12.0, 19.0]), period=365.25, order=1))
     np.testing.assert_array_equal(outputs["media_days"], [363.0, 5.0, 12.0, 19.0])
@@ -690,7 +715,11 @@ def test_day_of_year_inputs_anchor_seasonality_to_the_calendar_for_new_data():
 
     numeric = prepare_data(pl.DataFrame({"time": [1, 2], "sales": [1.0, 2.0]}), time="time", outcome="sales")
     with pytest.raises(ValueError, match="unknown input 'day_of_year'"):
-        Model({"level": Real()}, lambda outcome, day_of_year, level: jnp.sum(outcome * level), data=numeric)
+        Model(
+            parameters={"level": Real()},
+            log_density=lambda outcome, day_of_year, level: jnp.sum(outcome * level),
+            data=numeric,
+        )
 
 
 def test_unknown_input_errors_list_the_available_names():
@@ -699,11 +728,11 @@ def test_unknown_input_errors_list_the_available_names():
         ValueError,
         match=r"(?s)unknown input 'sales'.*Available inputs.*n_periods.*outcome.*outcome_scaling.*reference.*time",
     ):
-        Model({"level": Real()}, lambda sales, level: jnp.sum(sales * level), data=data)
+        Model(parameters={"level": Real()}, log_density=lambda sales, level: jnp.sum(sales * level), data=data)
     with pytest.raises(ValueError, match=r"(?s)unknown input 'sales'.*Available inputs.*revenue"):
         Model(
-            {"level": Real()},
-            lambda sales, level: jnp.sum(sales * level),
+            parameters={"level": Real()},
+            log_density=lambda sales, level: jnp.sum(sales * level),
             data=Data(data, variables={"revenue": "outcome"}),
         )
 
@@ -737,9 +766,9 @@ def test_constants_reach_every_program_block_by_name_under_jit():
         return {"copy": mean, "lag": jnp.asarray(max_lag)}
 
     model = Model(
-        {"level": Real()},
-        lambda outcome, mean, max_lag, level: jnp.sum(outcome - mean) * max_lag,
-        generated_quantities,
+        parameters={"level": Real()},
+        log_density=lambda outcome, mean, max_lag, level: jnp.sum(outcome - mean) * max_lag,
+        generated_quantities=generated_quantities,
         data=block,
         transformed_data=transformed_data,
         transformed_parameters=transformed_parameters,
@@ -759,7 +788,11 @@ def test_constants_reach_every_program_block_by_name_under_jit():
 
 def test_constants_are_available_beside_declared_variables():
     _, _, block = _constant_model(variables={"revenue": "outcome"})
-    model = Model({"level": Real()}, lambda revenue, max_lag, level: jnp.sum(revenue * level) * max_lag, data=block)
+    model = Model(
+        parameters={"level": Real()},
+        log_density=lambda revenue, max_lag, level: jnp.sum(revenue * level) * max_lag,
+        data=block,
+    )
 
     assert model.data_variables == {
         "revenue": "outcome",
@@ -768,7 +801,11 @@ def test_constants_are_available_beside_declared_variables():
         "label": "label",
     }
     with pytest.raises(ValueError, match=r"(?s)unknown input 'lag'.*Available inputs.*max_lag"):
-        Model({"level": Real()}, lambda revenue, lag, level: jnp.sum(revenue * level) * lag, data=block)
+        Model(
+            parameters={"level": Real()},
+            log_density=lambda revenue, lag, level: jnp.sum(revenue * level) * lag,
+            data=block,
+        )
 
 
 @pytest.mark.parametrize(
@@ -782,14 +819,14 @@ def test_constant_names_cannot_collide_with_other_inputs_or_parameters(declarati
     data, _, _ = _constant_model()
     with pytest.raises(ValueError, match=message):
         Model(
-            {"level": Real()},
-            lambda outcome, level: jnp.sum(outcome * level),
+            parameters={"level": Real()},
+            log_density=lambda outcome, level: jnp.sum(outcome * level),
             data=Data(data, constants={"max_lag": 2}, **declarations),
         )
     with pytest.raises(ValueError, match="conflict"):
         Model(
-            {"max_lag": Real()},
-            lambda outcome, max_lag: jnp.sum(outcome * max_lag),
+            parameters={"max_lag": Real()},
+            log_density=lambda outcome, max_lag: jnp.sum(outcome * max_lag),
             data=Data(data, constants={"max_lag": 2}),
         )
 
@@ -800,7 +837,7 @@ def test_time_inputs_and_training_references_exist_without_being_requested():
     )
     history = pl.DataFrame({"week": ["2025-12-29"], "video": [0.5]})
     data = prepare_data(frame, time="week", outcome="sales", media=["video"], media_history=history)
-    model = Model({"level": Real()}, lambda outcome, level: jnp.sum(outcome * level), data=data)
+    model = Model(parameters={"level": Real()}, log_density=lambda outcome, level: jnp.sum(outcome * level), data=data)
     inputs = model.data
 
     assert {"time", "media_time", "day_of_year", "media_day_of_year"} <= inputs.values.keys()
@@ -817,7 +854,9 @@ def test_time_inputs_and_training_references_exist_without_being_requested():
     np.testing.assert_array_equal(scenario.reference.media, inputs.values["media"])
 
     numeric = prepare_data(pl.DataFrame({"time": [1, 2], "sales": [1.0, 2.0]}), time="time", outcome="sales")
-    numeric_model = Model({"level": Real()}, lambda outcome, level: jnp.sum(outcome * level), data=numeric)
+    numeric_model = Model(
+        parameters={"level": Real()}, log_density=lambda outcome, level: jnp.sum(outcome * level), data=numeric
+    )
     assert "day_of_year" not in numeric_model.data.values
     assert "media_time" not in numeric_model.data.values
 
@@ -864,8 +903,8 @@ def test_reference_namespace_and_outcome_scaling_object_reach_the_blocks():
         }
 
     model = Model(
-        {"coefficient": Real()},
-        lambda outcome, mean, coefficient: normal(outcome, mean, 1.0),
+        parameters={"coefficient": Real()},
+        log_density=lambda outcome, mean, coefficient: normal(outcome, mean, 1.0),
         data=Data(data, scaling=scaling),
         transformed_data=transformed_data,
         transformed_parameters=transformed_parameters,
@@ -899,8 +938,8 @@ def test_reference_namespace_and_outcome_scaling_object_reach_the_blocks():
 def test_outcome_scaling_object_is_scalar_without_population_scaling():
     data = prepare_data(pl.DataFrame({"week": [1, 2, 3], "sales": [1.0, 2.0, 4.0]}), time="week", outcome="sales")
     model = Model(
-        {"level": Real()},
-        lambda outcome, outcome_scaling, level: normal(outcome, level, 1.0) + 0.0 * outcome_scaling.scale,
+        parameters={"level": Real()},
+        log_density=lambda outcome, outcome_scaling, level: normal(outcome, level, 1.0) + 0.0 * outcome_scaling.scale,
         data=Data(data, scaling="auto"),
     )
     values = model.data

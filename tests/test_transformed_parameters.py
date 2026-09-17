@@ -81,9 +81,9 @@ def test_reference_inputs_and_unit_helpers_compose_through_all_callbacks_without
         }
 
     model = Model(
-        {"coefficient": Positive()},
-        density,
-        generate,
+        parameters={"coefficient": Positive()},
+        log_density=density,
+        generated_quantities=generate,
         data=Data(raw, scaling=scaling),
         transformed_parameters=transformed,
     )
@@ -139,7 +139,7 @@ def test_outcome_scaling_requires_the_original_outcome_even_with_transformed_out
     callback = lambda key, outcome_scaling: {}  # noqa: E731
     callbacks[stage] = callback if stage == "generated_quantities" else partial(callback, None)
     with pytest.raises(ValueError, match=r"requires.*outcome.*original prepared data"):
-        Model({}, data=_data(observed=False), **callbacks)
+        Model(parameters={}, data=_data(observed=False), **callbacks)
 
 
 @pytest.mark.parametrize("stage", ["transformed_parameters", "log_density", "generated_quantities"])
@@ -152,7 +152,7 @@ def test_absent_reference_roles_are_reported_when_the_block_runs(stage, role):
         "transformed_parameters": lambda: {},
     }
     callbacks[stage] = callback if stage == "generated_quantities" else partial(callback, None)
-    model = Model({}, data=_data(observed=False), **callbacks)
+    model = Model(parameters={}, data=_data(observed=False), **callbacks)
     evaluate = {
         "log_density": lambda: model.log_density({}, model.data),
         "generated_quantities": lambda: model.generate_quantities(jax.random.key(0), {}, model.data),
@@ -165,7 +165,9 @@ def test_absent_reference_roles_are_reported_when_the_block_runs(stage, role):
 @pytest.mark.parametrize("generate", [lambda reference: {}, lambda outcome_scaling: {}])
 def test_generate_cannot_place_model_supplied_inputs_in_the_random_key_position(generate):
     with pytest.raises(TypeError, match=r"generated_quantities.*random key"):
-        Model({}, lambda: jnp.array(0.0), generate, data=_data(observed=False))
+        Model(
+            parameters={}, log_density=lambda: jnp.array(0.0), generated_quantities=generate, data=_data(observed=False)
+        )
 
 
 def test_period_helpers_work_without_original_or_current_outcomes():
@@ -177,8 +179,8 @@ def test_period_helpers_work_without_original_or_current_outcomes():
 
     raw = _data(observed=False)
     model = Model(
-        {},
-        lambda current: current.sum(),
+        parameters={},
+        log_density=lambda current: current.sum(),
         data=raw,
         transformed_parameters=transformed,
     )
@@ -208,9 +210,9 @@ def test_model_supplied_names_cannot_be_shadowed_by_declared_inputs(source, name
 @pytest.mark.parametrize("name", ["reference", "outcome_scaling", "n_periods"])
 def test_transformed_outputs_cannot_shadow_model_supplied_inputs(name):
     model = Model(
-        {},
-        lambda: jnp.array(0.0),
-        lambda key: {},
+        parameters={},
+        log_density=lambda: jnp.array(0.0),
+        generated_quantities=lambda key: {},
         data=_data(),
         transformed_parameters=lambda: {name: jnp.array(1.0)},
     )
@@ -236,9 +238,9 @@ def _regression(*, save=(), include_generate=True):
         }
 
     return Model(
-        {"beta": Real(shape=(2,)), "scale": Positive(), "intercept": Real()},
-        density,
-        quantities if include_generate else None,
+        parameters={"beta": Real(shape=(2,)), "scale": Positive(), "intercept": Real()},
+        log_density=density,
+        generated_quantities=quantities if include_generate else None,
         data=_data(),
         transformed_parameters=transformed,
         save=save,
@@ -338,7 +340,7 @@ def _media_model(transformed=None, *, save=(), include_generate=True):
         return {"mu": intercept + total + annual, "paid_media": paid_media, "paid_media_total": total, "annual": annual}
 
     model = Model(
-        {
+        parameters={
             "intercept": Real(),
             "sigma": Positive(),
             "annual_coefficients": Real((2,)),
@@ -347,8 +349,8 @@ def _media_model(transformed=None, *, save=(), include_generate=True):
             "paid_media_half_saturation": Positive(dims="channel"),
             "paid_media_slope": Positive(dims="channel"),
         },
-        density,
-        (lambda key, *, mu: {"mu": mu}) if include_generate else None,
+        log_density=density,
+        generated_quantities=(lambda key, *, mu: {"mu": mu}) if include_generate else None,
         data=data,
         transformed_parameters=media_quantities if transformed is None else transformed,
         save=save,
@@ -396,9 +398,9 @@ def test_construction_does_not_probe_callbacks_and_runs_the_whole_transform_for_
         return {"summary": outcome.mean(), "unused": outcome.sum()}
 
     model = Model(
-        {},
-        lambda *, summary: summary,
-        lambda key: {"constant": jnp.array(1.0)},
+        parameters={},
+        log_density=lambda *, summary: summary,
+        generated_quantities=lambda key: {"constant": jnp.array(1.0)},
         data=_data(),
         transformed_parameters=transformed,
     )
@@ -413,13 +415,15 @@ def test_construction_does_not_probe_callbacks_and_runs_the_whole_transform_for_
 
 def test_unknown_density_and_generation_inputs_are_deferred_to_runtime_even_with_defaults():
     for density in (lambda *, typo: typo, lambda *, typo=1.0: jnp.asarray(typo)):
-        model = Model({}, density, data=_data(), transformed_parameters=lambda: {"actual": jnp.array(0.0)})
+        model = Model(
+            parameters={}, log_density=density, data=_data(), transformed_parameters=lambda: {"actual": jnp.array(0.0)}
+        )
         with pytest.raises(ValueError, match="typo"):
             model.log_density({}, model.data)
     model = Model(
-        {},
-        lambda: jnp.array(0.0),
-        lambda key, *, typo=1.0: {"value": typo},
+        parameters={},
+        log_density=lambda: jnp.array(0.0),
+        generated_quantities=lambda key, *, typo=1.0: {"value": typo},
         data=_data(),
         transformed_parameters=lambda: {"actual": jnp.array(0.0)},
     )
@@ -452,9 +456,9 @@ def test_transform_outputs_must_be_a_mapping_of_valid_names_to_array_like_values
 
     for result in (None, [1.0], {1: 1.0}, {"bad-name": 1.0}, {"class": 1.0}, {"valid": object()}):
         model = Model(
-            {},
-            lambda: jnp.array(0.0),
-            lambda key: {},
+            parameters={},
+            log_density=lambda: jnp.array(0.0),
+            generated_quantities=lambda key: {},
             data=_data(),
             transformed_parameters=make_transform(result),
         )
@@ -466,9 +470,9 @@ def test_transform_outputs_must_be_a_mapping_of_valid_names_to_array_like_values
 
 def test_empty_transforms_and_python_scalar_list_boolean_outputs_are_supported():
     empty = Model(
-        {},
-        lambda: jnp.array(1.5),
-        lambda key: {"constant": 2.5},
+        parameters={},
+        log_density=lambda: jnp.array(1.5),
+        generated_quantities=lambda key: {"constant": 2.5},
         data=_data(),
         transformed_parameters=lambda: {},
     )
@@ -486,7 +490,13 @@ def test_empty_transforms_and_python_scalar_list_boolean_outputs_are_supported()
     def quantities(key, *, constant, values, mask):
         return {"constant": constant, "values": values, "mask": mask}
 
-    model = Model({}, density, quantities, data=_data(), transformed_parameters=transformed)
+    model = Model(
+        parameters={},
+        log_density=density,
+        generated_quantities=quantities,
+        data=_data(),
+        transformed_parameters=transformed,
+    )
     np.testing.assert_array_equal(jax.jit(model.log_density)({}, model.data), 3.5)
     generated = jax.jit(model.generate_quantities)(jax.random.key(0), {}, model.data)
     assert generated["constant"].shape == ()
@@ -498,9 +508,9 @@ def test_empty_transforms_and_python_scalar_list_boolean_outputs_are_supported()
 def test_parameter_usage_is_checked_across_transform_and_density_not_generation():
     with pytest.raises(ValueError, match="unused"):
         Model(
-            {"unused": Real()},
-            lambda: jnp.array(0.0),
-            lambda key, *, unused: {"unused": unused},
+            parameters={"unused": Real()},
+            log_density=lambda: jnp.array(0.0),
+            generated_quantities=lambda key, *, unused: {"unused": unused},
             data=_data(),
             transformed_parameters=lambda: {},
         )
@@ -508,8 +518,8 @@ def test_parameter_usage_is_checked_across_transform_and_density_not_generation(
         _media_model(lambda *, paid_media_exponent, intercept: {"mu": paid_media_exponent + intercept})
     with pytest.raises(ValueError, match="second_stage"):
         Model(
-            {},
-            lambda *, first_stage: first_stage,
+            parameters={},
+            log_density=lambda *, first_stage: first_stage,
             data=_data(),
             transformed_parameters=lambda *, second_stage: {"first_stage": second_stage},
         )
@@ -518,16 +528,18 @@ def test_parameter_usage_is_checked_across_transform_and_density_not_generation(
 def test_transformed_stage_requires_prepared_named_callbacks_and_one_callable():
     for transformed in ([lambda: {}], 0.5):
         with pytest.raises(TypeError):
-            Model({}, lambda: jnp.array(0.0), data=_data(), transformed_parameters=transformed)
+            Model(parameters={}, log_density=lambda: jnp.array(0.0), data=_data(), transformed_parameters=transformed)
     with pytest.raises((TypeError, ValueError)):
-        Model({}, lambda: jnp.array(0.0), transformed_parameters=lambda: {})
-    model = Model({}, lambda data, effects: jnp.array(0.0), data=_data(), transformed_parameters=lambda: {})
+        Model(parameters={}, log_density=lambda: jnp.array(0.0), transformed_parameters=lambda: {})
+    model = Model(
+        parameters={}, log_density=lambda data, effects: jnp.array(0.0), data=_data(), transformed_parameters=lambda: {}
+    )
     with pytest.raises(ValueError, match="not data or effects bundles"):
         model.log_density({}, model.data)
     model = Model(
-        {},
-        lambda: jnp.array(0.0),
-        lambda key, data, effects: {},
+        parameters={},
+        log_density=lambda: jnp.array(0.0),
+        generated_quantities=lambda key, data, effects: {},
         data=_data(),
         transformed_parameters=lambda: {},
     )
@@ -535,14 +547,14 @@ def test_transformed_stage_requires_prepared_named_callbacks_and_one_callable():
         model.generate_quantities(jax.random.key(0), {}, model.data)
     for transformed in (lambda controls, /: {}, lambda **values: {}, lambda *values: {}):
         with pytest.raises(TypeError):
-            Model({}, lambda: jnp.array(0.0), data=_data(), transformed_parameters=transformed)
+            Model(parameters={}, log_density=lambda: jnp.array(0.0), data=_data(), transformed_parameters=transformed)
 
 
 def test_transformed_quantities_named_data_or_effects_are_not_legacy_bundles():
     model = Model(
-        {},
-        lambda data, effects: jnp.sum(data + effects),
-        lambda key, effects, data: {"sum": data + effects},
+        parameters={},
+        log_density=lambda data, effects: jnp.sum(data + effects),
+        generated_quantities=lambda key, effects, data: {"sum": data + effects},
         data=_data(),
         transformed_parameters=lambda controls: {"data": controls[:, 0], "effects": controls[:, 1]},
     )
@@ -601,7 +613,14 @@ def test_saved_outputs_merge_with_generate_and_evaluate_transform_once():
     def density(signal):
         raise AssertionError("Saving quantities must not evaluate density")
 
-    model = Model({}, density, generate, data=_data(), transformed_parameters=transformed, save=("signal",))
+    model = Model(
+        parameters={},
+        log_density=density,
+        generated_quantities=generate,
+        data=_data(),
+        transformed_parameters=transformed,
+        save=("signal",),
+    )
     assert calls == []
     result = model.generate_quantities(jax.random.key(0), {}, model.data)
 
@@ -625,7 +644,13 @@ def test_saved_unknown_transformed_names_are_checked_only_at_evaluation():
         calls.append("transformed")
         return {"actual": jnp.array(1.0)}
 
-    model = Model({}, lambda: jnp.array(0.0), data=_data(), transformed_parameters=transformed, save=("typo",))
+    model = Model(
+        parameters={},
+        log_density=lambda: jnp.array(0.0),
+        data=_data(),
+        transformed_parameters=transformed,
+        save=("typo",),
+    )
     assert calls == []
 
     with pytest.raises(ValueError, match="typo"):
@@ -671,7 +696,14 @@ def test_direct_evaluation_returns_all_quantities_without_density_or_generation(
     def generate(key, signal):
         raise AssertionError("Direct evaluation must not generate random quantities")
 
-    model = Model({}, density, generate, data=_data(), transformed_parameters=transformed, save=("signal",))
+    model = Model(
+        parameters={},
+        log_density=density,
+        generated_quantities=generate,
+        data=_data(),
+        transformed_parameters=transformed,
+        save=("signal",),
+    )
     assert calls == []
 
     evaluated = model.evaluate({})

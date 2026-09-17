@@ -439,7 +439,12 @@ def test_model_constrained_draws_and_generated_quantities_keep_values_and_shapes
     def generate(key, controls, weights, sigma):
         return {"outcome": normal_rng(key, controls @ weights, sigma)}
 
-    model = Model({"weights": Simplex((3,)), "sigma": Positive()}, density, generate, data=data)
+    model = Model(
+        parameters={"weights": Simplex((3,)), "sigma": Positive()},
+        log_density=density,
+        generated_quantities=generate,
+        data=data,
+    )
     positions = {
         "weights": jnp.linspace(-0.4, 0.5, 12).reshape(2, 3, 2),
         "sigma": jnp.full((2, 3), jnp.log(2.0)),

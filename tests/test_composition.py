@@ -42,14 +42,14 @@ def _national_model(generate=None):
         }
 
     model = Model(
-        {
+        parameters={
             "intercept": Real(),
             "sigma": Positive(),
             "annual_coefficients": Real(shape=(2,)),
             "promotion_coefficients": Real(shape=(4,)),
         },
-        log_density,
-        generate,
+        log_density=log_density,
+        generated_quantities=generate,
         data=data,
         transformed_parameters=transformed,
     )
@@ -166,9 +166,9 @@ def test_grouped_composition_preserves_effect_shapes_and_counts_shared_priors_on
         return {"seasonality": seasonal}
 
     model = Model(
-        {"seasonality_coefficients": Real(shape=(2, 2) if group_specific_coefficients else (2,))},
-        log_density,
-        generate,
+        parameters={"seasonality_coefficients": Real(shape=(2, 2) if group_specific_coefficients else (2,))},
+        log_density=log_density,
+        generated_quantities=generate,
         data=data,
         transformed_parameters=transformed,
     )
@@ -230,8 +230,8 @@ def test_prepared_models_bind_inputs_by_name_and_raw_models_keep_data_callbacks(
         return normal(data["outcome"], location, 1.0)
 
     position = {"location": jnp.array(0.2)}
-    model = Model({"location": Real()}, composed, data=data)
-    old_model = Model({"location": Real()}, legacy)
+    model = Model(parameters={"location": Real()}, log_density=composed, data=data)
+    old_model = Model(parameters={"location": Real()}, log_density=legacy)
     assert set(model.parameters) == {"location"}
     actual = jax.jit(model.log_density)(position, model.data)
     expected = old_model.log_density(position, data._to_jax())
@@ -242,7 +242,7 @@ def test_prepared_models_bind_inputs_by_name_and_raw_models_keep_data_callbacks(
 @pytest.mark.parametrize("value", [None, [], (), [object()]])
 def test_model_has_no_component_assembly_argument(value):
     with pytest.raises(TypeError, match="components"):
-        Model({}, lambda data: jnp.array(0.0), components=value)
+        Model(parameters={}, log_density=lambda data: jnp.array(0.0), components=value)
 
 
 def test_model_snapshots_prepared_arrays_and_parameter_declarations():
@@ -255,7 +255,7 @@ def test_model_snapshots_prepared_arrays_and_parameter_declarations():
     def log_density(outcome, location, seasonality, coefficients):
         return normal(outcome, location + seasonality, 1.0) + normal(coefficients, 0.0, 1.0)
 
-    model = Model(parameters, log_density, data=data, transformed_parameters=transformed)
+    model = Model(parameters=parameters, log_density=log_density, data=data, transformed_parameters=transformed)
     position = {"location": jnp.array(0.2), "coefficients": jnp.array([0.3, -0.7])}
     expected = model.log_density(position, model.data)
     data.arrays["outcome"][:] = 99
@@ -271,7 +271,7 @@ def test_model_snapshots_prepared_arrays_and_parameter_declarations():
 def test_model_requires_prepared_data_in_constructor():
     for invalid_data in ({"outcome": jnp.ones(2)}, pl.DataFrame({"time": [0]})):
         with pytest.raises(TypeError):
-            Model({}, lambda outcome: jnp.sum(outcome), data=invalid_data)
+            Model(parameters={}, log_density=lambda outcome: jnp.sum(outcome), data=invalid_data)
 
 
 def test_prepared_density_rejects_legacy_data_effects_callbacks_with_guidance():
@@ -285,8 +285,8 @@ def test_prepared_density_rejects_legacy_data_effects_callbacks_with_guidance():
     for callback in bad_densities:
         with pytest.raises(TypeError, match=r"no longer receives data or effects.*Request individual inputs by name"):
             Model(
-                {"location": Real()},
-                callback,
+                parameters={"location": Real()},
+                log_density=callback,
                 data=data,
             )
 
@@ -296,9 +296,9 @@ def test_prepared_generation_rejects_legacy_data_effects_callbacks_with_guidance
     for callback in (lambda key, data, location: {}, lambda key, data, effects, seasonality: {}):
         with pytest.raises(TypeError, match=r"no longer receives data or effects.*Request individual inputs by name"):
             Model(
-                {"location": Real()},
-                lambda location: normal(location, 0.0, 1.0),
-                callback,
+                parameters={"location": Real()},
+                log_density=lambda location: normal(location, 0.0, 1.0),
+                generated_quantities=callback,
                 data=data,
             )
 
@@ -307,15 +307,15 @@ def test_callbacks_validate_requested_parameter_names():
     _, data, _ = _national_model()
     with pytest.raises(ValueError, match="seasonality"):
         Model(
-            {"location": Real()},
-            lambda *, seasonality: jnp.sum(seasonality),
+            parameters={"location": Real()},
+            log_density=lambda *, seasonality: jnp.sum(seasonality),
             data=data,
         )
 
 
 def test_model_rejects_an_invalid_integer_callback_density():
     _, data, _ = _national_model()
-    model = Model({}, lambda: jnp.array(1), data=data)
+    model = Model(parameters={}, log_density=lambda: jnp.array(1), data=data)
 
     with pytest.raises(TypeError):
         model.log_density({}, model.data)
@@ -345,9 +345,9 @@ def test_generation_skips_density_and_accepts_a_positional_only_random_key():
         return {"seasonality": fourier_features(time, period=7.0, order=1) @ seasonality_coefficients}
 
     model = Model(
-        {"seasonality_coefficients": Real(shape=(2,))},
-        log_density,
-        generate,
+        parameters={"seasonality_coefficients": Real(shape=(2,))},
+        log_density=log_density,
+        generated_quantities=generate,
         data=data,
         transformed_parameters=transformed,
     )
@@ -436,15 +436,15 @@ def prediction_model():
         return {"mean": expected, "seasonality": seasonality}
 
     model = Model(
-        {
+        parameters={
             "seasonality_coefficients": Real(shape=(2, 2)),
             "media_beta": Real(shape=(2, 2)),
             "spend_beta": Real(shape=(2, 2)),
             "control_beta": Real(shape=(2, 2)),
             "population_beta": Real(shape=(2,)),
         },
-        density,
-        generate,
+        log_density=density,
+        generated_quantities=generate,
         data=training,
         transformed_parameters=lambda time, seasonality_coefficients: {
             "seasonality": fourier_features(time, period=7.0, order=1) @ seasonality_coefficients,
@@ -555,9 +555,9 @@ def test_prediction_rejects_new_roles_columns_groups_and_channel_assignments(pre
 def test_prepared_models_prepare_partial_prediction_roles_and_validate_data():
     training = _prediction_data((10, 11))
     model = Model(
-        {},
-        lambda: jnp.array(0.0),
-        lambda key, population: {"population": population},
+        parameters={},
+        log_density=lambda: jnp.array(0.0),
+        generated_quantities=lambda key, population: {"population": population},
         data=training,
     )
     future = prepare_data(
@@ -573,7 +573,7 @@ def test_prepared_models_prepare_partial_prediction_roles_and_validate_data():
     for wrong in ({"population": [150, 300]}, None):
         with pytest.raises(TypeError):
             model.prepare_data(wrong)
-    legacy = Model({}, lambda data: jnp.array(0.0))
+    legacy = Model(parameters={}, log_density=lambda data: jnp.array(0.0))
     with pytest.raises(RuntimeError):
         legacy.prepare_data(future)
 
@@ -583,9 +583,9 @@ def test_outcome_only_seasonal_model_forecasts_from_calendar_labels_alone():
         pl.DataFrame({"time": ["2026-01-01", "2026-01-03"], "sales": [0.3, 0.7]}), time="time", outcome="sales"
     )
     model = Model(
-        {"seasonality_coefficients": Real(shape=(2,))},
-        lambda outcome, seasonality: normal(outcome, seasonality, 1.0),
-        lambda key, seasonality: {"effect": seasonality},
+        parameters={"seasonality_coefficients": Real(shape=(2,))},
+        log_density=lambda outcome, seasonality: normal(outcome, seasonality, 1.0),
+        generated_quantities=lambda key, seasonality: {"effect": seasonality},
         data=training,
         transformed_parameters=lambda time, seasonality_coefficients: {
             "seasonality": fourier_features(time, period=7.0, order=1) @ seasonality_coefficients,
@@ -607,9 +607,9 @@ def test_prediction_retains_training_float_precision_when_global_precision_chang
     training = prepare_data(pl.DataFrame({"time": [10, 11], "sales": [0.3, 0.7]}), time="time", outcome="sales")
     with jax.enable_x64(False):
         model = Model(
-            {"seasonality_coefficients": Real(shape=(2,))},
-            lambda outcome, seasonality: normal(outcome, seasonality, 1.0),
-            lambda key, seasonality, outcome: {"effect": seasonality, "observed": outcome},
+            parameters={"seasonality_coefficients": Real(shape=(2,))},
+            log_density=lambda outcome, seasonality: normal(outcome, seasonality, 1.0),
+            generated_quantities=lambda key, seasonality, outcome: {"effect": seasonality, "observed": outcome},
             data=training,
             transformed_parameters=lambda time, seasonality_coefficients: {
                 "seasonality": fourier_features(time, period=7.0, order=1) @ seasonality_coefficients,
@@ -634,8 +634,8 @@ def test_prediction_retains_training_float_precision_when_global_precision_chang
 def test_model_prepares_dataframe_using_saved_calendar_configuration(frequency):
     frame = pl.DataFrame({"week": ["2026-01-05", "2026-01-12", "2026-01-19"], "sales": [10.0, 20.0, 30.0]})
     model = Model(
-        {},
-        lambda outcome: jnp.sum(outcome),
+        parameters={},
+        log_density=lambda outcome: jnp.sum(outcome),
         data=prepare_data(frame, time="week", outcome="sales", frequency=frequency),
     )
     short = pl.DataFrame({"week": ["2026-01-26"], "sales": [40.0]})

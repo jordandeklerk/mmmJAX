@@ -65,9 +65,9 @@ def test_transformed_data_runs_once_and_feeds_every_program_block_under_jit():
         return {"mean": expected, "total": media_total}
 
     model = Model(
-        {"coefficient": Real((2,))},
-        log_density,
-        generated_quantities,
+        parameters={"coefficient": Real((2,))},
+        log_density=log_density,
+        generated_quantities=generated_quantities,
         data=data,
         transformed_data=transformed_data,
         transformed_parameters=transformed_parameters,
@@ -101,9 +101,9 @@ def test_transformed_data_is_recomputed_for_new_observations_while_references_st
         return {"cumulative": cumulative, "reference_total": reference_total}
 
     model = Model(
-        {},
-        lambda cumulative: cumulative.sum(),
-        generated_quantities,
+        parameters={},
+        log_density=lambda cumulative: cumulative.sum(),
+        generated_quantities=generated_quantities,
         data=data,
         transformed_data=transformed_data,
     )
@@ -130,8 +130,8 @@ def test_static_integer_and_boolean_outputs_define_shapes_and_follow_new_period_
         return {"trend": jnp.linspace(0.0, 1.0, window) * level, "late": jnp.ones(half) * level, "flag": exposed}
 
     model = Model(
-        {"level": Real()},
-        lambda trend, level: trend.sum(),
+        parameters={"level": Real()},
+        log_density=lambda trend, level: trend.sum(),
         data=data,
         transformed_data=transformed_data,
         transformed_parameters=transformed_parameters,
@@ -155,7 +155,7 @@ def test_transformed_data_must_return_the_same_names_for_every_dataset():
             outputs["late"] = media[3:].sum()
         return outputs
 
-    model = Model({}, lambda total: total, data=_data(), transformed_data=transformed_data)
+    model = Model(parameters={}, log_density=lambda total: total, data=_data(), transformed_data=transformed_data)
 
     with pytest.raises(ValueError, match="same names for each dataset"):
         model.prepare_data(_data(periods=2, observed=False))
@@ -163,7 +163,7 @@ def test_transformed_data_must_return_the_same_names_for_every_dataset():
 
 def test_transformed_data_requires_prepared_data():
     with pytest.raises(ValueError, match="transformed_data requires prepared data"):
-        Model({}, lambda data: jnp.array(0.0), transformed_data=lambda: {})
+        Model(parameters={}, log_density=lambda data: jnp.array(0.0), transformed_data=lambda: {})
 
 
 @pytest.mark.parametrize(
@@ -182,8 +182,8 @@ def test_transformed_data_requires_prepared_data():
 def test_transformed_data_outputs_are_validated_at_construction(transformed_data, error, message):
     with pytest.raises(error, match=message):
         Model(
-            {"coefficient": Real()},
-            lambda coefficient: -jnp.square(coefficient),
+            parameters={"coefficient": Real()},
+            log_density=lambda coefficient: -jnp.square(coefficient),
             data=_data(),
             transformed_data=transformed_data,
         )
@@ -197,8 +197,8 @@ def test_transformed_data_uses_declared_variable_names_only():
         return normal(revenue, log_impressions @ coefficient, 1.0)
 
     model = Model(
-        {"coefficient": Real((2,))},
-        log_density,
+        parameters={"coefficient": Real((2,))},
+        log_density=log_density,
         data=block,
         transformed_data=lambda impressions: {"log_impressions": jnp.log1p(impressions)},
     )
@@ -209,8 +209,8 @@ def test_transformed_data_uses_declared_variable_names_only():
     np.testing.assert_allclose(model.log_prob({"coefficient": jnp.asarray(coefficient)}), _normal(residual), rtol=2e-5)
     with pytest.raises(ValueError, match="unknown input 'media'"):
         Model(
-            {"coefficient": Real((2,))},
-            log_density,
+            parameters={"coefficient": Real((2,))},
+            log_density=log_density,
             data=block,
             transformed_data=lambda media: {"log_impressions": jnp.log1p(media)},
         )
@@ -226,9 +226,9 @@ def test_transformed_data_outputs_returned_unchanged_keep_their_data_labels():
         return {"exposure_copy": exposure, "share_copy": cost_share, "level_copy": level}
 
     model = Model(
-        {"level": Real()},
-        lambda level: -jnp.square(level),
-        generated_quantities,
+        parameters={"level": Real()},
+        log_density=lambda level: -jnp.square(level),
+        generated_quantities=generated_quantities,
         data=data,
         transformed_data=transformed_data,
     )
@@ -253,15 +253,15 @@ def _budget_models(data):
         raise AssertionError("Response analysis must not evaluate the log density")
 
     reference = Model(
-        {"coefficient": Real((2,))},
-        density,
+        parameters={"coefficient": Real((2,))},
+        log_density=density,
         data=data,
         transformed_parameters=lambda media, coefficient: quadratic(media.sum(axis=0), media.shape[0], coefficient),
         dims={"coefficient": ("channel",)},
     )
     fixed = Model(
-        {"coefficient": Real((2,))},
-        density,
+        parameters={"coefficient": Real((2,))},
+        log_density=density,
         data=data,
         transformed_data=lambda media: {"total_exposure": media.sum(axis=0)},
         transformed_parameters=lambda total_exposure, n_periods, coefficient: quadratic(
@@ -304,7 +304,9 @@ def test_budget_optimization_recomputes_transformed_data_for_candidate_allocatio
 
 def test_data_variables_list_every_standard_name_without_being_requested():
     data = _data()
-    model = Model({"level": Real()}, lambda outcome, level: normal(outcome, level, 1.0), data=data)
+    model = Model(
+        parameters={"level": Real()}, log_density=lambda outcome, level: normal(outcome, level, 1.0), data=data
+    )
     variables = model.data_variables
 
     assert variables == {name: name for name in variables}

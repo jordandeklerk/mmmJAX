@@ -70,9 +70,9 @@ def _model(data, *, scaling=None, cross_group=False):
         raise AssertionError("Media metrics must not generate observations")
 
     return Model(
-        {"coefficient": Real((2,))},
-        density,
-        generated,
+        parameters={"coefficient": Real((2,))},
+        log_density=density,
+        generated_quantities=generated,
         data=Data(data, scaling=scaling),
         transformed_parameters=transformed,
         dims={"coefficient": ("channel",)},
@@ -462,8 +462,8 @@ def test_media_metrics_population_outcome_inversion_restores_revenue_and_roi(alr
         raise AssertionError("Media metrics must not evaluate the log density")
 
     model = Model(
-        {"coefficient": Real((2,))},
-        density,
+        parameters={"coefficient": Real((2,))},
+        log_density=density,
         data=Data(scaling.transform(data) if already_scaled else data, scaling=scaling),
         transformed_parameters=transformed,
         dims={"coefficient": ("channel",)},
@@ -533,8 +533,8 @@ def test_media_metrics_keep_model_reference_inputs_fixed_when_changing_channel_s
         raise AssertionError("Media metrics must not evaluate the log density")
 
     model = Model(
-        {"roi": Positive(dims="channel")},
-        density,
+        parameters={"roi": Positive(dims="channel")},
+        log_density=density,
         data=Data(data, scaling=scaling),
         transformed_parameters=quantities,
     )
@@ -606,8 +606,8 @@ def _linear_model(*, media=(1, 3), spend=(1.0, 3.0), baseline=0.0, scaling=None)
         channels=["Video"],
     )
     model = Model(
-        {"coefficient": Real()},
-        lambda coefficient: -(coefficient**2),
+        parameters={"coefficient": Real()},
+        log_density=lambda coefficient: -(coefficient**2),
         data=Data(data, scaling=scaling),
         transformed_parameters=lambda media, coefficient: {"expected_users": baseline + media[:, 0] * coefficient},
     )
@@ -819,8 +819,8 @@ def _rf_case(*, mixed=False, scaled=False):
         raise AssertionError("Media metrics must only evaluate transformed quantities")
 
     model = Model(
-        {"coefficient": Real()},
-        density,
+        parameters={"coefficient": Real()},
+        log_density=density,
         data=Data(data, scaling="auto" if scaled else None),
         transformed_parameters=transformed,
     )

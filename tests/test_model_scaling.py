@@ -52,7 +52,12 @@ def _model(data, *, scaling=None):
             "mu": intercept + media.sum(-1) + controls[..., 0] + treatments[..., 0],
         }
 
-    return Model({"intercept": Real()}, density, generate, data=Data(data, scaling=scaling))
+    return Model(
+        parameters={"intercept": Real()},
+        log_density=density,
+        generated_quantities=generate,
+        data=Data(data, scaling=scaling),
+    )
 
 
 def _population_data(*, start=1, reverse=False, include_population=True):
@@ -83,11 +88,12 @@ def _population_data(*, start=1, reverse=False, include_population=True):
 
 def _population_model(data, *, scaling=None):
     return Model(
-        {"intercept": Real()},
-        lambda outcome, intercept: normal(outcome, intercept, 1.0) + normal(intercept, 0.0, 1.0),
-        lambda key, outcome, intercept: {"prediction": jnp.full_like(outcome, intercept)},
+        parameters={"intercept": Real()},
+        log_density=lambda outcome, intercept: normal(outcome, intercept, 1.0) + normal(intercept, 0.0, 1.0),
+        generated_quantities=lambda key, outcome, intercept: {
+            "predictive": {"prediction": jnp.full_like(outcome, intercept)}
+        },
         data=Data(data, scaling=scaling),
-        predictive=("prediction",),
     )
 
 
@@ -143,7 +149,12 @@ def test_reference_roles_are_scaled_snapshots_with_raw_spend_and_observation_per
             "reference_window": jnp.ones((reference.n_periods,)),
         }
 
-    model = Model({}, lambda reference: jnp.sum(reference.outcome), generate, data=Data(raw, scaling=scaling))
+    model = Model(
+        parameters={},
+        log_density=lambda reference: jnp.sum(reference.outcome),
+        generated_quantities=generate,
+        data=Data(raw, scaling=scaling),
+    )
     raw.arrays["media"][...] = -1
     raw.arrays["spend"][...] = -1
     raw.arrays["outcome"][...] = -1
@@ -203,7 +214,12 @@ def test_outcome_helpers_restore_levels_and_expose_only_marginal_scales(grouped,
             "unit_scale": outcome_scaling.scale,
         }
 
-    model = Model({"intercept": Real()}, density, generate, data=Data(raw, scaling=scaling))
+    model = Model(
+        parameters={"intercept": Real()},
+        log_density=density,
+        generated_quantities=generate,
+        data=Data(raw, scaling=scaling),
+    )
     transformation = None if scaling is None else scaling.transformations.get("outcome")
     if transformation is None:
         expected_scale, expected_offset = np.asarray(1.0), np.asarray(0.0)
@@ -264,9 +280,11 @@ def test_outcome_inverse_helper_preserves_grouped_broadcast_shape_guards(shape):
     raw = _reference_data()
     scaling = fit_data_scaling(raw, scale_outcome="population")
     model = Model(
-        {},
-        lambda: jnp.array(0.0),
-        lambda key, outcome_scaling: {"raw_prediction": outcome_scaling.inverse_transform(jnp.zeros(shape))},
+        parameters={},
+        log_density=lambda: jnp.array(0.0),
+        generated_quantities=lambda key, outcome_scaling: {
+            "raw_prediction": outcome_scaling.inverse_transform(jnp.zeros(shape))
+        },
         data=Data(raw, scaling=scaling),
     )
     with pytest.raises(ValueError, match=r"shape|broadcast"):
@@ -448,7 +466,7 @@ def test_invalid_scaling_options_fail_at_construction(scaling, error):
 
 def test_scaling_requires_a_prepared_model():
     with pytest.raises(TypeError, match="Data requires PreparedData"):
-        Model({}, lambda data: jnp.array(0.0), data=Data(None, scaling="auto"))
+        Model(parameters={}, log_density=lambda data: jnp.array(0.0), data=Data(None, scaling="auto"))
 
 
 def test_models_cannot_exchange_scaled_input_bundles():
@@ -474,8 +492,8 @@ def test_media_models_reject_changes_to_known_observation_spacing():
         )
 
     model = Model(
-        {},
-        lambda media: normal(media.sum(-1), 0.0, 1.0),
+        parameters={},
+        log_density=lambda media: normal(media.sum(-1), 0.0, 1.0),
         data=Data(dated_data(7), scaling="auto"),
     )
     with pytest.raises(ValueError, match="weekly observation spacing"):

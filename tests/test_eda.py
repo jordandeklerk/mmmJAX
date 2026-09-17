@@ -1166,8 +1166,8 @@ def test_check_prior_checks_original_unit_quantities_saved_from_actual_prior_dra
         return {"location": normal_rng(key, location=0, scale=1)}
 
     model = Model(
-        {"location": Real()},
-        density,
+        parameters={"location": Real()},
+        log_density=density,
         data=Data(data, scaling=scaling),
         transformed_parameters=quantities,
         prior=prior,
