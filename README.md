@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/source/_static/mmmjax-logo.png" alt="mmmJAX" width="400">
+  <img src="docs/source/_static/mmmjax-logo.png" alt="mmmJAX" width="480">
   <!-- Switch to the absolute URL before publishing so PyPI renders it:
   <img src="https://raw.githubusercontent.com/jordandeklerk/mmmJAX/main/docs/source/_static/mmmjax-logo.png" alt="mmmJAX" width="480">
   -->
