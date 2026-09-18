@@ -1,3 +1,10 @@
+<p align="center">
+  <img src="docs/source/_static/mmmjax-logo.png" alt="mmmJAX" width="400">
+  <!-- Switch to the absolute URL before publishing so PyPI renders it:
+  <img src="https://raw.githubusercontent.com/jordandeklerk/mmmJAX/main/docs/source/_static/mmmjax-logo.png" alt="mmmJAX" width="480">
+  -->
+</p>
+
 # Stan-style Bayesian marketing mix modeling in JAX
 
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/jordandeklerk/mmmJAX/blob/main/LICENSE)
