@@ -3,7 +3,7 @@
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from numbers import Integral, Real
-from typing import Literal, TypeAlias, cast
+from typing import Literal, cast
 
 import jax
 import jax.numpy as jnp
@@ -13,16 +13,15 @@ import xarray as xr
 from jax.typing import ArrayLike
 from numpy.typing import NDArray
 
+from mmmjax._binding import _ModelData
 from mmmjax._results import _coordinates, _prepared_coordinates
 from mmmjax.data import PreparedData
-from mmmjax.model import Model, _ModelData
+from mmmjax.model import Model
 from mmmjax.sampling import _parameter_draws, _parameter_metadata, _result_data
 
 __all__ = ["frequency_curves", "media_metrics", "response_curves"]
 
-_ReachFrequencyConversion: TypeAlias = (
-    Literal["reach", "frequency"] | Callable[[jax.Array], tuple[ArrayLike, ArrayLike]]
-)
+type _ReachFrequencyConversion = Literal["reach", "frequency"] | Callable[[jax.Array], tuple[ArrayLike, ArrayLike]]
 
 
 def response_curves(
@@ -711,7 +710,7 @@ def _response_inputs(
         raise ValueError("Response evaluation requires a model with prepared data")
     if not isinstance(quantity, str) or not quantity:
         raise ValueError("quantity must name an observation-shaped transformed output")
-    if model._transformed_parameters is None:
+    if model._blocks.transformed_parameters is None:
         raise ValueError("The model must define transformed_parameters for its expected response")
     if isinstance(batch_size, bool) or not isinstance(batch_size, Integral) or batch_size <= 0:
         raise ValueError("batch_size must be a positive integer")
@@ -912,7 +911,7 @@ def _sample_response(
     reduction_axes = tuple(axis for axis in range(len(observation_shape)) if axis not in retain_axes)
 
     def evaluate_quantity(data: _ModelData, parameters: dict[str, jax.Array]) -> jax.Array:
-        quantities = model._evaluate_quantities(data, parameters)
+        quantities = model._blocks.evaluate_transformed(parameters, data)
         if quantity not in quantities:
             raise ValueError(f"Transformed quantity {quantity!r} is not available")
 

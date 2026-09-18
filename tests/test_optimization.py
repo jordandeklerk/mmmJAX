@@ -1279,7 +1279,9 @@ def test_optimize_budget_recomputes_media_transformations_with_fitted_group_scal
 
     flattened = {name: jnp.asarray(value.reshape(4, 2)) for name, value in posterior.items()}
     evaluate = jax.jit(
-        lambda inputs: jax.vmap(lambda draw: model._evaluate_quantities(inputs, draw)["expected"].sum())(flattened)
+        lambda inputs: jax.vmap(lambda draw: model._blocks.evaluate_transformed(draw, inputs)["expected"].sum())(
+            flattened
+        )
     )
 
     def direct_response(spend):

@@ -3,7 +3,7 @@
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Literal, TypeAlias, cast, overload
+from typing import cast
 
 import blackjax  # type: ignore[import-untyped]
 import jax
@@ -12,80 +12,34 @@ import numpy as np
 from jax.sharding import AxisType, NamedSharding, PartitionSpec
 from numpy.typing import NDArray
 
-_Position: TypeAlias = dict[str, jax.Array]
-_DeviceSamples: TypeAlias = tuple[_Position, dict[str, jax.Array]]
-_Samples: TypeAlias = tuple[dict[str, NDArray[np.generic]], dict[str, NDArray[np.generic]]]
-_State: TypeAlias = blackjax.mcmc.hmc.HMCState
-_Parameters: TypeAlias = dict[str, jax.Array]
-_Adapted: TypeAlias = tuple[_State, _Parameters, jax.Array]
+type _Position = dict[str, jax.Array]
+type _DeviceSamples = tuple[_Position, dict[str, jax.Array]]
+type _Samples = tuple[dict[str, NDArray[np.generic]], dict[str, NDArray[np.generic]]]
+type _State = blackjax.mcmc.hmc.HMCState
+type _Parameters = dict[str, jax.Array]
+type _Adapted = tuple[_State, _Parameters, jax.Array]
 
 
 @dataclass(frozen=True)
 class _NUTSContinuation:
-    """Retain each chain's sampler state, tuning, and sampling-key position."""
+    """Retain each chain's final position, tuning, and sampling-key stream as plain arrays.
 
-    state: _State
+    Every field is an array or an integer so the continuation can be stored
+    alongside results and restored without live Python objects.
+    """
+
+    positions: _Position
+    logdensity: jax.Array
+    gradients: _Position
     step_size: jax.Array
     inverse_mass_matrix: jax.Array
     sampling_keys: jax.Array
     completed_draws: int
 
-
-@overload
-def _sample_nuts(
-    logdensity: Callable[[_Position], jax.Array],
-    initial_positions: _Position,
-    keys: jax.Array,
-    *,
-    draws: int,
-    warmup: int,
-    target_accept: float,
-    max_tree_depth: int,
-    chain_method: str,
-    mass_matrix: str,
-    chunk_size: int,
-    progress: bool = True,
-    return_state: Literal[False] = False,
-    continuation: _NUTSContinuation | None = None,
-) -> _Samples: ...
-
-
-@overload
-def _sample_nuts(
-    logdensity: Callable[[_Position], jax.Array],
-    initial_positions: _Position,
-    keys: jax.Array,
-    *,
-    draws: int,
-    warmup: int,
-    target_accept: float,
-    max_tree_depth: int,
-    chain_method: str,
-    mass_matrix: str,
-    chunk_size: int,
-    progress: bool = True,
-    return_state: Literal[True],
-    continuation: _NUTSContinuation | None = None,
-) -> tuple[_Samples, _NUTSContinuation]: ...
-
-
-@overload
-def _sample_nuts(
-    logdensity: Callable[[_Position], jax.Array],
-    initial_positions: _Position,
-    keys: jax.Array,
-    *,
-    draws: int,
-    warmup: int,
-    target_accept: float,
-    max_tree_depth: int,
-    chain_method: str,
-    mass_matrix: str,
-    chunk_size: int,
-    progress: bool = True,
-    return_state: bool,
-    continuation: _NUTSContinuation | None = None,
-) -> _Samples | tuple[_Samples, _NUTSContinuation]: ...
+    def state(self) -> _State:
+        """Rebuild the sampler state blackjax expects for the next step."""
+        build_state = cast(Callable[..., _State], blackjax.mcmc.hmc.HMCState)
+        return build_state(self.positions, self.logdensity, self.gradients)
 
 
 def _sample_nuts(
@@ -101,10 +55,13 @@ def _sample_nuts(
     mass_matrix: str,
     chunk_size: int,
     progress: bool = True,
-    return_state: bool = False,
     continuation: _NUTSContinuation | None = None,
-) -> _Samples | tuple[_Samples, _NUTSContinuation]:
-    """Adapt or continue chains, copying bounded sampling chunks into host arrays."""
+) -> tuple[_Samples, _NUTSContinuation]:
+    """Adapt or continue chains, copying bounded sampling chunks into host arrays.
+
+    Returns the host-side draws and statistics together with the final chain
+    positions and tuning, from which sampling can resume without warmup.
+    """
     adapt_chain: Callable[[_Position, jax.Array], _Adapted] | None = None
     retained: _Adapted | None = None
     completed_draws = 0
@@ -134,7 +91,7 @@ def _sample_nuts(
         adapt_chain = adapt_position
     else:
         retained = (
-            continuation.state,
+            continuation.state(),
             {"step_size": continuation.step_size, "inverse_mass_matrix": continuation.inverse_mass_matrix},
             continuation.sampling_keys,
         )
@@ -283,23 +240,22 @@ def _sample_nuts(
                     state, chunk = sample(state, parameters, step_keys)
                     transfer(chunk, start, stop, chain)
                     del chunk
-            if return_state:
-                final_chains.append((state, parameters, sampling_key))
+            final_chains.append((state, parameters, sampling_key))
 
-        if return_state:
-            final = jax.tree.map(lambda *values: jnp.stack(values), *final_chains)
+        final = jax.tree.map(lambda *values: jnp.stack(values), *final_chains)
 
     assert samples is not None
-    if return_state:
-        state, parameters, sampling_keys = final
-        return samples, _NUTSContinuation(
-            state=state,
-            step_size=parameters["step_size"],
-            inverse_mass_matrix=parameters["inverse_mass_matrix"],
-            sampling_keys=sampling_keys,
-            completed_draws=completed_draws + draws,
-        )
-    return samples
+    state, parameters, sampling_keys = final
+    resumable = _NUTSContinuation(
+        positions=cast(_Position, state.position),
+        logdensity=jnp.asarray(state.logdensity),
+        gradients=cast(_Position, state.logdensity_grad),
+        step_size=parameters["step_size"],
+        inverse_mass_matrix=parameters["inverse_mass_matrix"],
+        sampling_keys=sampling_keys,
+        completed_draws=completed_draws + draws,
+    )
+    return samples, resumable
 
 
 @contextmanager

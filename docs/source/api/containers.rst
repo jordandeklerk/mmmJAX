@@ -18,5 +18,4 @@ Data, fitted transformations, and model configuration objects.
    Scaling
    HSGPApproximation
    SpendConstraint
-   SamplingState
    Prior

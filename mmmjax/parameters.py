@@ -1,9 +1,9 @@
 """Parameter declarations and their inference-space mappings."""
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import Field, dataclass, field
 from math import prod
-from typing import Protocol, cast, runtime_checkable
+from typing import Any, ClassVar, Protocol, cast, runtime_checkable
 
 import jax
 import jax.numpy as jnp
@@ -102,6 +102,27 @@ class Parameterization(Protocol):
         jax.Array
             Unconstrained initial values with shape ``position_shape``.
         """
+        ...
+
+
+@runtime_checkable
+class _Dimensioned(Protocol):
+    """Dataclass declarations whose model-space shape is inferred from named axes.
+
+    ``Model`` resolves the ``dims`` of any declaration matching this contract
+    against prepared data or explicit coordinates and replaces its ``shape``.
+    """
+
+    __dataclass_fields__: ClassVar[dict[str, Field[Any]]]
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        """Explicit model-space shape, empty when inferred from ``dims``."""
+        ...
+
+    @property
+    def dims(self) -> str | Sequence[str]:
+        """Named axes that determine the shape and result labels."""
         ...
 
 

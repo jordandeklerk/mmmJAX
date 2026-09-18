@@ -72,8 +72,7 @@ def test_empty_metadata_preserves_existing_models():
     assert model._result_dims == {}
     assert model._result_coords == {}
     assert model._generated_dims == {}
-    assert model._time_values == ()
-    assert model._media_time_values == ()
+    assert model._training is None
 
 
 @pytest.mark.parametrize("names", [(), ("coefficient",), ("coefficient", "intercept", "extra")])
@@ -267,13 +266,13 @@ def test_aligned_time_history_and_group_metadata_follow_actual_scaled_model_inpu
         log_density=lambda outcome: -jnp.square(outcome).sum(),
         data=Data(incoming, scaling=scaling),
     )
-    assert model._time_values == expected.time_values == (2, 3, 4)
-    assert model._media_time_values == expected.media_time_values == (1, 2, 3, 4)
-    assert model._layout.group_columns == ("region", "segment")
-    assert model._layout.group_values == reference.group_values
-    assert model._layout.group_values != incoming.group_values
-    assert model._layout.channels == ("video", "search")
-    assert model._layout.columns == expected.columns
+    assert model._training.time_values == expected.time_values == (2, 3, 4)
+    assert model._training.media_time_values == expected.media_time_values == (1, 2, 3, 4)
+    assert model._training.layout.group_columns == ("region", "segment")
+    assert model._training.layout.group_values == reference.group_values
+    assert model._training.layout.group_values != incoming.group_values
+    assert model._training.layout.channels == ("video", "search")
+    assert model._training.layout.columns == expected.columns
     assert model._data.values["outcome"].shape == (3, 2)
     assert model._data.values["media"].shape == (4, 2, 2)
     for name, values in expected.arrays.items():
@@ -281,7 +280,7 @@ def test_aligned_time_history_and_group_metadata_follow_actual_scaled_model_inpu
     incoming.arrays["outcome"][:] = -999
     incoming.columns["media"] = ("changed",)
     np.testing.assert_allclose(model._data.values["outcome"], expected.arrays["outcome"], rtol=1e-6)
-    assert model._layout.columns["media"] == ("video", "search")
+    assert model._training.layout.columns["media"] == ("video", "search")
 
 
 def test_result_labels_do_not_change_density_gradients_or_generation():
