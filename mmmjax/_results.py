@@ -129,7 +129,7 @@ def _collect_results(
     return tree
 
 
-def _dimensions(dims: Mapping[str, Sequence[str]] | None) -> dict[str, tuple[str, ...]]:
+def _dimensions(dims: Mapping[str, str | Sequence[str]] | None) -> dict[str, tuple[str, ...]]:
     """Normalize explicitly named variable axes."""
     if dims is None:
         return {}
@@ -138,8 +138,10 @@ def _dimensions(dims: Mapping[str, Sequence[str]] | None) -> dict[str, tuple[str
     result = {}
     for name, axes in dims.items():
         _name(name)
-        if isinstance(axes, (str, bytes)) or not isinstance(axes, Sequence):
-            raise TypeError(f"Dimensions for {name!r} must be a sequence of names, not a string")
+        if isinstance(axes, str):
+            axes = (axes,)
+        if isinstance(axes, bytes) or not isinstance(axes, Sequence):
+            raise TypeError(f"Dimensions for {name!r} must be a name or a sequence of names")
         for axis in axes:
             _name(axis)
         if len(set(axes)) != len(axes):

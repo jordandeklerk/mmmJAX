@@ -27,10 +27,11 @@ from mmmjax.model import (
     _ResultGroup,
     _validate_value_names,
 )
-from mmmjax.priors import _validate_prior_sampler
+from mmmjax.priors import Prior, _validate_prior_sampler
 from mmmjax.scaling import Scaling
 
 _Key = TypeVar("_Key", bound=Hashable)
+_Value = TypeVar("_Value")
 
 __all__ = ["SamplingState", "continue_sampling", "generate_quantities", "sample", "sample_prior"]
 
@@ -192,8 +193,8 @@ def sample(
         Complete constrained parameter values used to start every chain.
         Otherwise, each chain starts from a random unconstrained position.
     generate : bool, default True
-        Evaluate saved quantities, mapped log-prior terms, and outputs from
-        the ``generated_quantities`` callback.
+        Evaluate mapped log-prior terms and outputs from the
+        ``generated_quantities`` callback.
     chunk_size : int, default 100
         Maximum retained draws per chain in a sampling chunk before transfer
         to host memory. Smaller chunks reduce device memory use without
@@ -306,7 +307,7 @@ def sample(
         raise ValueError("Sampling assigns chain and draw coordinates. Supply only model axes in coords")
 
     initial_parameters = model.constrain({name: value[0] for name, value in positions.items()})
-    outputs: dict[str, jax.Array] = {}
+    outputs: dict[_OutputKey, jax.Array] = {}
     output_dimensions: dict[str, tuple[str, ...]] = {}
 
     if generate and model._has_generated_quantities:
@@ -315,7 +316,7 @@ def sample(
 
     def collect(
         posterior: Mapping[str, ArrayLike],
-        generated: Mapping[str, ArrayLike],
+        generated: Mapping[_OutputKey, ArrayLike],
         stats: Mapping[str, ArrayLike] | None = None,
     ) -> xr.DataTree:
         return _collect_sampling_results(model, posterior, generated, stats, output_dimensions)
@@ -530,9 +531,9 @@ def _generation_keys(key: jax.Array, chains: int, start: int, stop: int) -> jax.
     return jax.vmap(lambda chain_key: jax.vmap(lambda index: jax.random.fold_in(chain_key, index))(indices))(chain_keys)
 
 
-def _grouped_outputs(generated: Mapping[_OutputKey, ArrayLike]) -> dict[_OutputGroup, dict[str, ArrayLike]]:
+def _grouped_outputs(generated: Mapping[_OutputKey, _Value]) -> dict[_OutputGroup, dict[str, _Value]]:
     """Separate result groups from the flat callback outputs."""
-    groups: dict[_OutputGroup, dict[str, ArrayLike]] = {"generated": {}}
+    groups: dict[_OutputGroup, dict[str, _Value]] = {"generated": {}}
     groups.update({group: {} for group in get_args(_ResultGroup)})
     for (group, name), value in generated.items():
         groups[group][name] = value
@@ -587,7 +588,7 @@ def _warn_sampling(stats: Mapping[str, ArrayLike]) -> None:
 
 def sample_prior(
     model: Model,
-    prior: PriorSampler | None = None,
+    prior: Mapping[str, Prior] | PriorSampler,
     *,
     data: object = None,
     draws: int = 500,
@@ -597,7 +598,7 @@ def sample_prior(
 ) -> xr.DataTree:
     """Draw explicit priors and inspect their implied outcomes before fitting.
 
-    Use the model's prior definitions or prior-draw function and reuse its
+    Draw every parameter from the supplied priors and reuse the model's
     transformed parameters and ``generated_quantities`` callback.
     The ``log_density`` callback and posterior sampler are not evaluated.
     Keep the sampling distributions consistent with the priors in ``log_density``.
@@ -606,11 +607,10 @@ def sample_prior(
     ----------
     model : Model
         Model supplying parameter declarations and generated quantities.
-    prior : callable, optional
-        Override the prior-draw function attached to ``Model`` for this call.
-        The function ``prior(key)`` must return one constrained draw per
-        declared parameter. Required if the model has no prior definitions
-        or prior-draw function.
+    prior : mapping of str to Prior or callable
+        ``Prior`` objects by parameter name for independent draws in the
+        declared shapes, or a JAX-compatible function ``prior(key)`` returning
+        one constrained draw per declared parameter for dependent draws.
     data : object, optional
         Inputs for a model without prepared data. Prepared models use their
         stored observations and fitted scaling automatically.
@@ -619,8 +619,7 @@ def sample_prior(
     seed : int, default 0
         Random seed for parameters and generated quantities.
     generate : bool, default True
-        Evaluate saved quantities and outputs from the ``generated_quantities``
-        callback.
+        Evaluate outputs from the ``generated_quantities`` callback.
     batch_size : int, default 64
         Maximum prior draws evaluated together, including generated quantities.
         Smaller batches reduce working memory without reducing the draw count.
@@ -634,8 +633,8 @@ def sample_prior(
         - **prior** contains constrained parameter draws.
         - **prior_predictive** contains outputs returned under ``predictive``
           by ``generated_quantities``.
-        - **prior_generated_quantities** contains saved quantities and other
-          generated outputs.
+        - **prior_generated_quantities** contains the ordinary generated
+          outputs.
         - **observed_data** and **constant_data** contain prepared model inputs
           in their evaluated units, including fitted scaling.
           Auxiliary ``Data`` inputs are stored in **constant_data**.
@@ -647,11 +646,10 @@ def sample_prior(
     if not isinstance(model, Model):
         raise TypeError("model must be a Model")
     _validate_batch_size(batch_size)
-    if prior is None:
-        prior = model._prior
-    if prior is None:
-        raise ValueError("Provide prior definitions or a prior-draw function on Model, or pass prior to sample_prior")
-    _validate_prior_sampler(prior)
+    if isinstance(prior, Mapping):
+        prior = _prior_mapping_sampler(model, prior)
+    else:
+        _validate_prior_sampler(prior)
     if isinstance(draws, bool) or not isinstance(draws, Integral) or draws < 1:
         raise ValueError("draws must be a positive integer")
     if isinstance(seed, bool) or not isinstance(seed, Integral) or seed < 0:
@@ -673,7 +671,7 @@ def sample_prior(
     generated: dict[_OutputKey, NDArray[np.generic]] = {}
     output_dimensions: dict[str, tuple[str, ...]] = {}
 
-    if generate and (model._generate is not None or model._saved_inputs):
+    if generate and model._generate is not None:
         initial = {name: value[0] for name, value in parameters.items()}
         outputs, arguments = model._generate_with_inputs(preview_key, initial, inputs)
         output_dimensions = _output_dimensions(model, outputs, arguments, dimensions, prepared)
@@ -707,6 +705,33 @@ def sample_prior(
     return results
 
 
+def _prior_mapping_sampler(model: Model, priors: Mapping[str, object]) -> PriorSampler:
+    """Turn Prior objects keyed by parameter name into an independent prior-draw function."""
+    _validate_value_names(priors, model._parameterizations, name="prior")
+    definitions = []
+    for name, declaration in model.parameters.items():
+        definition = priors[name]
+        if not isinstance(definition, Prior):
+            raise TypeError(
+                f"Prior definition for {name!r} must be a Prior object with fixed distribution settings. "
+                "Use a prior-draw function for dependent draws"
+            )
+        try:
+            definition._validate_shape(declaration.shape)
+        except ValueError as exc:
+            raise ValueError(f"Invalid prior shape for parameter {name!r}. {exc}") from exc
+        definitions.append((name, definition, declaration))
+
+    def draw(key: jax.Array) -> dict[str, jax.Array]:
+        keys = jax.random.split(key, len(definitions))
+        return {
+            name: definition._sample(draw_key, declaration.shape, declaration.dtype)
+            for (name, definition, declaration), draw_key in zip(definitions, keys, strict=True)
+        }
+
+    return draw
+
+
 def _prior_draws(
     model: Model,
     prior: PriorSampler,
@@ -734,7 +759,8 @@ def _prior_draws(
                 raise TypeError(
                     f"Prior draw for {name!r} must be a real array-like value. "
                     "Return constrained draws from prior(key). "
-                    "Pass Prior definitions through Model(prior=...) or return log-prior terms under log_prior"
+                    "Pass Prior objects to sample_prior by parameter name, "
+                    "or return log-prior terms under log_prior in generated_quantities"
                 ) from exc
             if value.shape != declaration.shape:
                 raise ValueError(f"Prior draw shape for {name!r} must match its declared shape {declaration.shape}")
@@ -777,16 +803,16 @@ def generate_quantities(
 ) -> xr.DataTree:
     """Evaluate generated quantities from existing posterior draws without refitting.
 
-    Evaluate saved quantities, mapped log-prior terms, and any
-    ``generated_quantities`` callback for every draw. The ``log_density``
+    Evaluate mapped log-prior terms and any ``generated_quantities``
+    callback for every draw. The ``log_density``
     callback and sampling are not rerun. Scenario calculations remain
     defined by the model.
 
     Parameters
     ----------
     model : Model
-        Model with saved quantities, mapped priors, or a ``generated_quantities``
-        callback and the fitted parameter declarations.
+        Model with mapped priors or a ``generated_quantities`` callback and
+        the fitted parameter declarations.
     results : xarray.DataTree
         Results containing constrained posterior draws with the model's parameter
         names, shapes, and axis labels. Draws may be sliced or thinned.
@@ -821,9 +847,7 @@ def generate_quantities(
         raise TypeError("model must be a Model")
     _validate_batch_size(batch_size)
     if not model._has_generated_quantities:
-        raise ValueError(
-            "The model must define a generated_quantities callback, select quantities with save, or map priors"
-        )
+        raise ValueError("The model must define a generated_quantities callback or map priors")
     if isinstance(seed, bool) or not isinstance(seed, Integral) or seed < 0:
         raise ValueError("seed must be a nonnegative integer")
 
@@ -982,7 +1006,6 @@ def _parameter_metadata(model: Model) -> tuple[dict[str, tuple[str, ...]], dict[
         *model._transform_inputs,
         *model._density_inputs,
         *model._generation_inputs,
-        *model._saved_inputs,
     )
     if model._data is not None and any(
         _metadata_source(name, source, model._data)[0] == "reference" for name, source in bindings
@@ -1040,7 +1063,7 @@ def _output_dimensions(
         }
         role_dimensions.update(model._input_dims)
         grouped_scale = model._data.outcome_group_scale
-        for name, source in (*model._generation_inputs, *model._saved_inputs):
+        for name, source in model._generation_inputs:
             source, source_name = _metadata_source(name, source, model._data)
             if source == "data":
                 input_dimensions[name] = role_dimensions[source_name]
@@ -1060,11 +1083,6 @@ def _output_dimensions(
                 input_dimensions[name] = parameter_dimensions[name]
     else:
         input_dimensions.update(parameter_dimensions)
-
-    prior_dimensions = {}
-    for parameter_name, prior in model._priors:
-        axes = parameter_dimensions[parameter_name]
-        prior_dimensions[f"log_prior_{parameter_name}"] = axes[: -prior.event_ndims] if prior.event_ndims else axes
 
     dimensions: dict[str, tuple[str, ...]] = {}
     for (group, name), value in outputs.items():
@@ -1086,8 +1104,6 @@ def _output_dimensions(
                 member_axes.add(("group",) if grouped_scale else ())
         if name in model._generated_dims:
             axes = model._generated_dims[name]
-        elif group == "log_prior" and name in prior_dimensions:
-            axes = prior_dimensions[name]
         elif member_axes or any(value is arguments.get(argument) for argument in reference_inputs):
             candidates = inherited | member_axes
             axes = candidates.pop() if len(candidates) == 1 else fallback

@@ -337,9 +337,19 @@ def test_log_prior_axes_do_not_inherit_matching_parameter_shapes(results, explic
 
 
 @pytest.mark.parametrize("batch_size", [1, 4, 64])
-def test_registered_log_priors_preserve_batch_axes_and_reduce_distribution_events(batch_size):
+def test_prior_log_densities_preserve_batch_axes_and_reduce_distribution_events(batch_size):
     def forbidden_density(data, **parameters):
-        raise AssertionError("Generating registered prior terms must not evaluate the model density")
+        raise AssertionError("Generating prior terms must not evaluate the model density")
+
+    def generate(key, data, scale, independent, coefficient, weights, factor):
+        values = {
+            "scale": scale,
+            "independent": independent,
+            "coefficient": coefficient,
+            "weights": weights,
+            "factor": factor,
+        }
+        return {"log_prior": {f"log_prior_{name}": priors[name].logpdf(values[name]) for name in priors}}
 
     priors = {
         "scale": Prior(lognormal, location=0.2, scale=0.9),
@@ -368,8 +378,14 @@ def test_registered_log_priors_preserve_batch_axes_and_reduce_distribution_event
             "factor": CorrelationCholesky(dims=("group", "channel", "channel_to")),
         },
         log_density=forbidden_density,
-        prior=priors,
+        generated_quantities=generate,
         coords=coords,
+        generated_dims={
+            "log_prior_independent": ("group", "channel"),
+            "log_prior_coefficient": ("group",),
+            "log_prior_weights": ("group",),
+            "log_prior_factor": ("group",),
+        },
     )
     coefficients = np.arange(36, dtype=np.float32).reshape(2, 3, 2, 3) / 10
     posterior = {
@@ -408,46 +424,24 @@ def test_registered_log_priors_preserve_batch_axes_and_reduce_distribution_event
     xr.testing.assert_identical(evaluated["posterior"], original["posterior"])
 
 
-def test_registered_log_priors_allow_additional_explicit_terms_and_deduplicate_auto_names(results):
+def test_log_prior_terms_keep_their_names_and_axes(results):
+    scale_prior = Prior(lognormal, location=0.2, scale=0.9)
     model = Model(
         parameters={"scale": Positive((2,))},
         log_density=_unused_density,
         generated_quantities=lambda key, data, scale: {
-            "log_prior": {"manual": normal(scale, 0.0, 1.0)},
+            "log_prior": {"log_prior_scale": scale_prior.logpdf(scale), "manual": normal(scale, 0.0, 1.0)},
             "mean": jnp.mean(scale),
         },
-        prior={"scale": Prior(lognormal, location=0.2, scale=0.9)},
         dims={"scale": ("channel",)},
         coords={"channel": ["search", "video"]},
+        generated_dims={"log_prior_scale": ("channel",)},
     )
     evaluated = generate_quantities(model, results)
     assert set(evaluated["log_prior"].data_vars) == {"log_prior_scale", "manual"}
     assert evaluated["log_prior"]["log_prior_scale"].dims == ("chain", "draw", "channel")
     assert evaluated["log_prior"]["manual"].dims == ("chain", "draw")
     assert set(evaluated["generated_quantities"].data_vars) == {"mean"}
-
-
-@pytest.mark.parametrize("saved", [False, True])
-def test_registered_log_prior_names_cannot_shadow_saved_or_generated_outputs(results, saved):
-    options = (
-        {
-            "data": _saved_data(),
-            "transformed_parameters": lambda scale: {"log_prior_scale": -scale.sum()},
-            "save": ("log_prior_scale",),
-        }
-        if saved
-        else {"generated_quantities": lambda key, data, scale: {"log_prior_scale": -scale.sum()}}
-    )
-    with pytest.raises(ValueError, match="log_prior_scale"):
-        model = Model(
-            parameters={"scale": Positive((2,))},
-            log_density=(lambda scale: -scale.sum()) if saved else (lambda data, scale: -scale.sum()),
-            prior={"scale": Prior(lognormal, location=0.2, scale=0.9)},
-            dims={"scale": ("channel",)},
-            coords={"channel": ["search", "video"]},
-            **options,
-        )
-        generate_quantities(model, results)
 
 
 def _saved_data(*, start=0, observations=3):
@@ -466,12 +460,12 @@ def _saved_data(*, start=0, observations=3):
     )
 
 
-def _saved_model(*, generated_dims=None, generate=None, save=("signal", "pointwise", "total")):
+def _saved_model(*, generated_dims=None, generate=None):
     def forbidden_density(signal):
-        raise AssertionError("Saving quantities must not evaluate the model density")
+        raise AssertionError("Generating quantities must not evaluate the model density")
 
-    def forbidden_prior(key):
-        raise AssertionError("Saving quantities must not sample the prior")
+    def keep_everything(key, signal, pointwise, total):
+        return {"signal": signal, "pointwise": pointwise, "total": total}
 
     def transformed(controls, scale, outcome):
         signal = controls @ scale
@@ -480,11 +474,9 @@ def _saved_model(*, generated_dims=None, generate=None, save=("signal", "pointwi
     return Model(
         parameters={"scale": Positive((2,))},
         log_density=forbidden_density,
-        generated_quantities=generate,
+        generated_quantities=keep_everything if generate is None else generate,
         data=_saved_data(),
         transformed_parameters=transformed,
-        prior=forbidden_prior,
-        save=save,
         dims={"scale": ("channel",)},
         coords={"channel": ["search", "video"]},
         generated_dims=generated_dims,
@@ -492,11 +484,9 @@ def _saved_model(*, generated_dims=None, generate=None, save=("signal", "pointwi
 
 
 @pytest.mark.parametrize("batch_size", [1, 4, 64])
-def test_generate_quantities_saves_transforms_without_callback_and_recomputes_scenarios(
-    results, monkeypatch, batch_size
-):
+def test_generate_quantities_returns_transforms_and_recomputes_scenarios(results, monkeypatch, batch_size):
     def forbidden_sampler(*args, **kwargs):
-        raise AssertionError("Saving quantities must not run the sampler")
+        raise AssertionError("Generating quantities must not run the sampler")
 
     monkeypatch.setattr(sampling, "_sample_nuts", forbidden_sampler)
     model = _saved_model(generated_dims={"signal": ("time",), "pointwise": ("time",)})
@@ -520,10 +510,10 @@ def test_generate_quantities_saves_transforms_without_callback_and_recomputes_sc
 
 
 def test_transformed_outputs_routed_to_result_groups_keep_observation_labels(results):
-    def generate(key, signal, pointwise):
-        return {"predictive": {"signal": signal}, "log_likelihood": {"pointwise": pointwise}}
+    def generate(key, signal, pointwise, total):
+        return {"predictive": {"signal": signal}, "log_likelihood": {"pointwise": pointwise}, "total": total}
 
-    model = _saved_model(generate=generate, save=("total",))
+    model = _saved_model(generate=generate)
     result = generate_quantities(model, results)
 
     assert result["posterior_predictive"]["signal"].dims == ("chain", "draw", "time")
@@ -551,7 +541,7 @@ def test_transformed_log_prior_terms_are_collected_through_the_generation_callba
     assert "generated_quantities" not in evaluated
 
 
-def test_saved_custom_outputs_keep_fallback_axes_without_guessing_observation_dimensions(results):
+def test_returned_custom_outputs_keep_fallback_axes_without_guessing_observation_dimensions(results):
     result = generate_quantities(_saved_model(), results)
 
     assert result["generated_quantities"]["signal"].dims == ("chain", "draw", "signal_dim_0")

@@ -55,7 +55,6 @@ def test_explicit_noncentered_correlated_hierarchy_evaluates_and_differentiates(
         data=auxiliary_data,
         transformed_parameters=quantities,
         coords={"channel_to": auxiliary_data.channels},
-        save=("mu",),
     )
     values = {
         "location": jnp.array([0.2, 0.3]),
@@ -124,7 +123,12 @@ def test_labeled_inputs_reach_named_callbacks_and_have_analytic_jit_gradients(au
         return -0.5 * (jnp.square(outcome - theta.sum()).sum() + jnp.square(residual).sum() + jnp.square(beta).sum())
 
     def generated(key, *, trial_mean, indices, active, offset):
-        return {"prediction": normal_rng(key, trial_mean, offset), "indices": indices, "active": active}
+        return {
+            "prediction": normal_rng(key, trial_mean, offset),
+            "indices": indices,
+            "active": active,
+            "trial_mean": trial_mean,
+        }
 
     model = Model(
         parameters={"theta": Real(dims="experiment"), "beta": Real(dims="channel")},
@@ -132,7 +136,6 @@ def test_labeled_inputs_reach_named_callbacks_and_have_analytic_jit_gradients(au
         generated_quantities=generated,
         data=Data(auxiliary_data, inputs=auxiliary_inputs),
         transformed_parameters=transformed,
-        save=("trial_mean",),
     )
     parameters = {"theta": jnp.array([0.2, -0.1, 0.3]), "beta": jnp.array([0.4, -0.2])}
     mean = np.array([0.5, 0.8, 0.6])

@@ -1168,12 +1168,11 @@ def test_check_prior_checks_original_unit_quantities_saved_from_actual_prior_dra
     model = Model(
         parameters={"location": Real()},
         log_density=density,
+        generated_quantities=lambda key, expected_sales: {"expected_sales": expected_sales},
         data=Data(data, scaling=scaling),
         transformed_parameters=quantities,
-        prior=prior,
-        save=("expected_sales",),
     )
-    results = sample_prior(model, draws=8, seed=4)
+    results = sample_prior(model, prior, draws=8, seed=4)
     draws = results["prior_generated_quantities"]["expected_sales"]
 
     report = check_prior(draws, lower=105, upper=115)

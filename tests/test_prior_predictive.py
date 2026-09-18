@@ -49,7 +49,7 @@ def _normal_prior(key):
 
 
 @pytest.mark.parametrize("batch_size", [1, 4, 64])
-def test_registered_priors_draw_declared_shapes_with_independent_keys_and_copied_mapping(batch_size):
+def test_prior_mappings_draw_declared_shapes_with_independent_keys(batch_size):
     def forbidden_density(data, first, second, scale, weights, joint, factor):
         raise AssertionError("Registered prior draws must not evaluate the model density")
 
@@ -72,16 +72,14 @@ def test_registered_priors_draw_declared_shapes_with_independent_keys_and_copied
             "factor": CorrelationCholesky(dims=("group", "channel", "channel_to")),
         },
         log_density=forbidden_density,
-        prior=priors,
         coords={
             "group": ["west", "east"],
             "channel": ["search", "video", "radio"],
             "channel_to": ["search", "video", "radio"],
         },
     )
-    priors.clear()
-    first = sample_prior(model, draws=5, seed=19, batch_size=batch_size)
-    repeated = sample_prior(model, draws=5, seed=19, batch_size=64)
+    first = sample_prior(model, priors, draws=5, seed=19, batch_size=batch_size)
+    repeated = sample_prior(model, priors, draws=5, seed=19, batch_size=64)
     xr.testing.assert_allclose(first, repeated)
     assert set(first.children) == {"prior"}
     assert set(first["prior"].data_vars) == {"first", "second", "scale", "weights", "joint", "factor"}
@@ -102,17 +100,13 @@ def test_registered_priors_draw_declared_shapes_with_independent_keys_and_copied
     np.testing.assert_allclose(first["prior"]["weights"].sum("channel"), 1.0, rtol=2e-6)
 
 
-def test_registered_prior_draws_still_require_parameter_support():
-    model = Model(
-        parameters={"scale": Positive()},
-        log_density=lambda data, scale: normal(scale, 0.0, 1.0),
-        prior={"scale": Prior(normal, location=-100.0, scale=0.01)},
-    )
+def test_prior_mapping_draws_still_require_parameter_support():
+    model = Model(parameters={"scale": Positive()}, log_density=lambda data, scale: normal(scale, 0.0, 1.0))
     with pytest.raises(ValueError, match=r"scale|support"):
-        sample_prior(model, draws=3)
+        sample_prior(model, {"scale": Prior(normal, location=-100.0, scale=0.01)}, draws=3)
 
 
-def test_registered_prior_only_draws_skip_unsaved_transforms():
+def test_prior_only_draws_skip_transforms_when_nothing_is_generated():
     def forbidden_transform(location):
         raise AssertionError("Prior draws must not evaluate transforms when no outputs are requested")
 
@@ -122,9 +116,8 @@ def test_registered_prior_only_draws_skip_unsaved_transforms():
         log_density=lambda mean: mean.sum(),
         data=data,
         transformed_parameters=forbidden_transform,
-        prior={"location": Prior(normal, location=0.0, scale=1.0)},
     )
-    result = sample_prior(model, draws=3)
+    result = sample_prior(model, {"location": Prior(normal, location=0.0, scale=1.0)}, draws=3)
     assert set(result.children) == {"prior", "observed_data", "constant_data"}
     assert result["prior"]["location"].shape == (1, 3)
 
@@ -143,11 +136,10 @@ def test_correlated_joint_prior_draws_keep_parameter_and_predictive_axes():
         parameters={"factor": CorrelationCholesky(dims=("effect", "effect_to")), "coefficients": Real(dims="effect")},
         log_density=density,
         generated_quantities=lambda key, data, coefficients: {"predictive": {"prediction": coefficients}},
-        prior=prior,
         coords={"effect": ["search", "video"], "effect_to": ["search", "video"]},
         generated_dims={"prediction": ("effect",)},
     )
-    results = sample_prior(model, draws=12, seed=4)
+    results = sample_prior(model, prior, draws=12, seed=4)
     assert results["prior"]["factor"].dims == ("chain", "draw", "effect", "effect_to")
     assert results["prior"]["coefficients"].dims == ("chain", "draw", "effect")
     np.testing.assert_array_equal(results["prior"]["coefficients"], results["prior_predictive"]["prediction"])
@@ -273,79 +265,49 @@ def test_prior_batches_preserve_seeded_draws_generated_groups_and_labels(batch_s
         assert isinstance(result[group][name].data, np.ndarray)
 
 
-def test_attached_prior_matches_explicit_callback_and_supports_generation_toggle():
+def test_prior_sampling_supports_the_generation_toggle():
     model = Model(
         parameters={"location": Real()},
         log_density=lambda data, location: jnp.nan,
         generated_quantities=lambda key, data, location: {
             "predictive": {"prediction": location + jax.random.normal(key)}
         },
-        prior=_normal_prior,
     )
-    attached = sample_prior(model, draws=4, seed=12)
-    explicit = sample_prior(model, _normal_prior, draws=4, seed=12)
-    explicit_none = sample_prior(model, None, draws=4, seed=12)
-    disabled = sample_prior(model, draws=4, seed=12, generate=False)
-    xr.testing.assert_equal(attached, explicit)
-    xr.testing.assert_equal(attached, explicit_none)
-    xr.testing.assert_equal(attached["prior"], disabled["prior"])
-    assert set(attached.children) == {"prior", "prior_predictive"}
+    generated = sample_prior(model, _normal_prior, draws=4, seed=12)
+    disabled = sample_prior(model, _normal_prior, draws=4, seed=12, generate=False)
+    xr.testing.assert_equal(generated["prior"], disabled["prior"])
+    assert set(generated.children) == {"prior", "prior_predictive"}
     assert set(disabled.children) == {"prior"}
 
 
-@pytest.mark.parametrize("registered", [False, True])
-def test_per_call_prior_override_does_not_replace_the_attached_prior(registered):
-    prior = {"location": Prior(normal, location=0.0, scale=1.0)} if registered else _normal_prior
-    model = Model(parameters={"location": Real()}, log_density=lambda data, location: jnp.nan, prior=prior)
-    original = sample_prior(model, draws=3, seed=5)
-    override = sample_prior(model, lambda key: {"location": 42.0}, draws=3, seed=5)
-    again = sample_prior(model, draws=3, seed=5)
-    np.testing.assert_array_equal(override["prior"]["location"], np.full((1, 3), 42.0))
+@pytest.mark.parametrize("mapping", [False, True])
+def test_prior_draws_are_reproducible_for_mappings_and_callables(mapping):
+    prior = {"location": Prior(normal, location=0.0, scale=1.0)} if mapping else _normal_prior
+    model = Model(parameters={"location": Real()}, log_density=lambda data, location: jnp.nan)
+    original = sample_prior(model, prior, draws=3, seed=5)
+    fixed = sample_prior(model, lambda key: {"location": 42.0}, draws=3, seed=5)
+    again = sample_prior(model, prior, draws=3, seed=5)
+    np.testing.assert_array_equal(fixed["prior"]["location"], np.full((1, 3), 42.0))
     xr.testing.assert_equal(original, again)
-    assert not np.array_equal(original["prior"]["location"], override["prior"]["location"])
+    assert not np.array_equal(original["prior"]["location"], fixed["prior"]["location"])
 
 
-def test_attached_prior_preserves_parameter_and_generated_metadata():
+def test_prior_sampling_preserves_parameter_and_generated_metadata():
     model = Model(
         parameters={"coefficient": Real((2,))},
         log_density=lambda data, coefficient: jnp.nan,
         generated_quantities=lambda key, data, coefficient: {"copy": coefficient},
-        prior=lambda key: {"coefficient": jax.random.normal(key, (2,))},
         dims={"coefficient": ("feature",)},
         coords={"feature": ["price", "promotion"]},
     )
-    result = sample_prior(model, draws=3)
+    result = sample_prior(model, lambda key: {"coefficient": jax.random.normal(key, (2,))}, draws=3)
     assert result["prior"]["coefficient"].dims == ("chain", "draw", "feature")
     assert result["prior_generated_quantities"]["copy"].dims == ("chain", "draw", "feature")
     np.testing.assert_array_equal(result["prior"]["feature"], ["price", "promotion"])
     np.testing.assert_array_equal(result["prior_generated_quantities"]["copy"], result["prior"]["coefficient"])
 
 
-def test_attached_prior_is_not_executed_by_construction_density_or_posterior_sampling(monkeypatch):
-    def forbidden_prior(key):
-        raise AssertionError("Attaching a prior must not add or evaluate a model density")
-
-    def stationary_draws(logdensity, positions, keys, *, draws, **options):
-        repeated = jax.tree.map(lambda value: jnp.repeat(value[:, None], draws, axis=1), positions)
-        shape = (len(keys), draws)
-        return repeated, {
-            "lp": jax.vmap(jax.vmap(logdensity))(repeated),
-            "diverging": jnp.zeros(shape, dtype=bool),
-            "reached_max_treedepth": jnp.zeros(shape, dtype=bool),
-        }
-
-    monkeypatch.setattr(sampling, "_sample_nuts", stationary_draws)
-    model = Model(
-        parameters={"location": Real()}, log_density=lambda data, location: -0.5 * location**2, prior=forbidden_prior
-    )
-    position = {"location": jnp.array(1.5)}
-    np.testing.assert_allclose(model.log_density(position, None), -1.125)
-    result = sampling.sample(model, draws=2, warmup=1, chains=1, initial_values=position)
-    np.testing.assert_array_equal(result["sample_stats"]["lp"], np.full((1, 2), -1.125))
-    assert set(result.children) == {"posterior", "sample_stats"}
-
-
-def test_attached_prior_shapes_are_validated_even_when_generation_is_disabled():
+def test_prior_draw_shapes_are_validated_even_when_generation_is_disabled():
     def forbidden_generate(key, data, location):
         raise AssertionError("Generation was disabled")
 
@@ -353,10 +315,9 @@ def test_attached_prior_shapes_are_validated_even_when_generation_is_disabled():
         parameters={"location": Real()},
         log_density=lambda data, location: jnp.nan,
         generated_quantities=forbidden_generate,
-        prior=lambda key: {"location": jnp.ones(2)},
     )
     with pytest.raises(ValueError, match="shape"):
-        sample_prior(model, draws=2, generate=False)
+        sample_prior(model, lambda key: {"location": jnp.ones(2)}, draws=2, generate=False)
 
 
 def test_constrained_draws_preserve_full_parameter_shapes_and_labels():
@@ -439,14 +400,15 @@ def test_prior_auxiliary_inputs_supply_parameter_axes_and_saved_calculations(gen
     model = Model(
         parameters={"effect": Real(dims="component")},
         log_density=forbidden_density,
-        generated_quantities=lambda key, lift: {"predictive": {"lift_copy": lift}},
-        prior=lambda key: {"effect": jnp.array([1.0, 2.0, 3.0])},
+        generated_quantities=lambda key, lift, expected_lift: {
+            "predictive": {"lift_copy": lift},
+            "expected_lift": expected_lift,
+        },
         data=Data(data, inputs=inputs),
         transformed_parameters=lambda basis, effect: {"expected_lift": basis @ effect},
-        save=("expected_lift",),
         generated_dims={"expected_lift": ("experiment",)},
     )
-    result = sample_prior(model, draws=2, generate=generate)
+    result = sample_prior(model, lambda key: {"effect": jnp.array([1.0, 2.0, 3.0])}, draws=2, generate=generate)
 
     assert result["prior"]["effect"].dims == ("chain", "draw", "component")
     np.testing.assert_array_equal(result["prior"]["component"], np.arange(3))
@@ -627,7 +589,7 @@ def test_prior_routes_transformed_quantities_through_generation_without_density_
     _, data = _prepared_model()
 
     def forbidden_density(mean):
-        raise AssertionError("Prior saved quantities must not evaluate the model density")
+        raise AssertionError("Prior generated quantities must not evaluate the model density")
 
     def transformed(location, controls, outcome):
         mean = location + controls[:, 0]
@@ -638,11 +600,12 @@ def test_prior_routes_transformed_quantities_through_generation_without_density_
             "total": mean.sum(),
         }
 
-    def generate(key, mean, pointwise, lp_location):
+    def generate(key, mean, pointwise, lp_location, total):
         return {
             "predictive": {"mean": mean},
             "log_likelihood": {"pointwise": pointwise},
             "log_prior": {"lp_location": lp_location},
+            "total": total,
         }
 
     model = Model(
@@ -650,11 +613,9 @@ def test_prior_routes_transformed_quantities_through_generation_without_density_
         log_density=forbidden_density,
         generated_quantities=generate,
         data=data,
-        prior=_normal_prior,
         transformed_parameters=transformed,
-        save=("total",),
     )
-    result = sample_prior(model, draws=6, seed=23, batch_size=batch_size)
+    result = sample_prior(model, _normal_prior, draws=6, seed=23, batch_size=batch_size)
 
     assert set(result["prior"].data_vars) == {"location"}
     assert set(result["prior_generated_quantities"].data_vars) == {"total"}
@@ -668,28 +629,27 @@ def test_prior_routes_transformed_quantities_through_generation_without_density_
 
 
 @pytest.mark.parametrize("batch_size", [1, 4, 64])
-def test_prior_generation_toggle_skips_saved_transforms_entirely(batch_size):
+def test_prior_generation_toggle_skips_transforms_entirely(batch_size):
     _, data = _prepared_model()
 
     def forbidden_transform(location):
-        raise AssertionError("Saved transforms must not execute when generation is disabled")
+        raise AssertionError("Transforms must not execute when generation is disabled")
 
     model = Model(
         parameters={"location": Real()},
         log_density=lambda mean: jnp.nan,
+        generated_quantities=lambda key, mean: {"mean": mean},
         data=data,
-        prior=_normal_prior,
         transformed_parameters=forbidden_transform,
-        save=("mean",),
     )
-    result = sample_prior(model, draws=6, generate=False, batch_size=batch_size)
+    result = sample_prior(model, _normal_prior, draws=6, generate=False, batch_size=batch_size)
 
     assert set(result["prior"].data_vars) == {"location"}
     assert "prior_generated_quantities" not in result
     assert "prior_predictive" not in result
 
 
-def test_prior_saves_explicit_media_and_seasonal_outputs_with_named_axes():
+def test_prior_returns_explicit_media_and_seasonal_outputs_with_named_axes():
     data = prepare_data(
         pd.DataFrame({"week": [0, 1, 2], "sales": [1.0, 2.0, 3.0], "video": [1.0, 3.0, 2.0]}),
         time="week",
@@ -731,7 +691,11 @@ def test_prior_saves_explicit_media_and_seasonal_outputs_with_named_axes():
             "paid_media_total": ("time",),
             "annual": ("time",),
         },
-        save=("paid_media", "paid_media_total", "annual"),
+        generated_quantities=lambda key, paid_media, paid_media_total, annual: {
+            "paid_media": paid_media,
+            "paid_media_total": paid_media_total,
+            "annual": annual,
+        },
     )
 
     def prior(key):
@@ -786,10 +750,9 @@ def test_invalid_model_is_rejected():
         sample_prior(object(), _normal_prior, draws=2)
 
 
-@pytest.mark.parametrize("options", [{}, {"prior": None}])
-def test_missing_prior_requires_an_attached_or_per_call_callback(scalar_model, options):
-    with pytest.raises(ValueError, match="prior"):
-        sample_prior(scalar_model, draws=2, **options)
+def test_missing_prior_is_rejected(scalar_model):
+    with pytest.raises(TypeError, match="prior"):
+        sample_prior(scalar_model, None, draws=2)
 
 
 @pytest.mark.parametrize("prior", [False, {"location": 1.0}])
@@ -799,39 +762,28 @@ def test_prior_argument_must_be_callable(scalar_model, prior):
 
 
 @pytest.mark.parametrize("definition", [1.0, normal, "normal"])
-def test_model_rejects_invalid_registered_prior_entries(definition):
+def test_prior_mappings_reject_invalid_entries(scalar_model, definition):
     with pytest.raises(TypeError, match="Prior") as error:
-        Model(
-            parameters={"location": Real()}, log_density=lambda data, location: jnp.nan, prior={"location": definition}
-        )
+        sample_prior(scalar_model, {"location": definition}, draws=2)
     assert "location" in str(error.value)
 
 
-@pytest.mark.parametrize("override", [False, True])
 @pytest.mark.parametrize("form", ["instance", "logpdf"])
-def test_registered_prior_density_requires_parameter_mapping(scalar_model, override, form):
+def test_prior_objects_must_be_passed_by_parameter_name(scalar_model, form):
     prior = Prior(normal, location=0.0, scale=1.0)
     value = prior if form == "instance" else prior.logpdf
     with pytest.raises(TypeError, match="mapping"):
-        if override:
-            sample_prior(scalar_model, value, draws=2)
-        else:
-            Model(parameters={"location": Real()}, log_density=lambda data, location: jnp.nan, prior=value)
+        sample_prior(scalar_model, value, draws=2)
 
 
 @pytest.mark.parametrize("value", [("lp_location",), ["lp_location"], "lp_location"])
-@pytest.mark.parametrize("override", [False, True])
-def test_output_names_passed_as_prior_point_to_log_prior(scalar_model, value, override):
+def test_output_names_passed_as_prior_point_to_log_prior(scalar_model, value):
     with pytest.raises(TypeError, match="log_prior"):
-        if override:
-            sample_prior(scalar_model, value, draws=2)
-        else:
-            Model(parameters={"location": Real()}, log_density=lambda data, location: jnp.nan, prior=value)
+        sample_prior(scalar_model, value, draws=2)
 
 
 @pytest.mark.parametrize("form", ["no_key", "required_positional", "required_keyword", "density"])
-@pytest.mark.parametrize("override", [False, True])
-def test_prior_callback_signatures_are_rejected_without_execution(scalar_model, form, override):
+def test_prior_callback_signatures_are_rejected_without_execution(scalar_model, form):
     def no_key():
         raise AssertionError("Signature validation must not run prior callbacks")
 
@@ -848,10 +800,7 @@ def test_prior_callback_signatures_are_rejected_without_execution(scalar_model, 
         "density": normal,
     }[form]
     with pytest.raises(TypeError, match=r"prior\(key\)") as error:
-        if override:
-            sample_prior(scalar_model, prior, draws=2)
-        else:
-            Model(parameters={"location": Real()}, log_density=lambda data, location: jnp.nan, prior=prior)
+        sample_prior(scalar_model, prior, draws=2)
     assert "mapping" in str(error.value)
     assert "density" in str(error.value)
 
@@ -859,8 +808,7 @@ def test_prior_callback_signatures_are_rejected_without_execution(scalar_model, 
 @pytest.mark.parametrize(
     "form", ["positional_only", "defaults", "callable_object", "callable_sequence", "partial", "jit"]
 )
-@pytest.mark.parametrize("override", [False, True])
-def test_compatible_prior_callbacks_are_validated_without_executing_at_construction(form, override):
+def test_compatible_prior_callbacks_are_validated_without_executing_before_draws(form):
     calls = []
 
     def positional_only(key, /):
@@ -890,11 +838,9 @@ def test_compatible_prior_callbacks_are_validated_without_executing_at_construct
         "partial": partial(with_location, 0.0),
         "jit": jax.jit(positional_only),
     }[form]
-    model = Model(
-        parameters={"location": Real()}, log_density=lambda data, location: jnp.nan, prior=None if override else prior
-    )
+    model = Model(parameters={"location": Real()}, log_density=lambda data, location: jnp.nan)
     assert calls == []
-    result = sample_prior(model, prior if override else None, draws=3)
+    result = sample_prior(model, prior, draws=3)
     assert calls
     assert result["prior"]["location"].shape == (1, 3)
     assert np.unique(result["prior"]["location"]).size == 3
@@ -911,20 +857,20 @@ def test_opaque_prior_callback_keeps_runtime_output_validation():
             return jnp.array(-1.0)
 
     prior = OpaqueSampler()
-    model = Model(parameters={"location": Real()}, log_density=lambda data, location: jnp.nan, prior=prior)
+    model = Model(parameters={"location": Real()}, log_density=lambda data, location: jnp.nan)
     assert calls == []
     with pytest.raises(TypeError, match="mapping"):
-        sample_prior(model, draws=2)
+        sample_prior(model, prior, draws=2)
     assert calls
 
 
 @pytest.mark.parametrize("names", [(), ("extra",), ("location", "extra")])
-@pytest.mark.parametrize("registered", [False, True])
-def test_prior_key_errors_identify_missing_and_unexpected_names(scalar_model, names, registered):
-    values = {name: Prior(normal, location=0.0, scale=1.0) if registered else 1.0 for name in names}
+@pytest.mark.parametrize("mapping", [False, True])
+def test_prior_key_errors_identify_missing_and_unexpected_names(scalar_model, names, mapping):
+    values = {name: Prior(normal, location=0.0, scale=1.0) if mapping else 1.0 for name in names}
     with pytest.raises(ValueError) as error:
-        if registered:
-            Model(parameters={"location": Real()}, log_density=lambda data, location: jnp.nan, prior=values)
+        if mapping:
+            sample_prior(scalar_model, values, draws=2)
         else:
             sample_prior(scalar_model, lambda key: values, draws=2)
     message = str(error.value).lower()
@@ -934,13 +880,13 @@ def test_prior_key_errors_identify_missing_and_unexpected_names(scalar_model, na
         assert "unexpected" in message and "extra" in message
 
 
-@pytest.mark.parametrize("registered", [False, True])
-def test_prior_mapping_keys_must_be_strings(scalar_model, registered):
-    value = Prior(normal, location=0.0, scale=1.0) if registered else 1.0
+@pytest.mark.parametrize("mapping", [False, True])
+def test_prior_mapping_keys_must_be_strings(scalar_model, mapping):
+    value = Prior(normal, location=0.0, scale=1.0) if mapping else 1.0
     values = {"location": value, 1: value}
     with pytest.raises((TypeError, ValueError), match=r"name|string"):
-        if registered:
-            Model(parameters={"location": Real()}, log_density=lambda data, location: jnp.nan, prior=values)
+        if mapping:
+            sample_prior(scalar_model, values, draws=2)
         else:
             sample_prior(scalar_model, lambda key: values, draws=2)
 
@@ -966,7 +912,7 @@ def test_prior_draw_callbacks_reject_definitions_and_output_names(scalar_model, 
     with pytest.raises(TypeError, match="location") as error:
         sample_prior(scalar_model, lambda key: {"location": value}, draws=2)
     message = str(error.value)
-    assert "prior=" in message
+    assert "sample_prior" in message
     assert "log_prior" in message
 
 

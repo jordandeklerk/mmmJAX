@@ -126,23 +126,6 @@ class PreparedData:
     frequency : str or None
         Inferred or declared observation spacing. None for numeric labels,
         fewer than three dates without a declared spacing, or disabled checks.
-    time_positions : numpy.ndarray
-        Elapsed positions of the modeling periods from the first period, in
-        days for dates and in label units otherwise. These are the ``time``
-        values that models receive.
-    media_time_positions : numpy.ndarray
-        Elapsed positions of the exposure periods on the same origin, with
-        history periods negative. Empty without exposure inputs. These are
-        the ``media_time`` values that models receive.
-    day_of_year : numpy.ndarray
-        Calendar day of the year for each modeling period, from one through
-        366, matching the ``day_of_year`` model input. Requires dates.
-    media_day_of_year : numpy.ndarray
-        Calendar day of the year for each exposure period, matching the
-        ``media_day_of_year`` model input. Empty without exposure inputs.
-    model_inputs : dict of str to ModelInput
-        Every name that model functions can request from this data, with its
-        kind, axes, and source. Use it to choose ``Data`` variable names.
     """
 
     arrays: dict[str, NDArray[np.generic]]
@@ -390,22 +373,6 @@ class Data:
         as shapes under ``jax.jit``. They never change across scenarios.
     scaling : DataScaling or {"auto"}, optional
         Fitted transformations or automatic scaling. None uses unchanged data.
-
-    Attributes
-    ----------
-    observations : PreparedData
-        A copy of the prepared observations.
-    variables : dict of str to str or None
-        A copy of the variable declarations.
-    inputs : xarray.Dataset or None
-        A copy of the auxiliary inputs.
-    constants : dict of str to object
-        A copy of the declared constants.
-    scaling : DataScaling or str or None
-        The fitted transformations or requested scaling mode.
-    model_inputs : dict of str to ModelInput
-        Every name model functions can request, combining the prepared
-        observations, auxiliary inputs, and constants.
     """
 
     _observations: PreparedData

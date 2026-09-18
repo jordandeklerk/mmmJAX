@@ -20,7 +20,6 @@ from mmmjax import (
     fit_data_scaling,
     fourier_features,
     generate_quantities,
-    lognormal,
     normal,
     prepare_data,
     sample_prior,
@@ -78,44 +77,27 @@ def test_empty_metadata_preserves_existing_models():
 
 
 @pytest.mark.parametrize("names", [(), ("coefficient",), ("coefficient", "intercept", "extra")])
-def test_registered_priors_require_exact_parameter_names(names):
+def test_prior_mappings_require_exact_parameter_names(names):
+    priors = {name: Prior(normal, location=0.0, scale=1.0) for name in names}
     with pytest.raises(ValueError, match=r"prior|parameter"):
-        _plain_model(prior={name: Prior(normal, location=0.0, scale=1.0) for name in names})
+        sample_prior(_plain_model(), priors, draws=2)
 
 
 @pytest.mark.parametrize("distribution", [normal, 1.0, None])
-def test_registered_prior_entries_require_prior_objects(distribution):
+def test_prior_mapping_entries_require_prior_objects(distribution):
+    priors = {"coefficient": distribution, "intercept": Prior(normal, location=0.0, scale=1.0)}
     with pytest.raises(TypeError, match="Prior"):
-        _plain_model(prior={"coefficient": distribution, "intercept": Prior(normal, location=0.0, scale=1.0)})
+        sample_prior(_plain_model(), priors, draws=2)
 
 
 @pytest.mark.parametrize("event", [False, True])
-def test_registered_prior_shapes_must_match_parameter_declarations(event):
+def test_prior_mapping_shapes_must_match_parameter_declarations(event):
     parameter = Simplex((3,)) if event else Real((3,))
     distribution = (
         Prior(dirichlet, concentration=jnp.ones(2)) if event else Prior(normal, location=jnp.zeros(2), scale=1.0)
     )
     with pytest.raises(ValueError, match=r"shape.*coefficient"):
-        _plain_model(parameters={"coefficient": parameter}, prior={"coefficient": distribution})
-
-
-@pytest.mark.parametrize("include_prior", [False, True])
-def test_registered_priors_do_not_implicitly_change_jitted_density_or_gradient(include_prior):
-    prior = Prior(lognormal, location=0.2, scale=0.9)
-
-    def density(data, scale):
-        likelihood = normal(data, scale, 0.5)
-        return likelihood + prior(scale) if include_prior else likelihood
-
-    plain = Model(parameters={"scale": Positive()}, log_density=density)
-    registered = Model(parameters={"scale": Positive()}, log_density=density, prior={"scale": prior})
-    values = {"scale": jnp.array(2.0)}
-    position = {"scale": jnp.log(values["scale"])}
-    for method, arguments in (("log_prob", values), ("log_density", position)):
-        expected = jax.jit(jax.value_and_grad(getattr(plain, method)))(arguments, 1.5)
-        actual = jax.jit(jax.value_and_grad(getattr(registered, method)))(arguments, 1.5)
-        for actual_array, expected_array in zip(jax.tree.leaves(actual), jax.tree.leaves(expected), strict=True):
-            np.testing.assert_array_equal(actual_array, expected_array)
+        sample_prior(_plain_model(parameters={"coefficient": parameter}), {"coefficient": distribution}, draws=2)
 
 
 def test_result_metadata_copies_mappings_axes_coordinates_and_output_names():
@@ -145,7 +127,7 @@ def test_result_metadata_copies_mappings_axes_coordinates_and_output_names():
     [
         ({"dims": []}, TypeError, "dims must map"),
         ({"dims": {"unknown": ()}}, ValueError, "undeclared parameter"),
-        ({"dims": {"coefficient": "channel"}}, TypeError, "sequence"),
+        ({"dims": {"coefficient": 1}}, TypeError, "sequence"),
         ({"dims": {"coefficient": ()}}, ValueError, "constrained shape"),
         ({"dims": {"intercept": ("channel",)}}, ValueError, "constrained shape"),
         ({"dims": {"coefficient": ("channel", "channel")}}, ValueError, "must not repeat"),
@@ -189,22 +171,6 @@ def test_simplex_metadata_uses_constrained_shape():
         )
 
 
-@pytest.mark.parametrize(
-    "value,error,message",
-    [
-        ("outcome", TypeError, "sequence"),
-        (None, TypeError, "sequence"),
-        ({"outcome"}, TypeError, "sequence"),
-        ([""], ValueError, "nonempty string"),
-        ([1], ValueError, "nonempty string"),
-        (["outcome", "outcome"], ValueError, "duplicate"),
-    ],
-)
-def test_save_names_are_validated(value, error, message):
-    with pytest.raises(error, match=message):
-        _plain_model(generate=_generate, save=value)
-
-
 @pytest.mark.parametrize("group", ["predictive", "log_likelihood", "log_prior"])
 @pytest.mark.parametrize(
     "value,error,message",
@@ -220,45 +186,6 @@ def test_generated_group_values_are_validated_when_returned(group, value, error,
     position = {"coefficient": jnp.zeros(2), "intercept": jnp.array(0.0)}
     with pytest.raises(error, match=message):
         model.generate_quantities(jax.random.key(0), position, None)
-
-
-def test_save_requires_prepared_data():
-    with pytest.raises(ValueError, match="save requires prepared data"):
-        _plain_model(save=("mu",))
-
-
-def test_save_selection_is_copied_without_probing_callbacks():
-    def transformed():
-        raise AssertionError("Construction must not evaluate transformed quantities")
-
-    selection = ["mu"]
-    model = Model(
-        parameters={},
-        log_density=lambda mu: mu.sum(),
-        data=_prepared_data(),
-        transformed_parameters=transformed,
-        save=selection,
-        generated_dims={"mu": ("time", "group")},
-    )
-    selection.clear()
-    assert model._saved_inputs == (("mu", "transformed"),)
-
-
-@pytest.mark.parametrize("name", ["outcome", "intercept", "not a name", "class"])
-def test_save_rejects_data_parameter_and_invalid_names(name):
-    with pytest.raises(ValueError, match=r"save|saved"):
-        Model(
-            parameters={"intercept": Real()},
-            log_density=lambda intercept: -(intercept**2),
-            data=_prepared_data(),
-            transformed_parameters=lambda: {"mu": jnp.zeros(3)},
-            save=(name,),
-        )
-
-
-def test_save_requires_transformed_parameters():
-    with pytest.raises(ValueError, match="transformed quantity"):
-        Model(parameters={}, log_density=lambda: jnp.array(0.0), data=_prepared_data(), save=("missing",))
 
 
 def test_the_same_output_name_can_be_returned_in_several_groups():
@@ -281,7 +208,7 @@ def test_generated_dimensions_require_a_generation_callback():
 
 @pytest.mark.parametrize(
     "generated_dims,error",
-    [([], TypeError), ({"mean": "time"}, TypeError), ({"mean": ("chain",)}, ValueError)],
+    [([], TypeError), ({"mean": 1}, TypeError), ({"mean": ("chain",)}, ValueError)],
 )
 def test_generated_dimensions_use_the_same_axis_validation(generated_dims, error):
     with pytest.raises(error):
@@ -585,15 +512,15 @@ def test_auxiliary_inputs_remain_fixed_across_shorter_reordered_scenarios():
     model = Model(
         parameters={"coefficient": Real(dims="channel")},
         log_density=lambda coefficient: -jnp.square(coefficient).sum(),
-        generated_quantities=lambda key, media, experiment_spend: {
+        generated_quantities=lambda key, media, experiment_spend, experiment_response: {
             "media_copy": media,
             "experiment_copy": experiment_spend,
+            "experiment_response": experiment_response,
         },
         data=Data(data, inputs=inputs),
         transformed_parameters=lambda experiment_spend, coefficient: {
             "experiment_response": experiment_spend @ coefficient
         },
-        save=("experiment_response",),
         generated_dims={"experiment_response": ("experiment",)},
     )
     coefficient = np.array([2.0, 3.0], dtype=jax.dtypes.canonicalize_dtype(float))
@@ -705,10 +632,9 @@ def test_generated_training_arrays_distinguish_current_and_reference_provenance(
         log_density=lambda level: -jnp.square(level),
         generated_quantities=lambda key, media, reference: {"current_media": media, "original_media": reference.media},
         data=data,
-        prior=lambda key: {"level": jnp.asarray(0.0)},
     )
     if prior:
-        evaluated = sample_prior(model, draws=2)
+        evaluated = sample_prior(model, lambda key: {"level": jnp.asarray(0.0)}, draws=2)
         generated = evaluated["prior_generated_quantities"]
     else:
         results = _collect_results({"level": np.zeros((1, 2), dtype=np.float32)}, data=data)
@@ -773,10 +699,9 @@ def test_declared_data_variables_keep_prepared_and_auxiliary_result_labels(prior
                 "experiment_costs": "experiment_spend",
             },
         ),
-        prior={"level": Prior(normal, location=0.0, scale=1.0)},
     )
     if prior:
-        evaluated = sample_prior(model, draws=2, batch_size=1)
+        evaluated = sample_prior(model, {"level": Prior(normal, location=0.0, scale=1.0)}, draws=2, batch_size=1)
         generated_values = evaluated["prior_generated_quantities"]
         predictive = evaluated["prior_predictive"]
     else:
@@ -904,3 +829,27 @@ def test_result_collection_rejects_auxiliary_coordinate_alignment():
 def test_result_collection_rejects_auxiliary_overwrite_of_prepared_data(name):
     with pytest.raises(ValueError, match="conflict with prepared data variables"):
         _collect_results({"location": np.zeros((1, 1))}, data=_prepared_data(), inputs=xr.Dataset({name: 1.0}))
+
+
+def test_single_names_are_accepted_for_dims_and_generated_dims():
+    data = _prepared_data()
+
+    def transformed(outcome, level):
+        return {"mu": outcome * 0 + level}
+
+    def build(level_axes, mu_axes):
+        return Model(
+            parameters={"level": Real((2,))},
+            log_density=lambda outcome, mu, level: -jnp.square(outcome - mu).sum() - jnp.square(level).sum(),
+            generated_quantities=lambda key, mu: {"mu": mu},
+            data=data,
+            transformed_parameters=transformed,
+            dims={"level": level_axes},
+            coords={"unit": ["first", "second"]},
+            generated_dims={"mu": mu_axes},
+        )
+
+    single = build("unit", "time")
+    sequence = build(("unit",), ("time",))
+    assert single._result_dims == sequence._result_dims == {"level": ("unit",)}
+    assert single._generated_dims == sequence._generated_dims == {"mu": ("time",)}

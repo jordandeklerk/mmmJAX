@@ -825,13 +825,12 @@ def test_explicit_hsgp_prior_and_scenario_replay_preserve_axes_and_frozen_center
         },
         log_density=density,
         generated_quantities=generate,
-        prior=prior,
         data=training,
         transformed_parameters=transformed,
         coords={"basis": [1, 2, 3]},
         generated_dims={"prediction": observation_dims},
     )
-    draws = sample_prior(model, draws=3, seed=7)
+    draws = sample_prior(model, prior, draws=3, seed=7)
     assert draws["prior"]["coefficients"].dims == ("chain", "draw", *coefficient_dims)
     assert draws["prior_generated_quantities"]["coefficient_copy"].dims == ("chain", "draw", *coefficient_dims)
     assert draws["prior_predictive"]["prediction"].dims == ("chain", "draw", *observation_dims)
