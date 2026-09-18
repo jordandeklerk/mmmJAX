@@ -222,7 +222,7 @@ def test_transformed_outputs_cannot_shadow_model_supplied_inputs(name):
         model.generate_quantities(jax.random.key(0), {}, model.data)
 
 
-def _regression(*, save=(), include_generate=True):
+def _regression(*, generate="default"):
     def transformed(scale, controls, beta):
         return {"signal": controls @ beta, "spread": jnp.sqrt(scale**2 + 0.4)}
 
@@ -240,10 +240,9 @@ def _regression(*, save=(), include_generate=True):
     return Model(
         parameters={"beta": Real(shape=(2,)), "scale": Positive(), "intercept": Real()},
         log_density=density,
-        generated_quantities=quantities if include_generate else None,
+        generated_quantities=quantities if generate == "default" else generate,
         data=_data(),
         transformed_parameters=transformed,
-        save=save,
     )
 
 
@@ -291,7 +290,7 @@ def test_transformed_outputs_change_with_positions_and_outcome_free_forecasts_un
     assert set(model.parameters) == {"beta", "scale", "intercept"}
 
 
-def _media_model(transformed=None, *, save=(), include_generate=True):
+def _media_model(transformed=None, *, generate="default"):
     def density(
         *,
         outcome,
@@ -350,10 +349,9 @@ def _media_model(transformed=None, *, save=(), include_generate=True):
             "paid_media_slope": Positive(dims="channel"),
         },
         log_density=density,
-        generated_quantities=(lambda key, *, mu: {"mu": mu}) if include_generate else None,
+        generated_quantities=(lambda key, *, mu: {"mu": mu}) if generate == "default" else generate,
         data=data,
         transformed_parameters=media_quantities if transformed is None else transformed,
-        save=save,
     )
     position = {
         "intercept": jnp.array(0.2),
@@ -564,9 +562,9 @@ def test_transformed_quantities_named_data_or_effects_are_not_legacy_bundles():
     np.testing.assert_allclose(generated["sum"], expected, rtol=1e-6)
 
 
-def test_saved_transformed_quantities_work_without_generate_and_preserve_density_gradients():
+def test_returned_transformed_quantities_preserve_density_gradients():
     original = _regression()
-    saved = _regression(save=("signal", "spread"), include_generate=False)
+    saved = _regression(generate=lambda key, signal, spread: {"signal": signal, "spread": spread})
     position = {"beta": jnp.array([0.3, -0.2]), "scale": jnp.log(jnp.array(0.7)), "intercept": jnp.array(0.25)}
     original_value, original_gradient = jax.jit(jax.value_and_grad(original.log_density))(position, original.data)
     saved_value, saved_gradient = jax.jit(jax.value_and_grad(saved.log_density))(position, saved.data)
@@ -582,11 +580,11 @@ def test_saved_transformed_quantities_work_without_generate_and_preserve_density
     np.testing.assert_allclose(generated["spread"], np.sqrt(0.7**2 + 0.4), rtol=2e-6)
 
 
-def test_saved_transforms_include_media_totals_and_fourier_curves():
-    model, _, position = _media_model(
-        save=("mu", "paid_media", "paid_media_total", "annual"),
-        include_generate=False,
-    )
+def test_returned_transforms_include_media_totals_and_fourier_curves():
+    def generate(key, *, mu, paid_media, paid_media_total, annual):
+        return {"mu": mu, "paid_media": paid_media, "paid_media_total": paid_media_total, "annual": annual}
+
+    model, _, position = _media_model(generate=generate)
     generated = jax.jit(model.generate_quantities)(jax.random.key(0), model.constrain(position), model.data)
 
     assert set(generated) == {"mu", "paid_media", "paid_media_total", "annual"}
@@ -599,7 +597,7 @@ def test_saved_transforms_include_media_totals_and_fourier_curves():
     )
 
 
-def test_saved_outputs_merge_with_generate_and_evaluate_transform_once():
+def test_transformed_inputs_reach_generate_and_evaluate_the_transform_once():
     calls = []
 
     def transformed(controls):
@@ -608,10 +606,10 @@ def test_saved_outputs_merge_with_generate_and_evaluate_transform_once():
 
     def generate(key, signal):
         calls.append("generate")
-        return {"prediction": signal + 1}
+        return {"signal": signal, "prediction": signal + 1}
 
     def density(signal):
-        raise AssertionError("Saving quantities must not evaluate density")
+        raise AssertionError("Generating quantities must not evaluate density")
 
     model = Model(
         parameters={},
@@ -619,7 +617,6 @@ def test_saved_outputs_merge_with_generate_and_evaluate_transform_once():
         generated_quantities=generate,
         data=_data(),
         transformed_parameters=transformed,
-        save=("signal",),
     )
     assert calls == []
     result = model.generate_quantities(jax.random.key(0), {}, model.data)
@@ -629,15 +626,7 @@ def test_saved_outputs_merge_with_generate_and_evaluate_transform_once():
     np.testing.assert_array_equal(result["prediction"], result["signal"] + 1)
 
 
-def test_saved_outputs_reject_generate_name_collisions_even_for_identical_values():
-    model = _regression(save=("signal",))
-    values = {"beta": jnp.ones(2), "scale": jnp.array(1.0), "intercept": jnp.array(0.0)}
-
-    with pytest.raises(ValueError, match="signal"):
-        model.generate_quantities(jax.random.key(0), values, model.data)
-
-
-def test_saved_unknown_transformed_names_are_checked_only_at_evaluation():
+def test_unknown_transformed_inputs_are_checked_only_at_evaluation():
     calls = []
 
     def transformed():
@@ -647,9 +636,9 @@ def test_saved_unknown_transformed_names_are_checked_only_at_evaluation():
     model = Model(
         parameters={},
         log_density=lambda: jnp.array(0.0),
+        generated_quantities=lambda key, typo: {"typo": typo},
         data=_data(),
         transformed_parameters=transformed,
-        save=("typo",),
     )
     assert calls == []
 
@@ -657,18 +646,8 @@ def test_saved_unknown_transformed_names_are_checked_only_at_evaluation():
         model.generate_quantities(jax.random.key(0), {}, model.data)
 
 
-@pytest.mark.parametrize("name", ["annual_coefficients", "paid_media_coefficient", "paid_media_retention"])
-def test_saved_names_cannot_select_parameter_inputs(name):
-    with pytest.raises(ValueError, match=name):
-        model, _, position = _media_model(
-            save=(name,),
-            include_generate=False,
-        )
-        model.generate_quantities(jax.random.key(0), model.constrain(position), model.data)
-
-
-def test_saved_outputs_follow_changed_parameters_and_scenario_shapes_under_jit_vmap():
-    model = _regression(save=("signal",), include_generate=False)
+def test_returned_transformed_outputs_follow_changed_parameters_and_scenario_shapes_under_jit_vmap():
+    model = _regression(generate=lambda key, signal: {"signal": signal})
     positions = {"beta": jnp.array([[0.3, -0.2], [0.5, 0.1]]), "scale": jnp.ones(2), "intercept": jnp.zeros(2)}
     keys = jax.random.split(jax.random.key(0), 2)
     generate = jax.jit(jax.vmap(model.generate_quantities, in_axes=(0, 0, None)))
@@ -702,7 +681,6 @@ def test_direct_evaluation_returns_all_quantities_without_density_or_generation(
         generated_quantities=generate,
         data=_data(),
         transformed_parameters=transformed,
-        save=("signal",),
     )
     assert calls == []
 
@@ -717,9 +695,9 @@ def test_direct_evaluation_returns_all_quantities_without_density_or_generation(
     assert calls == ["transformed", "transformed", "density"]
 
 
-@pytest.mark.parametrize("save", [(), ("signal",)])
-def test_direct_evaluation_supports_training_inputs_and_outcome_free_scenarios_under_jit_vmap(save):
-    model = _regression(save=save, include_generate=False)
+@pytest.mark.parametrize("generate", [None, lambda key, signal: {"signal": signal}])
+def test_direct_evaluation_supports_training_inputs_and_outcome_free_scenarios_under_jit_vmap(generate):
+    model = _regression(generate=generate)
     parameters = {"beta": jnp.array([0.3, -0.2]), "scale": jnp.array(0.7), "intercept": jnp.array(0.25)}
     training = model.evaluate(parameters)
     compiled = jax.jit(model.evaluate)(parameters)
@@ -749,7 +727,7 @@ def test_direct_evaluation_supports_training_inputs_and_outcome_free_scenarios_u
 
 def test_direct_evaluation_includes_explicit_effects_and_media_totals():
     model, _, position = _media_model(
-        include_generate=False,
+        generate=None,
     )
     parameters = model.constrain(position)
     evaluated = jax.jit(model.evaluate)(parameters)
@@ -765,7 +743,7 @@ def test_direct_evaluation_includes_explicit_effects_and_media_totals():
 
 
 def test_direct_log_prob_matches_constrained_density_and_gradients_without_jacobian():
-    model = _regression(include_generate=False)
+    model = _regression(generate=None)
     parameters = {"beta": jnp.array([0.3, -0.2]), "scale": jnp.array(0.7), "intercept": jnp.array(0.25)}
     value, gradient = jax.jit(jax.value_and_grad(model.log_prob))(parameters)
     controls, outcome = _data().arrays["controls"], _data().arrays["outcome"]

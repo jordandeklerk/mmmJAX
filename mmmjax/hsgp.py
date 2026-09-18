@@ -36,9 +36,6 @@ class HSGPApproximation:
     column_means : tuple of float or None
         Basis column means over the preparation positions, subtracted by
         :meth:`basis` when the approximation was prepared with centering.
-    frequencies : jax.Array
-        Angular frequencies of the basis functions, fixed by the domain
-        half-width and basis count.
     """
 
     center: float
@@ -203,11 +200,11 @@ def prepare_hsgp(
            ...:     "week": [0, 4, 8, 12],
            ...:     "sales": [100.0, 120.0, 110.0, 130.0],
            ...: })
-           ...: config = prepare_hsgp((0, 16), length_scale_range=(2, 8))
-           ...: basis, frequencies = config.basis(frame["week"].to_numpy())
-           ...: weights = config.weights(frequencies, length_scale=4.0)
-           ...: future_basis, _ = config.basis([13.0, 14.0, 15.0, 16.0])
-           ...: basis.shape, future_basis.shape
+           ...: approximation = prepare_hsgp((0, 16), length_scale_range=(2, 8))
+           ...: basis = approximation.basis(frame["week"].to_numpy())
+           ...: weights = approximation.weights(length_scale=4.0)
+           ...: future_basis = approximation.basis([13.0, 14.0, 15.0, 16.0])
+           ...: basis.shape, weights.shape, future_basis.shape
     """
     if covariance not in ("expquad", "matern32", "matern52"):
         raise ValueError(f"covariance must be 'expquad', 'matern32', or 'matern52', got {covariance!r}")

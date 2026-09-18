@@ -632,9 +632,9 @@ def test_parallel_nuts_on_two_cpu_devices_preserves_targets_generation_and_label
         sampling._sample_nuts = check_execution
         observed_location = jax.device_put(jnp.array(0.0), jax.local_devices()[1])
         model = Model(
-            {"location": Real()},
-            lambda data, location: normal(location, data, 1.0),
-            lambda key, data, location: {
+            parameters={"location": Real()},
+            log_density=lambda data, location: normal(location, data, 1.0),
+            generated_quantities=lambda key, data, location: {
                 "predictive": {"prediction": location + 0.2 * jax.random.normal(key)},
                 "location_copy": location,
             },
@@ -711,8 +711,8 @@ def test_parallel_nuts_on_two_cpu_devices_preserves_targets_generation_and_label
             nested["generated_quantities"]["location_copy"], nested["posterior"]["location"],
         )
         simplex_model = Model(
-            {"location": Real(), "weights": Simplex((1,))},
-            lambda data, location, weights: normal(location, 0.0, 1.0) + 0.0 * weights.sum(),
+            parameters={"location": Real(), "weights": Simplex((1,))},
+            log_density=lambda data, location, weights: normal(location, 0.0, 1.0) + 0.0 * weights.sum(),
         )
         simplex = sample(
             simplex_model, chains=2, draws=8, warmup=40, seed=8, chain_method="parallel",
@@ -723,9 +723,11 @@ def test_parallel_nuts_on_two_cpu_devices_preserves_targets_generation_and_label
         assert np.isfinite(simplex["posterior"]["location"]).all()
         assert np.isfinite(simplex["sample_stats"]["lp"]).all()
         dense_model = Model(
-            {"intercept": Real(), "coefficients": Real((2,))},
-            lambda data, intercept, coefficients: normal(intercept, 0.0, 1.0) + normal(coefficients, intercept, 1.0),
-            lambda key, data, intercept, coefficients: {"response": intercept + coefficients},
+            parameters={"intercept": Real(), "coefficients": Real((2,))},
+            log_density=lambda data, intercept, coefficients: (
+                normal(intercept, 0.0, 1.0) + normal(coefficients, intercept, 1.0)
+            ),
+            generated_quantities=lambda key, data, intercept, coefficients: {"response": intercept + coefficients},
         )
         dense = sample(
             dense_model, chains=2, draws=12, warmup=100, seed=17,
@@ -829,29 +831,22 @@ def test_prepared_data_and_selected_generated_outputs_are_collected_automaticall
 
 
 @pytest.mark.parametrize("batch_size", [1, 4, 64])
-@pytest.mark.parametrize("registered", [False, True])
-def test_sampling_collects_log_prior_without_sampling_jacobian(nuts_calls, batch_size, registered):
+def test_sampling_collects_log_prior_without_sampling_jacobian(nuts_calls, batch_size):
     prior = Prior(lognormal, location=0.0, scale=1.0)
 
     def density(data, scale):
         return prior(scale) + normal(data, scale, 0.5)
 
     def generate(key, data, scale):
-        output = {"log_likelihood": {"observation": normal(data, scale, 0.5)}}
-        return output if registered else output | {"log_prior": {"lp_scale": prior(scale)}}
+        return {"log_likelihood": {"observation": normal(data, scale, 0.5)}, "log_prior": {"lp_scale": prior(scale)}}
 
-    model = Model(
-        parameters={"scale": Positive()},
-        log_density=density,
-        generated_quantities=generate,
-        prior={"scale": prior} if registered else None,
-    )
+    model = Model(parameters={"scale": Positive()}, log_density=density, generated_quantities=generate)
     result = sample(model, data=1.5, draws=3, warmup=1, chains=2, initial_values={"scale": 2.0}, batch_size=batch_size)
     scale = result["posterior"]["scale"].values
     expected_prior = -0.5 * np.log(scale) ** 2 - np.log(scale) - 0.5 * np.log(2 * np.pi)
     expected_likelihood = -0.5 * ((1.5 - scale) / 0.5) ** 2 - np.log(0.5) - 0.5 * np.log(2 * np.pi)
     assert set(result.children) == {"posterior", "sample_stats", "log_likelihood", "log_prior"}
-    prior_name = "log_prior_scale" if registered else "lp_scale"
+    prior_name = "lp_scale"
     assert result["log_prior"][prior_name].dims == ("chain", "draw")
     np.testing.assert_allclose(result["log_prior"][prior_name], expected_prior, rtol=2e-6)
     np.testing.assert_allclose(result["log_likelihood"]["observation"], expected_likelihood, rtol=2e-6)
@@ -860,20 +855,6 @@ def test_sampling_collects_log_prior_without_sampling_jacobian(nuts_calls, batch
     )
     assert not np.allclose(result["log_prior"][prior_name], result["sample_stats"]["lp"])
     assert len(nuts_calls) == 1
-
-
-@pytest.mark.parametrize("generate", [False, True])
-def test_sampling_registered_log_priors_without_a_callback_respects_generation_toggle(nuts_calls, generate):
-    prior = Prior(normal, location=0.0, scale=1.0)
-    model = Model(
-        parameters={"location": Real()}, log_density=lambda data, location: prior(location), prior={"location": prior}
-    )
-    result = sample(model, draws=3, warmup=1, chains=2, initial_values={"location": 1.5}, generate=generate)
-    expected_groups = {"posterior", "sample_stats", "log_prior"} if generate else {"posterior", "sample_stats"}
-    assert set(result.children) == expected_groups
-    if generate:
-        assert result["log_prior"]["log_prior_location"].dims == ("chain", "draw")
-        np.testing.assert_allclose(result["log_prior"]["log_prior_location"], -0.5 * 1.5**2 - 0.5 * np.log(2 * np.pi))
 
 
 @pytest.mark.parametrize("batch_size", [1, 4, 64])
@@ -1022,10 +1003,10 @@ def test_auxiliary_inputs_keep_evaluated_values_and_experiment_labels(nuts_calls
         generated_quantities=lambda key, lift, expected_lift, uncertainty: {
             "predictive": {"lift_copy": lift},
             "log_likelihood": {"pointwise": normal_logpdf(lift, expected_lift, uncertainty)},
+            "expected_lift": expected_lift,
         },
         data=Data(data, inputs=inputs, scaling=fit_data_scaling(data, scale_outcome=True)),
         transformed_parameters=lambda effect, baseline: {"expected_lift": effect * baseline},
-        save=("expected_lift",),
         generated_dims={"expected_lift": ("experiment",), "pointwise": ("experiment",)},
     )
     effect = np.array([1.0, 2.0, 3.0])
@@ -1478,7 +1459,7 @@ def _saved_model(**options):
     def density(outcome, mu, intercept):
         return normal(outcome, mu, 10.0) + normal(intercept, 0.0, 1.0)
 
-    settings = {"save": ("mu",), "generated_dims": {"mu": ("time",)}} | options
+    settings = {"generated_quantities": lambda key, mu: {"mu": mu}, "generated_dims": {"mu": ("time",)}} | options
     return Model(
         parameters={"intercept": Real()},
         log_density=density,
@@ -1489,7 +1470,7 @@ def _saved_model(**options):
 
 
 @pytest.mark.parametrize("batch_size", [1, 4, 64])
-def test_sampling_collects_selected_transformed_quantities_without_callback(nuts_calls, batch_size):
+def test_sampling_collects_returned_transformed_quantities(nuts_calls, batch_size):
     model = _saved_model()
     options = {"draws": 3, "warmup": 4, "chains": 2, "seed": 9, "initial_values": {"intercept": 2.0}}
     results = sample(model, **options, batch_size=batch_size)
@@ -1506,14 +1487,11 @@ def test_sampling_collects_selected_transformed_quantities_without_callback(nuts
     assert len(nuts_calls) == 2
 
 
-@pytest.mark.parametrize("problem", ["missing", "collision", "dimensions"])
-def test_saved_quantities_are_validated_before_chain_adaptation(nuts_calls, problem):
+@pytest.mark.parametrize("problem", ["missing", "dimensions"])
+def test_generated_quantities_are_validated_before_chain_adaptation(nuts_calls, problem):
     if problem == "missing":
-        model = _saved_model(save=("unknown",))
+        model = _saved_model(generated_quantities=lambda key, unknown: {"unknown": unknown})
         message = "unknown"
-    elif problem == "collision":
-        model = _saved_model(generated_quantities=lambda key, mu: {"mu": mu})
-        message = "also returned by generated_quantities"
     else:
         model = _saved_model(generated_dims={"mu": ()})
         message = "dims matching"
@@ -1591,6 +1569,7 @@ def test_continuation_preserves_generated_streams_saved_quantities_and_prepared_
             "log_likelihood": {"pointwise": normal_logpdf(outcome, mu, 1.0)},
             "log_prior": {"lp_location": normal(location, 0.0, 2.0)},
             "key_words": jax.random.key_data(key),
+            "mu": mu,
         }
 
     model = Model(
@@ -1599,8 +1578,6 @@ def test_continuation_preserves_generated_streams_saved_quantities_and_prepared_
         generated_quantities=generate,
         data=data,
         transformed_parameters=transformed,
-        save=("mu",),
-        prior={"location": Prior(normal, location=0.0, scale=2.0)},
         generated_dims={"mu": ("time",), "key_words": ("word",)},
         coords={"word": ["first", "second"]},
     )
@@ -1615,8 +1592,6 @@ def test_continuation_preserves_generated_streams_saved_quantities_and_prepared_
     assert combined.attrs["warmup_steps"] == 60
     assert combined.attrs["seed"] == 17
     assert combined["log_prior"]["lp_location"].dims == ("chain", "draw")
-    assert combined["log_prior"]["log_prior_location"].dims == ("chain", "draw")
-    np.testing.assert_array_equal(combined["log_prior"]["log_prior_location"], combined["log_prior"]["lp_location"])
     np.testing.assert_array_equal(combined["log_prior"]["draw"], np.arange(7))
     np.testing.assert_allclose(
         combined["log_prior"]["lp_location"],

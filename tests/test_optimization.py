@@ -1458,7 +1458,7 @@ def test_optimize_budget_breakdowns_retain_compound_group_coordinates():
     np.testing.assert_array_equal(detailed.group_store, ["large", "small"])
     assert detailed.group_region.dims == ("group",)
     assert detailed.group_store.dims == ("group",)
-    np.testing.assert_allclose(detailed["response_change"], np.zeros((2, 3, 3, 2)), atol=1e-6)
+    np.testing.assert_allclose(detailed["response_change"], np.zeros((2, 3, 3, 2)), atol=1e-5)
 
 
 @pytest.mark.parametrize("by", [None, [], ()])

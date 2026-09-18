@@ -1000,3 +1000,23 @@ def test_parameterization_target_can_be_vectorized(parameterization: Parameteriz
 def _target(parameterization: Parameterization, position: jax.Array) -> jax.Array:
     parameter = parameterization.constrain(position)
     return -0.5 * jnp.sum(parameter**2) + parameterization.log_density_adjustment(position)
+
+
+@pytest.mark.parametrize(
+    "declare",
+    [
+        lambda shape: Real(shape),
+        lambda shape: Positive(shape),
+        lambda shape: LowerBound(1.0, shape),
+        lambda shape: UpperBound(1.0, shape),
+        lambda shape: Interval(0.0, 1.0, shape),
+        lambda shape: Simplex(shape),
+    ],
+)
+def test_integer_shapes_declare_a_single_axis(declare):
+    assert declare(3).shape == (3,)
+    assert declare(3) == declare((3,))
+    with pytest.raises(TypeError, match="shape"):
+        declare(2.0)
+    with pytest.raises(TypeError, match="shape"):
+        declare(True)

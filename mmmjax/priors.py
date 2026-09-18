@@ -1,6 +1,6 @@
 """Reusable probability terms and independent prior draws."""
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from inspect import signature
 
@@ -19,8 +19,9 @@ class Prior:
     """Bind fixed distribution settings for density evaluation and sampling.
 
     Calling a prior evaluates its summed log density. Include that call
-    explicitly in the model density. A ``Model(prior=...)`` mapping uses
-    these same objects for independent prior draws and saved log-prior terms.
+    explicitly in the model density. Pass the same objects by parameter name
+    to ``sample_prior`` for independent prior draws, and use ``logpdf`` for
+    pointwise log-prior terms in ``generated_quantities``.
 
     Parameters
     ----------
@@ -220,17 +221,12 @@ def _validate_prior_sampler(prior: object) -> None:
     if isinstance(prior, Prior) or isinstance(getattr(prior, "__self__", None), Prior):
         raise TypeError(
             "prior must be a prior-draw function supporting prior(key) and returning a parameter mapping. "
-            "Assign Prior objects by parameter name in Model(prior=...) instead of passing a density or sampling method"
-        )
-    if isinstance(prior, Mapping):
-        raise TypeError(
-            "The sample_prior override must be a prior-draw function. "
-            "Pass a mapping of Prior definitions to Model through prior"
+            "Pass Prior objects to sample_prior by parameter name instead of a density or sampling method"
         )
     if isinstance(prior, (str, bytes, Sequence)) and not callable(prior):
         raise TypeError(
             "prior requires Prior definitions or a prior-draw function, not output names. "
-            "Pass saved or generated log-density output names through Model log_prior"
+            "Return log-prior terms under log_prior in generated_quantities"
         )
     if not callable(prior):
         raise TypeError("prior must be a mapping of parameter names to Prior objects or a prior-draw function")

@@ -483,11 +483,28 @@ def _rf_model(data, *, grouped=False, scaling=None, include_priors=True):
             "mean": quantities["mean"] + paid_media.sum(-1),
         }
 
-    def generate(key, mean, paid_rf_coefficient, paid_rf_retention):
+    def generate(key, mean, paid_rf, paid_rf_total, paid_rf_coefficient, paid_rf_retention):
         return {
             "predictive": {"prediction": mean},
             "coefficient_copy": paid_rf_coefficient,
             "retention_copy": paid_rf_retention,
+            "mean": mean,
+            "paid_rf": paid_rf,
+            "paid_rf_total": paid_rf_total,
+        }
+
+    def mixed_generate(
+        key, mean, paid_rf, paid_rf_total, paid_media, paid_media_total, paid_rf_coefficient, paid_rf_retention
+    ):
+        return {
+            "predictive": {"prediction": mean},
+            "coefficient_copy": paid_rf_coefficient,
+            "retention_copy": paid_rf_retention,
+            "mean": mean,
+            "paid_rf": paid_rf,
+            "paid_rf_total": paid_rf_total,
+            "paid_media": paid_media,
+            "paid_media_total": paid_media_total,
         }
 
     parameters = {
@@ -498,7 +515,6 @@ def _rf_model(data, *, grouped=False, scaling=None, include_priors=True):
         "paid_rf_slope": Positive(dims="rf_channel"),
     }
     observation_dims = ("time", "group") if grouped else ("time",)
-    saved = ["paid_rf", "paid_rf_total", "mean"]
     generated_dims = {
         "paid_rf": (*observation_dims, "rf_channel"),
         "paid_rf_total": observation_dims,
@@ -512,16 +528,14 @@ def _rf_model(data, *, grouped=False, scaling=None, include_priors=True):
             paid_media_half_saturation=Positive(dims="channel"),
             paid_media_slope=Positive(dims="channel"),
         )
-        saved.extend(("paid_media", "paid_media_total"))
         generated_dims.update(paid_media=(*observation_dims, "channel"), paid_media_total=observation_dims)
 
     return Model(
         parameters=parameters,
         log_density=density,
-        generated_quantities=generate,
+        generated_quantities=mixed_generate if mixed else generate,
         data=Data(data, scaling=scaling),
         transformed_parameters=mixed_quantities if mixed else rf_quantities,
-        save=saved,
         generated_dims=generated_dims,
     )
 

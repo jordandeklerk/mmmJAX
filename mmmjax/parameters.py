@@ -105,15 +105,16 @@ class Parameterization(Protocol):
         ...
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class Real:
     """Unconstrained real parameter with the identity parameterization.
 
     Parameters
     ----------
-    shape : tuple of int, default ()
-        Positive dimensions in model space. Omit to infer sizes from ``dims``
-        or declare a scalar when ``dims`` is empty.
+    shape : int or tuple of int, default ()
+        Positive dimensions in model space. An integer declares one axis of
+        that length. Omit to infer sizes from ``dims`` or declare a scalar
+        when ``dims`` is empty.
     dtype : data-type, default float
         Floating-point dtype for parameters and unconstrained positions.
         The default ``float`` follows JAX's precision setting.
@@ -126,11 +127,18 @@ class Real:
     dtype: DTypeLike = float
     dims: str | Sequence[str] = field(default=(), kw_only=True)
 
-    def __post_init__(self) -> None:
+    def __init__(
+        self,
+        shape: int | tuple[int, ...] = (),
+        dtype: DTypeLike = float,
+        *,
+        dims: str | Sequence[str] = (),
+    ) -> None:
         """Normalize metadata so equal specifications share JIT cache keys."""
-        _validate_shape(self.shape)
-        object.__setattr__(self, "dims", _normalize_dims(self.dims, self.shape))
-        object.__setattr__(self, "dtype", _canonicalize_dtype(self.dtype))
+        axes = _normalize_shape(shape)
+        object.__setattr__(self, "shape", axes)
+        object.__setattr__(self, "dims", _normalize_dims(dims, axes))
+        object.__setattr__(self, "dtype", _canonicalize_dtype(dtype))
 
     @property
     def position_shape(self) -> tuple[int, ...]:
@@ -217,7 +225,7 @@ class Real:
         return _initialize(key, shape=self.position_shape, dtype=self.dtype)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class Positive:
     """Positive parameter using an exponential parameterization.
 
@@ -228,9 +236,10 @@ class Positive:
 
     Parameters
     ----------
-    shape : tuple of int, default ()
-        Positive dimensions in model space. Omit to infer sizes from ``dims``
-        or declare a scalar when ``dims`` is empty.
+    shape : int or tuple of int, default ()
+        Positive dimensions in model space. An integer declares one axis of
+        that length. Omit to infer sizes from ``dims`` or declare a scalar
+        when ``dims`` is empty.
     dtype : data-type, default float
         Floating-point dtype for parameters and unconstrained positions.
         The default ``float`` follows JAX's precision setting.
@@ -243,11 +252,18 @@ class Positive:
     dtype: DTypeLike = float
     dims: str | Sequence[str] = field(default=(), kw_only=True)
 
-    def __post_init__(self) -> None:
+    def __init__(
+        self,
+        shape: int | tuple[int, ...] = (),
+        dtype: DTypeLike = float,
+        *,
+        dims: str | Sequence[str] = (),
+    ) -> None:
         """Normalize metadata so equal specifications share JIT cache keys."""
-        _validate_shape(self.shape)
-        object.__setattr__(self, "dims", _normalize_dims(self.dims, self.shape))
-        object.__setattr__(self, "dtype", _canonicalize_dtype(self.dtype))
+        axes = _normalize_shape(shape)
+        object.__setattr__(self, "shape", axes)
+        object.__setattr__(self, "dims", _normalize_dims(dims, axes))
+        object.__setattr__(self, "dtype", _canonicalize_dtype(dtype))
 
     @property
     def position_shape(self) -> tuple[int, ...]:
@@ -337,7 +353,7 @@ class Positive:
         return _initialize(key, shape=self.position_shape, dtype=self.dtype)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class LowerBound:
     r"""Parameter constrained to be greater than a finite lower bound.
 
@@ -353,9 +369,10 @@ class LowerBound:
     ----------
     lower : float
         Finite scalar lower bound, excluded from the parameter support.
-    shape : tuple of int, default ()
-        Positive dimensions in model space. Omit to infer sizes from ``dims``
-        or declare a scalar when ``dims`` is empty.
+    shape : int or tuple of int, default ()
+        Positive dimensions in model space. An integer declares one axis of
+        that length. Omit to infer sizes from ``dims`` or declare a scalar
+        when ``dims`` is empty.
     dtype : data-type, default float
         Floating-point dtype for parameters and unconstrained positions.
         The default ``float`` follows JAX's precision setting.
@@ -369,14 +386,21 @@ class LowerBound:
     dtype: DTypeLike = float
     dims: str | Sequence[str] = field(default=(), kw_only=True)
 
-    def __post_init__(self) -> None:
+    def __init__(
+        self,
+        lower: float,
+        shape: int | tuple[int, ...] = (),
+        dtype: DTypeLike = float,
+        *,
+        dims: str | Sequence[str] = (),
+    ) -> None:
         """Normalize metadata so equal specifications share JIT cache keys."""
-        _validate_shape(self.shape)
-        object.__setattr__(self, "dims", _normalize_dims(self.dims, self.shape))
-        dtype = _canonicalize_dtype(self.dtype)
-        lower = _canonicalize_bound(self.lower, name="lower", dtype=dtype)
-        object.__setattr__(self, "lower", lower)
-        object.__setattr__(self, "dtype", dtype)
+        axes = _normalize_shape(shape)
+        object.__setattr__(self, "shape", axes)
+        object.__setattr__(self, "dims", _normalize_dims(dims, axes))
+        canonical_dtype = _canonicalize_dtype(dtype)
+        object.__setattr__(self, "lower", _canonicalize_bound(lower, name="lower", dtype=canonical_dtype))
+        object.__setattr__(self, "dtype", canonical_dtype)
 
     @property
     def position_shape(self) -> tuple[int, ...]:
@@ -469,7 +493,7 @@ class LowerBound:
         return _initialize(key, shape=self.position_shape, dtype=self.dtype)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class UpperBound:
     r"""Parameter constrained to be less than a finite upper bound.
 
@@ -485,9 +509,10 @@ class UpperBound:
     ----------
     upper : float
         Finite scalar upper bound, excluded from the parameter support.
-    shape : tuple of int, default ()
-        Positive dimensions in model space. Omit to infer sizes from ``dims``
-        or declare a scalar when ``dims`` is empty.
+    shape : int or tuple of int, default ()
+        Positive dimensions in model space. An integer declares one axis of
+        that length. Omit to infer sizes from ``dims`` or declare a scalar
+        when ``dims`` is empty.
     dtype : data-type, default float
         Floating-point dtype for parameters and unconstrained positions.
         The default ``float`` follows JAX's precision setting.
@@ -501,14 +526,21 @@ class UpperBound:
     dtype: DTypeLike = float
     dims: str | Sequence[str] = field(default=(), kw_only=True)
 
-    def __post_init__(self) -> None:
+    def __init__(
+        self,
+        upper: float,
+        shape: int | tuple[int, ...] = (),
+        dtype: DTypeLike = float,
+        *,
+        dims: str | Sequence[str] = (),
+    ) -> None:
         """Normalize metadata so equal specifications share JIT cache keys."""
-        _validate_shape(self.shape)
-        object.__setattr__(self, "dims", _normalize_dims(self.dims, self.shape))
-        dtype = _canonicalize_dtype(self.dtype)
-        upper = _canonicalize_bound(self.upper, name="upper", dtype=dtype)
-        object.__setattr__(self, "upper", upper)
-        object.__setattr__(self, "dtype", dtype)
+        axes = _normalize_shape(shape)
+        object.__setattr__(self, "shape", axes)
+        object.__setattr__(self, "dims", _normalize_dims(dims, axes))
+        canonical_dtype = _canonicalize_dtype(dtype)
+        object.__setattr__(self, "upper", _canonicalize_bound(upper, name="upper", dtype=canonical_dtype))
+        object.__setattr__(self, "dtype", canonical_dtype)
 
     @property
     def position_shape(self) -> tuple[int, ...]:
@@ -601,7 +633,7 @@ class UpperBound:
         return _initialize(key, shape=self.position_shape, dtype=self.dtype)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class Interval:
     r"""Parameter constrained to an open interval with finite bounds.
 
@@ -619,9 +651,10 @@ class Interval:
         Finite scalar lower bound, excluded from the parameter support.
     upper : float
         Finite scalar upper bound, excluded from the parameter support.
-    shape : tuple of int, default ()
-        Positive dimensions in model space. Omit to infer sizes from ``dims``
-        or declare a scalar when ``dims`` is empty.
+    shape : int or tuple of int, default ()
+        Positive dimensions in model space. An integer declares one axis of
+        that length. Omit to infer sizes from ``dims`` or declare a scalar
+        when ``dims`` is empty.
     dtype : data-type, default float
         Floating-point dtype for parameters and unconstrained positions.
         The default ``float`` follows JAX's precision setting.
@@ -636,26 +669,36 @@ class Interval:
     dtype: DTypeLike = float
     dims: str | Sequence[str] = field(default=(), kw_only=True)
 
-    def __post_init__(self) -> None:
+    def __init__(
+        self,
+        lower: float,
+        upper: float,
+        shape: int | tuple[int, ...] = (),
+        dtype: DTypeLike = float,
+        *,
+        dims: str | Sequence[str] = (),
+    ) -> None:
         """Normalize and validate the finite interval metadata."""
-        _validate_shape(self.shape)
-        object.__setattr__(self, "dims", _normalize_dims(self.dims, self.shape))
-        dtype = _canonicalize_dtype(self.dtype)
-        lower = _canonicalize_bound(self.lower, name="lower", dtype=dtype)
-        upper = _canonicalize_bound(self.upper, name="upper", dtype=dtype)
-        if lower >= upper:
+        axes = _normalize_shape(shape)
+        object.__setattr__(self, "shape", axes)
+        object.__setattr__(self, "dims", _normalize_dims(dims, axes))
+        canonical_dtype = _canonicalize_dtype(dtype)
+        lower_bound = _canonicalize_bound(lower, name="lower", dtype=canonical_dtype)
+        upper_bound = _canonicalize_bound(upper, name="upper", dtype=canonical_dtype)
+        if lower_bound >= upper_bound:
             raise ValueError(
-                f"lower must be less than upper after conversion to {jnp.dtype(dtype)}, "
-                f"got lower={lower} and upper={upper}"
+                f"lower must be less than upper after conversion to {jnp.dtype(canonical_dtype)}, "
+                f"got lower={lower_bound} and upper={upper_bound}"
             )
-        width = jnp.asarray(upper, dtype=dtype) - jnp.asarray(lower, dtype=dtype)
+        width = jnp.asarray(upper_bound, dtype=canonical_dtype) - jnp.asarray(lower_bound, dtype=canonical_dtype)
         if not bool(jnp.isfinite(width)):
             raise ValueError(
-                f"upper - lower must be finite in dtype {jnp.dtype(dtype)}, got lower={lower} and upper={upper}"
+                f"upper - lower must be finite in dtype {jnp.dtype(canonical_dtype)}, "
+                f"got lower={lower_bound} and upper={upper_bound}"
             )
-        object.__setattr__(self, "lower", lower)
-        object.__setattr__(self, "upper", upper)
-        object.__setattr__(self, "dtype", dtype)
+        object.__setattr__(self, "lower", lower_bound)
+        object.__setattr__(self, "upper", upper_bound)
+        object.__setattr__(self, "dtype", canonical_dtype)
 
     @property
     def position_shape(self) -> tuple[int, ...]:
@@ -750,7 +793,7 @@ class Interval:
         return _initialize(key, shape=self.position_shape, dtype=self.dtype)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class Simplex:
     r"""Positive weights that sum to one along the final axis.
 
@@ -766,7 +809,7 @@ class Simplex:
 
     Parameters
     ----------
-    shape : tuple of int, default ()
+    shape : int or tuple of int, default ()
         Positive dimensions in model space. The final axis contains the
         simplex weights and leading axes identify independent simplexes.
         Omit to infer sizes from ``dims``.
@@ -782,13 +825,20 @@ class Simplex:
     dtype: DTypeLike = float
     dims: str | Sequence[str] = field(default=(), kw_only=True)
 
-    def __post_init__(self) -> None:
+    def __init__(
+        self,
+        shape: int | tuple[int, ...] = (),
+        dtype: DTypeLike = float,
+        *,
+        dims: str | Sequence[str] = (),
+    ) -> None:
         """Normalize metadata and require a simplex event dimension."""
-        _validate_shape(self.shape)
-        object.__setattr__(self, "dims", _normalize_dims(self.dims, self.shape))
+        axes = _normalize_shape(shape)
+        object.__setattr__(self, "shape", axes)
+        object.__setattr__(self, "dims", _normalize_dims(dims, axes))
         if not self.shape and not self.dims:
             raise ValueError("shape must include a final simplex dimension, got ()")
-        object.__setattr__(self, "dtype", _canonicalize_dtype(self.dtype))
+        object.__setattr__(self, "dtype", _canonicalize_dtype(dtype))
 
     @property
     def position_shape(self) -> tuple[int, ...]:
@@ -883,7 +933,7 @@ class Simplex:
         return _initialize(key, shape=self.position_shape, dtype=self.dtype)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class CorrelationCholesky:
     r"""Lower Cholesky factor of a positive-definite correlation matrix.
 
@@ -893,7 +943,7 @@ class CorrelationCholesky:
 
     Parameters
     ----------
-    shape : tuple of int, default ()
+    shape : int or tuple of int, default ()
         Constrained shape with two equal final dimensions. Leading axes
         identify independent factors. Omit to infer sizes from ``dims``.
     dtype : data-type, default float
@@ -907,18 +957,23 @@ class CorrelationCholesky:
     dtype: DTypeLike = float
     dims: str | Sequence[str] = field(default=(), kw_only=True)
 
-    def __post_init__(self) -> None:
+    def __init__(
+        self,
+        shape: int | tuple[int, ...] = (),
+        dtype: DTypeLike = float,
+        *,
+        dims: str | Sequence[str] = (),
+    ) -> None:
         """Validate the square event shape and normalize declaration metadata."""
-        _validate_shape(self.shape)
-        object.__setattr__(self, "dims", _normalize_dims(self.dims, self.shape))
-
-        if self.shape:
-            if len(self.shape) < 2 or self.shape[-2] != self.shape[-1]:
+        axes = _normalize_shape(shape)
+        object.__setattr__(self, "shape", axes)
+        object.__setattr__(self, "dims", _normalize_dims(dims, axes))
+        if axes:
+            if len(axes) < 2 or axes[-2] != axes[-1]:
                 raise ValueError("shape must end in two equal correlation dimensions")
         elif len(self.dims) < 2:
             raise ValueError("Specify a square correlation shape or at least two named axes")
-
-        object.__setattr__(self, "dtype", _canonicalize_dtype(self.dtype))
+        object.__setattr__(self, "dtype", _canonicalize_dtype(dtype))
 
     @property
     def position_shape(self) -> tuple[int, ...]:
@@ -1039,26 +1094,22 @@ def _resolved_shape(shape: tuple[int, ...], dims: str | Sequence[str]) -> tuple[
     return shape
 
 
-def _validate_shape(shape: tuple[int, ...]) -> None:
-    if not isinstance(shape, tuple):
-        raise TypeError(f"shape must be a tuple of positive integers, got {type(shape).__name__}")
-    invalid_dimension = next(
-        ((index, size) for index, size in enumerate(shape) if isinstance(size, bool) or not isinstance(size, int)),
-        None,
-    )
-    if invalid_dimension is not None:
-        invalid_index, invalid_size = invalid_dimension
-        raise TypeError(
-            f"shape[{invalid_index}] must be a positive integer, "
-            f"got {invalid_size!r} of type {type(invalid_size).__name__}"
-        )
-    nonpositive_dimension = next(
-        ((index, size) for index, size in enumerate(shape) if size <= 0),
-        None,
-    )
-    if nonpositive_dimension is not None:
-        nonpositive_index, nonpositive_size = nonpositive_dimension
-        raise ValueError(f"shape[{nonpositive_index}] must be positive, got {nonpositive_size} in shape {shape}")
+def _normalize_shape(shape: object) -> tuple[int, ...]:
+    """Accept an integer as a single axis and validate the resulting tuple."""
+    axes = (shape,) if isinstance(shape, int) and not isinstance(shape, bool) else shape
+    if not isinstance(axes, tuple):
+        raise TypeError(f"shape must be a tuple of positive integers or a single integer, got {type(axes).__name__}")
+    _validate_shape(axes)
+    return axes
+
+
+def _validate_shape(shape: tuple[object, ...]) -> None:
+    for index, size in enumerate(shape):
+        if isinstance(size, bool) or not isinstance(size, int):
+            raise TypeError(f"shape[{index}] must be a positive integer, got {size!r} of type {type(size).__name__}")
+    for index, size in enumerate(shape):
+        if isinstance(size, int) and size <= 0:
+            raise ValueError(f"shape[{index}] must be positive, got {size} in shape {shape}")
 
 
 def _canonicalize_dtype(dtype: DTypeLike) -> DTypeLike:
