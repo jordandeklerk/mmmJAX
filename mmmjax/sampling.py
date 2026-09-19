@@ -449,17 +449,20 @@ def _concatenate_draws(previous: xr.DataTree, additional: xr.DataTree, *, start:
 def _with_state(
     results: xr.DataTree, continuation: _NUTSContinuation, generation_key: jax.Array, generate: bool
 ) -> xr.DataTree:
-    """Store the resumable sampler state beside the results as plain arrays."""
+    """Store the resumable sampler state beside the results as writable numpy arrays."""
     groups = {name: node.to_dataset() for name, node in results.children.items() if name != "sampling_state"}
-    mass_matrix = np.asarray(continuation.inverse_mass_matrix)
+    mass_matrix = np.array(continuation.inverse_mass_matrix, copy=True)
     mass_dims = ("chain", "position") if mass_matrix.ndim == 2 else ("chain", "position", "position_")
     groups["sampling_state"] = xr.Dataset(
         {
-            "logdensity": ("chain", np.asarray(continuation.logdensity)),
-            "step_size": ("chain", np.asarray(continuation.step_size)),
+            "logdensity": ("chain", np.array(continuation.logdensity, copy=True)),
+            "step_size": ("chain", np.array(continuation.step_size, copy=True)),
             "inverse_mass_matrix": (mass_dims, mass_matrix),
-            "sampling_key": (("chain", "key_data"), np.asarray(jax.random.key_data(continuation.sampling_keys))),
-            "generation_key": ("key_data", np.asarray(jax.random.key_data(generation_key))),
+            "sampling_key": (
+                ("chain", "key_data"),
+                np.array(jax.random.key_data(continuation.sampling_keys), copy=True),
+            ),
+            "generation_key": ("key_data", np.array(jax.random.key_data(generation_key), copy=True)),
         },
         attrs={
             "completed_draws": int(continuation.completed_draws),
@@ -478,7 +481,7 @@ def _position_dataset(values: Mapping[str, jax.Array]) -> xr.Dataset:
     """Label per-chain unconstrained arrays with parameter-specific axis names."""
     variables = {}
     for name, value in values.items():
-        array = np.asarray(value)
+        array = np.array(value, copy=True)
         axes = ("chain", *(f"{name}_position_{index}" for index in range(array.ndim - 1)))
         variables[name] = xr.Variable(axes, array)
     return xr.Dataset(variables)
