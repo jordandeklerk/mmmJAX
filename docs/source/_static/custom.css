@@ -42,6 +42,12 @@ header.md-header,
   max-width: 1440px;
 }
 
+@media screen and (min-width: 100em) {
+  html {
+    font-size: 133.333%;
+  }
+}
+
 .md-typeset {
   font-size: 0.75rem;
   line-height: 1.6;
@@ -150,7 +156,7 @@ offset below reads the same variable and the logo can be resized in one place.
 
 .md-header__button.md-logo {
   height: 100%;
-  margin: 0;
+  margin: 0 0 0 53px;
   padding: 0;
 }
 
