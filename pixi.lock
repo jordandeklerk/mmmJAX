@@ -8498,7 +8498,7 @@ packages:
 - pypi: ./
   name: mmmjax
   version: 0.0.1
-  sha256: 21e5d815d52450f78cad79ed3b7f2393b182e510f34811814a401692e3534c6d
+  sha256: 59d5bde38d996a48b710804b02fe9ccfc601519599ffb073347aa8b75fae8b40
   requires_dist:
   - blackjax[progress]>=1.6.2,<1.7
   - jax>=0.10.0,<0.11
@@ -8517,7 +8517,7 @@ packages:
   - mypy ; extra == 'dev'
   - ty ; extra == 'dev'
   - pandas-stubs>=2.2 ; extra == 'dev'
-  - numpy>=2.0,<2.5 ; extra == 'dev'
+  - numpy>=2.0 ; extra == 'dev'
   - sphinx>=8,<9 ; extra == 'doc'
   - sphinx-immaterial>=0.13.9 ; extra == 'doc'
   - myst-parser[linkify]>=5.0 ; extra == 'doc'
@@ -8534,7 +8534,7 @@ packages:
   - pytest-xdist>=3.8 ; extra == 'test'
   - polars>=1.0 ; extra == 'test'
   - pyarrow>=16.0 ; extra == 'test'
-  requires_python: '>=3.11'
+  requires_python: '>=3.12'
 - conda: https://conda.anaconda.org/conda-forge/noarch/munkres-1.1.4-pyhd8ed1ab_1.conda
   sha256: d09c47c2cf456de5c09fa66d2c3c5035aa1fa228a1983a433c47b876aa16ce90
   md5: 37293a85a0f4f77bbd9cf7aaefc62609

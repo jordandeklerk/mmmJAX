@@ -277,21 +277,29 @@ def fit_scaling(
 
     Examples
     --------
-    Fit separate statistics for two columns, then reuse them on later
-    observations without changing the training scales.
+    Fit separate statistics for two training columns.
 
     .. ipython::
 
         In [1]: import polars as pl
            ...: from mmmjax import fit_scaling
-           ...: training = pl.DataFrame({
+
+        In [2]: training = pl.DataFrame({
            ...:     "temperature": [10.0, 12.0, 14.0],
            ...:     "price": [8.0, 10.0, 12.0],
            ...: })
-           ...: scaling = fit_scaling(training.to_numpy())
-           ...: future = pl.DataFrame({"temperature": [16.0], "price": [9.0]})
+
+        In [3]: scaling = fit_scaling(training.to_numpy())
+
+    Later observations use the training statistics rather than their own,
+    and the inverse recovers the original values.
+
+    .. ipython::
+
+        In [4]: future = pl.DataFrame({"temperature": [16.0], "price": [9.0]})
            ...: scaled = scaling.transform(future.to_numpy())
-           ...: scaling.inverse_transform(scaled)
+
+        In [5]: scaling.inverse_transform(scaled)
     """
     if not isinstance(center, bool):
         raise TypeError(f"center must be True or False, got {center!r}")
@@ -420,21 +428,35 @@ def fit_media_scaling(
 
     Examples
     --------
-    Scale two impression columns without changing periods with no activity,
-    then reuse the training scales for a later week.
+    Start with two impression columns that each include a period with no
+    activity.
 
     .. ipython::
 
         In [1]: import polars as pl
            ...: from mmmjax import fit_media_scaling
-           ...: training = pl.DataFrame({
+
+        In [2]: training = pl.DataFrame({
            ...:     "search": [0.0, 1_000.0, 3_000.0],
            ...:     "video": [2_000.0, 0.0, 6_000.0],
            ...: })
-           ...: scaling = fit_media_scaling(training.to_numpy())
-           ...: future = pl.DataFrame({"search": [4_000.0], "video": [0.0]})
+
+    The default method divides by the mean of the nonzero values, so zeros
+    stay zero and a later week is scaled with the training statistics.
+
+    .. ipython::
+
+        In [3]: scaling = fit_media_scaling(training.to_numpy())
+
+        In [4]: future = pl.DataFrame({"search": [4_000.0], "video": [0.0]})
            ...: scaling.transform(future.to_numpy())
-           ...: maximum = fit_media_scaling(training.to_numpy(), method="max")
+
+    Dividing by the training maximum instead keeps training values within
+    the unit interval.
+
+    .. ipython::
+
+        In [5]: maximum = fit_media_scaling(training.to_numpy(), method="max")
            ...: maximum.transform(future.to_numpy())
     """
     if not isinstance(method, str):
@@ -569,28 +591,41 @@ def fit_data_scaling(
 
     Examples
     --------
-    Prepare impressions, costs, and a control from a dataframe. Fit the
-    scaling once, then reuse it on a later week with no observed outcome.
+    Prepare impressions, costs, and a control from a dataframe.
 
     .. ipython::
 
         In [1]: import polars as pl
            ...: from mmmjax import fit_data_scaling, prepare_data
-           ...: frame = pl.DataFrame({
+
+        In [2]: frame = pl.DataFrame({
            ...:     "week": [1, 2, 3],
            ...:     "sales": [100, 120, 140],
            ...:     "impressions": [0, 1_000, 3_000],
            ...:     "cost": [0.0, 20.0, 60.0],
            ...:     "temperature": [10.0, 12.0, 14.0],
            ...: })
-           ...: data = prepare_data(
+
+        In [3]: data = prepare_data(
            ...:     frame, time="week", outcome="sales",
            ...:     media=["impressions"], spend=["cost"],
            ...:     controls=["temperature"],
            ...: )
-           ...: scaling = fit_data_scaling(data)
+
+    Fit the scaling once on the training data. Each role gets the
+    transformation suited to it.
+
+    .. ipython::
+
+        In [4]: scaling = fit_data_scaling(data)
            ...: scaled = scaling.transform(data)
-           ...: future = prepare_data(
+
+    A later week with no observed outcome is scaled with the same fitted
+    statistics.
+
+    .. ipython::
+
+        In [5]: future = prepare_data(
            ...:     pl.DataFrame({"week": [4], "impressions": [4_000]}),
            ...:     time="week", media=["impressions"],
            ...: )

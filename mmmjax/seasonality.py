@@ -53,8 +53,7 @@ def fourier_features(time: ArrayLike, *, period: ArrayLike, order: int) -> jax.A
 
     Examples
     --------
-    Build annual features from weekly dates and combine them with illustrative
-    coefficients. Reuse ``origin`` when preparing later dates for prediction.
+    Start with three weekly dates.
 
     .. ipython::
 
@@ -63,17 +62,33 @@ def fourier_features(time: ArrayLike, *, period: ArrayLike, order: int) -> jax.A
            ...: import numpy as np
            ...: import polars as pl
            ...: from mmmjax import fourier_features
-           ...: frame = pl.DataFrame({
+
+        In [2]: frame = pl.DataFrame({
            ...:     "week": [date(2026, 1, 1), date(2026, 1, 8),
            ...:              date(2026, 1, 15)],
            ...:     "sales": [100.0, 120.0, 110.0],
            ...: })
-           ...: origin = date(2026, 1, 1)
+
+    Measure each date in days from a fixed origin and build annual features
+    of order two. Reuse the same origin when preparing later dates for
+    prediction.
+
+    .. ipython::
+
+        In [3]: origin = date(2026, 1, 1)
            ...: days = (frame["week"] - origin).dt.total_days().to_numpy()
-           ...: features = fourier_features(days, period=365.25, order=2)
-           ...: coefficients = jnp.array([0.2, -0.1, 0.3, 0.1])
+
+        In [4]: features = fourier_features(days, period=365.25, order=2)
+
+    Combining the features with coefficients gives the seasonal component
+    for each week.
+
+    .. ipython::
+
+        In [5]: coefficients = jnp.array([0.2, -0.1, 0.3, 0.1])
            ...: seasonal = features @ coefficients
-           ...: frame.with_columns(
+
+        In [6]: frame.with_columns(
            ...:     pl.Series("seasonality", np.asarray(seasonal)),
            ...: )
     """

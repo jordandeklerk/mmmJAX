@@ -141,7 +141,7 @@ from mmmjax.response import frequency_curves, media_metrics, response_curves
 from mmmjax.saturation import hill_saturation, log_saturation, logistic_saturation, root_saturation
 from mmmjax.scaling import DataScaling, Scaling, fit_data_scaling, fit_media_scaling, fit_scaling
 from mmmjax.seasonality import fourier_features
-from mmmjax.sampling import SamplingState, continue_sampling, generate_quantities, sample, sample_prior
+from mmmjax.sampling import continue_sampling, generate_quantities, sample, sample_prior
 from mmmjax.synthetic import SyntheticData, simulate_data
 
 __version__ = "0.0.1"
@@ -161,7 +161,6 @@ __all__ = [
     "Prior",
     "Real",
     "Reference",
-    "SamplingState",
     "Scaling",
     "Simplex",
     "SpendConstraint",

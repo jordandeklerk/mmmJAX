@@ -6,8 +6,9 @@ from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
+from enum import StrEnum
 from keyword import iskeyword
-from typing import TYPE_CHECKING, Literal, NamedTuple, TypeAlias, cast, get_args
+from typing import TYPE_CHECKING, Literal, NamedTuple, cast
 
 import jax
 import jax.numpy as jnp
@@ -24,7 +25,14 @@ if TYPE_CHECKING:
 
 __all__ = ["Data", "ModelInput", "PreparedData", "Reference", "prepare_data", "select_channels"]
 
-_TimeInput: TypeAlias = Literal["time", "media_time", "day_of_year", "media_day_of_year"]
+
+class _TimeInput(StrEnum):
+    """Numeric time inputs a prepared dataset can supply to model blocks."""
+
+    TIME = "time"
+    MEDIA_TIME = "media_time"
+    DAY_OF_YEAR = "day_of_year"
+    MEDIA_DAY_OF_YEAR = "media_day_of_year"
 
 
 class ModelInput(NamedTuple):
@@ -506,7 +514,7 @@ def _data_dimensions(data: PreparedData) -> dict[str, tuple[str, ...]]:
     }
 
 
-def _time_input_names(data: PreparedData) -> tuple[_TimeInput, ...]:
+def _time_input_names(data: PreparedData) -> tuple[str, ...]:
     """List the time inputs the data can supply, with calendar names only for dates."""
     try:
         _, origin = _time_positions(data.time_values)
@@ -514,17 +522,17 @@ def _time_input_names(data: PreparedData) -> tuple[_TimeInput, ...]:
         # Categorical period labels carry no positions, so no time input exists.
         return ()
     dated = isinstance(origin, datetime)
-    names: list[_TimeInput] = []
-    for name in get_args(_TimeInput):
+    names: list[str] = []
+    for name in _TimeInput:
         if name.startswith("media_") and not data.media_time_values:
             continue
         if name.endswith("day_of_year") and not dated:
             continue
-        names.append(name)
+        names.append(name.value)
     return tuple(names)
 
 
-def _time_input_axes(name: _TimeInput) -> tuple[str, ...]:
+def _time_input_axes(name: str) -> tuple[str, ...]:
     """Name the axis of a time input by whether it follows the media periods."""
     return ("media_time",) if name.startswith("media_") else ("time",)
 
@@ -532,7 +540,7 @@ def _time_input_axes(name: _TimeInput) -> tuple[str, ...]:
 def _reference_dimensions(data: PreparedData) -> dict[str, tuple[str, ...]]:
     """Name the axes of every training array the reference namespace can hold."""
     dimensions = _data_dimensions(data)
-    dimensions.update({name: _time_input_axes(name) for name in get_args(_TimeInput)})
+    dimensions.update({name.value: _time_input_axes(name) for name in _TimeInput})
     return dimensions
 
 
@@ -988,23 +996,33 @@ def select_channels(
 
     Examples
     --------
-    Use different prior families for two entries of the same coefficient
-    array. For group-specific coefficients, the same calls select the
-    channels across every group.
+    Start with one coefficient per channel.
 
     .. ipython::
 
         In [1]: import jax.numpy as jnp
            ...: from mmmjax import half_normal, lognormal, select_channels
-           ...: channels = ("video", "search")
+
+        In [2]: channels = ("video", "search")
            ...: coefficient = jnp.array([0.6, 0.4])
-           ...: video = select_channels(
+
+    Select each channel's entry by name. For group-specific coefficients,
+    the same calls select the channel across every group.
+
+    .. ipython::
+
+        In [3]: video = select_channels(
            ...:     coefficient, channels=channels, select="video",
            ...: )
            ...: search = select_channels(
            ...:     coefficient, channels=channels, select="search",
            ...: )
-           ...: target = half_normal(video, scale=1.0)
+
+    The two entries can then take different prior families in a log density.
+
+    .. ipython::
+
+        In [4]: target = half_normal(video, scale=1.0)
            ...: target += lognormal(search, location=0.0, scale=0.5)
            ...: target
     """

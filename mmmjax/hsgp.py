@@ -189,21 +189,35 @@ def prepare_hsgp(
 
     Examples
     --------
-    Prepare a weekly time basis with room for four forecast weeks.
-    Training and future observations share the same basis definition.
+    Start with observations at four points in time and a domain that
+    leaves room for four forecast weeks.
 
     .. ipython::
 
         In [1]: import polars as pl
            ...: from mmmjax import prepare_hsgp
-           ...: frame = pl.DataFrame({
+
+        In [2]: frame = pl.DataFrame({
            ...:     "week": [0, 4, 8, 12],
            ...:     "sales": [100.0, 120.0, 110.0, 130.0],
            ...: })
-           ...: approximation = prepare_hsgp((0, 16), length_scale_range=(2, 8))
-           ...: basis = approximation.basis(frame["week"].to_numpy())
+
+        In [3]: approximation = prepare_hsgp((0, 16), length_scale_range=(2, 8))
+
+    The basis for the training weeks and the spectral weights for a chosen
+    length scale come from the same approximation.
+
+    .. ipython::
+
+        In [4]: basis = approximation.basis(frame["week"].to_numpy())
            ...: weights = approximation.weights(length_scale=4.0)
-           ...: future_basis = approximation.basis([13.0, 14.0, 15.0, 16.0])
+
+    Future weeks reuse the definition, so their basis has the same number of
+    columns and pairs with the same weights.
+
+    .. ipython::
+
+        In [5]: future_basis = approximation.basis([13.0, 14.0, 15.0, 16.0])
            ...: basis.shape, weights.shape, future_basis.shape
     """
     if covariance not in ("expquad", "matern32", "matern52"):
@@ -342,22 +356,29 @@ def hsgp_basis(
 
     Examples
     --------
-    Prepare a shared basis for weekly observations. The domain also leaves
-    room for future weeks without changing the basis definition.
+    Start with four weekly observations.
 
     .. ipython::
 
         In [1]: import polars as pl
            ...: from mmmjax import hsgp_basis
-           ...: frame = pl.DataFrame({
+
+        In [2]: frame = pl.DataFrame({
            ...:     "week": [0, 1, 2, 3],
            ...:     "sales": [100.0, 120.0, 110.0, 130.0],
            ...: })
-           ...: basis, frequencies = hsgp_basis(
+
+    Center the basis on the observed weeks with a boundary wide enough to
+    leave room for future weeks. The basis has one column per frequency.
+
+    .. ipython::
+
+        In [3]: basis, frequencies = hsgp_basis(
            ...:     frame["week"].to_numpy(),
            ...:     center=1.5, boundary=10.0, n_basis=20,
            ...: )
-           ...: basis.shape, frequencies.shape
+
+        In [4]: basis.shape, frequencies.shape
     """
     if isinstance(n_basis, bool) or not isinstance(n_basis, int):
         raise TypeError("n_basis must be a positive Python integer and stay fixed during JIT compilation")
@@ -452,21 +473,33 @@ def hsgp_weights(
 
     Examples
     --------
-    Draw a smooth curve from standard-normal coefficients. These are prior
-    draws, not estimates fitted to observed outcomes.
+    Build a basis over four points in time.
 
     .. ipython::
 
         In [1]: from jax import random
            ...: from mmmjax import hsgp_basis, hsgp_weights, normal_rng
-           ...: basis, frequencies = hsgp_basis(
+
+        In [2]: basis, frequencies = hsgp_basis(
            ...:     [0.0, 1.0, 2.0, 3.0],
            ...:     center=1.5, boundary=10.0, n_basis=20,
            ...: )
-           ...: weights = hsgp_weights(
+
+    The weights scale each frequency according to the length scale and
+    amplitude of the process.
+
+    .. ipython::
+
+        In [3]: weights = hsgp_weights(
            ...:     frequencies, length_scale=3.0, amplitude=0.5,
            ...: )
-           ...: z = normal_rng(random.key(0), 0.0, 1.0, sample_shape=(20,))
+
+    Standard-normal coefficients give one draw of a smooth curve. These are
+    prior draws, not estimates fitted to observed outcomes.
+
+    .. ipython::
+
+        In [4]: z = normal_rng(random.key(0), 0.0, 1.0, sample_shape=(20,))
            ...: basis @ (weights * z)
     """
     if covariance not in ("expquad", "matern32", "matern52"):

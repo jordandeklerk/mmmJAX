@@ -3,7 +3,6 @@
 body[data-md-color-scheme="default"] {
   --mmmj-header-bg: #ffffff;
   --mmmj-header-fg: rgba(0, 0, 0, 0.87);
-  --mmmj-header-hover: rgba(0, 0, 0, 0.06);
   --mmmj-search-bg: rgba(0, 0, 0, 0.07);
   --mmmj-search-fg: #212121;
   --mmmj-search-placeholder: rgba(0, 0, 0, 0.6);
@@ -12,7 +11,6 @@ body[data-md-color-scheme="default"] {
 body[data-md-color-scheme="slate"] {
   --mmmj-header-bg: #14151a;
   --mmmj-header-fg: #ffffff;
-  --mmmj-header-hover: rgba(255, 255, 255, 0.1);
   --mmmj-search-bg: #0f1013;
   --mmmj-search-fg: #ffffff;
   --mmmj-search-placeholder: rgba(255, 255, 255, 0.7);
@@ -35,61 +33,71 @@ header.md-header,
   color: var(--mmmj-search-placeholder);
 }
 
-.md-tabs {
-  font-family: "PT Sans", var(--md-text-font-family, Roboto), sans-serif;
-  font-weight: 400;
-  opacity: 1;
-}
-
-.md-tabs li:hover {
-  background-color: var(--mmmj-header-hover);
-}
-
-.md-tabs__link {
-  color: var(--mmmj-header-fg);
-  opacity: 0.7;
-}
-
-.md-tabs__link--active,
-.md-tabs__link:hover {
-  color: var(--mmmj-header-fg);
-  opacity: 1;
-}
-
 .md-footer {
   border-top: 1px solid var(--md-default-fg-color--lightest);
 }
 
-html {
-  font-size: 130%;
+/* Content width and type scale, following marimo's documentation. */
+.md-grid {
+  max-width: 1440px;
 }
 
-@media screen and (min-width: 100em) {
-  html {
-    font-size: 137.5%;
-  }
-}
-
-@media screen and (min-width: 125em) {
-  html {
-    font-size: 150%;
-  }
+.md-typeset {
+  font-size: 0.75rem;
+  line-height: 1.6;
 }
 
 .md-typeset h1 {
-  font-size: 1.7rem;
+  font-size: 2em;
+  font-weight: 600;
 }
 
-.md-typeset h2 {
-  font-size: 1.6rem;
+.md-typeset table:not([class]) {
+  font-size: 0.75rem;
 }
 
-.md-typeset h3 {
-  font-size: 1.4rem;
+.md-nav {
+  font-size: 0.7rem;
 }
 
-.md-typeset h4 {
-  font-size: 1.2rem;
+.highlight {
+  background-color: var(--md-code-bg-color);
+  border-radius: 4px;
+}
+
+.admonition {
+  border-left-width: 4px !important;
+}
+
+/*
+The theme pads object signatures but paints each parameter, return, and
+attribute entry with a bare code background that hugs the name. Give those
+entries the same breathing room as the signature block.
+*/
+.md-typeset dl.api-field > dt {
+  padding: 0.35em 0.6em;
+  border-radius: 0.1rem;
+  margin-top: 0.75em;
+}
+
+.md-typeset dl.api-field > dd {
+  margin-top: 0.5em;
+  margin-bottom: 1em;
+}
+
+/*
+The theme recolors the example box's border, title, and icon from the
+configured color but leaves the collapse arrow on Material's purple, so it
+follows the forest green here. The focus glow is removed entirely.
+*/
+.md-typeset .example > .admonition-title::after,
+.md-typeset .example > summary::after {
+  color: #074230;
+}
+
+.md-typeset .admonition.example:focus-within,
+.md-typeset details.example:focus-within {
+  box-shadow: none;
 }
 
 .md-typeset div.math,
@@ -123,6 +131,60 @@ button.copybtn.success {
 
 .sd-tab-set > label {
   padding: 0.78125em 1.25em 0.625em;
+}
+
+/*
+The wordmark sets the header height, matching marimo's 55px banner. The theme
+assumes a 2.4rem header when it pins the sidebar and the lifted tabs, so every
+offset below reads the same variable and the logo can be resized in one place.
+*/
+:root {
+  --mmmj-header-height: 55px;
+}
+
+.md-header__button.md-logo img,
+.md-header__button.md-logo svg {
+  height: var(--mmmj-header-height);
+  width: auto;
+}
+
+.md-header__button.md-logo {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+.md-header__title {
+  height: var(--mmmj-header-height);
+  line-height: var(--mmmj-header-height);
+}
+
+.md-sidebar {
+  top: var(--mmmj-header-height);
+}
+
+.md-header--lifted ~ .md-container .md-sidebar {
+  top: calc(var(--mmmj-header-height) + 2.4rem);
+}
+
+.md-sidebar--primary .md-sidebar__scrollwrap {
+  max-height: calc(100vh - var(--mmmj-header-height) - 1.2rem);
+  overflow-y: auto;
+}
+
+[dir="ltr"] .md-header__title {
+  margin-left: 0.5rem;
+}
+
+/*
+The wordmark already names the project, so the text title only shows on narrow
+screens where the theme hides the logo. The element stays in the flow to keep
+the search bar and repository widget in place.
+*/
+@media screen and (min-width: 76.25em) {
+  .md-header__title .md-header__topic {
+    visibility: hidden;
+  }
 }
 
 .md-header__title .md-header__topic {

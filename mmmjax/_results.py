@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime
-from typing import Literal, TypeAlias
+from typing import Literal
 
 import numpy as np
 import xarray as xr
@@ -11,8 +11,8 @@ from numpy.typing import NDArray
 
 from mmmjax.data import PreparedData, _data_dimensions
 
-_Group: TypeAlias = Mapping[str, ArrayLike]
-_Coordinates: TypeAlias = dict[str, NDArray[np.generic]]
+type _Group = Mapping[str, ArrayLike]
+type _Coordinates = dict[str, NDArray[np.generic]]
 
 
 def _collect_results(

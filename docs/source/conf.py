@@ -26,15 +26,14 @@ mathjax_path = "https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-mml-chtml.js"
 
 html_theme = "sphinx_immaterial"
 html_static_path = ["_static"]
-html_css_files = [
-    "https://fonts.googleapis.com/css2?family=PT+Sans:wght@400;700&display=swap",
-    "custom.css",
-]
+html_css_files = ["custom.css"]
 html_js_files = [("copybutton-shim.js", {"priority": 200}), "header-title-link.js"]
 html_title = "mmmJAX"
+html_logo = "_static/mmmjax-logo.svg"
+html_favicon = "_static/favicon.ico"
 
-# Add html_logo and html_favicon here once mmmJAX has brand assets.
 html_theme_options = {
+    "font": {"text": "PT Sans", "code": "Fira Mono"},
     "repo_url": "https://github.com/jordandeklerk/mmmJAX",
     "repo_name": "mmmJAX",
     "icon": {"repo": "fontawesome/brands/git-alt"},
@@ -61,14 +60,14 @@ html_theme_options = {
             "media": "(prefers-color-scheme: light)",
             "scheme": "default",
             "primary": "white",
-            "accent": "grey",
+            "accent": "teal",
             "toggle": {"icon": "material/weather-sunny", "name": "Switch to dark mode"},
         },
         {
             "media": "(prefers-color-scheme: dark)",
             "scheme": "slate",
             "primary": "black",
-            "accent": "grey",
+            "accent": "teal",
             "toggle": {"icon": "material/weather-night", "name": "Switch to system preference"},
         },
     ],
@@ -84,6 +83,13 @@ napoleon_numpy_docstring = True
 napoleon_google_docstring = False
 # Let autodoc index each field once while keeping its description in the class docstring
 napoleon_use_ivar = True
+# Examples sections become admonitions so the theme can style them as example boxes
+napoleon_use_admonition_for_examples = True
+
+# Recolor the theme's example admonition to the brand forest green
+sphinx_immaterial_custom_admonitions = [
+    {"name": "example", "override": True, "icon": "material/code-braces", "color": (7, 66, 48)},
+]
 
 # Keep example output compact without rounding the values used in calculations
 ipython_execlines = [
@@ -110,6 +116,16 @@ def _format_signature_defaults(app, what, name, obj, options, signature, return_
     return signature, return_annotation
 
 
+def _open_examples_boxes(app, doctree):
+    """Render napoleon's Examples admonitions as open, collapsible example boxes."""
+    from docutils import nodes
+
+    for node in doctree.findall(nodes.admonition):
+        if "example" in node["classes"]:
+            node["collapsible"] = "open"
+
+
 def setup(app):
-    """Register API signature formatting."""
+    """Register API signature formatting and example box styling."""
     app.connect("autodoc-process-signature", _format_signature_defaults)
+    app.connect("doctree-read", _open_examples_boxes)

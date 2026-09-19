@@ -175,7 +175,7 @@ def test_labeled_inputs_copy_source_values_labels_and_returned_data(auxiliary_da
 
     np.testing.assert_array_equal(model.data.values["lift"], [1.5, -0.25, 0.75])
     np.testing.assert_array_equal(model.data.values["indices"], [1, 0, 1])
-    np.testing.assert_array_equal(model._input_coords["experiment"], ["first", "second", "third"])
+    np.testing.assert_array_equal(model._training.input_coords["experiment"], ["first", "second", "third"])
     assert "active" in model.data.values
     np.testing.assert_allclose(jax.jit(model.log_prob)({}), -2.875)
 
@@ -403,7 +403,7 @@ def test_unlabeled_independent_input_axes_supply_positional_coordinates(auxiliar
         data=Data(auxiliary_data, inputs=xr.Dataset({"lift": ("experiment", [1.0, 2.0, 3.0])})),
     )
     assert model.parameters["theta"].shape == (3,)
-    np.testing.assert_array_equal(model._input_coords["experiment"], [0, 1, 2])
+    np.testing.assert_array_equal(model._training.input_coords["experiment"], [0, 1, 2])
 
 
 @pytest.mark.parametrize("axis", ["time", "media_time", "chain", "draw", "sample", "pred_id"])
@@ -514,7 +514,7 @@ def test_generation_key_name_cannot_shadow_a_time_input():
 
     model = Model(parameters={}, log_density=lambda: jnp.array(0.0), generated_quantities=generate_with_key, data=data)
     key = jax.random.key(10)
-    assert model._time_inputs == ("time",)
+    assert model._training.time_inputs == ("time",)
     actual = jax.jit(model.generate_quantities)(key, {}, model.data)
     np.testing.assert_array_equal(actual["draw"], jax.random.normal(key))
 
@@ -552,7 +552,7 @@ def test_model_is_immutable() -> None:
     specification = _make_scalar_model()
 
     with pytest.raises(FrozenInstanceError):
-        specification._log_density = _scalar_log_density
+        specification._blocks = specification._blocks
 
 
 @pytest.mark.parametrize(("name", "type_name"), [(1, "int"), (None, "NoneType")])
@@ -944,7 +944,9 @@ def test_log_prob_passes_dynamic_data_to_plain_callbacks_under_jit_vmap() -> Non
         actual = compiled(parameters, current)
         expected = jnp.stack(
             [
-                specification._log_density(current, **jax.tree.map(lambda value, index=index: value[index], parameters))
+                specification._blocks.log_density(
+                    current, **jax.tree.map(lambda value, index=index: value[index], parameters)
+                )
                 for index in range(2)
             ]
         )

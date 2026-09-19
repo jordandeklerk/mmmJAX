@@ -97,7 +97,6 @@ jobs:
       fail-fast: false
       matrix:
         config:
-          - {python-version: "3.11", x64: "false"}
           - {python-version: "3.12", x64: "false"}
           - {python-version: "3.13", x64: "false"}
           - {python-version: "3.14", x64: "false"}
