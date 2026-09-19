@@ -101,12 +101,12 @@ JAX runs on the CPU by default. For GPU sampling, install the JAX wheel for your
 
 The program blocks support different likelihoods and hierarchical structures for an outcome observed over time. mmmJAX adds tools for preparing marketing data, defining media effects, and interpreting fitted models. You choose which tools to use and how to combine them.
 
-* **Data preparation.** Select outcome, media, spending, and control columns and fit their scaling, with support for paid media, organic media, and reach and frequency channels.
-* **Adstock and saturation.** Model media effects with geometric, delayed, and Weibull adstock and Hill, logistic, log, and root response curves.
-* **Seasonality and baselines.** Add calendar seasonality with Fourier features and smooth trends with a Hilbert space Gaussian process.
-* **Channel ROI, response curves, and budget allocation.** Use posterior draws from the fitted model to estimate channel returns, construct response curves, and optimize budgets.
-* **Prior predictive checks.** Simulate outcomes from the declared priors to assess their implications before fitting.
-* **Scenarios.** Re-evaluate the model on new data using the scaling and reference values established from the training data.
+* `prepare_data` selects the outcome, media, spending, and control columns from a dataframe and fits their scaling, with paid media, organic media, and reach and frequency channels all supported.
+* Geometric, delayed, and Weibull adstock model carryover, and Hill, logistic, log, and root curves model saturation.
+* Fourier features add calendar seasonality, and a Hilbert space Gaussian process adds smooth trends.
+* Posterior draws from the fitted model estimate channel returns, trace response curves, and optimize budgets.
+* Prior predictive checks simulate outcomes from the declared priors before anything is fit.
+* Scenario evaluation re-runs a fitted model on new data using the scaling and reference values from training.
 
 ## Distributions
 
