@@ -65,9 +65,8 @@ def geometric_adstock(
 
     Examples
     --------
-    Start with weekly media spending, with one row per week in time order.
-    Apply a different retention value to each channel, in the same order
-    as the selected columns, and add the transformed values to the table:
+    Start with weekly spending for two channels, one row per week in time
+    order.
 
     .. ipython::
 
@@ -81,6 +80,12 @@ def geometric_adstock(
            ...:     "social": [60.0, 0.0, 40.0, 80.0],
            ...: })
 
+    Give each channel its own retention rate, in the same order as the
+    selected columns. Search keeps half of its effect from one week to the
+    next and social keeps less.
+
+    .. ipython::
+
         In [3]: media = spend.select("search", "social").to_numpy()
            ...: carried = geometric_adstock(
            ...:     media,
@@ -88,11 +93,15 @@ def geometric_adstock(
            ...:     max_lag=2,
            ...: )
 
-        In [4]: spend = spend.with_columns(
+    The transformed columns sit beside the originals, so the carryover into
+    weeks with no spending is easy to see.
+
+    .. ipython::
+
+        In [4]: spend.with_columns(
            ...:     pl.Series("search_adstock", np.asarray(carried[:, 0])),
            ...:     pl.Series("social_adstock", np.asarray(carried[:, 1])),
            ...: )
-           ...: spend
     """
     media_array, parameters = _prepare_adstock(media, max_lag=max_lag, axis=axis, normalize=normalize, alpha=alpha)
     alpha_array = parameters["alpha"]
@@ -184,9 +193,8 @@ def delayed_adstock(
 
     Examples
     --------
-    Suppose a video campaign runs in the first of four consecutive weeks.
-    Apply carryover that peaks two weeks later and compare it with the
-    original spending:
+    Suppose a video campaign runs in the first of four consecutive weeks and
+    nothing is spent afterwards.
 
     .. ipython::
 
@@ -199,6 +207,11 @@ def delayed_adstock(
            ...:     "video": [100.0, 0.0, 0.0, 0.0],
            ...: })
 
+    Let the effect build for two weeks before it peaks, then fade with a
+    retention of one half.
+
+    .. ipython::
+
         In [3]: carried = delayed_adstock(
            ...:     spend["video"].to_numpy(),
            ...:     alpha=0.5,
@@ -206,10 +219,14 @@ def delayed_adstock(
            ...:     max_lag=3,
            ...: )
 
-        In [4]: spend = spend.with_columns(
+    Placed next to the original spending, the transformed column shows the
+    delayed peak in week three.
+
+    .. ipython::
+
+        In [4]: spend.with_columns(
            ...:     pl.Series("video_adstock", np.asarray(carried)),
            ...: )
-           ...: spend
     """
     media_array, parameters = _prepare_adstock(
         media, max_lag=max_lag, axis=axis, normalize=normalize, alpha=alpha, theta=theta
@@ -312,9 +329,8 @@ def weibull_pdf_adstock(
 
     Examples
     --------
-    Transform four consecutive weeks of video spending using Weibull
-    density weights. Add the result as a new column, keeping the original
-    spending available for comparison:
+    Start with four consecutive weeks of video spending, including a week
+    with none.
 
     .. ipython::
 
@@ -327,6 +343,11 @@ def weibull_pdf_adstock(
            ...:     "video": [100.0, 0.0, 80.0, 40.0],
            ...: })
 
+    Weight the carryover with a Weibull density, so the effect rises after
+    exposure and then tails off.
+
+    .. ipython::
+
         In [3]: carried = weibull_pdf_adstock(
            ...:     spend["video"].to_numpy(),
            ...:     shape=2.0,
@@ -334,10 +355,13 @@ def weibull_pdf_adstock(
            ...:     max_lag=3,
            ...: )
 
-        In [4]: spend = spend.with_columns(
+    Keep the original spending beside the transformed values for comparison.
+
+    .. ipython::
+
+        In [4]: spend.with_columns(
            ...:     pl.Series("video_adstock", np.asarray(carried)),
            ...: )
-           ...: spend
     """
     media_array, parameters = _prepare_adstock(
         media, max_lag=max_lag, axis=axis, normalize=normalize, shape=shape, scale=scale
@@ -440,9 +464,8 @@ def weibull_cdf_adstock(
 
     Examples
     --------
-    Transform four consecutive weeks of video spending using decreasing
-    carryover weights. Add the result alongside the original spending
-    for each week:
+    Start with four consecutive weeks of video spending, including a week
+    with none.
 
     .. ipython::
 
@@ -455,6 +478,11 @@ def weibull_cdf_adstock(
            ...:     "video": [100.0, 0.0, 80.0, 40.0],
            ...: })
 
+    Weight the carryover with a Weibull survival curve, so the effect is
+    strongest at exposure and decreases from there.
+
+    .. ipython::
+
         In [3]: carried = weibull_cdf_adstock(
            ...:     spend["video"].to_numpy(),
            ...:     shape=2.0,
@@ -462,10 +490,13 @@ def weibull_cdf_adstock(
            ...:     max_lag=3,
            ...: )
 
-        In [4]: spend = spend.with_columns(
+    Keep the original spending beside the transformed values for comparison.
+
+    .. ipython::
+
+        In [4]: spend.with_columns(
            ...:     pl.Series("video_adstock", np.asarray(carried)),
            ...: )
-           ...: spend
     """
     media_array, parameters = _prepare_adstock(
         media, max_lag=max_lag, axis=axis, normalize=normalize, shape=shape, scale=scale

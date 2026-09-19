@@ -1,11 +1,10 @@
-<p align="center">
-  <img src="docs/source/_static/mmmjax-logo.png" alt="mmmJAX" width="520">
-  <!-- Switch to the absolute URL before publishing so PyPI renders it:
-  <img src="https://raw.githubusercontent.com/jordandeklerk/mmmJAX/main/docs/source/_static/mmmjax-logo.png" alt="mmmJAX" width="520">
-  -->
-</p>
+<div align="center">
+<img src="docs/source/_static/mmmjax-logo.png" alt="mmmJAX" width="350">
+<!-- Switch to the absolute URL before publishing so PyPI renders it:
+<img src="https://raw.githubusercontent.com/jordandeklerk/mmmJAX/main/docs/source/_static/mmmjax-logo.png" alt="mmmJAX" width="350">
+-->
 
-# Stan-style Bayesian marketing mix modeling in JAX
+## Stan-style Bayesian marketing mix modeling in JAX
 
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/jordandeklerk/mmmJAX/blob/main/LICENSE)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
@@ -13,17 +12,15 @@
 [![Build status](https://github.com/jordandeklerk/mmmJAX/actions/workflows/test.yml/badge.svg)](https://github.com/jordandeklerk/mmmJAX/actions/workflows/test.yml)
 [![Documentation](https://readthedocs.org/projects/mmmjax/badge/?version=latest)](https://mmmjax.readthedocs.io/en/latest/)
 
-[**Distributions**](#distributions) | [**Features**](#features) | [**Inference**](#inference) | [**Documentation**](https://mmmjax.readthedocs.io/en/latest/)
+[Distributions](#distributions) | [Features](#features) | [Inference](#inference) | [Documentation](https://mmmjax.readthedocs.io/en/latest/)
+
+</div>
 
 ## What is mmmJAX?
 
-**mmmJAX** is a Python library for Bayesian marketing mix modeling in JAX, built around Stan’s explicit modeling style.
+**mmmJAX** brings Stan’s explicit modeling style to marketing mix models in JAX. You write a model as a sequence of program blocks, with parameter declarations, constraints, transformations, log-density terms, and generated quantities, so structural assumptions stay visible where you can inspect, test, and revise them. The model you read is the model you fit.
 
-You write models as a sequence of program blocks, with explicit parameter declarations, constraints, transformations, log-density terms, and generated quantities. Priors and structural assumptions remain visible in the model definition, where you can inspect, test, and revise them as you work. The model you read is the model you fit.
-
-The statistical model stays separate from inference. You declare parameters on their natural scale, and mmmJAX handles the transformations to unconstrained space and the required Jacobian adjustments. The resulting log density can be differentiated, compiled, and vectorized with JAX and used with different inference algorithms.
-
-This structure is intended to make models easier to adapt as assumptions and business questions change, from small national specifications to larger hierarchical models.
+The statistical model stays separate from inference. You declare parameters on their natural scale, and mmmJAX handles the unconstrained transformations and Jacobian adjustments, producing a log density that JAX can differentiate, compile, and vectorize for any inference algorithm.
 
 ```python
 import numpy as np
@@ -89,6 +86,16 @@ model = mj.Model(
 
 results = mj.sample(model, draws=1000, warmup=1000, chains=4)
 ```
+
+## Installation
+
+mmmJAX is in alpha and requires Python 3.12 or later. It is not yet on PyPI, so install the development version from GitHub.
+
+```bash
+pip install "git+https://github.com/jordandeklerk/mmmJAX.git"
+```
+
+JAX runs on the CPU by default. For GPU sampling, install the JAX wheel for your accelerator first by following the [JAX installation guide](https://docs.jax.dev/en/latest/installation.html).
 
 ## Features
 

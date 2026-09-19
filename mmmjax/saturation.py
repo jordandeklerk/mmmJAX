@@ -57,25 +57,36 @@ def hill_saturation(
 
     Examples
     --------
-    Give two impression columns separate half-saturation points and add
-    their response curves to the dataframe.
+    Start with weekly impressions for two channels.
 
     .. ipython::
 
         In [1]: import numpy as np
            ...: import polars as pl
            ...: from mmmjax import hill_saturation
-           ...: frame = pl.DataFrame({
+
+        In [2]: frame = pl.DataFrame({
            ...:     "week": [1, 2, 3],
            ...:     "search": [0.0, 1_000.0, 3_000.0],
            ...:     "video": [1_000.0, 2_000.0, 4_000.0],
            ...: })
-           ...: response = hill_saturation(
+
+    Give each channel its own half-saturation point and slope, in the same
+    order as the selected columns.
+
+    .. ipython::
+
+        In [3]: response = hill_saturation(
            ...:     frame.select("search", "video").to_numpy(),
            ...:     half_saturation=np.array([1_000.0, 2_000.0]),
            ...:     slope=np.array([1.0, 2.0]),
            ...: )
-           ...: frame.with_columns(
+
+    Each response reaches one half at its channel's half-saturation point.
+
+    .. ipython::
+
+        In [4]: frame.with_columns(
            ...:     pl.Series("search_response", np.asarray(response[:, 0])),
            ...:     pl.Series("video_response", np.asarray(response[:, 1])),
            ...: )
@@ -145,23 +156,35 @@ def logistic_saturation(media: ArrayLike, half_saturation: ArrayLike) -> jax.Arr
 
     Examples
     --------
-    Apply separate response curves to two impression columns.
+    Start with weekly impressions for two channels.
 
     .. ipython::
 
         In [1]: import numpy as np
            ...: import polars as pl
            ...: from mmmjax import logistic_saturation
-           ...: frame = pl.DataFrame({
+
+        In [2]: frame = pl.DataFrame({
            ...:     "week": [1, 2, 3],
            ...:     "search": [0.0, 1_000.0, 3_000.0],
            ...:     "video": [1_000.0, 2_000.0, 4_000.0],
            ...: })
-           ...: response = logistic_saturation(
+
+    Give each channel its own half-saturation point, in the same order as
+    the selected columns.
+
+    .. ipython::
+
+        In [3]: response = logistic_saturation(
            ...:     frame.select("search", "video").to_numpy(),
            ...:     half_saturation=np.array([1_000.0, 2_000.0]),
            ...: )
-           ...: frame.with_columns(
+
+    The responses sit beside the impressions that produced them.
+
+    .. ipython::
+
+        In [4]: frame.with_columns(
            ...:     pl.Series("search_response", np.asarray(response[:, 0])),
            ...:     pl.Series("video_response", np.asarray(response[:, 1])),
            ...: )
@@ -214,21 +237,29 @@ def root_saturation(media: ArrayLike, exponent: ArrayLike) -> jax.Array:
 
     Examples
     --------
-    Apply a square-root response to an impression column.
+    Start with three weeks of video impressions.
 
     .. ipython::
 
         In [1]: import numpy as np
            ...: import polars as pl
            ...: from mmmjax import root_saturation
-           ...: frame = pl.DataFrame({
+
+        In [2]: frame = pl.DataFrame({
            ...:     "week": [1, 2, 3],
            ...:     "video": [0.0, 100.0, 400.0],
            ...: })
-           ...: response = root_saturation(
+
+    An exponent of one half gives a square-root response, so quadrupling the
+    impressions doubles the effect.
+
+    .. ipython::
+
+        In [3]: response = root_saturation(
            ...:     frame["video"].to_numpy(), exponent=0.5,
            ...: )
-           ...: frame.with_columns(
+
+        In [4]: frame.with_columns(
            ...:     pl.Series("video_response", np.asarray(response)),
            ...: )
     """
@@ -284,20 +315,28 @@ def log_saturation(media: ArrayLike) -> jax.Array:
 
     Examples
     --------
-    Apply a logarithmic response to an impression column, including a
-    period with no exposure.
+    Start with three weeks of video impressions, including a week with no
+    exposure.
 
     .. ipython::
 
         In [1]: import numpy as np
            ...: import polars as pl
            ...: from mmmjax import log_saturation
-           ...: frame = pl.DataFrame({
+
+        In [2]: frame = pl.DataFrame({
            ...:     "week": [1, 2, 3],
            ...:     "video": [0.0, 100.0, 400.0],
            ...: })
-           ...: response = log_saturation(frame["video"].to_numpy())
-           ...: frame.with_columns(
+
+    The logarithmic response is zero where there was no exposure and grows
+    slowly at high impression counts.
+
+    .. ipython::
+
+        In [3]: response = log_saturation(frame["video"].to_numpy())
+
+        In [4]: frame.with_columns(
            ...:     pl.Series("video_response", np.asarray(response)),
            ...: )
     """

@@ -53,8 +53,8 @@ def media_response(
 
     Examples
     --------
-    Include earlier impressions when calculating carryover, then return
-    one response for each modeling period.
+    Start with three modeling weeks and one earlier week of impressions
+    that should count towards carryover.
 
     .. ipython::
 
@@ -62,17 +62,25 @@ def media_response(
            ...: import numpy as np
            ...: import polars as pl
            ...: import mmmjax as mm
-           ...: frame = pl.DataFrame({
+
+        In [2]: frame = pl.DataFrame({
            ...:     "week": [2, 3, 4],
            ...:     "sales": [120.0, 140.0, 110.0],
            ...:     "video": [200.0, 400.0, 100.0],
            ...: })
            ...: history = pl.DataFrame({"week": [1], "video": [100.0]})
-           ...: data = mm.prepare_data(
+
+        In [3]: data = mm.prepare_data(
            ...:     frame, time="week", outcome="sales", media=["video"],
            ...:     media_history=history,
            ...: )
-           ...: response = mm.media_response(
+
+    Apply adstock and then saturation over the full media history, keeping
+    one response for each modeling period.
+
+    .. ipython::
+
+        In [4]: response = mm.media_response(
            ...:     data.arrays["media"],
            ...:     adstock=partial(mm.geometric_adstock, alpha=0.5, max_lag=2),
            ...:     saturation=partial(
@@ -80,7 +88,8 @@ def media_response(
            ...:     ),
            ...:     n_periods=len(data.time_values),
            ...: )
-           ...: frame.with_columns(
+
+        In [5]: frame.with_columns(
            ...:     pl.Series("video_response", np.asarray(response[:, 0])),
            ...: )
     """
@@ -177,8 +186,8 @@ def reach_frequency_response(
 
     Examples
     --------
-    Use earlier audience measurements to calculate responses for later
-    periods, including one with no new exposure.
+    Start with reach and frequency for three modeling weeks, the last with
+    no new exposure, plus one earlier week of history.
 
     .. ipython::
 
@@ -186,7 +195,8 @@ def reach_frequency_response(
            ...: import numpy as np
            ...: import polars as pl
            ...: import mmmjax as mm
-           ...: frame = pl.DataFrame({
+
+        In [2]: frame = pl.DataFrame({
            ...:     "week": [2, 3, 4],
            ...:     "video_reach": [1_000, 1_500, 0],
            ...:     "video_frequency": [2.0, 3.0, 0.0],
@@ -195,11 +205,18 @@ def reach_frequency_response(
            ...:     "week": [1], "video_reach": [800],
            ...:     "video_frequency": [1.5],
            ...: })
-           ...: data = mm.prepare_data(
+
+        In [3]: data = mm.prepare_data(
            ...:     frame, time="week", reach=["video_reach"],
            ...:     media_frequency=["video_frequency"], media_history=history,
            ...: )
-           ...: response = mm.reach_frequency_response(
+
+    Saturation applies to frequency and the result is weighted by reach,
+    with adstock carrying earlier exposure into the week with none.
+
+    .. ipython::
+
+        In [4]: response = mm.reach_frequency_response(
            ...:     data.arrays["reach"], data.arrays["media_frequency"],
            ...:     adstock=partial(mm.geometric_adstock, alpha=0.5, max_lag=2),
            ...:     saturation=partial(
@@ -207,7 +224,8 @@ def reach_frequency_response(
            ...:     ),
            ...:     n_periods=len(data.time_values),
            ...: )
-           ...: frame.with_columns(
+
+        In [5]: frame.with_columns(
            ...:     pl.Series("video_response", np.asarray(response[:, 0])),
            ...: )
     """

@@ -1,7 +1,8 @@
 Sampling
 ========
 
-Draw priors, fit a model, or evaluate generated quantities from posterior draws.
+Draw from the priors, fit a model with NUTS, add draws to a fitted run, or
+evaluate generated quantities from existing posterior draws.
 
 .. currentmodule:: mmmjax
 
@@ -13,3 +14,4 @@ Draw priors, fit a model, or evaluate generated quantities from posterior draws.
    continue_sampling
    sample_prior
    generate_quantities
+   Prior

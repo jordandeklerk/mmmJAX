@@ -108,16 +108,28 @@ def simulate_data(
 
     Examples
     --------
-    Generate observations and select paid and organic exposure columns.
-    Keep the true effects aside when preparing inputs for a model.
+    Generate two years of weekly observations.
 
     .. ipython::
 
         In [1]: from mmmjax import prepare_data, simulate_data
-           ...: example = simulate_data(seed=7, n_periods=104)
-           ...: paid = example.channels.query("kind == 'paid'")
+
+        In [2]: example = simulate_data(seed=7, n_periods=104)
+
+    The channel table describes each column, so paid and organic exposure
+    can be selected by kind rather than by name.
+
+    .. ipython::
+
+        In [3]: paid = example.channels.query("kind == 'paid'")
            ...: organic = example.channels.query("kind == 'organic'")
-           ...: data = prepare_data(
+
+    Prepare model inputs from the frame, keeping the true effects aside for
+    comparison with the fit later.
+
+    .. ipython::
+
+        In [4]: data = prepare_data(
            ...:     example.frame, time="week", groups=["region"],
            ...:     outcome="revenue", population="population",
            ...:     media=paid["exposure_column"].to_list(),
@@ -129,7 +141,8 @@ def simulate_data(
            ...:     treatments=["price", "promotion"],
            ...:     media_history=example.media_history,
            ...: )
-           ...: example.frame[["week", "region", "revenue"]].head()
+
+        In [5]: example.frame[["week", "region", "revenue"]].head()
     """
     first_date, group_names = _validate_inputs(
         seed, n_periods, groups, start, campaign_overlap, noise_scale, measurement_error

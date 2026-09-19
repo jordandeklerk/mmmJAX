@@ -996,23 +996,33 @@ def select_channels(
 
     Examples
     --------
-    Use different prior families for two entries of the same coefficient
-    array. For group-specific coefficients, the same calls select the
-    channels across every group.
+    Start with one coefficient per channel.
 
     .. ipython::
 
         In [1]: import jax.numpy as jnp
            ...: from mmmjax import half_normal, lognormal, select_channels
-           ...: channels = ("video", "search")
+
+        In [2]: channels = ("video", "search")
            ...: coefficient = jnp.array([0.6, 0.4])
-           ...: video = select_channels(
+
+    Select each channel's entry by name. For group-specific coefficients,
+    the same calls select the channel across every group.
+
+    .. ipython::
+
+        In [3]: video = select_channels(
            ...:     coefficient, channels=channels, select="video",
            ...: )
            ...: search = select_channels(
            ...:     coefficient, channels=channels, select="search",
            ...: )
-           ...: target = half_normal(video, scale=1.0)
+
+    The two entries can then take different prior families in a log density.
+
+    .. ipython::
+
+        In [4]: target = half_normal(video, scale=1.0)
            ...: target += lognormal(search, location=0.0, scale=0.5)
            ...: target
     """

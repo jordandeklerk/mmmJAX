@@ -1,9 +1,9 @@
 Model
 =====
 
-Combine parameter declarations with a log-density function and an optional
-``generated_quantities`` callback.
-Write priors and likelihood terms explicitly in the log-density function.
+Compose parameter declarations, a log-density function, and optional
+``transformed_data``, ``transformed_parameters``, and ``generated_quantities``
+blocks. Priors and likelihood terms are written explicitly in the log density.
 
 .. currentmodule:: mmmjax
 
@@ -12,3 +12,19 @@ Write priors and likelihood terms explicitly in the log-density function.
    :nosignatures:
 
    Model
+
+Parameter declarations
+----------------------
+
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+
+   Real
+   Positive
+   LowerBound
+   UpperBound
+   Interval
+   Simplex
+   CorrelationCholesky
+   Parameterization

@@ -1,4 +1,4 @@
-# API reference
+# API Reference
 
 All entries below can be imported from `mmmjax`. Distribution functions are also
 available from `mmmjax.distributions`.
@@ -7,19 +7,10 @@ available from `mmmjax.distributions`.
 :maxdepth: 1
 
 model
+data
+media
+baselines
 sampling
 response
-optimization
-data
-scaling
-parameters
-adstock
-saturation
-media
-seasonality
-hsgp
-continuous
-discrete
-multivariate
-containers
+distributions
 ```
