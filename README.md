@@ -12,80 +12,15 @@
 [![Build status](https://github.com/jordandeklerk/mmmJAX/actions/workflows/test.yml/badge.svg)](https://github.com/jordandeklerk/mmmJAX/actions/workflows/test.yml)
 [![Documentation](https://readthedocs.org/projects/mmmjax/badge/?version=latest)](https://mmmjax.readthedocs.io/en/latest/)
 
-[Distributions](#distributions) | [Features](#features) | [Inference](#inference) | [Documentation](https://mmmjax.readthedocs.io/en/latest/)
+[Installation](#installation) | [Program blocks](#program-blocks) | [Distributions](#distributions) | [Inference](#inference-is-separate-from-the-model) | [Documentation](https://mmmjax.readthedocs.io/en/latest/)
 
 </div>
 
 ## What is mmmJAX?
 
-**mmmJAX** brings Stan’s explicit modeling style to marketing mix models in JAX. You write a model as a sequence of program blocks, with parameter declarations, constraints, transformations, log-density terms, and generated quantities, so structural assumptions stay visible where you can inspect, test, and revise them. The model you read is the model you fit.
+mmmJAX is a library for Bayesian marketing mix modeling in [JAX](https://docs.jax.dev/). It borrows the shape of a [Stan](https://mc-stan.org/) program. A model is a sequence of named blocks, each a plain Python function or dictionary, and the blocks together state what the data is, what is being estimated, how the pieces combine, what the log density is, and what to compute from each draw. Because the model is written out rather than assembled from options, you can read every prior and every structural assumption in the same place you would change it.
 
-The statistical model stays separate from inference. You declare parameters on their natural scale, and mmmJAX handles the unconstrained transformations and Jacobian adjustments, producing a log density that JAX can differentiate, compile, and vectorize for any inference algorithm.
-
-```python
-import numpy as np
-import pandas as pd
-
-import mmmjax as mj
-
-rng = np.random.default_rng(0)
-tv = rng.gamma(2.0, 1.0, size=52)
-price = rng.normal(size=52)
-y = 1.0 + 0.8 * tv - 0.5 * price + 0.3 * rng.normal(size=52)
-frame = pd.DataFrame({"week": np.arange(52), "y": y, "tv": tv, "price": price})
-data = mj.prepare_data(frame, time="week", outcome="y", media=["tv"], controls=["price"])
-
-
-def transformed_data(controls):
-    centered = controls - controls.mean(axis=0)
-    return {"centered": centered}
-
-
-parameters = {
-    "intercept": mj.Real(),
-    "coefficient": mj.Positive(dims="channel"),
-    "retention": mj.Interval(0.0, 1.0, dims="channel"),
-    "slope": mj.Real(dims="control"),
-    "sigma": mj.Positive(),
-}
-
-
-def transformed_parameters(media, centered, intercept, coefficient, retention, slope):
-    carried = mj.geometric_adstock(media, alpha=retention, max_lag=8)
-    mu = intercept + carried @ coefficient + centered @ slope
-    return {"mu": mu}
-
-
-def log_density(outcome, mu, intercept, coefficient, retention, slope, sigma):
-    target = mj.normal(intercept, 0.0, 1.0)
-    target += mj.half_normal(coefficient, 1.0)
-    target += mj.beta(retention, 2.0, 4.0)
-    target += mj.normal(slope, 0.0, 1.0)
-    target += mj.half_normal(sigma, 1.0)
-    target += mj.normal(outcome, mu, sigma)
-    return target
-
-
-def generated_quantities(key, outcome, mu, sigma):
-    prediction = mj.normal_rng(key, mu, sigma)
-    pointwise = mj.normal_logpdf(outcome, mu, sigma)
-    return {
-        "predictive": {"prediction": prediction},
-        "log_likelihood": {"pointwise": pointwise}
-        }
-
-
-model = mj.Model(
-    data,
-    transformed_data,
-    parameters,
-    transformed_parameters,
-    log_density,
-    generated_quantities,
-)
-
-results = mj.sample(model, draws=1000, warmup=1000, chains=4)
-```
+The blocks are ordinary JAX code, so the finished model can be differentiated, compiled, and vectorized, and mmmJAX supplies the marketing-specific pieces that go inside them. Adstock and saturation functions, seasonal features, Gaussian process baselines, data preparation with fitted scaling, a Stan-style distribution library, a NUTS sampler, and tools for response curves and budget allocation are all available, and none of them are required.
 
 ## Installation
 
@@ -97,44 +32,81 @@ pip install "git+https://github.com/jordandeklerk/mmmJAX.git"
 
 JAX runs on the CPU by default. For GPU sampling, install the JAX wheel for your accelerator first by following the [JAX installation guide](https://docs.jax.dev/en/latest/installation.html).
 
-## Features
+## Program blocks
 
-The program blocks support different likelihoods and hierarchical structures for an outcome observed over time. mmmJAX adds tools for preparing marketing data, defining media effects, and interpreting fitted models. You choose which tools to use and how to combine them.
+A model is built from up to six blocks, given to `Model` in the order they run. This skeleton shows all of them with their bodies left as comments. Each function asks for what it needs by argument name, and mmmJAX supplies it from the prepared data, the outputs of earlier blocks, or the parameter draws.
 
-* `prepare_data` selects the outcome, media, spending, and control columns from a dataframe and fits their scaling, with paid media, organic media, and reach and frequency channels all supported.
-* Geometric, delayed, and Weibull adstock model carryover, and Hill, logistic, log, and root curves model saturation.
-* Fourier features add calendar seasonality, and a Hilbert space Gaussian process adds smooth trends.
-* Posterior draws from the fitted model estimate channel returns, trace response curves, and optimize budgets.
-* Prior predictive checks simulate outcomes from the declared priors before anything is fit.
-* Scenario evaluation re-runs a fitted model on new data using the scaling and reference values from training.
+```python
+import mmmjax as mj
+
+data = mj.prepare_data(frame, time="week", outcome="sales", media=channels)
+
+
+def transformed_data(media, controls):
+    # fixed calculations on the data, evaluated once
+    return {...}
+
+
+parameters = {
+    # each name paired with a declaration such as mj.Positive(dims="channel")
+}
+
+
+def transformed_parameters(media, centered, coefficient, retention):
+    # derived quantities shared by the two blocks below
+    return {...}
+
+
+def log_density(outcome, mu, coefficient, retention, sigma):
+    # priors and likelihood, added one term at a time
+    return target
+
+
+def generated_quantities(key, outcome, mu, sigma):
+    # predictions and pointwise terms computed from each draw
+    return {...}
+
+
+model = mj.Model(
+    data,
+    transformed_data,
+    parameters,
+    transformed_parameters,
+    log_density,
+    generated_quantities,
+)
+```
+
+Only `parameters` and `log_density` are required. Data-only work runs once, the density runs on every evaluation, and generated quantities run once per retained draw. Parameters are declared with their constraints and named axes, and each declaration owns the transform to the unconstrained scale and its Jacobian adjustment, so every block sees parameters on their natural scale and the log density contains only the terms you wrote.
 
 ## Distributions
 
-mmmJAX provides Stan-style continuous, discrete, and multivariate distributions built on TensorFlow Probability’s JAX backend, with summed and pointwise log densities that support JAX compilation and automatic differentiation. The suite also includes random draws, log cumulative distribution and log survival functions where applicable, and log or logit parameterizations for supported discrete families.
+Every prior and likelihood term comes from a Stan-style distribution library built on TensorFlow Probability. Each family has a summed log density for use in `log_density`, a pointwise version for likelihood diagnostics, a random draw function, and log cumulative and log survival functions where they exist. They are plain JAX functions, so they broadcast, differentiate, and compile like any other.
 
 ```python
 import jax
 import mmmjax as mj
 
-draws = mj.normal_rng(jax.random.key(0), 0.0, 1.0, sample_shape=(3,))
-term = mj.normal(draws, 0.0, 1.0)              # summed log density for a model block
-pointwise = mj.normal_logpdf(draws, 0.0, 1.0)  # one log density per draw
-tail = mj.normal_logcdf(draws, 0.0, 1.0)       # log cumulative probability
+term = mj.gamma(values, shape=2.0, rate=0.5)
+gradient = jax.grad(mj.gamma)(values, shape=2.0, rate=0.5)
+draws = mj.gamma_rng(jax.random.key(0), shape=2.0, rate=0.5, sample_shape=(1000,))
 ```
 
-## Inference
+## Inference is separate from the model
 
-By default, `sample` runs [BlackJAX](https://blackjax-devs.github.io/blackjax/)’s NUTS implementation with window adaptation and returns posterior draws, sampler statistics, predictive draws, and model data in an xarray [DataTree](https://docs.xarray.dev/en/stable/user-guide/hierarchical-data.html) labeled with the prepared data’s coordinates. The model exposes its unconstrained log density, random initialization, and parameter transformations for other compatible samplers. The example below uses [NumPyro](https://num.pyro.ai/en/stable/)’s NUTS implementation, with the negative log density as its potential function.
+A `Model` does not know how it will be fit. It exposes `log_density` for an unconstrained position, `initialize_random` for a starting point, and `constrain` to map draws back to the parameter scale, and that is the whole interface a sampler needs. The log density is an ordinary JAX function, so its gradient is one transformation away.
 
 ```python
-import jax
-from numpyro.infer import MCMC, NUTS
-
-potential = lambda position: -model.log_density(position, model.data)
-mcmc = MCMC(NUTS(potential_fn=potential), num_warmup=1000, num_samples=1000)
-mcmc.run(jax.random.key(0), init_params=model.initialize_random(jax.random.key(1)))
-draws = jax.vmap(model.constrain)(mcmc.get_samples())
+position = model.initialize_random(jax.random.key(0))
+value, gradient = jax.value_and_grad(model.log_density)(position, model.data)
+parameters = model.constrain(position)
 ```
+
+The built-in `sample` uses this interface to run NUTS with window adaptation and returns an xarray [DataTree](https://docs.xarray.dev/en/stable/user-guide/hierarchical-data.html) labeled with your data's coordinates, with the sampler state stored alongside so `continue_sampling` can add draws later. Any other sampler that accepts a log density and its gradient, in NumPyro, BlackJAX, or your own code, works with the same object.
+
+## From data to decisions
+
+`prepare_data` builds the model inputs from a dataframe, with a grouping column when the same blocks should fit a hierarchical model across regions or markets. `check_data` and `sample_prior` catch data and prior problems before any fitting. Afterwards, `response_curves`, `media_metrics`, and `optimize_budget` turn the posterior draws into response curves, channel returns, and spending plans, so the uncertainty in the fit carries through to the decision.
 
 ## Documentation
 
