@@ -68,10 +68,12 @@ class Reference:
 
     Request ``reference`` in a program block and read the training arrays as
     attributes, such as ``reference.spend`` or ``reference.time``, together
-    with the training period count ``reference.n_periods``. These never
-    change for scenarios, forecasts, or response curves, so calculations
-    that must stay anchored to the fitted data use them in place of the
-    current inputs.
+    with the training period count ``reference.n_periods``. The attribute
+    names are the input names the blocks use, so a mapping declared through
+    ``Data`` variables applies here as well. These arrays never change for
+    scenarios, forecasts, or response curves, so calculations that must stay
+    anchored to the fitted data, such as a normalization that defines a
+    parameter, use them in place of the current inputs.
 
     Attributes
     ----------
@@ -371,7 +373,10 @@ class Data:
         Model function argument names mapped to prepared or auxiliary input
         names. ``PreparedData.model_inputs`` lists the available names. If
         omitted, functions use the standard input names. When supplied, only
-        the declared names are available to model functions.
+        the declared names are available to model functions, and that includes
+        the model-supplied inputs ``reference``, ``outcome_scaling``, and
+        ``n_periods``, which need a declaration such as
+        ``{"training": "reference"}`` to be requested.
     inputs : xarray.Dataset, optional
         Additional fixed inputs, such as experiment measurements.
     constants : mapping of str to object, optional

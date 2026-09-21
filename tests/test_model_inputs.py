@@ -652,7 +652,7 @@ def test_declared_current_inputs_update_for_scenarios_while_references_remain_fi
         original_window = jnp.ones(original.n_periods)
         return {
             "exposure": exposure,
-            "original_exposure": original.media,
+            "original_exposure": original.exposure,
             "elapsed": elapsed,
             "window": window,
             "original_window": original_window,
@@ -945,3 +945,31 @@ def test_outcome_scaling_object_is_scalar_without_population_scaling():
     values = model.data
     assert values.outcome_scaling.scale.shape == () and values.outcome_scaling.offset.shape == ()
     assert jnp.isfinite(jax.jit(model.log_prob)({"level": jnp.array(0.0)}, values))
+
+
+def test_reference_namespace_uses_declared_variable_names():
+    training = prepare_data(
+        pl.DataFrame({"time": [1, 2, 3], "video": [10.0, 20.0, 30.0], "sales": [1.0, 2.0, 3.0]}),
+        time="time",
+        media=["video"],
+        outcome="sales",
+    )
+    seen = {}
+
+    def transformed_parameters(exposure, original, level):
+        seen["names"] = sorted(original.values)
+        return {"mean": level * exposure[:, 0] + original.exposure[:, 0]}
+
+    model = Model(
+        parameters={"level": Real()},
+        log_density=lambda revenue, mean, level: jnp.sum((revenue - mean) ** 2),
+        transformed_parameters=transformed_parameters,
+        data=Data(training, variables={"revenue": "outcome", "exposure": "media", "original": "reference"}),
+    )
+    outputs = model.evaluate({"level": jnp.array(2.0)})
+
+    # Only declared names exist, so the undeclared time input and the role names are absent.
+    assert seen["names"] == ["exposure", "revenue"]
+    np.testing.assert_array_equal(outputs["mean"], [30.0, 60.0, 90.0])
+    with pytest.raises(AttributeError, match="Available reference inputs are exposure, revenue, n_periods"):
+        _ = model.data.reference.media
