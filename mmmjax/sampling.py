@@ -1045,11 +1045,17 @@ def _output_dimensions(
     role_dimensions: dict[str, tuple[str, ...]] = {}
     reference_dimensions: dict[str, tuple[str, ...]] = {}
     grouped_scale = False
+    # A declared mapping names reference members after the block inputs, so the
+    # role that carries each member's axes is recovered through the declarations.
+    declared_roles: dict[str, str] = {}
+    if model._data is not None and model._data.variable_sources is not None:
+        declared_roles = {name: origin.name for name, origin in model._data.variable_sources.items()}
 
     def reference_axes(member: str) -> tuple[str, ...]:
         # Training arrays keep their own time axes even when new data lacks the role.
+        role = declared_roles.get(member, member)
         return tuple(
-            f"reference_{axis}" if axis in ("time", "media_time") else axis for axis in reference_dimensions[member]
+            f"reference_{axis}" if axis in ("time", "media_time") else axis for axis in reference_dimensions[role]
         )
 
     if prepared is not None:

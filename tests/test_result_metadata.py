@@ -774,9 +774,9 @@ def test_declared_reference_variables_keep_original_labels_in_scenarios(periods)
     def generated(key, impressions, training):
         quantities = {
             "current": impressions,
-            "original": training.media,
-            "original_elapsed": training.time,
-            "predictive": {"original_sales": training.outcome},
+            "original": training.impressions,
+            "original_elapsed": training.elapsed,
+            "predictive": {"original_sales": training.sales},
         }
         return quantities
 
@@ -786,7 +786,7 @@ def test_declared_reference_variables_keep_original_labels_in_scenarios(periods)
         generated_quantities=generated,
         data=Data(
             data,
-            variables={"impressions": "media", "training": "reference"},
+            variables={"impressions": "media", "elapsed": "time", "sales": "outcome", "training": "reference"},
         ),
     )
     results = _collect_results({"level": np.zeros((1, 2), dtype=np.float32)}, data=data)
