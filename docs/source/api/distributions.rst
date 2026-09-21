@@ -4,9 +4,23 @@ Distributions
 Stan-style distributions built on TensorFlow Probability's JAX backend. Each
 family provides a summed log density for model blocks, a pointwise log
 density, random draws, and log cumulative and log survival functions where
-they exist. Discrete families also offer log or logit parameterizations.
+they exist. Discrete families also offer log or logit parameterizations, and
+distributions written as plain functions join through ``custom_distribution``.
 
 .. currentmodule:: mmmjax
+
+User-defined
+------------
+
+Write a pointwise log density and a draw function as plain JAX functions and
+register them once. The returned summed density works in ``log_density``, and
+``Prior`` accepts it like a built-in family.
+
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+
+   custom_distribution
 
 Continuous
 ----------

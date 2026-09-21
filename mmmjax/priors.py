@@ -26,8 +26,9 @@ class Prior:
     Parameters
     ----------
     distribution : callable
-        A scalar distribution function exported by ``mmmjax``, such as
-        ``normal``, ``lognormal``, or ``dirichlet``.
+        A distribution function exported by ``mmmjax``, such as ``normal``,
+        ``lognormal``, or ``dirichlet``, or one returned by
+        ``custom_distribution`` for a distribution written as plain functions.
     **parameters : array_like
         All named distribution settings, copied at construction. Multinomial
         priors also require ``trials`` and reject counts with another total.

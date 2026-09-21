@@ -12,6 +12,7 @@ from tensorflow_probability.substrates.jax import distributions as tfd
 
 import mmmjax
 import mmmjax.distributions as dist
+from mmmjax import Model, Positive, custom_distribution, sample_prior
 from mmmjax.distributions._distribution import _bind_distribution, _get_distribution_spec
 from mmmjax.distributions._normal import normal as module_normal
 from mmmjax.distributions._normal import normal_logpdf as module_normal_logpdf
@@ -281,7 +282,7 @@ def test_multinomial_density_and_draws_share_bound_trial_counts(distribution, pa
 
 @pytest.mark.parametrize("distribution", [lambda value: value, dist.normal_logpdf, "normal", None, []])
 def test_unknown_distribution_functions_are_rejected(distribution):
-    with pytest.raises(TypeError, match="registered mmmjax scalar distribution"):
+    with pytest.raises(TypeError, match="exported by mmmjax or returned by custom_distribution"):
         Prior(distribution)
 
 
@@ -331,3 +332,135 @@ def test_incompatible_declared_shapes_are_rejected(distribution, parameters, sha
 def test_invalid_bound_batch_or_event_shapes_are_rejected(distribution, parameters):
     with pytest.raises(ValueError, match=r"batch shape|event|square matrix"):
         Prior(distribution, **parameters)
+
+
+def half_cauchy_logpdf(value, scale):
+    standardized = value / scale
+    density = jnp.log(2.0 / jnp.pi) - jnp.log(scale) - jnp.log1p(standardized**2)
+    return jnp.where(value < 0, -jnp.inf, density)
+
+
+def half_cauchy_rng(key, scale, *, sample_shape=()):
+    shape = sample_shape + jnp.shape(jnp.asarray(scale))
+    return jnp.abs(scale * jax.random.cauchy(key, shape))
+
+
+def rng_without_sample_shape(key, scale):
+    return jnp.abs(scale * jax.random.cauchy(key))
+
+
+def rng_with_another_setting(key, width, *, sample_shape=()):
+    return jnp.abs(width * jax.random.cauchy(key, sample_shape))
+
+
+def rng_with_missing_default(key, scale, *, sample_shape=None):
+    shape = () if sample_shape is None else sample_shape
+    return jnp.abs(scale * jax.random.cauchy(key, shape))
+
+
+def test_custom_distribution_returns_a_summed_density_carrying_prior_metadata():
+    half_cauchy = custom_distribution(half_cauchy_logpdf, half_cauchy_rng)
+    values = jnp.array([0.5, 2.0, 4.0])
+
+    assert half_cauchy.__name__ == "half_cauchy"
+    assert tuple(signature(half_cauchy).parameters) == ("value", "scale")
+    np.testing.assert_allclose(half_cauchy(values, 2.0), half_cauchy_logpdf(values, 2.0).sum(), rtol=1e-6)
+    np.testing.assert_allclose(half_cauchy(values, scale=2.0), half_cauchy(values, 2.0))
+    np.testing.assert_allclose(half_cauchy(value=values, scale=2.0), half_cauchy(values, 2.0))
+    gradient = jax.jit(jax.grad(half_cauchy))(values, 2.0)
+    expected = jax.grad(lambda value: half_cauchy_logpdf(value, 2.0).sum())(values)
+    np.testing.assert_allclose(gradient, expected, rtol=1e-6)
+    binding = _get_distribution_spec(half_cauchy)
+    assert binding.logpdf is half_cauchy_logpdf
+    assert binding.rng is half_cauchy_rng
+    assert binding.parameter_events == (("scale", 0),)
+    assert binding.event_ndims == 0
+    named = custom_distribution(half_cauchy_logpdf, half_cauchy_rng, name="folded_cauchy")
+    assert named.__name__ == "folded_cauchy"
+
+
+def test_prior_binds_user_defined_distribution_settings_for_density_and_draws():
+    half_cauchy = custom_distribution(half_cauchy_logpdf, half_cauchy_rng)
+    prior = Prior(half_cauchy, scale=2.0)
+    values = jnp.array([0.5, 2.0, 4.0])
+    key = jax.random.key(3)
+
+    assert prior.event_ndims == 0
+    np.testing.assert_allclose(prior(values), half_cauchy_logpdf(values, 2.0).sum(), rtol=1e-6)
+    np.testing.assert_allclose(prior.logpdf(values), half_cauchy_logpdf(values, 2.0), rtol=1e-6)
+    draws = prior.sample(key, sample_shape=(4,))
+    assert draws.shape == (4,)
+    np.testing.assert_array_equal(draws, half_cauchy_rng(key, 2.0, sample_shape=(4,)))
+    declared = prior._sample(key, (3,), jnp.float32)
+    assert declared.shape == (3,)
+    assert declared.dtype == jnp.float32
+    np.testing.assert_allclose(declared, half_cauchy_rng(key, jnp.full((3,), 2.0, dtype=jnp.float32)), rtol=1e-6)
+
+
+def test_sample_prior_draws_user_defined_priors_in_declared_shapes():
+    half_cauchy = custom_distribution(half_cauchy_logpdf, half_cauchy_rng)
+    model = Model(parameters={"scale": Positive((2,))}, log_density=lambda data, scale: half_cauchy(scale, 1.0))
+
+    results = sample_prior(model, {"scale": Prior(half_cauchy, scale=1.0)}, draws=6, seed=4, generate=False)
+
+    draws = results["prior"]["scale"].values
+    assert draws.shape == (1, 6, 2)
+    assert np.isfinite(draws).all()
+    assert (draws > 0).all()
+
+
+def test_custom_distribution_supports_vector_events_with_vector_settings():
+    def isotropic_logpdf(value, location, scale):
+        standardized = (value - location) / jnp.asarray(scale)[..., None]
+        return jnp.sum(
+            -0.5 * standardized**2 - jnp.log(jnp.asarray(scale))[..., None] - 0.5 * jnp.log(2 * jnp.pi), axis=-1
+        )
+
+    def isotropic_rng(key, location, scale, *, sample_shape=()):
+        shape = sample_shape + jnp.shape(jnp.asarray(location))
+        return location + jnp.asarray(scale)[..., None] * jax.random.normal(key, shape)
+
+    isotropic = custom_distribution(
+        isotropic_logpdf, isotropic_rng, event_ndims=1, parameter_event_ndims={"location": 1}
+    )
+    prior = Prior(isotropic, location=jnp.zeros(3), scale=2.0)
+    values = jnp.arange(6.0).reshape(2, 3)
+
+    assert prior.event_ndims == 1
+    assert prior.logpdf(values).shape == (2,)
+    np.testing.assert_allclose(prior.logpdf(values), isotropic_logpdf(values, jnp.zeros(3), 2.0), rtol=1e-6)
+    np.testing.assert_allclose(prior(values), isotropic_logpdf(values, jnp.zeros(3), 2.0).sum(), rtol=1e-6)
+    assert prior.sample(jax.random.key(0), sample_shape=(4,)).shape == (4, 3)
+    assert prior._sample(jax.random.key(0), (5, 3), jnp.float32).shape == (5, 3)
+    with pytest.raises(ValueError, match="event shape"):
+        prior._sample(jax.random.key(0), (5, 2), jnp.float32)
+
+
+@pytest.mark.parametrize(
+    ("arguments", "options", "error", "message"),
+    [
+        ((half_cauchy_logpdf, rng_without_sample_shape), {}, TypeError, "sample_shape"),
+        ((half_cauchy_logpdf, rng_with_missing_default), {}, TypeError, "default of"),
+        (("density", half_cauchy_rng), {}, TypeError, "callable"),
+        ((half_cauchy_logpdf, rng_with_another_setting), {}, TypeError, "same names"),
+        ((half_cauchy_logpdf, "draws"), {}, TypeError, "callable"),
+        ((half_cauchy_logpdf, half_cauchy_rng), {"name": 3}, TypeError, "name must be a string"),
+        ((half_cauchy_logpdf, half_cauchy_rng), {"event_ndims": 2}, ValueError, "event_ndims must be 0"),
+        ((half_cauchy_logpdf, half_cauchy_rng), {"parameter_event_ndims": {"width": 1}}, ValueError, "does not take"),
+        ((half_cauchy_logpdf, half_cauchy_rng), {"parameter_event_ndims": {"scale": -1}}, ValueError, "nonnegative"),
+        ((half_cauchy_logpdf, half_cauchy_rng), {"event_ndims": 1}, ValueError, "vector distribution needs"),
+    ],
+)
+def test_custom_distribution_rejects_inconsistent_functions_and_metadata(arguments, options, error, message):
+    with pytest.raises(error, match=message):
+        custom_distribution(*arguments, **options)
+
+
+def test_prior_reports_user_defined_setting_names_and_unregistered_functions():
+    half_cauchy = custom_distribution(half_cauchy_logpdf, half_cauchy_rng)
+    with pytest.raises(TypeError, match=r"Missing parameters for half_cauchy.*scale"):
+        Prior(half_cauchy)
+    with pytest.raises(TypeError, match=r"Unknown parameters for half_cauchy.*width"):
+        Prior(half_cauchy, scale=1.0, width=2.0)
+    with pytest.raises(TypeError, match="returned by custom_distribution"):
+        Prior(half_cauchy_logpdf, scale=1.0)
