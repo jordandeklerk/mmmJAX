@@ -98,6 +98,17 @@ def case():
     return data, _model(data), _results(data)
 
 
+def _restore_outcome_units(response, scaling):
+    """Apply the fitted outcome transform in double precision for the closed form."""
+    if scaling is None or "outcome" not in scaling.transformations:
+        return response
+    outcome = scaling.transformations["outcome"]
+    scale = np.asarray(outcome.scale, dtype=np.float64)
+    offset = np.asarray(outcome.offset, dtype=np.float64)
+    restored = response * scale + offset
+    return restored
+
+
 def _expected(
     data,
     coefficient,
@@ -136,8 +147,20 @@ def _expected(
     )
     if cross_group:
         response = response + 0.2 * carried[..., 0].sum(axis=1, keepdims=True) ** 2
+    response = _restore_outcome_units(response, scaling)
     axes = ("time", "group") if data.group_columns else ("time",)
-    return response[measurement].sum(axis=tuple(index for index, axis in enumerate(axes) if axis not in by))
+    kept = tuple(index for index, axis in enumerate(axes) if axis not in by)
+    totals = response[measurement].sum(axis=kept)
+    return totals
+
+
+def _total_spend(data, spend_periods=None):
+    spending = (
+        np.array([data.time_values.index(t) for t in spend_periods])
+        if spend_periods is not None
+        else np.arange(len(data.time_values))
+    )
+    return sum(data.arrays[role][spending].sum() for role in ("spend", "rf_spend") if role in data.arrays)
 
 
 def _assert_closed_form(metrics, data, results, *, group="posterior", **options):
@@ -160,10 +183,15 @@ def _assert_closed_form(metrics, data, results, *, group="posterior", **options)
                     "roi": (reference - zero).sum() / spend,
                     "marginal_response": boosted - reference,
                     "marginal_roi": (boosted - reference).sum() / increase,
+                    "cost_per_incremental_response": spend / (reference - zero).sum(),
+                    "spend_share": spend / _total_spend(data, options.get("spend_periods")),
                 }.items():
-                    np.testing.assert_allclose(
-                        metrics[name].isel(chain=chain, draw=draw, channel=index), expected, rtol=3e-5, atol=3e-5
-                    )
+                    actual = metrics[name].isel(channel=index)
+                    if "chain" in actual.dims:
+                        actual = actual.isel(chain=chain)
+                    if "draw" in actual.dims:
+                        actual = actual.isel(draw=draw)
+                    np.testing.assert_allclose(actual, expected, rtol=3e-5, atol=3e-5)
 
 
 @pytest.mark.parametrize("group", ["prior", "posterior"])
@@ -255,6 +283,8 @@ def test_media_metrics_evaluate_full_nonlinear_model_for_every_paired_draw(group
         "reference_spend",
         "incremental_spend",
         "reference_response",
+        "cost_per_incremental_response",
+        "spend_share",
     }
     for name in ("incremental_response", "roi", "marginal_response", "marginal_roi"):
         assert metrics[name].dims == ("chain", "draw", "channel")
@@ -274,7 +304,7 @@ def test_media_metrics_evaluate_full_nonlinear_model_for_every_paired_draw(group
     assert metrics.attrs["quantity"] == "expected_users"
     assert metrics.attrs["spend_to_media"] == "proportional"
     assert metrics.attrs["history"] == "fixed"
-    assert metrics.attrs["response_units"] == "as returned by the transformed quantity"
+    assert metrics.attrs["response_units"] == "original outcome units"
     np.testing.assert_allclose(metrics["reference_spend"], data.arrays["spend"].sum(axis=(0, 1) if grouped else 0))
     _assert_closed_form(metrics, data, results)
     mean_parameters = results["posterior"]["coefficient"].values.mean(axis=(0, 1))
@@ -415,7 +445,7 @@ def test_media_metrics_preserve_posterior_labels_and_requested_channel_order(cas
 
 
 @pytest.mark.parametrize("already_scaled", [False, True])
-def test_media_metrics_reuse_fitted_scales_and_report_transformed_quantity_units(already_scaled):
+def test_media_metrics_reuse_fitted_scales_and_report_original_outcome_units(already_scaled):
     data = _data(grouped=True)
     scaling = fit_data_scaling(data, scale_outcome=True, adjust_population=True)
     model = _model(scaling.transform(data) if already_scaled else data, scaling=scaling)
@@ -428,7 +458,7 @@ def test_media_metrics_reuse_fitted_scales_and_report_transformed_quantity_units
 @pytest.mark.parametrize("already_scaled", [False, True])
 @pytest.mark.parametrize("new_scenario", [False, True])
 @pytest.mark.parametrize("by", [(), ("time",), ("group",), ("time", "group")])
-def test_media_metrics_population_outcome_inversion_restores_revenue_and_roi(already_scaled, new_scenario, by):
+def test_media_metrics_population_outcome_inversion_restores_outcome_units_and_roi(already_scaled, new_scenario, by):
     frame = pl.DataFrame(
         {
             "week": [0, 0, 1, 1, 2, 2],
@@ -451,12 +481,10 @@ def test_media_metrics_population_outcome_inversion_restores_revenue_and_roi(alr
         spend=["video_cost", "search_cost"],
     )
     scaling = fit_data_scaling(data, scale_outcome="population", adjust_population=True)
-    outcome_scaling = scaling.transformations["outcome"]
 
-    def transformed(media, revenue_per_outcome, coefficient):
+    def transformed(media, coefficient):
         expected_standardized = 0.25 + media @ coefficient
-        expected_outcome = outcome_scaling.inverse_transform(expected_standardized)
-        return {"expected_revenue": expected_outcome * revenue_per_outcome}
+        return {"expected_outcome": expected_standardized}
 
     def density(coefficient):
         raise AssertionError("Media metrics must not evaluate the log density")
@@ -482,7 +510,7 @@ def test_media_metrics_population_outcome_inversion_restores_revenue_and_roi(alr
     metrics = media_metrics(
         model,
         results,
-        quantity="expected_revenue",
+        quantity="expected_outcome",
         new_data=new_data,
         by=by,
         incremental_increase=0.25,
@@ -494,11 +522,11 @@ def test_media_metrics_population_outcome_inversion_restores_revenue_and_roi(alr
     mean, deviation = per_person_outcome.mean(), per_person_outcome.std()
     median_media = np.median(data.arrays["media"] / population[:, None], axis=(0, 1))
     scaled_media = reference_data.arrays["media"] / (population[:, None] * median_media)
-    revenue_factor = deviation * population * reference_data.arrays["revenue_per_outcome"]
+    outcome_factor = deviation * population
     coefficient = results["posterior"]["coefficient"].values
-    lift = np.einsum("tgc,adc->adtgc", scaled_media, coefficient) * revenue_factor[None, None, ..., None]
-    baseline = (mean + 0.25 * deviation) * population * reference_data.arrays["revenue_per_outcome"]
-    reference = baseline[None, None] + lift.sum(axis=-1)
+    lift = np.einsum("tgc,adc->adtgc", scaled_media, coefficient) * outcome_factor[None, None, None, :, None]
+    baseline = (mean + 0.25 * deviation) * population
+    reference = baseline[None, None, None, :] + lift.sum(axis=-1)
     spend = reference_data.arrays["spend"].sum(axis=(0, 1))
     axes = tuple(index + 2 for index, axis in enumerate(("time", "group")) if axis not in by)
     expected = {
@@ -527,7 +555,7 @@ def test_media_metrics_keep_model_reference_inputs_fixed_when_changing_channel_s
         coefficient = roi * reference.spend.sum(axis=(0, 1)) / denominator
         current = media[-n_periods:]
         standardized = 0.25 + jnp.sum(current / (1.0 + current) * coefficient, axis=-1)
-        return {"expected_revenue": outcome_scaling.inverse_transform(standardized)}
+        return {"expected_outcome": standardized}
 
     def density(roi):
         raise AssertionError("Media metrics must not evaluate the log density")
@@ -540,7 +568,7 @@ def test_media_metrics_keep_model_reference_inputs_fixed_when_changing_channel_s
     )
     roi = np.array([[[1.0, 2.0], [3.0, 4.0]]], dtype=np.float32)
     results = _collect_results({"roi": roi}, data=data, dims={"roi": ("channel",)})
-    options = {"quantity": "expected_revenue", "incremental_increase": 0.25, "by": ("time", "group")}
+    options = {"quantity": "expected_outcome", "incremental_increase": 0.25, "by": ("time", "group")}
     baseline = media_metrics(model, results, **options)
     changed_data = _data(grouped=True, multiplier=2.0)
     changed = media_metrics(model, results, new_data=changed_data, **options)
@@ -1097,3 +1125,26 @@ def test_media_metrics_rf_validate_custom_conversion_at_increased_spending():
             incremental_increase=0.25,
             spend_to_rf=conversion,
         )
+
+
+def test_media_metrics_cost_per_incremental_response_is_missing_for_zero_increments():
+    data = _data()
+
+    def transformed(media, spend, controls, coefficient):
+        expected = 3.0 + controls[..., 0] + coefficient[0] * media[1:, ..., 0]
+        return {"expected_users": expected}
+
+    model = Model(
+        parameters={"coefficient": Real((2,))},
+        log_density=lambda expected_users: 0.0,
+        data=Data(data),
+        transformed_parameters=transformed,
+        dims={"coefficient": ("channel",)},
+    )
+    results = _results(data)
+
+    metrics = media_metrics(model, results, quantity="expected_users")
+
+    assert np.isnan(metrics["cost_per_incremental_response"].sel(channel="Paid search")).all()
+    assert np.isfinite(metrics["cost_per_incremental_response"].sel(channel="Online video")).all()
+    np.testing.assert_allclose(metrics["spend_share"].sum(), 1.0)

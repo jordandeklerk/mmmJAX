@@ -1521,7 +1521,15 @@ def test_optimize_budget_reports_paired_channel_metrics_at_each_joint_allocation
         incremental_increase=0.2,
         batch_size=3,
     )
-    for name in ["incremental_response", "roi", "marginal_response", "marginal_roi", "incremental_spend"]:
+    for name in [
+        "incremental_response",
+        "roi",
+        "marginal_response",
+        "marginal_roi",
+        "incremental_spend",
+        "cost_per_incremental_response",
+        "spend_share",
+    ]:
         xr.testing.assert_allclose(reported[name].sel(allocation="reference", drop=True), reference_metrics[name])
 
     for label in ["reference", "optimized"]:

@@ -869,11 +869,18 @@ def _prepare_training(
         _, time_origin = _time_positions(data.time_values)
         values.update(_model_time_inputs(data, time_inputs, time_origin))
     # Copies keep the training references distinct from the current inputs,
-    # so unchanged outputs can be labeled by which one they came from.
-    reference = Reference(
-        values={role: jnp.array(value, copy=True) for role, value in values.items()},
-        n_periods=len(data.time_values),
-    )
+    # so unchanged outputs can be labeled by which one they came from. The
+    # namespace uses the names the blocks see, so a declared mapping renames
+    # the training arrays exactly as it renames the current inputs.
+    if declarations.variables is None:
+        reference_values = {role: jnp.array(value, copy=True) for role, value in values.items()}
+    else:
+        reference_values = {
+            name: jnp.array(values[source], copy=True)
+            for name, source in declarations.variables.items()
+            if source in values
+        }
+    reference = Reference(values=reference_values, n_periods=len(data.time_values))
     reserved = frozenset() if declared else frozenset({"n_periods", "outcome_scaling", "reference"})
     conflicts = reserved & set(parameter_names)
     if conflicts:

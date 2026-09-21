@@ -177,15 +177,12 @@ def prepare_hsgp(
     Returns
     -------
     HSGPApproximation
-        Reusable settings containing
+        Reusable ``basis`` and ``weights`` settings for modeling and prediction.
 
-        - **center** — Midpoint of the supplied time range.
-        - **boundary** — Half-width of the padded approximation domain.
-        - **n_basis** — Number of basis functions.
-        - **covariance** — Covariance family for coefficient weights.
-
-        Use the object's ``basis`` and ``weights`` methods in the model.
-        Reuse it for predictions instead of preparing new settings.
+        - **center** — Time range midpoint
+        - **boundary** — Padded domain half-width
+        - **n_basis** — Basis count
+        - **covariance** — Covariance family for coefficient weights
 
     Examples
     --------
@@ -345,14 +342,12 @@ def hsgp_basis(
     Returns
     -------
     basis : jax.Array
-        Matrix with shape ``(len(time), n_basis)`` and increasing frequency
-        along the final axis. Nonfinite or out-of-domain time positions
-        produce ``nan`` rows. An invalid center or boundary gives an invalid
-        basis. Values use a common floating dtype of at least float32.
+        Shape ``(len(time), n_basis)`` in increasing frequency order, with
+        floating dtype of at least float32. Nonfinite or out-of-domain times
+        give ``nan`` rows. Invalid center or boundary gives an invalid basis.
     frequencies : jax.Array
-        Angular frequencies with shape ``(n_basis,)`` in inverse time units.
-        Pass these to :func:`hsgp_weights`. An invalid boundary gives ``nan``
-        frequencies.
+        Angular frequencies shaped ``(n_basis,)`` in inverse time units for
+        :func:`hsgp_weights`. Invalid boundary gives ``nan`` frequencies.
 
     Examples
     --------
@@ -464,12 +459,10 @@ def hsgp_weights(
     Returns
     -------
     jax.Array
-        Nonnegative weights with shape ``batch_shape + (len(frequencies),)``.
-        The batch shape is the broadcast shape of ``length_scale`` and
-        ``amplitude``. Invalid numeric inputs give ``nan`` in affected
-        positions. Values use a common floating dtype of at least float32.
-        Batched coefficients can share one basis through a contraction such
-        as ``jnp.einsum("tm,gcm->tgc", basis, weights * z)``.
+        Nonnegative weights shaped ``batch_shape + (len(frequencies),)``,
+        where ``batch_shape`` broadcasts ``length_scale`` and ``amplitude``.
+        Floating dtype is at least float32. Invalid numeric inputs give ``nan``
+        in affected positions.
 
     Examples
     --------

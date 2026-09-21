@@ -109,26 +109,23 @@ def sample(
     Returns
     -------
     xarray.DataTree
-        Host-side results with chain and draw dimensions. The complete results
-        must fit in host memory.
+        Results with chain and draw dimensions that must fit in host memory.
 
         - **posterior** contains constrained parameter draws.
-        - **sample_stats** contains sampler diagnostics, including divergences
-          and the unconstrained log density in ``lp``.
-        - **posterior_predictive**, **log_likelihood**, and **log_prior** contain
-          the outputs returned under those keys by ``generated_quantities``
-          and mapped log-prior terms. Other outputs, including saved
-          transformed quantities, are stored in **generated_quantities**.
-        - **observed_data** and **constant_data** contain prepared model inputs
-          in their evaluated units, including any fitted scaling.
-          Auxiliary ``Data`` inputs are stored in **constant_data**.
-        - **sampling_state** contains each chain's final unconstrained
-          position, tuning, and random stream for :func:`continue_sampling`.
+        - **sample_stats** contains diagnostics including divergences and
+          unconstrained log density ``lp``.
+        - **posterior_predictive** contains outputs returned under ``predictive``.
+        - **log_likelihood** and **log_prior** contain outputs returned under
+          the corresponding keys by ``generated_quantities``.
+        - **generated_quantities** contains other generated outputs.
+        - **observed_data** and **constant_data** contain inputs in evaluated
+          units, including fitted scaling. Auxiliary ``Data`` uses **constant_data**.
+        - **sampling_state** stores chain positions, tuning, and random streams
+          for continued sampling.
 
-        Declared parameter and data axes retain their labels, including unchanged
-        callback inputs. Observation-shaped predictive and likelihood outputs
-        inherit outcome labels. Use ``dims``, ``generated_dims``, and ``coords``
-        on the model for custom axes. Inspect diagnostics before interpreting results.
+        Declared axes retain labels. Predictive and likelihood outputs matching
+        observations inherit outcome labels. Custom axes use model ``dims``,
+        ``generated_dims``, and ``coords``. Inspect diagnostics before interpretation.
     """
     if not isinstance(model, Model):
         raise TypeError("model must be a Model")
@@ -635,21 +632,17 @@ def sample_prior(
     Returns
     -------
     xarray.DataTree
-        Labeled results with one chain axis and ``draws`` draws. The complete
-        results must fit in host memory.
+        Labeled results with one chain and ``draws`` draws that must fit in
+        host memory. The chain axis serves result compatibility, not MCMC.
 
         - **prior** contains constrained parameter draws.
-        - **prior_predictive** contains outputs returned under ``predictive``
-          by ``generated_quantities``.
-        - **prior_generated_quantities** contains the ordinary generated
-          outputs.
-        - **observed_data** and **constant_data** contain prepared model inputs
-          in their evaluated units, including fitted scaling.
-          Auxiliary ``Data`` inputs are stored in **constant_data**.
+        - **prior_predictive** contains callback outputs under ``predictive``.
+        - **prior_generated_quantities** contains other generated outputs.
+        - **observed_data** and **constant_data** contain inputs in evaluated
+          units, including fitted scaling. Auxiliary ``Data`` uses **constant_data**.
 
-        Log-likelihood and log-prior outputs are omitted. The chain
-        axis is for result compatibility, not an MCMC chain. Without generation,
-        only prior draws and available model inputs are returned.
+        Log-likelihood and log-prior outputs are omitted. Without generation,
+        only prior draws and available inputs are returned.
     """
     if not isinstance(model, Model):
         raise TypeError("model must be a Model")
@@ -841,15 +834,14 @@ def generate_quantities(
     Returns
     -------
     xarray.DataTree
-        A new result tree. The original results and model are unchanged.
-        The complete results must fit in host memory.
+        New results that must fit in host memory, leaving inputs unchanged.
 
-        - **posterior** contains the reused draws and sample labels.
+        - **posterior** retains the draws and sample labels.
         - **posterior_predictive**, **log_likelihood**, **log_prior**, and
-          **generated_quantities** contain newly evaluated outputs, grouped
-          as returned by the model.
-        - **observed_data** and **constant_data** contain the evaluated inputs
-          in model units. Original sampler diagnostics are not copied.
+          **generated_quantities** contain newly evaluated model outputs.
+        - **observed_data** and **constant_data** contain inputs in model units.
+
+        Original sampler diagnostics are omitted.
     """
     if not isinstance(model, Model):
         raise TypeError("model must be a Model")

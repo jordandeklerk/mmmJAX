@@ -1,6 +1,6 @@
 """Prior and posterior media responses for spending and frequency scenarios."""
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from numbers import Integral, Real
 from typing import Literal, cast
@@ -56,11 +56,13 @@ def response_curves(
     results : xarray.DataTree
         Results containing the model's constrained draws in the selected group.
     quantity : str
-        Key in the mapping returned by ``transformed_parameters``, such as
-        ``"expected_revenue"``. Its value must contain one expected response
-        per observation in the desired reporting units. It is recomputed for
-        each scenario and draw and need not be stored in ``results``.
-        No inverse scaling is applied to this output.
+        Key returned by ``transformed_parameters`` holding the expected outcome
+        for every observation on the scale the likelihood uses, such as
+        ``"mu"``. It is recomputed for each scenario and draw, and the fitted
+        outcome scaling restores original outcome units before anything is
+        summed, so results are in the units of the outcome column. Any
+        normalization by exposures or spending inside the blocks should read
+        the training arrays from ``reference`` so that a scenario cannot zero it.
     multipliers : array_like
         Distinct nonnegative spending multipliers. One retains reference
         spending and zero removes the channel's spending during ``spend_periods``.
@@ -106,28 +108,23 @@ def response_curves(
     Returns
     -------
     xarray.Dataset
-        Labeled curves preserving chain and draw coordinates. The ``group``
-        attribute records which parameter draws were used.
+        Curves in original outcome units with chain and draw labels and a
+        ``group`` attribute identifying the parameter draws.
 
-        - **response** contains responses by channel and multiplier.
-        - **incremental_response** subtracts the same channel's response
-          with zero spending during ``spend_periods`` and other inputs fixed.
-        - **spend** contains candidate totals during the spending periods
-          in original spend units.
-        - **reference_spend** contains the corresponding reference totals.
-        - **reference_response** evaluates reference spending under the
-          selected spend-to-media conversion.
+        - **response** gives responses by channel and multiplier.
+        - **incremental_response** subtracts each channel's zero-spend response
+          during ``spend_periods``, with other inputs fixed.
+        - **spend** and **reference_spend** give candidate and reference totals
+          for the spending periods in original spend units.
+        - **reference_response** evaluates reference spending with the selected
+          conversion.
         - **spend_period** and **response_period** record the selected dates.
         - **channel_type** identifies ordinary media and reach/frequency channels.
 
-        With ``by``, response fields retain the requested observation axes.
-        Spending remains totaled over the selected periods and groups.
-        Breakdowns show where and when each overall spending change has an
-        effect, not independent spending changes within each period or group.
-
-        Incremental curves need not add up when channels interact. Zero
-        spending in selected periods can retain carryover from earlier exposures.
-        These are model-based interventions, not additional causal evidence.
+        ``by`` retains response axes for the same overall intervention. Spending
+        stays totaled across periods and groups. Channel interactions can make
+        increments nonadditive, and zero spending can retain earlier carryover.
+        These interventions provide no additional causal evidence.
     """
     grid = np.asarray(multipliers)
     if grid.ndim != 1 or grid.size == 0 or grid.dtype.kind not in "fiu":
@@ -148,7 +145,7 @@ def response_curves(
         response_periods=response_periods,
         batch_size=batch_size,
     )
-    retained, retain_axes, response_coords = _response_breakdown(context, by)
+    retained, retain_axes, response_coords = _response_breakdown(context.response_coords, by)
     totals = context.reference_spend
     indices = context.indices
     selected_count = len(indices)
@@ -225,8 +222,13 @@ def frequency_curves(
     results : xarray.DataTree
         Results containing the model's constrained draws in the selected group.
     quantity : str
-        Key returned by ``transformed_parameters`` with one expected response
-        per observation in reporting units. Recomputed for each scenario.
+        Key returned by ``transformed_parameters`` holding the expected outcome
+        for every observation on the scale the likelihood uses, such as
+        ``"mu"``. It is recomputed for each scenario and draw, and the fitted
+        outcome scaling restores original outcome units before anything is
+        summed, so results are in the units of the outcome column. Any
+        normalization by exposures or spending inside the blocks should read
+        the training arrays from ``reference`` so that a scenario cannot zero it.
     frequencies : array_like
         Distinct finite positive average exposures per reached person to test.
         These are levels, not multipliers. Each applies across the selected
@@ -252,19 +254,18 @@ def frequency_curves(
     Returns
     -------
     xarray.Dataset
-        Labeled frequency comparisons retaining draw-level uncertainty. The
-        ``group`` attribute records which parameter draws were used.
+        Comparisons in original outcome units with a ``group`` attribute
+        identifying the parameter draws.
 
-        - **response** contains total responses by chain, draw, channel, and frequency.
-        - **response_change** contains paired changes from the reference inputs.
-        - **reference_response** contains the full reference response for each draw.
-        - **reference_spend** records fixed spending for the selected periods.
-        - **best_frequency** maximizes mean change across the selected draws
-          within the supplied grid. Exact ties select the first supplied value.
+        - **response** and **response_change** give totals and paired changes
+          from reference by chain, draw, channel, and frequency.
+        - **reference_response** gives the reference total per draw.
+        - **reference_spend** gives fixed spending in original spend units.
+        - **best_frequency** maximizes mean change across draws over the grid.
+          Exact ties select the first supplied frequency.
         - **frequency_period** and **response_period** record the selected dates.
 
-        Responses retain the quantity's units without inverse scaling. No
-        audience cap is inferred, and the model is not refitted.
+        No audience cap is inferred, and the model is not refitted.
     """
     grid = np.asarray(frequencies)
     if grid.ndim != 1 or grid.size == 0 or grid.dtype.kind not in "fiu":
@@ -376,7 +377,11 @@ def frequency_curves(
     scenario_levels = jnp.asarray(np.tile(candidate_grid, len(indices)))
     reference, responses, changes = map(np.asarray, jax.jit(evaluate_grid)((scenario_channels, scenario_levels)))
     if not all(np.isfinite(value).all() for value in (reference, responses, changes)):
-        raise ValueError("A frequency scenario produced invalid exposures or a nonfinite response")
+        raise ValueError(
+            "A frequency scenario produced invalid exposures or a nonfinite response. "
+            "If a transformed parameter is normalized by exposures or spending, compute that "
+            "normalization from the training arrays in the reference namespace so scenarios cannot zero it"
+        )
 
     shape = (len(indices), len(grid), *responses.shape[1:])
     response = responses.reshape(shape).transpose(2, 3, 0, 1)
@@ -407,7 +412,7 @@ def frequency_curves(
             "intervention": "fixed impressions and spending",
             "history": "fixed",
             "selection": f"highest {group} mean response among supplied frequencies with other channels fixed",
-            "response_units": "as returned by the transformed quantity",
+            "response_units": "original outcome units",
         },
     )
 
@@ -443,10 +448,13 @@ def media_metrics(
     results : xarray.DataTree
         Results containing the model's constrained draws in the selected group.
     quantity : str
-        Key returned by ``transformed_parameters`` with one expected response
-        per observation in reporting units, such as ``"expected_revenue"``.
-        Values are recomputed for each scenario without inverse scaling.
-        Revenue gives monetary returns. Other outcomes give outcome per unit spend.
+        Key returned by ``transformed_parameters`` holding the expected outcome
+        for every observation on the scale the likelihood uses, such as
+        ``"mu"``. It is recomputed for each scenario and draw, and the fitted
+        outcome scaling restores original outcome units before anything is
+        summed, so results are in the units of the outcome column. Any
+        normalization by exposures or spending inside the blocks should read
+        the training arrays from ``reference`` so that a scenario cannot zero it.
     group : {"prior", "posterior"}, default "posterior"
         Parameter draws to use. Choose ``"prior"`` with results from
         ``sample_prior`` to inspect returns implied by the priors.
@@ -487,28 +495,29 @@ def media_metrics(
     Returns
     -------
     xarray.Dataset
-        Channel metrics retaining chain and draw coordinates. The ``group``
-        attribute records which parameter draws were used.
+        Channel metrics with chain and draw labels and a ``group`` attribute
+        identifying the parameter draws. Responses and spend use original units.
 
-        - **incremental_response** is reference response minus response with
-          that channel's spending removed during ``spend_periods``.
-        - **roi** divides total incremental response by **reference_spend**. It does
-          not subtract spending from the numerator to calculate profit.
-        - **marginal_response** is increased-spend response minus reference response.
+        - **incremental_response** subtracts each channel's zero-spend response
+          during ``spend_periods`` from reference response.
+        - **roi** divides total incremental response by **reference_spend**,
+          without subtracting spending to calculate profit.
+        - **marginal_response** gives the increase from additional spending.
         - **marginal_roi** divides total marginal response by **incremental_spend**,
-          the additional spending used for the comparison.
-        - **reference_response** contains the full response at reference spending.
+          the additional spending.
+        - **cost_per_incremental_response** divides **reference_spend** by total
+          incremental response. It is missing if spending or the increment is zero.
+        - **spend_share** gives each channel's share of all paid spending during
+          ``spend_periods``, including unselected channels.
+        - **reference_response** gives the full response at reference spending.
         - **spend_period** and **response_period** record the selected dates.
         - **channel_type** identifies ordinary media and reach/frequency channels.
 
-        With ``by``, response fields retain the requested observation axes.
-        ROI, marginal ROI, and spending still aggregate all selected periods
-        and groups. Sum effects within each draw before computing intervals.
-        Breakdowns report where and when the same intervention changes outcomes,
-        not separate interventions for each period or group.
-
-        Zero spending can retain carryover from earlier exposures. Returns
-        reflect the model and intervention assumptions, not new causal evidence.
+        ``by`` retains response axes for the same overall intervention. Ratios
+        and spending aggregate periods and groups. Ratios are NaN at zero spend.
+        Sum effects within each draw before computing intervals. Zero spending
+        can retain earlier carryover.
+        These interventions provide no additional causal evidence.
     """
     if (
         isinstance(incremental_increase, bool)
@@ -558,7 +567,7 @@ class _ResponseContext:
 
 
 def _response_breakdown(
-    context: _ResponseContext,
+    response_coords: Mapping[str, NDArray[np.generic] | tuple[str, NDArray[np.generic]]],
     by: str | Sequence[str] | None,
 ) -> tuple[
     tuple[str, ...],
@@ -573,18 +582,16 @@ def _response_breakdown(
         raise ValueError("by must contain only time or group dimension names")
     if len(set(requested)) != len(requested):
         raise ValueError("by must contain distinct dimension names")
-    if "group" in requested and "group" not in context.response_coords:
+    if "group" in requested and "group" not in response_coords:
         raise ValueError("Retaining group requires grouped data from prepare_data")
 
     retained = tuple(name for name in ("time", "group") if name in requested)
     retain_axes = tuple(("time", "group").index(name) for name in retained)
-    response_coords = {name: context.response_coords[name] for name in retained}
+    breakdown_coords = {name: response_coords[name] for name in retained}
     if "group" in retained:
-        response_coords.update(
-            {name: value for name, value in context.response_coords.items() if isinstance(value, tuple)}
-        )
+        breakdown_coords.update({name: value for name, value in response_coords.items() if isinstance(value, tuple)})
 
-    return retained, retain_axes, response_coords
+    return retained, retain_axes, breakdown_coords
 
 
 def _allocation_metrics(
@@ -596,7 +603,7 @@ def _allocation_metrics(
     by: str | Sequence[str] | None = None,
 ) -> xr.Dataset:
     """Evaluate channel interventions around each joint spending allocation."""
-    retained, retain_axes, response_coords = _response_breakdown(context, by)
+    retained, retain_axes, response_coords = _response_breakdown(context.response_coords, by)
     indices = context.indices
     count = len(indices)
 
@@ -643,6 +650,12 @@ def _allocation_metrics(
         marginal_roi = np.divide(
             total_marginal, incremental_spend, out=np.full_like(total_marginal, np.nan), where=positive
         )
+        countable = positive & (total_incremental != 0)
+        cost_per_incremental_response = np.divide(
+            spend, total_incremental, out=np.full_like(total_incremental, np.nan), where=countable
+        )
+        allocation_totals = totals.sum(axis=1, keepdims=True)
+        spend_share = np.divide(spend, allocation_totals, out=np.full_like(spend, np.nan), where=allocation_totals > 0)
 
     if not np.all(np.isfinite(roi) | ~positive) or not np.all(np.isfinite(marginal_roi) | ~positive):
         raise ValueError("Channel returns are nonfinite. Check the response and spending units")
@@ -659,6 +672,8 @@ def _allocation_metrics(
             "spend": (("allocation", "channel"), spend),
             "incremental_spend": (("allocation", "channel"), incremental_spend),
             "response": (("chain", "draw", "allocation", *retained), response),
+            "cost_per_incremental_response": (ratio_axes, cost_per_incremental_response),
+            "spend_share": (("allocation", "channel"), spend_share),
         },
         coords={
             **context.coords,
@@ -688,7 +703,9 @@ def _evaluate_response_pairs(
     if not np.isfinite(responses).all() or not np.isfinite(differences).all():
         raise ValueError(
             "A scenario produced invalid media or a nonfinite response. "
-            "Check the conversion, transformed quantity, and parameter draws"
+            "Check the conversion, transformed quantity, and parameter draws. "
+            "If a transformed parameter is normalized by exposures or spending, compute that "
+            "normalization from the training arrays in the reference namespace so scenarios cannot zero it"
         )
 
     return responses, differences
@@ -732,6 +749,19 @@ def _response_inputs(
     return inputs, prepared, {name: jnp.asarray(value) for name, value in samples.items()}, coordinates
 
 
+def _response_coordinates(
+    prepared: PreparedData, response_indices: NDArray[np.intp]
+) -> dict[str, NDArray[np.generic] | tuple[str, NDArray[np.generic]]]:
+    """Label the response window and any groups for retained observation axes."""
+    prepared_coords, group_coords = _prepared_coordinates(prepared)
+    time_labels = prepared_coords["time"]
+    coords: dict[str, NDArray[np.generic] | tuple[str, NDArray[np.generic]]] = {"time": time_labels[response_indices]}
+    if "group" in prepared_coords:
+        coords["group"] = prepared_coords["group"]
+        coords.update(group_coords)
+    return coords
+
+
 def _prepare_response(
     model: Model,
     results: xr.DataTree,
@@ -762,16 +792,11 @@ def _prepare_response(
             "Response evaluation requires paired media and spend or reach, frequency, and rf_spend columns"
         )
 
-    prepared_coords, group_coords = _prepared_coordinates(prepared)
+    prepared_coords, _ = _prepared_coordinates(prepared)
     time_labels = prepared_coords["time"]
     spend_indices = _period_indices(time_labels, spend_periods, name="spend_periods")
     response_indices = _period_indices(time_labels, response_periods, name="response_periods")
-    response_coords: dict[str, NDArray[np.generic] | tuple[str, NDArray[np.generic]]] = {
-        "time": time_labels[response_indices]
-    }
-    if "group" in prepared_coords:
-        response_coords["group"] = prepared_coords["group"]
-        response_coords.update(group_coords)
+    response_coords = _response_coordinates(prepared, response_indices)
 
     spend_mask = np.zeros(len(time_labels), dtype=bool)
     spend_mask[spend_indices] = True
@@ -890,7 +915,7 @@ def _prepare_response(
             "allocation": "reference spending proportions across selected spending periods and groups",
             "history": "fixed",
             "response_window": "selected supplied modeling periods only",
-            "response_units": "as returned by the transformed quantity",
+            "response_units": "original outcome units",
         },
     )
 
@@ -909,6 +934,7 @@ def _sample_response(
 ) -> tuple[jax.Array, jax.Array]:
     """Evaluate paired observation responses in bounded parameter batches."""
     reduction_axes = tuple(axis for axis in range(len(observation_shape)) if axis not in retain_axes)
+    scaling = inputs.outcome_scaling
 
     def evaluate_quantity(data: _ModelData, parameters: dict[str, jax.Array]) -> jax.Array:
         quantities = model._blocks.evaluate_transformed(parameters, data)
@@ -925,8 +951,13 @@ def _sample_response(
         value = evaluate_quantity(inputs, parameters)
         difference = jnp.zeros_like(value)
         if reference_inputs is not None:
-            # Subtract per observation before a large baseline can hide changes in the sum.
+            # Subtract per observation on the model scale before any offset can hide changes in the sum.
             difference = value - evaluate_quantity(reference_inputs, parameters)
+        if scaling is not None:
+            # Restoring outcome units is affine, so a paired difference needs the scale without the offset.
+            value = scaling.inverse_transform(value)
+            # The outcome statistics carry no time axis, so the bare multiply broadcasts after the row selection.
+            difference = difference * scaling.scale
 
         return jnp.sum(value, axis=reduction_axes), jnp.sum(difference, axis=reduction_axes)
 

@@ -39,18 +39,15 @@ def check_prior(
     Returns
     -------
     xarray.Dataset
-        Labeled checks over the retained axes containing
+        Checks over retained axes with the following fields.
 
-        - **finite_draws** counts usable draws at each location.
-        - **nonfinite_fraction** reports the fraction that are NaN or infinite.
-        - **probability_below** and **probability_above** report probabilities
-          beyond the corresponding supplied limits.
-        - **probability_outside** reports probability outside either limit.
-        - **lower** and **upper** record supplied limits in the evaluated order.
+        - **finite_draws**, **nonfinite_fraction** — Finite count and nonfinite fraction
+        - **probability_below**, **probability_above** — Probability beyond each
+          supplied limit
+        - **probability_outside** — Probability outside either limit
+        - **lower**, **upper** — Supplied limits in evaluated order
 
-        Probabilities are conditional on finite draws and are NaN where none
-        are finite. Inspect ``nonfinite_fraction`` before interpreting them.
-        Limits are not inferred from observed data or distribution supports.
+        Probabilities condition on finite draws and are NaN where none are finite.
     """
     if not isinstance(draws, xr.DataArray):
         raise TypeError("draws must be an xarray.DataArray selected from prior results")
@@ -172,39 +169,32 @@ def check_data(
     Returns
     -------
     xarray.DataTree
-        Labeled report containing five groups.
+        Five report groups with features labeled by role and source column.
 
-        - **coverage** records modeling dates, history dates, groups, and cadence.
-        - **series** contains minimum, maximum, mean, population standard
-          deviation, nonzero periods, zero fraction, longest zero run, and
-          quartiles. The ``constant`` and ``sparse`` flags apply by feature and
-          optional group. ``outlier_periods`` counts values outside 1.5 interquartile ranges
-          from the quartiles. ``std_without_outliers`` and
-          ``outlier_driven_variation`` identify variation lost when those
-          observations are excluded. The flag requires constant retained values.
-        - **pairs** contains predictor correlations and ``high_correlation``
-          flags. For grouped data, ``within_group_correlation`` removes each
-          group's temporal mean and has its own flag. Constant inputs give NaN.
-        - **spend** contains dated spend/exposure mismatches and cost-per-exposure
-          outliers for channels with spend. Reach-frequency exposure is reach
-          times frequency. Costs are NaN without exposure. Cost fences use
-          1.5 interquartile ranges within each channel and group across time.
-        - **predictors** contains variance inflation factors in ``vif``.
-          Constant predictors give NaN and linearly dependent predictors give
-          infinity. Grouped inputs also report unadjusted variation explained
-          by group and time indicators, separately and together. These are
-          descriptive summaries, not measures of a fitted model's quality.
-
-        Features are identified by role and source column. Predictor pairs
-        exclude outcomes and spend. Exposure pairs also report jointly and
-        exclusively active observations, activity overlap as intersection over
-        union, and ``matching_activity`` for identical nonzero patterns with
-        temporal on/off variation. These describe observations, not campaign IDs.
-        Other pairs have NaN overlap and counts of -1. All-inactive pairs have
-        NaN overlap. Constant or always-active pairs are not flagged as matching.
-
-        Fixed frequency or sparse promotions may be intentional. No data are
-        dropped, and no minimum history or overall readiness score is imposed.
+        - **coverage** — Modeling and history dates, groups, and cadence
+        - **series** — Minimum, maximum, mean, population standard deviation,
+          nonzero periods, zero fraction, longest zero run, quartiles, and
+          ``constant``/``sparse`` flags by feature and optional group.
+          ``outlier_periods`` counts values beyond quartiles plus or minus
+          1.5 interquartile ranges. ``std_without_outliers`` excludes these values,
+          and ``outlier_driven_variation`` flags variation lost entirely without them.
+        - **pairs** — Predictor correlations and ``high_correlation`` flags,
+          excluding outcomes and spend. ``within_group_correlation`` removes
+          group temporal means and has its own flag. Constant inputs give NaN.
+          Exposure pairs include jointly and exclusively active counts, activity
+          overlap as intersection over union, and ``matching_activity`` for
+          identical nonzero patterns with temporal on/off variation. These count
+          observations, not campaigns. Other pairs have NaN overlap and -1 counts.
+          All-inactive pairs have NaN overlap. Constant or always-active pairs
+          are not flagged as matching.
+        - **spend** — Dated spend/exposure mismatches and cost-per-exposure
+          outliers. Reach-frequency exposure is reach times frequency. Costs are
+          NaN without exposure. Fences use quartiles plus or minus 1.5 interquartile
+          ranges across time within each channel and group.
+        - **predictors** — ``vif`` variance inflation factors, with NaN for constant
+          predictors and infinity for linear dependence. Grouped inputs also
+          report unadjusted variation explained by group and time indicators,
+          separately and together.
     """
     if not isinstance(data, PreparedData):
         raise TypeError("data must be PreparedData returned by prepare_data")
