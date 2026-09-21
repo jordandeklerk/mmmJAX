@@ -30,10 +30,12 @@ class Prior:
         ``lognormal``, or ``dirichlet``, or one returned by
         ``custom_distribution`` for a distribution written as plain functions.
     **parameters : array_like
-        All named distribution settings, copied at construction. Multinomial
-        priors also require ``trials`` and reject counts with another total.
-        LKJ priors accept optional ``dimension`` for direct ``sample`` calls.
-        A model's parameter declaration supplies it otherwise.
+        All named distribution settings, copied at construction in the
+        precision in effect at that moment, so enable JAX 64-bit mode before
+        building priors as with any other array. Multinomial priors also
+        require ``trials`` and reject counts with another total. LKJ priors
+        accept optional ``dimension`` for direct ``sample`` calls. A model's
+        parameter declaration supplies it otherwise.
     """
 
     _spec: _DistributionSpec

@@ -7,12 +7,13 @@ from inspect import Parameter, signature
 import jax
 import jax.numpy as jnp
 import numpy as np
+import polars as pl
 import pytest
 from tensorflow_probability.substrates.jax import distributions as tfd
 
 import mmmjax
 import mmmjax.distributions as dist
-from mmmjax import Model, Positive, custom_distribution, sample_prior
+from mmmjax import Data, Model, Positive, Real, custom_distribution, prepare_data, sample_prior
 from mmmjax.distributions._distribution import _bind_distribution, _get_distribution_spec
 from mmmjax.distributions._normal import normal as module_normal
 from mmmjax.distributions._normal import normal_logpdf as module_normal_logpdf
@@ -464,3 +465,157 @@ def test_prior_reports_user_defined_setting_names_and_unregistered_functions():
         Prior(half_cauchy, scale=1.0, width=2.0)
     with pytest.raises(TypeError, match="returned by custom_distribution"):
         Prior(half_cauchy_logpdf, scale=1.0)
+
+
+def shifted_lognormal_logpdf(value, shift, location, scale):
+    excess = value - shift
+    safe = jnp.where(excess > 0, excess, 1.0)
+    standardized = (jnp.log(safe) - location) / scale
+    density = -jnp.log(safe) - jnp.log(scale) - 0.5 * jnp.log(2.0 * jnp.pi) - 0.5 * standardized**2
+    return jnp.where(excess > 0, density, -jnp.inf)
+
+
+def shifted_lognormal_rng(key, shift, location, scale, *, sample_shape=()):
+    batch_shape = jnp.broadcast_shapes(jnp.shape(shift), jnp.shape(location), jnp.shape(scale))
+    draws = jax.random.normal(key, sample_shape + batch_shape)
+    return shift + jnp.exp(location + scale * draws)
+
+
+def mixture_logpdf(value, weight, location1, location2, scale):
+    def component(location):
+        standardized = (value - location) / scale
+        return -0.5 * standardized**2 - jnp.log(scale) - 0.5 * jnp.log(2.0 * jnp.pi)
+
+    first = jnp.log(weight) + component(location1)
+    second = jnp.log1p(-weight) + component(location2)
+    return jnp.logaddexp(first, second)
+
+
+def mixture_rng(key, weight, location1, location2, scale, *, sample_shape=()):
+    batch_shape = jnp.broadcast_shapes(jnp.shape(weight), jnp.shape(location1), jnp.shape(location2), jnp.shape(scale))
+    shape = sample_shape + batch_shape
+    choose_key, noise_key = jax.random.split(key)
+    first = jax.random.bernoulli(choose_key, weight, shape)
+    location = jnp.where(first, location1, location2)
+    return location + scale * jax.random.normal(noise_key, shape)
+
+
+def logistic_logpdf(value, location, scale):
+    standardized = (value - location) / scale
+    return -standardized - jnp.log(scale) - 2.0 * jax.nn.softplus(-standardized)
+
+
+def logistic_rng(key, location, scale, *, sample_shape=()):
+    batch_shape = jnp.broadcast_shapes(jnp.shape(location), jnp.shape(scale))
+    uniform = jax.random.uniform(key, sample_shape + batch_shape, minval=1e-6, maxval=1.0 - 1e-6)
+    return location + scale * (jnp.log(uniform) - jnp.log1p(-uniform))
+
+
+def test_custom_distribution_settings_with_mixed_batch_shapes_draw_per_channel_priors():
+    frame = pl.DataFrame(
+        {"week": [1, 2, 3], "sales": [1.0, 2.0, 3.0], "video": [4.0, 1.0, 3.0], "search": [2.0, 2.0, 1.0]}
+    )
+    data = prepare_data(frame, time="week", outcome="sales", media=["video", "search"])
+    shifted_lognormal = custom_distribution(shifted_lognormal_logpdf, shifted_lognormal_rng)
+    location = jnp.array([0.0, 0.7])
+    scale = jnp.array([0.3, 0.5])
+    prior = Prior(shifted_lognormal, shift=0.1, location=location, scale=scale)
+    model = Model(
+        parameters={"roi": Positive(dims="channel")},
+        log_density=lambda media, roi: shifted_lognormal(roi, 0.1, location, scale),
+        data=Data(data),
+    )
+
+    results = sample_prior(model, {"roi": prior}, draws=400, seed=11, generate=False)
+    draws = results["prior"]["roi"]
+
+    assert draws.dims == ("chain", "draw", "channel")
+    assert list(draws["channel"].values) == ["video", "search"]
+    values = draws.values
+    assert (values > 0.1).all()
+    logs = np.log(values - 0.1).reshape(-1, 2)
+    np.testing.assert_allclose(logs.mean(axis=0), location, atol=0.1)
+    np.testing.assert_allclose(logs.std(axis=0), scale, atol=0.1)
+    np.testing.assert_allclose(
+        prior.logpdf(values[0, :5]), shifted_lognormal_logpdf(values[0, :5], 0.1, location, scale), rtol=1e-6
+    )
+    assert prior.sample(jax.random.key(0), sample_shape=(4,)).shape == (4, 2)
+    assert prior._sample(jax.random.key(0), (2,), jnp.float32).shape == (2,)
+
+
+def test_custom_mixture_density_matches_component_sum_and_draw_frequencies():
+    mixture = custom_distribution(mixture_logpdf, mixture_rng, name="normal_mixture")
+    prior = Prior(mixture, weight=0.8, location1=-3.0, location2=3.0, scale=0.5)
+    values = jnp.linspace(-5.0, 5.0, 11)
+
+    first = 0.8 * jnp.exp(dist.normal_logpdf(values, -3.0, 0.5))
+    second = 0.2 * jnp.exp(dist.normal_logpdf(values, 3.0, 0.5))
+    expected = jnp.log(first + second)
+    np.testing.assert_allclose(prior.logpdf(values), expected, rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(prior(values), expected.sum(), rtol=1e-5)
+    gradient = jax.jit(jax.grad(mixture))(values, 0.8, -3.0, 3.0, 0.5)
+    assert np.isfinite(gradient).all()
+    draws = prior.sample(jax.random.key(1), sample_shape=(4000,))
+    assert draws.shape == (4000,)
+    np.testing.assert_allclose(np.mean(draws < 0), 0.8, atol=0.03)
+
+
+def test_custom_distribution_serves_as_a_likelihood_with_parameter_settings():
+    frame = pl.DataFrame({"week": [1, 2, 3, 4], "sales": [1.0, 2.5, 2.0, 3.5], "video": [1.0, 2.0, 1.5, 3.0]})
+    data = prepare_data(frame, time="week", outcome="sales", media=["video"])
+    logistic = custom_distribution(logistic_logpdf, logistic_rng)
+
+    def transformed_parameters(media, coefficient):
+        return {"mu": coefficient * media[:, 0]}
+
+    def log_density(outcome, mu, coefficient, scale):
+        target = dist.normal(coefficient, 0.0, 1.0) + dist.half_normal(scale, 1.0)
+        target += logistic(outcome, mu, scale)
+        return target
+
+    def generated_quantities(key, outcome, mu, scale):
+        return {
+            "predictive": {"replicated": logistic_rng(key, mu, scale)},
+            "log_likelihood": {"pointwise": logistic_logpdf(outcome, mu, scale)},
+        }
+
+    model = Model(
+        parameters={"coefficient": Real(), "scale": Positive()},
+        log_density=log_density,
+        data=Data(data),
+        transformed_parameters=transformed_parameters,
+        generated_quantities=generated_quantities,
+    )
+    position = model.initialize_random(jax.random.key(2))
+    parameters = model.constrain(position)
+
+    value, gradient = jax.jit(jax.value_and_grad(model.log_density))(position, model.data)
+    assert np.isfinite(value)
+    assert all(np.isfinite(entry).all() for entry in gradient.values())
+    mu = parameters["coefficient"] * data.arrays["media"][:, 0]
+    expected = (
+        dist.normal(parameters["coefficient"], 0.0, 1.0)
+        + dist.half_normal(parameters["scale"], 1.0)
+        + logistic_logpdf(data.arrays["outcome"], mu, parameters["scale"]).sum()
+    )
+    np.testing.assert_allclose(model.log_prob(parameters), expected, rtol=1e-5)
+    outputs = jax.jit(model.generate_quantities)(jax.random.key(3), parameters, model.data)
+    assert outputs["predictive"]["replicated"].shape == (4,)
+    np.testing.assert_allclose(
+        outputs["log_likelihood"]["pointwise"],
+        logistic_logpdf(data.arrays["outcome"], mu, parameters["scale"]),
+        rtol=1e-6,
+    )
+
+
+def test_custom_distribution_draws_honor_the_requested_precision():
+    half_cauchy = custom_distribution(half_cauchy_logpdf, half_cauchy_rng)
+    with jax.enable_x64(True):
+        # Settings are copied at construction, so the prior is built where they can be float64.
+        prior = Prior(half_cauchy, scale=1.5)
+        wide = prior._sample(jax.random.key(6), (3,), jnp.float64)
+        assert wide.dtype == jnp.float64
+        np.testing.assert_allclose(prior.logpdf(wide), half_cauchy_logpdf(wide, 1.5), rtol=1e-12)
+    narrow = prior._sample(jax.random.key(6), (3,), jnp.float32)
+    assert narrow.dtype == jnp.float32
+    assert (narrow > 0).all()
