@@ -37,6 +37,7 @@ from mmmjax.distributions._cauchy import cauchy_rng as cauchy_rng
 from mmmjax.distributions._dirichlet import dirichlet as dirichlet
 from mmmjax.distributions._dirichlet import dirichlet_logpdf as dirichlet_logpdf
 from mmmjax.distributions._dirichlet import dirichlet_rng as dirichlet_rng
+from mmmjax.distributions._distribution import custom_distribution as custom_distribution
 from mmmjax.distributions._exponential import exponential as exponential
 from mmmjax.distributions._exponential import exponential_logcdf as exponential_logcdf
 from mmmjax.distributions._exponential import exponential_logpdf as exponential_logpdf
@@ -153,6 +154,7 @@ __all__ = [
     "cauchy_logpdf",
     "cauchy_logsf",
     "cauchy_rng",
+    "custom_distribution",
     "dirichlet",
     "dirichlet_logpdf",
     "dirichlet_rng",
