@@ -159,17 +159,6 @@ the sampler state stored alongside so {func}`~mmmjax.continue_sampling` can add 
 Any other sampler that accepts a log density and its gradient, in NumPyro,
 BlackJAX, or your own code, works with the same object.
 
-## From data to decisions
-
-{func}`~mmmjax.prepare_data` builds the model inputs from a dataframe, with a
-grouping column when the same blocks should fit a hierarchical model across
-regions or markets. {func}`~mmmjax.check_data` and {func}`~mmmjax.sample_prior`
-catch data and prior problems before any fitting. Afterwards,
-{func}`~mmmjax.response_curves`, {func}`~mmmjax.media_metrics`, and
-{func}`~mmmjax.optimize_budget` turn the posterior draws into response curves,
-channel returns, and spending plans, so the uncertainty in the fit carries
-through to the decision.
-
 ## Where to go next
 
 [Getting Started](getting_started/index) fits a first model end to end. The

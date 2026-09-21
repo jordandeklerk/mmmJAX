@@ -266,14 +266,14 @@ def fit_scaling(
     Returns
     -------
     Scaling
-        Stored transformation containing
+        Fitted transformation with the following fields.
 
-        - **offset** : Training mean, or zeros when centering is disabled
-        - **scale** : Training standard deviation, with ones for constant
-          series or when scaling is disabled
+        - **offset** — Training means, or zeros without centering
+        - **scale** — Training standard deviations, or ones for constant series
+          or disabled scaling
 
-        Reduced axes have length one for broadcasting. Statistics use at
-        least float32 precision. Float64 requires JAX 64-bit mode.
+        Reduced axes retain length one for broadcasting.
+        Precision is at least float32. Float64 requires JAX 64-bit mode.
 
     Examples
     --------
@@ -415,16 +415,14 @@ def fit_media_scaling(
     Returns
     -------
     Scaling
-        Stored transformation containing
+        Fitted transformation with the following fields.
 
-        - **offset** : Zeros so absent exposure stays zero
-        - **scale** : Selected channel statistics multiplied by population
-          where supplied
+        - **offset** — Zeros to preserve absent exposure
+        - **scale** — Channel statistics multiplied by population where supplied
 
-        Statistics retain a length-one time axis. Grouped inputs have a
-        length-one group axis unless population-specific factors are used.
-        Factors remain fixed when reused. Fit outside JAX transformations,
-        then apply in the fitted group and channel order using JAX.
+        Time retains length one, as does group unless population-specific factors
+        are used.
+        Reuse fixed factors in the fitted group and channel order.
 
     Examples
     --------
@@ -580,14 +578,10 @@ def fit_data_scaling(
     Returns
     -------
     DataScaling
-        Fitted scaling object containing
-
-        - **transformations** : Per-input offsets and divisors, available
-          as individual :class:`Scaling` objects
-
-        Retains labels for alignment, not observations. Its ``transform`` and
-        ``inverse_transform`` methods return new :class:`PreparedData` objects
-        without refitting statistics.
+        ``transformations`` maps inputs to :class:`Scaling` offsets and divisors.
+        Retains alignment labels without observations. ``transform`` and
+        ``inverse_transform`` return new :class:`PreparedData` objects using
+        the fitted statistics.
 
     Examples
     --------

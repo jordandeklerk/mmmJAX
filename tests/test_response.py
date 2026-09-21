@@ -122,6 +122,17 @@ def integer_media_model():
     )
 
 
+def _restore_outcome_units(response, scaling):
+    """Apply the fitted outcome transform in double precision for the closed form."""
+    if scaling is None or "outcome" not in scaling.transformations:
+        return response
+    outcome = scaling.transformations["outcome"]
+    scale = np.asarray(outcome.scale, dtype=np.float64)
+    offset = np.asarray(outcome.offset, dtype=np.float64)
+    restored = response * scale + offset
+    return restored
+
+
 def _expected(data, coefficient, *, scaling=None):
     values = (scaling.transform(data) if scaling is not None else data).arrays
     carried = values["media"][1:] + 0.5 * values["media"][:-1]
@@ -132,7 +143,9 @@ def _expected(data, coefficient, *, scaling=None):
         + 0.03 * carried[..., 0] * carried[..., 1]
         + 0.2 * values["spend"].sum(axis=-1)
     )
-    return np.exp(0.01 * predictor).sum()
+    expected = _restore_outcome_units(np.exp(0.01 * predictor), scaling)
+    total = expected.sum()
+    return total
 
 
 def _scenario(data, channel, multiplier, *, conversion=None):
@@ -387,7 +400,7 @@ def test_response_curves_preserve_channel_selection_and_posterior_coordinates():
 
 
 @pytest.mark.parametrize("already_scaled", [False, True])
-def test_response_curves_reuse_fitted_scaling_and_leave_response_units_to_model(already_scaled):
+def test_response_curves_reuse_fitted_scaling_and_restore_original_outcome_units(already_scaled):
     data = _data(grouped=True)
     scaling = fit_data_scaling(data, scale_outcome=True, adjust_population=True)
     model = _model(scaling.transform(data) if already_scaled else data, scaling=scaling)
@@ -675,9 +688,11 @@ def _window_expected(data, coefficient, periods, *, scaling=None, by=(), cross_g
     if cross_group:
         predictor = predictor + 0.04 * carried[..., 0].sum(axis=1, keepdims=True) * carried[..., 1]
     indices = [data.time_values.index(period) for period in periods]
-    expected = np.exp(0.01 * predictor)[indices]
-    axes = tuple(index for index in range(expected.ndim) if ("time", "group")[index] not in by)
-    return expected.sum(axis=axes)
+    expected = _restore_outcome_units(np.exp(0.01 * predictor), scaling)
+    selected = expected[indices]
+    axes = tuple(index for index in range(selected.ndim) if ("time", "group")[index] not in by)
+    totals = selected.sum(axis=axes)
+    return totals
 
 
 @pytest.mark.parametrize("grouped", [False, True])
@@ -717,8 +732,12 @@ def test_response_curves_use_separate_noncontiguous_spend_and_response_periods(g
                     scenario = _window_scenario(data, channel, multiplier, [1, 3])
                     expected = _window_expected(scenario, coefficient, [2, 3], scaling=scaling)
                     np.testing.assert_allclose(curves["response"][chain, draw, channel, index], expected, rtol=2e-6)
+                    # Restoring outcome units scales the increment and its float32 reduction error together.
                     np.testing.assert_allclose(
-                        curves["incremental_response"][chain, draw, channel, index], expected - comparison, atol=3e-6
+                        curves["incremental_response"][chain, draw, channel, index],
+                        expected - comparison,
+                        rtol=1e-4,
+                        atol=3e-6,
                     )
     for name, value in original.items():
         np.testing.assert_array_equal(model.data.values[name], value)
@@ -783,7 +802,8 @@ def test_response_curves_breakdowns_preserve_global_interventions_and_posterior_
                 )
                 actual = detailed.sel(multiplier=multiplier).isel(chain=chain, draw=draw, channel=channel)
                 np.testing.assert_allclose(actual["response"], expected, rtol=3e-6)
-                np.testing.assert_allclose(actual["incremental_response"], expected - zero, atol=2e-6)
+                # Restoring outcome units scales the increment and its float32 reduction error together.
+                np.testing.assert_allclose(actual["incremental_response"], expected - zero, rtol=1e-4, atol=2e-6)
 
     if by == "time":
         unbatched = response_curves(model, results, by=by, **options)
@@ -1223,9 +1243,11 @@ def _rf_expected(data, coefficient, *, scaling=None, response_periods=(1, 2, 3),
         expected = expected + coefficient * values["media"][1:, ..., 0] * (1.0 + 0.1 * carried)
     if "spend" in values:
         expected = expected + 0.2 * values["spend"].sum(axis=-1)
-    expected = expected[[data.time_values.index(period) for period in response_periods]]
-    axes = tuple(index for index in range(expected.ndim) if ("time", "group")[index] not in by)
-    return expected.sum(axis=axes)
+    expected = _restore_outcome_units(expected, scaling)
+    selected = expected[[data.time_values.index(period) for period in response_periods]]
+    axes = tuple(index for index in range(selected.ndim) if ("time", "group")[index] not in by)
+    totals = selected.sum(axis=axes)
+    return totals
 
 
 def _rf_scenario(data, channel, multiplier, *, mode="reach", spend_periods=(1, 2, 3), media_conversion=None):

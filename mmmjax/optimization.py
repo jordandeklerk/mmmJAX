@@ -134,17 +134,22 @@ def optimize_budget(
         periods, in original spend units. Defaults to their total reference
         spending, using ``new_data`` when supplied.
     quantity : str
-        Key in the mapping returned by ``transformed_parameters``, such as
-        ``"expected_revenue"``. Its value must contain one expected response
-        per observation in the desired reporting units. It is recomputed for
-        each allocation and posterior draw and need not be stored in ``results``.
-        The objective totals responses over selected measurement periods and groups.
+        Key returned by ``transformed_parameters`` holding the expected outcome
+        for every observation on the scale the likelihood uses, such as
+        ``"mu"``. It is recomputed for each scenario and draw, and the fitted
+        outcome scaling restores original outcome units before anything is
+        summed, so results are in the units of the outcome column. Any
+        normalization by exposures or spending inside the blocks should read
+        the training arrays from ``reference`` so that a scenario cannot zero it.
     utility_function : callable, optional
         Differentiable JAX function receiving total expected responses with
         shape ``(chain, draw)`` and returning a floating-point scalar to
         maximize. Defaults to the posterior mean. Custom functions can
-        penalize uncertainty. Inputs are absolute responses in the quantity's
-        units, not changes from the reference allocation.
+        penalize uncertainty. Inputs are total expected responses in original
+        outcome units, not changes from the reference allocation. Because they
+        are absolute totals, a custom utility that differences them works on
+        offset-laden float32 values and should be scaled sensibly, while the
+        default objective differences paired responses and is unaffected.
     spend_to_media : {"proportional"} or callable, default "proportional"
         By default, exposure scales with spending at each period and group,
         retaining reference exposure per unit spend. A differentiable JAX
@@ -212,40 +217,31 @@ def optimize_budget(
     Returns
     -------
     xarray.Dataset
-        Labeled allocations and responses, retaining posterior uncertainty.
+        Reference and optimized allocations with posterior uncertainty.
 
-        - **spend** contains reference and optimized channel budgets.
-        - **response** contains their responses for every chain and draw.
-        - **response_change** contains paired optimized-minus-reference responses.
-        - **utility** contains the objective value for each allocation.
-        - **lower_bound**, **upper_bound**, and **initial_spend** record constraints
-          and the starting allocation.
-        - **spend_period** and **response_period** record selected dates.
-        - **channel_type** identifies ordinary media or reach/frequency channels.
+        - **spend** gives channel budgets in original spend units.
+        - **response** gives each allocation's response per chain and draw.
+        - **response_change** gives paired optimized-minus-reference responses.
+        - **utility** gives the objective value for each allocation.
+        - **lower_bound**, **upper_bound**, and **initial_spend** give channel
+          limits and starting budgets in original spend units.
+        - **spend_period**, **response_period**, and **channel_type** label
+          selected dates and ordinary-media or reach/frequency channels.
+        - **constraint_spend** and **constraint_satisfied** report supplied
+          group constraints for both allocations. The reference may violate them.
+        - **constraint_lower_bound**, **constraint_upper_bound**, and
+          **constraint_channels** give group limits in spend units and membership.
+        - **incremental_response**, **roi**, **marginal_response**, **marginal_roi**,
+          **incremental_spend**, **cost_per_incremental_response**, and
+          **spend_share** are added with ``include_metrics=True``. Definitions
+          follow :func:`media_metrics`, evaluated at each allocation without
+          restricting the metric interventions to optimization bounds.
 
-        When group constraints are supplied, **constraint_spend** and
-        **constraint_satisfied** describe both allocations. **constraint_lower_bound**
-        and **constraint_upper_bound** use original spend units, and
-        **constraint_channels** identifies each group's channels. The reference
-        allocation need not satisfy the new limits.
-
-        With ``include_metrics=True``, **incremental_response** measures
-        response lost by removing a channel's spending, and **roi** divides
-        it by that spending. **marginal_response** and **marginal_roi** measure
-        an increase using **incremental_spend**. Response and ROI arrays retain
-        chain, draw, allocation, and channel axes. Response effects additionally
-        retain axes selected with ``by``. Ratios use the quantity's units
-        per unit spend and are undefined (``NaN``) at zero spending.
-        Channel removal and increase scenarios hold other channels at the
-        allocation being evaluated and are not restricted by optimization
-        bounds. Channel effects need not add up when channels interact.
-
-        A single allocation maximizes the chosen utility across posterior
-        draws. If the reference total differs from ``budget``, the
-        comparison also reflects the change in total spending. Responses
-        retain the quantity's units and receive no inverse scaling.
-        Breakdowns show where and when the joint allocation changes responses,
-        not independently optimized allocations for each period or group.
+        Responses use original outcome units and retain chain, draw, and
+        optional ``by`` axes. Channel ratios retain chain, draw, allocation,
+        and channel axes, using totals across periods and groups. Spending
+        and ``spend_share`` have only allocation and channel axes. Breakdowns
+        describe one joint allocation, not separately optimized budgets.
 
     Raises
     ------
@@ -281,7 +277,7 @@ def optimize_budget(
         response_periods=response_periods,
         batch_size=batch_size,
     )
-    retained, retain_axes, response_coords = _response_breakdown(context, by)
+    retained, retain_axes, response_coords = _response_breakdown(context.response_coords, by)
 
     reference = np.asarray(context.reference_spend, dtype=np.float64)[context.indices]
     if not np.isfinite(reference).all():
@@ -528,7 +524,15 @@ def optimize_budget(
             incremental_increase=incremental_increase,
             by=by,
         )
-        for name in ("incremental_response", "roi", "marginal_response", "marginal_roi", "incremental_spend"):
+        for name in (
+            "incremental_response",
+            "roi",
+            "marginal_response",
+            "marginal_roi",
+            "incremental_spend",
+            "cost_per_incremental_response",
+            "spend_share",
+        ):
             report[name] = metrics[name]
         report.attrs["incremental_increase"] = incremental_increase
 

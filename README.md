@@ -104,10 +104,6 @@ parameters = model.constrain(position)
 
 The built-in `sample` uses this interface to run NUTS with window adaptation and returns an xarray [DataTree](https://docs.xarray.dev/en/stable/user-guide/hierarchical-data.html) labeled with your data's coordinates, with the sampler state stored alongside so `continue_sampling` can add draws later. Any other sampler that accepts a log density and its gradient, in NumPyro, BlackJAX, or your own code, works with the same object.
 
-## From data to decisions
-
-`prepare_data` builds the model inputs from a dataframe, with a grouping column when the same blocks should fit a hierarchical model across regions or markets. `check_data` and `sample_prior` catch data and prior problems before any fitting. Afterwards, `response_curves`, `media_metrics`, and `optimize_budget` turn the posterior draws into response curves, channel returns, and spending plans, so the uncertainty in the fit carries through to the decision.
-
 ## Documentation
 
 For details about the API, see the [reference documentation](https://mmmjax.readthedocs.io/en/latest/).

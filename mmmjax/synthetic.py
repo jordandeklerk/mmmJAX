@@ -94,17 +94,15 @@ def simulate_data(
     Returns
     -------
     SyntheticData
-        Simulation containing the following fields.
+        Simulation with the following fields.
 
-        - **frame** — Observed weekly data for preparation and modeling
-        - **media_history** — Earlier exposure observations for carryover
-        - **channels** — Channel labels, column selections, and settings
-        - **truth** — Parameters, effects, and full-window paid-channel ROI
+        - **frame**, **media_history** — Weekly observations and earlier exposures
+        - **channels** — Channel labels, columns, and settings
+        - **truth** — Parameters, effects, and paid-channel revenue ROI
 
-        ROI removes one channel throughout the lead-in and modeling window,
-        holds other inputs fixed, and divides the modeling-window revenue
-        difference by that window's spend. Zero spend gives undefined ROI.
-        It is not net-profit ROI. Some channels may be inactive in short windows.
+        ROI is the modeling-window revenue difference when removing a channel
+        from both lead-in and modeling periods, holding other inputs fixed,
+        divided by modeling-window spend. Zero spend gives undefined ROI.
 
     Examples
     --------

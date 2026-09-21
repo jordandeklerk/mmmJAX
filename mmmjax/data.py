@@ -739,29 +739,26 @@ def prepare_data(
     Returns
     -------
     PreparedData
-        Prepared inputs containing
+        Prepared inputs with the following fields.
 
-        - **arrays** : NumPy arrays keyed by input role. Omitted inputs have no entry
-        - **time_column** : Name of the source column identifying time periods
-        - **time_values** : Sorted modeling periods
-        - **media_time_values** : Shared periods for all paid and organic
-          exposure inputs, including history. Empty without exposure inputs
-        - **group_columns** : Selected group-column names
-        - **group_values** : Observed group-label tuples in array order
-        - **columns** : Source column names by input role, in selected order
-        - **channels** : Labels shared by media and spend
-        - **organic_channels** : Organic media labels
-        - **rf_channels** : Labels shared by paid reach, frequency, and spend
-        - **organic_rf_channels** : Labels shared by organic reach and frequency
-        - **frequency** : Inferred or declared calendar spacing, or None
+        - **arrays** — Independent NumPy arrays by role, excluding omitted inputs
+        - **time_column**, **time_values** — Source time column and sorted periods
+        - **media_time_values** — Shared paid and organic exposure periods,
+          including history. Empty without exposures
+        - **group_columns**, **group_values** — Group columns and observed label
+          tuples in array order
+        - **columns** — Source columns by role, in selected order
+        - **channels**, **organic_channels** — Paid and organic media labels
+        - **rf_channels**, **organic_rf_channels** — Paid and organic
+          reach-frequency labels. Paid channel labels also align with spend
+        - **frequency** — Inferred or declared calendar spacing, or None
 
-        Time-varying arrays are ordered by time, group (if supplied), then
-        feature. Outcome and revenue per outcome have no final feature axis.
-        Population has shape ``(n_groups,)``, or ``()`` without groups.
-        All other inputs keep a feature axis even for a single column.
-        Integer outcomes and population estimates retain their dtype
-        separately from continuous inputs. Arrays do not share memory with
-        either dataframe. Unused group and channel labels are empty tuples.
+        Time-varying axes are time, optional group, then feature. Outcome and
+        revenue per outcome omit the feature axis. Population has shape
+        ``(n_groups,)``, or ``()`` without groups. Other inputs retain a feature
+        axis, even for one column. Integer outcome and population dtypes are
+        preserved separately from continuous inputs. Arrays share no memory
+        with either dataframe. Unused group and channel labels are empty tuples.
     """
     selections = {
         "outcome": outcome,

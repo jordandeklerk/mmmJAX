@@ -40,16 +40,9 @@ def fourier_features(time: ArrayLike, *, period: ArrayLike, order: int) -> jax.A
     Returns
     -------
     jax.Array
-        Features with shape ``(len(time), 2 * order)``. Sine terms come first
-        in increasing harmonic order, followed by cosine terms in the same
-        order. No intercept column is included. Values use a common floating
-        dtype of at least float32. Invalid numeric inputs produce ``nan`` in
-        the affected rows.
-
-        A coefficient vector of shape ``(2 * order,)`` gives one shared
-        seasonal curve through ``features @ coefficients``. Coefficients
-        shaped ``(2 * order, group)`` give separate group curves without
-        duplicating the features.
+        Features shaped ``(len(time), 2 * order)`` with sine then cosine terms,
+        each in increasing harmonic order. No intercept is included. Floating
+        dtype is at least float32. Invalid numeric inputs give ``nan`` rows.
 
     Examples
     --------
