@@ -366,6 +366,14 @@ def optimize_budget(
         difference = jax.jit(loss)
         initial_shares = jnp.asarray(start[free], dtype=baseline.dtype)
         difference_step = np.sqrt(np.finfo(baseline.dtype).eps)
+        lower_free, upper_free = lower[free], upper[free]
+        bound_tolerance = 4 * np.finfo(np.float64).eps
+
+        # Diminishing returns flatten a forward secant as the step grows, so the
+        # smallest step the model precision still resolves sits closest to the
+        # derivative. Measuring at shrinking steps and keeping the steepest finite
+        # slope recovers that value without assuming a curve shape.
+        shrinking_steps = difference_step / np.array([1.0, 16.0, 256.0])
 
         def evaluate(shares: NDArray[np.float64]) -> tuple[float, NDArray[np.float64]]:
             current = jnp.asarray(shares, dtype=baseline.dtype)
@@ -373,22 +381,27 @@ def optimize_budget(
             value_host = float(value)
             gradient_host = np.array(gradient, dtype=np.float64, copy=True)
 
-            # Fractional response curves can have unbounded or masked derivatives
-            # near zero. Measure one-sided changes without imposing a spend floor.
-            near_zero = np.flatnonzero(shares <= difference_step)
-            if near_zero.size:
-                steps = np.minimum(difference_step, upper[free][near_zero] - shares[near_zero])
-                backward = steps == 0
-                steps[backward] = -np.minimum(
-                    difference_step, shares[near_zero][backward] - lower[free][near_zero][backward]
-                )
+            # Fractional response curves can have unbounded or masked derivatives at
+            # zero spending. Measure forward changes only for shares resting on a
+            # zero-spend boundary, since a positive lower bound leaves the analytic
+            # gradient exact and free variables keep room to step upward from zero.
+            zero_boundary = (shares <= lower_free + bound_tolerance) & (lower_free <= bound_tolerance)
+            at_zero = np.flatnonzero(zero_boundary)
+            if at_zero.size:
 
                 def changed_loss(values: NDArray[np.float64]) -> float:
                     candidate = shares.copy()
-                    candidate[near_zero] = values
+                    candidate[at_zero] = values
                     return float(difference(jnp.asarray(candidate, dtype=baseline.dtype), current))
 
-                gradient_host[near_zero] = approx_fprime(shares[near_zero], changed_loss, epsilon=steps)
+                estimates = np.empty((shrinking_steps.size, at_zero.size))
+                for position, width in enumerate(shrinking_steps):
+                    steps = np.minimum(width, upper_free[at_zero] - shares[at_zero])
+                    estimates[position] = approx_fprime(shares[at_zero], changed_loss, epsilon=steps)
+
+                magnitudes = np.where(np.isfinite(estimates), np.abs(estimates), -np.inf)
+                steepest = np.argmax(magnitudes, axis=0)
+                gradient_host[at_zero] = np.take_along_axis(estimates, steepest[None], axis=0)[0]
 
             if not np.isfinite(value_host) or not np.isfinite(gradient_host).all():
                 raise ValueError(

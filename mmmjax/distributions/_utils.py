@@ -4,6 +4,7 @@ import math
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax.scipy.special import digamma, gammaln
 from jax.typing import ArrayLike
 
@@ -22,6 +23,27 @@ def _is_lower_cholesky(value: jax.Array) -> jax.Array:
 
 
 def _as_real_array(name: str, value: ArrayLike) -> jax.Array:
+    if not isinstance(value, jax.Array):
+        try:
+            host_value = np.asarray(value)
+        except (TypeError, ValueError):
+            host_value = None
+        if host_value is not None and host_value.dtype == object:
+            # A Python int too wide for any NumPy integer dtype lands here rather than
+            # raising, and would otherwise reach JAX and raise an uncaught OverflowError
+            raise TypeError(
+                f"distribution argument {name!r} must be real numeric and array-like, got {type(value).__name__}"
+            )
+        if host_value is not None and np.issubdtype(host_value.dtype, np.integer):
+            canonical_dtype = jax.dtypes.canonicalize_dtype(host_value.dtype)
+            if canonical_dtype != host_value.dtype:
+                limits = np.iinfo(canonical_dtype)
+                if np.any(host_value < limits.min) or np.any(host_value > limits.max):
+                    raise ValueError(
+                        f"distribution argument {name!r} contains integers outside the 32-bit range. "
+                        "Pass floating-point values or enable JAX 64-bit mode"
+                    )
+
     try:
         array = jnp.asarray(value)
     except (TypeError, ValueError) as exc:

@@ -117,6 +117,22 @@ def _uncertain_linear_problem():
     return model, results
 
 
+def _root_response_problem(weights):
+    frame = pl.DataFrame({"week": [1], "video": [0.5], "search": [0.5]})
+    data = prepare_data(frame, time="week", media=["video", "search"], spend=["video", "search"])
+    model = Model(
+        parameters={"weight": Real((2,))},
+        log_density=lambda expected: expected.sum(),
+        data=data,
+        transformed_parameters=lambda media, weight: {"expected": jnp.sqrt(media) @ weight},
+        dims={"weight": ("channel",)},
+    )
+    results = _collect_results(
+        {"weight": np.array([[weights]], dtype=np.float32)}, data=data, dims={"weight": ("channel",)}
+    )
+    return model, results
+
+
 def _mixed_reach_frequency_problem(*, zero_spend_channels=()):
     portions = np.array([0.4, 0.6])
     data = prepare_data(
@@ -1104,6 +1120,57 @@ def test_optimize_budget_recovers_concave_optimum_when_solver_reaches_zero(
     np.testing.assert_allclose(allocation["response"].sel(allocation="optimized"), expected.max(), atol=1e-5)
     np.testing.assert_array_equal(allocation["lower_bound"], [0.0, 0.0])
     np.testing.assert_allclose(optimized.sum(), 1.0, atol=1e-8)
+    assert allocation.attrs["success"]
+
+
+def test_optimize_budget_finds_an_optimal_share_smaller_than_the_finite_difference_step():
+    model, results = _root_response_problem([0.009, 1.0])
+
+    allocation = optimize_budget(model, results, quantity="expected", budget=1.0, bounds=(0.0, 1.0))
+
+    # Equal marginal returns solve 0.009 / (2 sqrt(x)) = 1 / (2 sqrt(1 - x)) for a
+    # unique optimum at 0.009**2 / (1 + 0.009**2), far below the difference step.
+    optimum = 0.009**2 / (1 + 0.009**2)
+    optimized = allocation["spend"].sel(allocation="optimized").values
+    boundary_response = 0.009 * np.sqrt(0.0) + np.sqrt(1.0)
+    np.testing.assert_allclose(optimized, [optimum, 1.0 - optimum], atol=3e-5)
+    assert allocation["response"].sel(allocation="optimized").values.min() > boundary_response
+    assert allocation.attrs["success"]
+
+
+def test_optimize_budget_keeps_an_unresponsive_channel_at_a_zero_share():
+    model, results = _root_response_problem([0.0, 1.0])
+
+    allocation = optimize_budget(model, results, quantity="expected", budget=1.0, bounds=(0.0, 1.0))
+
+    # A zero weight makes the video response exactly zero at every spend, so no
+    # one-sided estimate may push spending away from the lower bound.
+    optimized = allocation["spend"].sel(allocation="optimized").values
+    np.testing.assert_allclose(optimized, [0.0, 1.0], atol=1e-10)
+    np.testing.assert_allclose(allocation["response"].sel(allocation="optimized"), 1.0, atol=1e-6)
+    assert allocation.attrs["success"]
+
+
+def test_optimize_budget_converges_on_a_binding_positive_lower_bound():
+    model, results = _root_response_problem([1.0, 1.2])
+
+    allocation = optimize_budget(
+        model,
+        results,
+        quantity="expected",
+        budget=1.0,
+        bounds={"video": (0.45, 1.0), "search": (0.0, 1.0)},
+    )
+
+    # Equal marginal returns place the unconstrained optimum at 1 / (1 + 1.2**2),
+    # below the 0.45 floor, so the concave response peaks on that bound itself and
+    # the exact analytic gradient must hold the solver there.
+    unconstrained = 1.0 / (1.0 + 1.2**2)
+    optimized = allocation["spend"].sel(allocation="optimized").values
+    peak = np.sqrt(0.45) + 1.2 * np.sqrt(0.55)
+    assert unconstrained < 0.45
+    np.testing.assert_allclose(optimized, [0.45, 0.55], atol=1e-8)
+    np.testing.assert_allclose(allocation["response"].sel(allocation="optimized"), peak, atol=1e-6)
     assert allocation.attrs["success"]
 
 
