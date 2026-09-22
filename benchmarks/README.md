@@ -1,60 +1,39 @@
 # mmmJAX benchmarks
 
-The mmmJAX benchmark suite uses [Airspeed Velocity (ASV)](https://asv.readthedocs.io/) to track
-performance across numerical workloads. It covers distribution evaluation, gradients, sampling,
-and tail probabilities across representative model shapes, with separate comparisons against public
-JAX operations.
-
-These workloads cover representative shapes and known numerical edge cases, but they do not replace
-the distribution correctness tests. Implementations can also differ outside the measured inputs
-because mmmJAX applies stricter parameter validation.
+The benchmark suite uses [Airspeed Velocity (ASV)](https://asv.readthedocs.io/) to track the cost
+of distribution evaluation, gradients, sampling, and tail probabilities across representative
+model shapes, and a separate command compares mmmJAX with the equivalent public JAX operations.
+The workloads cover known numerical edge cases, but they do not replace the correctness tests, and
+the two implementations do not always do identical work because mmmJAX validates its parameters
+more strictly.
 
 ## Running benchmarks
 
-Install and enter the locked benchmark environment from the repository root:
+Install and enter the locked benchmark environment from the repository root, then run everything
+below from that shell.
 
 ```console
 pixi install -e benchmark
 pixi shell -e benchmark
 ```
 
-Run all remaining commands from this Pixi shell.
-
-Benchmark the current checkout:
-
-```console
-spin bench
-```
-
-Use `--quick` to check each benchmark once, `-t` to select a suite or benchmark, and `--compare`
-to compare committed revisions. These options can be combined as needed.
-
-> [!NOTE]
-> Full suite and revision comparisons can take several minutes. Use `--quick` when you only need to
-> check that the benchmarks execute.
-
-For example, run the `ElementwiseLogProbability` benchmark class with:
+`spin bench` benchmarks the current checkout. Add `--quick` to run each benchmark once, `-t` to
+select a suite or a benchmark class, and `--compare` to compare committed revisions. The full suite
+and revision comparisons take several minutes, so use `--quick` when you only need to confirm that
+the benchmarks execute.
 
 ```console
+spin bench --quick
 spin bench -t bench_density.ElementwiseLogProbability
-```
-
-Compare mmmJAX with equivalent public JAX operations:
-
-```console
 spin compare
 ```
 
-Use `spin bench --help` and `spin compare --help` for all available options.
+Revision comparisons install only committed project source, so commit package changes before
+comparing them. The suite and its configuration always come from the current checkout and define
+both runs. `asv.conf.json` pins JAX, jaxlib, and ASV Runner for the managed environment, and
+`spin bench --help` and `spin compare --help` list every option.
 
-Revision comparisons install only committed project source. Commit package changes before comparing
-them. The benchmark suite and configuration come from the current checkout and define both runs, so
-keep those files clean unless you intentionally want their uncommitted state applied to both
-revisions. The managed environment pins JAX, jaxlib, and ASV Runner through `asv.conf.json`.
-
-### Result history
-
-`spin asv` runs lower-level ASV operations from the benchmark directory:
+`spin asv` exposes the lower-level ASV commands for keeping a result history.
 
 ```console
 spin asv machine --yes
@@ -63,147 +42,76 @@ spin asv publish
 spin asv preview
 ```
 
-Generated `.asv` artifacts are ignored by Git. Local machine metadata lives in
-`~/.asv-machine.json`.
+Generated `.asv` artifacts are ignored by Git, and machine metadata lives in `~/.asv-machine.json`.
 
 ## What is measured
 
-- `bench_density`: Elementwise log probabilities and summed log densities
-- `bench_event`: Dirichlet and Multinomial log probabilities, parameter gradients, and sampling
-- `bench_grad`: Log densities and their parameter gradients
-- `bench_random`: Random sampling for distributions with supported samplers
-- `bench_tail`: Log-CDFs, log-survival functions, and their parameter gradients
+- `bench_density` times elementwise log probabilities and summed log densities.
+- `bench_event` times Dirichlet and Multinomial log probabilities, gradients, and sampling.
+- `bench_grad` times log densities together with their parameter gradients.
+- `bench_random` times random sampling for every distribution with a sampler.
+- `bench_tail` times log-CDFs, log-survival functions, and their gradients.
 
-The ASV suites use float32 inputs and cover the `vector`, `likelihood`, and `channel_prior`
-profiles. The `stress` profile remains opt-in for paired comparisons.
+Every suite uses float32 inputs in three profiles. `vector` pairs values of shape `(32,)` with
+scalar parameters, `likelihood` pairs values of shape `(260, 8)` with parameters of shape `(8,)`,
+and `channel_prior` pairs values of shape `(8, 465)` with parameters of shape `(465,)`. A fourth
+`stress` profile with values of shape `(260, 8, 465)` is available only for paired comparisons.
+Categorical parameters append their event axis to the parameter shape, and event distributions
+use their own profiles with one 32-component event, 260 samples over eight batches of
+four-component events, or eight samples from a shared 465-component vector.
 
-### Profiles
-
-- `vector`: Values `(32,)` and scalar parameters for basic broadcasting
-- `likelihood`: Values `(260, 8)` and parameters `(8,)` for grouped workloads
-- `channel_prior`: Values `(8, 465)` and parameters `(465,)` for wide batches shared across groups
-- `stress`: Values `(260, 8, 465)` and parameters `(8, 465)` for large nested structures
-
-Categorical parameters append their event axis to the parameter batch shape. For example, the
-`channel_prior` profile uses parameters shaped `(465, K)` and values shaped `(8, 465)`.
-
-Event distributions use dedicated profiles. The `vector` workload has one 32-component event,
-`likelihood` has 260 samples across eight batches of four-component events, and `channel_prior`
-has eight samples from a shared 465-component parameter vector. Multinomial workloads use 100
-trials per event.
-
-### Reading ASV results
-
-ASV counts a parameterized method as one benchmark and expands its parameter combinations in the
-results table. Timings show the sample median followed by half the interquartile range. A large value
-after `±` indicates unstable samples and should be rerun. Each sample averages 100 synchronized calls,
-with five samples collected per round. All ASV timings exclude compilation and include the compiled
-JAX call and host synchronization.
+ASV lists each parameter combination of a method as its own row. A timing is the sample median
+followed by half the interquartile range, so a large second number means unstable samples that
+deserve a rerun. Each sample averages 100 synchronized calls, five samples make a round, and every
+timing excludes compilation while including the compiled call and host synchronization.
 
 ## Comparing with JAX
 
-`spin compare` measures mmmJAX and equivalent public JAX operations in the same process. Its default
-workload uses the `channel_prior` profile, float32, ordinary inputs, both implementations, and all
-standard density, gradient, and sampling operations. Filters can narrow the comparison:
+`spin compare` measures mmmJAX and the matching public JAX operations in one process. The default
+workload uses the `channel_prior` profile with ordinary inputs and every density, gradient, and
+sampling operation, and filters narrow it.
 
 ```console
 spin compare --profiles vector --distributions normal
 ```
 
-> [!IMPORTANT]
-> mmmJAX applies stricter parameter checks and numerical safeguards than some JAX references, so the
-> two sides do not always perform exactly the same work.
+The report separates cache-cleared compilation from warm execution. Compilation timings are
+descriptive, while warm results give the median, the median absolute deviation, throughput,
+iteration counts, and the ratio of the two medians. References come from `jax.scipy.stats`,
+`jax.random`, and plain JAX array operations, composed where no single public function matches an
+mmmJAX parameterization. SciPy stays a correctness reference rather than a timing baseline because
+it offers none of the JIT, differentiation, accelerator, or PRNG behavior being measured.
 
-The report separates cache-cleared JIT compilation from synchronized warm execution. Compilation
-timings are descriptive. Warm results report the median, median absolute deviation, throughput,
-iterations, and the relative mmmJAX and JAX medians.
-
-References use public `jax.scipy.stats`, `jax.random`, and JAX array operations. Composed references
-are used when no single public function matches an mmmJAX parameterization. SciPy remains an
-independent correctness reference and is not a timing baseline because it does not provide the same
-JIT, automatic differentiation, accelerator, or PRNG execution model.
-
-Event-distribution references adapt public JAX operations to mmmJAX's final-axis batching contract.
-The Multinomial logit reference composes `softmax` with JAX's probability-parameterized operation.
-
-## Special workloads
-
-- Discrete inputs cycle valid outcomes across the sample and parameter dimensions. The Negative
-  Binomial sampling reference composes public Gamma and Poisson random functions.
-- Bernoulli tail benchmarks use thresholds between 0 and 1 and vary the parameters across batches.
-  The scalar-parameter profile uses the deepest selected tail. Probability inputs use powers of two
-  to avoid rounding the CDF's success probability to one: float32 log-CDF cases reach about -16,
-  while log-survival and float64 cases reach about -32. Logit inputs cover -4 to -32 in either tail.
-  Ordinary inputs use the configured success probability or logit. JAX references compose public
-  Bernoulli log masses or `log_sigmoid` with the step-function boundaries.
-- Binomial tail benchmarks use 100 trials and success probability 0.5 (logit 0), with counts spanning
-  log probabilities around -4 to -35. Ordinary inputs use thresholds from 25 to 45 and the configured
-  parameters. References compose public JAX incomplete-Beta operations, since JAX has no Binomial
-  CDF or survival function. Gradients treat trial counts as fixed data. These workloads do not
-  measure the finite-sum recovery used for much smaller probabilities or extreme logits.
-- Negative Binomial tail benchmarks cover mean and log-mean parameters, using mean 80 and
-  concentration 40 for log probabilities around -4 to -36. Ordinary inputs use counts from 0 to 12
-  with the configured parameters. JAX value references compose public incomplete-Beta operations.
-  Full parameter-gradient timings are mmmJAX-only because JAX does not provide the incomplete-Beta
-  shape derivatives needed for concentration gradients. These workloads do not measure recovery
-  for underflowed Beta arguments or extreme log means.
-- Poisson tail benchmarks cover rate and log-rate parameters, using rate 40 and counts that span
-  log probabilities around -4 to -34. Ordinary inputs use counts from 0 to 10 with the configured
-  parameters. JAX references use its public Poisson CDF and the incomplete Gamma survival identity,
-  taking the logarithm of each probability.
-- Concentrated Poisson inputs span roughly two standard deviations around rates of `1e7` for
-  float32 and `1e15` for float64. They remain exactly representable while exposing cancellation near
-  the mode. Public JAX timings are omitted because its direct calculation is not numerically
-  equivalent there, and sampling remains in the ordinary workload because the float64 rate exceeds
-  the `int32` output range.
-- Tail inputs target log probabilities from roughly -4 to -35. Gradient benchmarks sum elementwise
-  values and differentiate only distribution parameters, matching the treatment of observed data
-  during inference.
-- Cauchy tail inputs invert its closed-form tail probability to cover log probabilities from -4 to
-  -32. Public JAX remains available for ordinary Cauchy inputs but is omitted from the deep-tail
-  comparison because its direct formula loses accuracy through cancellation.
-
-Ordinary tail-probability inputs cover standardized values from -2 to 2 for Cauchy, Laplace, Normal,
-and LogNormal; 0.023 to 2.36 for Half Normal; `rate * value` from 0.1 to 3 for Exponential and 0.5 to
-6 for Gamma; `scale / value` from 0.9 to 7.35 for Inverse Gamma; and probabilities from 0.25 to 0.75
-for Uniform. Uniform anchors its evaluated endpoint at zero for representable float32 tails. Public
-Laplace and Uniform references compose CDFs and reflected CDFs because JAX does not provide their
-log-CDF or log-survival functions.
-
-Run the specialized comparisons with:
+Tail inputs target log probabilities from about -4 to -35, discrete inputs cycle valid outcomes
+across the sample and parameter axes, and gradients differentiate only the distribution parameters,
+which matches how observed data is treated during inference. Some deep-tail references are omitted
+because JAX's direct formulas lose accuracy there, and some gradients are mmmJAX-only because JAX
+lacks the needed incomplete-Beta derivatives. `cases.py` and `references.py` hold the exact input
+values and reference availability for every case. Two specialized comparisons cover the
+concentrated Poisson inputs and the tail operations.
 
 ```console
-spin compare \
-  --distributions poisson poisson_log \
-  --inputs concentrated \
+spin compare --distributions poisson poisson_log --inputs concentrated \
   --operations logpmf log_density value_and_grad
 
-spin compare \
-  --inputs ordinary tail \
+spin compare --inputs ordinary tail \
   --operations logcdf logcdf_value_and_grad logsf logsf_value_and_grad
 ```
 
-Exact workload values and reference availability are defined in `cases.py` and `references.py`.
-
 ## Writing benchmarks
 
-See ASV's [benchmark-writing guidance](https://asv.readthedocs.io/en/latest/writing_benchmarks.html)
-for the fundamentals. mmmJAX benchmarks should also follow these rules:
+Follow ASV's [benchmark-writing guidance](https://asv.readthedocs.io/en/latest/writing_benchmarks.html)
+for the fundamentals. Timing modules live in `benchmarks/benchmarks/` and are named `bench_*.py`,
+workload definitions live in `cases.py`, and shared measurement utilities live in `common.py`.
+Use ASV `time_` methods, build inputs and compiled functions in `setup`, and synchronize every
+timed JAX result. Leave warm-up enabled and keep the shared `number` and `repeat` policy unless
+measurements justify a change. Keep `params` and `param_names` stable across revisions, handle
+cases that older revisions lack inside `setup`, and keep every module importable across supported
+revisions, which also means no `time_` or `track_` prefixes in support modules. Increment the
+suite's `version` whenever workload construction, setup, synchronization, or the measured
+operation changes.
 
-- Put timing modules in `benchmarks/benchmarks/` and name them `bench_*.py`
-- Keep workload definitions in `cases.py` and shared measurement utilities in `common.py`
-- Use ASV `time_` methods, prepare inputs and compiled functions in `setup`, and synchronize every
-  timed JAX result
-- Keep ASV warm-up enabled and preserve the shared `number` and `repeat` policy unless measurements
-  justify changing it
-- Keep `params` and `param_names` stable across revisions, and handle unavailable historical cases
-  in `setup`
-- Keep every module importable across supported revisions and avoid benchmark prefixes such as
-  `time_` or `track_` in support modules
-- Increment the suite's explicit `version` when workload construction, setup, synchronization, or
-  the measured operation changes
-
-Before requesting review, check discovery and run the suite you changed:
+Before requesting review, check discovery and run the suite you changed.
 
 ```console
 spin asv check -E existing
