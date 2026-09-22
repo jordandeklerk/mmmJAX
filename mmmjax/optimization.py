@@ -369,11 +369,10 @@ def optimize_budget(
         lower_free, upper_free = lower[free], upper[free]
         bound_tolerance = 4 * np.finfo(np.float64).eps
 
-        # Diminishing returns flatten a forward secant as the step grows, so the
-        # smallest step the model precision still resolves sits closest to the
-        # derivative. Measuring at shrinking steps and keeping the steepest finite
-        # slope recovers that value without assuming a curve shape.
-        shrinking_steps = difference_step / np.array([1.0, 16.0, 256.0])
+        # Secants flatten as the step grows, so the steepest of a few shrinking
+        # steps is closest to the derivative. The floor keeps float64 from probing
+        # where an unbounded derivative makes the secant explode and stall the solver.
+        shrinking_steps = np.unique(np.maximum(difference_step / np.array([1.0, 16.0, 256.0]), 1e-6))
 
         def evaluate(shares: NDArray[np.float64]) -> tuple[float, NDArray[np.float64]]:
             current = jnp.asarray(shares, dtype=baseline.dtype)
@@ -381,10 +380,8 @@ def optimize_budget(
             value_host = float(value)
             gradient_host = np.array(gradient, dtype=np.float64, copy=True)
 
-            # Fractional response curves can have unbounded or masked derivatives at
-            # zero spending. Measure forward changes only for shares resting on a
-            # zero-spend boundary, since a positive lower bound leaves the analytic
-            # gradient exact and free variables keep room to step upward from zero.
+            # Only a zero-spend boundary needs a secant, since derivatives can be
+            # unbounded or masked there while a positive bound keeps the gradient exact.
             zero_boundary = (shares <= lower_free + bound_tolerance) & (lower_free <= bound_tolerance)
             at_zero = np.flatnonzero(zero_boundary)
             if at_zero.size:

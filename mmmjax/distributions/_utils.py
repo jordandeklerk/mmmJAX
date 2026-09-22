@@ -29,8 +29,7 @@ def _as_real_array(name: str, value: ArrayLike) -> jax.Array:
         except (TypeError, ValueError):
             host_value = None
         if host_value is not None and host_value.dtype == object:
-            # A Python int too wide for any NumPy integer dtype lands here rather than
-            # raising, and would otherwise reach JAX and raise an uncaught OverflowError
+            # NumPy widens ints beyond int64 to object dtype, which JAX would reject with OverflowError
             raise TypeError(
                 f"distribution argument {name!r} must be real numeric and array-like, got {type(value).__name__}"
             )

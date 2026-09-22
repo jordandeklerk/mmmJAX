@@ -233,8 +233,7 @@ def _transformed_array(name: str, value: object) -> jax.Array:
         except (TypeError, ValueError):
             host_value = None
         if host_value is not None and host_value.dtype == object:
-            # A Python int too wide for any NumPy integer dtype lands here rather than
-            # raising, and would otherwise reach JAX and raise an uncaught OverflowError
+            # NumPy widens ints beyond int64 to object dtype, which JAX would reject with OverflowError
             raise TypeError(f"Transformed data {name!r} must contain real numeric values")
         if host_value is not None and np.issubdtype(host_value.dtype, np.integer):
             canonical_dtype = jax.dtypes.canonicalize_dtype(host_value.dtype)
