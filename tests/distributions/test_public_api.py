@@ -38,6 +38,7 @@ DISTRIBUTION_EXPORTS = [
     "cauchy_logpdf",
     "cauchy_logsf",
     "cauchy_rng",
+    "custom_distribution",
     "dirichlet",
     "dirichlet_logpdf",
     "dirichlet_rng",
