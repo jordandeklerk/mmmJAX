@@ -7,6 +7,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from enum import StrEnum
+from itertools import pairwise
 from keyword import iskeyword
 from typing import TYPE_CHECKING, Literal, NamedTuple, cast
 
@@ -576,14 +577,12 @@ class _DataLayout:
     organic_rf_channels: tuple[str, ...]
 
 
-def _prepare_model_frame(
-    frame: object,
-    layout: _DataLayout,
-    *,
-    time: str,
-    frequency: str | None,
-) -> PreparedData:
-    """Reuse selected source columns without inferring roles from new column names."""
+def _prepare_model_frame(frame: object, layout: _DataLayout, *, time: str) -> PreparedData:
+    """Reuse selected source columns without inferring roles from new column names.
+
+    Scenario labels keep the calendar of the training data, so the frame is prepared
+    without a frequency and the caller checks its labels against the training calendar.
+    """
     if not is_into_dataframe(frame):
         raise TypeError("New data must be an eager dataframe or PreparedData")
     native = nw.from_native(frame, eager_only=True)
@@ -603,7 +602,7 @@ def _prepare_model_frame(
         native,
         time=time,
         groups=layout.group_columns,
-        frequency=frequency,
+        frequency=None,
         outcome=columns["outcome"][0] if "outcome" in columns else None,
         revenue_per_outcome=columns["revenue_per_outcome"][0] if "revenue_per_outcome" in columns else None,
         population=columns["population"][0] if "population" in columns else None,
@@ -1344,4 +1343,58 @@ def _validate_calendar_spacing(times: Sequence[datetime], *, time: str, frequenc
                 f"time column {time!r} does not follow frequency={frequency!r}, "
                 f"expected {expected.isoformat(sep=' ')}, found {observed.isoformat(sep=' ')}. "
                 "Check for missing periods or an incorrect frequency"
+            )
+
+
+def _calendar_periods(observed: datetime, *, anchor: datetime, frequency: str) -> int:
+    """Count the whole periods that separate an observation from a calendar anchor."""
+    months = {"monthly": 1, "quarterly": 3, "yearly": 12}.get(frequency)
+    if months is None:
+        step = 7 if frequency == "weekly" else 1
+        periods = round((observed - anchor).total_seconds() / (86400 * step))
+        return periods
+    periods = round(((observed.year - anchor.year) * 12 + observed.month - anchor.month) / months)
+    return periods
+
+
+def _calendar_grid_date(anchor: datetime, periods: int, *, frequency: str) -> datetime:
+    """Step a whole number of periods away from a calendar anchor."""
+    months = {"monthly": 1, "quarterly": 3, "yearly": 12}.get(frequency)
+    if months is None:
+        stepped = anchor + timedelta(days=periods * (7 if frequency == "weekly" else 1))
+        return stepped
+    at_month_end = anchor.day == monthrange(anchor.year, anchor.month)[1]
+    year, month = divmod(anchor.year * 12 + anchor.month - 1 + periods * months, 12)
+    last_day = monthrange(year, month + 1)[1]
+    day = last_day if at_month_end else min(anchor.day, last_day)
+    stepped = anchor.replace(year=year, month=month + 1, day=day)
+    return stepped
+
+
+def _validate_calendar_anchor(labels: Sequence[object], *, anchor: datetime, time: str, frequency: str) -> None:
+    """Check labels against an established calendar rather than against their own first period."""
+    # Labels may arrive in any order, so each one is placed on the anchor's grid on its own
+    for observed in _calendar_dates(labels, time=time, frequency=frequency):
+        periods = _calendar_periods(observed, anchor=anchor, frequency=frequency)
+        nearest = _calendar_grid_date(anchor, periods, frequency=frequency)
+        if observed != nearest:
+            raise ValueError(
+                f"time column {time!r} contains {observed.isoformat(sep=' ')}, which does not follow the "
+                f"training frequency={frequency!r}. The nearest period is {nearest.isoformat(sep=' ')}. "
+                "Scenario dates must follow the training calendar"
+            )
+
+
+def _validate_calendar_contiguity(labels: Sequence[object], *, anchor: datetime, time: str, frequency: str) -> None:
+    """Check that labels fill consecutive positions on an established calendar."""
+    # A window may start anywhere on the grid, yet a skipped period would change what the lags mean
+    times = _calendar_dates(labels, time=time, frequency=frequency)
+    positions = [_calendar_periods(observed, anchor=anchor, frequency=frequency) for observed in times]
+    for previous, following in pairwise(positions):
+        if following > previous + 1:
+            missing = _calendar_grid_date(anchor, previous + 1, frequency=frequency)
+            raise ValueError(
+                f"time column {time!r} skips {missing.isoformat(sep=' ')} at the training "
+                f"frequency={frequency!r}. The scenario is missing periods, so supply every period "
+                "between its first and last date"
             )

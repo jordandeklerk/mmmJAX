@@ -643,12 +643,100 @@ def test_model_prepares_dataframe_using_saved_calendar_configuration(frequency):
     expected = model.prepare_data(prepare_data(short, time="week", outcome="sales", frequency=frequency))
     np.testing.assert_array_equal(actual.values["outcome"], expected.values["outcome"])
 
-    irregular = pl.DataFrame({"week": ["2026-01-26", "2026-02-09"], "sales": [40.0, 50.0]})
+    gapped = pl.DataFrame({"week": ["2026-01-26", "2026-02-09"], "sales": [40.0, 50.0]})
+    offset = pl.DataFrame({"week": ["2026-01-27", "2026-02-03"], "sales": [40.0, 50.0]})
     if frequency is None:
-        np.testing.assert_array_equal(model.prepare_data(irregular).values["outcome"], [40.0, 50.0])
+        np.testing.assert_array_equal(model.prepare_data(gapped).values["outcome"], [40.0, 50.0])
+        np.testing.assert_array_equal(model.prepare_data(offset).values["outcome"], [40.0, 50.0])
     else:
-        with pytest.raises(ValueError, match="expected 2026-02-02"):
-            model.prepare_data(irregular)
+        for scenario in (gapped, prepare_data(gapped, time="week", outcome="sales")):
+            with pytest.raises(ValueError, match=r"skips 2026-02-02 .*missing periods"):
+                model.prepare_data(scenario)
+        with pytest.raises(ValueError, match="Scenario dates must follow the training calendar"):
+            model.prepare_data(offset)
+
+
+def _calendar_model(data):
+    return Model(parameters={}, log_density=lambda outcome: jnp.sum(outcome), data=data)
+
+
+def test_month_end_scenarios_follow_the_training_calendar_instead_of_their_own_first_period():
+    training = prepare_data(
+        pl.DataFrame({"month": ["2026-01-30", "2026-02-28", "2026-03-30"], "sales": [10.0, 20.0, 30.0]}),
+        time="month",
+        outcome="sales",
+    )
+    assert training.frequency == "monthly"
+    model = _calendar_model(training)
+
+    later = pl.DataFrame({"month": ["2026-02-28", "2026-03-30"], "sales": [20.0, 30.0]})
+    np.testing.assert_array_equal(model.prepare_data(later).values["outcome"], [20.0, 30.0])
+    prepared = prepare_data(later, time="month", outcome="sales")
+    np.testing.assert_array_equal(model.prepare_data(prepared).values["outcome"], [20.0, 30.0])
+
+    shifted = pl.DataFrame({"month": ["2026-02-27", "2026-03-30"], "sales": [20.0, 30.0]})
+    for scenario in (shifted, prepare_data(shifted, time="month", outcome="sales")):
+        with pytest.raises(ValueError, match=r"2026-02-27 .*nearest period is 2026-02-28"):
+            model.prepare_data(scenario)
+
+
+def test_weekly_models_reject_scenario_dates_that_leave_the_training_grid():
+    training = prepare_data(
+        pl.DataFrame({"week": ["2026-01-05", "2026-01-12", "2026-01-19"], "sales": [10.0, 20.0, 30.0]}),
+        time="week",
+        outcome="sales",
+    )
+    assert training.frequency == "weekly"
+    model = _calendar_model(training)
+
+    daily = pl.DataFrame({"week": ["2026-01-26", "2026-01-27"], "sales": [40.0, 50.0]})
+    assert prepare_data(daily, time="week", outcome="sales").frequency is None
+    for scenario in (daily, prepare_data(daily, time="week", outcome="sales")):
+        with pytest.raises(ValueError, match=r"2026-01-27 .*Scenario dates must follow the training calendar"):
+            model.prepare_data(scenario)
+
+    later = pl.DataFrame({"week": ["2026-03-02", "2026-03-09", "2026-03-16"], "sales": [40.0, 50.0, 60.0]})
+    np.testing.assert_array_equal(model.prepare_data(later).values["outcome"], [40.0, 50.0, 60.0])
+    prepared = prepare_data(later, time="week", outcome="sales")
+    assert prepared.frequency == "weekly"
+    np.testing.assert_array_equal(model.prepare_data(prepared).values["outcome"], [40.0, 50.0, 60.0])
+
+    shifted = pl.DataFrame({"week": ["2026-03-03", "2026-03-10", "2026-03-17"], "sales": [40.0, 50.0, 60.0]})
+    for scenario in (shifted, prepare_data(shifted, time="week", outcome="sales")):
+        with pytest.raises(ValueError, match=r"2026-03-03 .*nearest period is 2026-03-02"):
+            model.prepare_data(scenario)
+
+
+def test_scenario_media_history_follows_the_training_calendar():
+    frame = pl.DataFrame(
+        {"week": ["2026-01-05", "2026-01-12", "2026-01-19"], "video": [1.0, 2.0, 3.0], "sales": [10.0, 20.0, 30.0]}
+    )
+    history = pl.DataFrame({"week": ["2025-12-29"], "video": [0.5]})
+    training = prepare_data(frame, time="week", outcome="sales", media=["video"], media_history=history)
+    assert training.frequency == "weekly"
+    model = _calendar_model(training)
+
+    future = pl.DataFrame({"week": ["2026-02-02"], "video": [4.0], "sales": [40.0]})
+    selection = {"time": "week", "outcome": "sales", "media": ["video"]}
+    on_grid = prepare_data(future, media_history=pl.DataFrame({"week": ["2026-01-26"], "video": [3.5]}), **selection)
+    np.testing.assert_array_equal(model.prepare_data(on_grid).values["outcome"], [40.0])
+
+    off_grid = prepare_data(future, media_history=pl.DataFrame({"week": ["2026-01-27"], "video": [3.5]}), **selection)
+    with pytest.raises(ValueError, match=r"2026-01-27 .*Scenario dates must follow the training calendar"):
+        model.prepare_data(off_grid)
+
+
+def test_integer_period_scenarios_stay_free_of_calendar_checks():
+    training = prepare_data(
+        pl.DataFrame({"time": [1, 2, 3], "sales": [10.0, 20.0, 30.0]}), time="time", outcome="sales"
+    )
+    assert training.frequency is None
+    model = _calendar_model(training)
+
+    scenario = pl.DataFrame({"time": [9, 17], "sales": [40.0, 50.0]})
+    np.testing.assert_array_equal(model.prepare_data(scenario).values["outcome"], [40.0, 50.0])
+    prepared = prepare_data(scenario, time="time", outcome="sales")
+    np.testing.assert_array_equal(model.prepare_data(prepared).values["outcome"], [40.0, 50.0])
 
 
 @pytest.mark.parametrize("kind", ["lazy", "series", "mapping"])

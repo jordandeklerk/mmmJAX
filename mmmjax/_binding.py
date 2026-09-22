@@ -227,6 +227,24 @@ def _transformed_array(name: str, value: object) -> jax.Array:
     """Convert one transformed_data output to a finite real array."""
     if value is None or callable(value):
         raise TypeError(f"Transformed data {name!r} must contain real numeric values")
+    if not isinstance(value, jax.Array):
+        try:
+            host_value = np.asarray(value)
+        except (TypeError, ValueError):
+            host_value = None
+        if host_value is not None and host_value.dtype == object:
+            # A Python int too wide for any NumPy integer dtype lands here rather than
+            # raising, and would otherwise reach JAX and raise an uncaught OverflowError
+            raise TypeError(f"Transformed data {name!r} must contain real numeric values")
+        if host_value is not None and np.issubdtype(host_value.dtype, np.integer):
+            canonical_dtype = jax.dtypes.canonicalize_dtype(host_value.dtype)
+            if canonical_dtype != host_value.dtype:
+                limits = np.iinfo(canonical_dtype)
+                if np.any(host_value < limits.min) or np.any(host_value > limits.max):
+                    raise ValueError(
+                        f"Transformed data {name!r} contains integers outside the JAX dtype range. "
+                        "Return floating-point values or enable 64-bit mode"
+                    )
     try:
         array = jnp.array(value, copy=not isinstance(value, jax.Array))
     except (TypeError, ValueError) as error:

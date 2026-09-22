@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 from typing import Literal, override
 
@@ -34,6 +34,7 @@ from mmmjax.data import (
     Data,
     PreparedData,
     Reference,
+    _calendar_dates,
     _data_dimensions,
     _DataLayout,
     _day_of_year,
@@ -41,6 +42,8 @@ from mmmjax.data import (
     _time_input_names,
     _time_positions,
     _TimeInput,
+    _validate_calendar_anchor,
+    _validate_calendar_contiguity,
 )
 from mmmjax.parameters import Parameterization, _as_array, _Dimensioned
 from mmmjax.scaling import DataScaling, Scaling, fit_data_scaling
@@ -460,7 +463,11 @@ class Model:
         ----------
         data : dataframe-like or PreparedData
             Observations using the original source columns and groups.
-            Dataframes reuse the model's selections and observation spacing.
+            Dataframes reuse the model's selections, and every scenario
+            follows the calendar of the training periods without gaps.
+            These calendar checks apply when the training data carries an
+            inferred or declared frequency, while training prepared with
+            ``frequency=None`` leaves scenario dates unchecked.
             Prepared inputs may be raw or use this model's fitted scaling.
             Omit inputs only when no evaluated callback needs them.
             For explicit media history, use ``prepare_data(media_history=...)``.
@@ -481,7 +488,7 @@ class Model:
         training = self._training
         if not isinstance(data, PreparedData):
             assert training.time_column is not None
-            data = _prepare_model_frame(data, training.layout, time=training.time_column, frequency=training.frequency)
+            data = _prepare_model_frame(data, training.layout, time=training.time_column)
         if data.time_column != training.time_column:
             raise ValueError(f"The time column must match the training column {training.time_column!r}")
         if (
@@ -494,6 +501,17 @@ class Model:
                 f"Media inputs must retain the model's {training.frequency} observation spacing. "
                 "Changing frequency changes the meaning of the lag parameters"
             )
+        if training.frequency is not None and all(isinstance(label, (str, date)) for label in data.time_values):
+            # Scenarios never re-anchor the calendar, so labels stay on the training grid without gaps
+            column = data.time_column
+            frequency = training.frequency
+            earliest = (training.media_time_values or training.time_values)[0]
+            anchor = _calendar_dates([earliest], time=column, frequency=frequency)[0]
+            _validate_calendar_anchor(data.time_values, anchor=anchor, time=column, frequency=frequency)
+            _validate_calendar_contiguity(data.time_values, anchor=anchor, time=column, frequency=frequency)
+            if data.media_time_values and data.media_time_values != data.time_values:
+                _validate_calendar_anchor(data.media_time_values, anchor=anchor, time=column, frequency=frequency)
+                _validate_calendar_contiguity(data.media_time_values, anchor=anchor, time=column, frequency=frequency)
 
         aligned = data._align_to(training.layout)
         if training.scaling is not None:

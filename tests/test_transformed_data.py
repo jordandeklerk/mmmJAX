@@ -177,16 +177,69 @@ def test_transformed_data_requires_prepared_data():
         (lambda media: {"missing": None}, TypeError, "must contain real numeric values"),
         (lambda media: {"bad": jnp.array([jnp.nan])}, ValueError, "must contain finite values"),
         (lambda media: {"not valid": media}, ValueError, "valid non-keyword Python identifier"),
+        (
+            lambda media: {"big": np.array([2**32 + 1], dtype=np.int64)},
+            ValueError,
+            "contains integers outside the JAX dtype range",
+        ),
+        (lambda media: {"big": [2**32 + 1]}, ValueError, "contains integers outside the JAX dtype range"),
+        (lambda media: {"big": [2**70]}, TypeError, "must contain real numeric values"),
     ],
 )
 def test_transformed_data_outputs_are_validated_at_construction(transformed_data, error, message):
-    with pytest.raises(error, match=message):
+    with jax.enable_x64(False), pytest.raises(error, match=message):
         Model(
             parameters={"coefficient": Real()},
             log_density=lambda coefficient: -jnp.square(coefficient),
             data=_data(),
             transformed_data=transformed_data,
         )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [np.array([2**32 + 1], dtype=np.int64), [2**32 + 1]],
+    ids=["int64_array", "list"],
+)
+def test_transformed_data_accepts_and_preserves_large_integers_under_64_bit_mode(value):
+    def transformed_data(media):
+        return {"big": value}
+
+    def generated_quantities(key, big):
+        return {"big": big}
+
+    with jax.enable_x64(True):
+        model = Model(
+            parameters={"coefficient": Real()},
+            log_density=lambda coefficient: -jnp.square(coefficient),
+            generated_quantities=generated_quantities,
+            data=_data(),
+            transformed_data=transformed_data,
+        )
+        outputs = model.generate_quantities(jax.random.key(0), {"coefficient": jnp.array(0.0)}, model.data)
+
+    assert int(np.asarray(outputs["big"])[0]) == 2**32 + 1
+
+
+def test_transformed_data_preserves_in_range_integers_at_either_precision():
+    def transformed_data(media):
+        return {"count": np.array([5], dtype=np.int64)}
+
+    def generated_quantities(key, count):
+        return {"count": count}
+
+    for precision in (False, True):
+        with jax.enable_x64(precision):
+            model = Model(
+                parameters={"coefficient": Real()},
+                log_density=lambda coefficient: -jnp.square(coefficient),
+                generated_quantities=generated_quantities,
+                data=_data(),
+                transformed_data=transformed_data,
+            )
+            outputs = model.generate_quantities(jax.random.key(0), {"coefficient": jnp.array(0.0)}, model.data)
+
+        assert int(np.asarray(outputs["count"])[0]) == 5
 
 
 def test_transformed_data_uses_declared_variable_names_only():

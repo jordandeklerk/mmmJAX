@@ -4,6 +4,7 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 from tensorflow_probability.substrates.jax import distributions as tfd
 
@@ -1011,3 +1012,44 @@ def test_distribution_functions_identify_non_array_like_argument() -> None:
         match="argument 'scale' must be real numeric and array-like, got object",
     ):
         normal_logpdf(0.0, 0.0, object())
+
+
+@pytest.mark.parametrize(
+    "value",
+    [np.array([3_000_000_000], dtype=np.int64), 3_000_000_000, [3_000_000_000]],
+    ids=["int64_array", "python_int", "list"],
+)
+def test_as_real_array_rejects_integers_outside_the_32_bit_range(value) -> None:
+    with jax.enable_x64(False), pytest.raises(ValueError, match=r"argument 'value' contains integers"):
+        exponential_logpdf(value, 1e-9)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [np.array([3_000_000_000], dtype=np.int64), 3_000_000_000, [3_000_000_000]],
+    ids=["int64_array", "python_int", "list"],
+)
+def test_as_real_array_accepts_integers_outside_the_32_bit_range_under_64_bit_mode(value) -> None:
+    with jax.enable_x64(True):
+        result = exponential_logpdf(value, 1e-9)
+
+    expected = np.log(1e-9) - 1e-9 * 3_000_000_000
+    np.testing.assert_allclose(result, expected, rtol=1e-9)
+
+
+def test_as_real_array_preserves_in_range_integers_at_either_precision() -> None:
+    value = np.array([5], dtype=np.int64)
+    expected = np.log(1e-9) - 1e-9 * 5
+
+    with jax.enable_x64(False):
+        result = exponential_logpdf(value, 1e-9)
+    np.testing.assert_allclose(result, expected, rtol=1e-5)
+
+    with jax.enable_x64(True):
+        result = exponential_logpdf(value, 1e-9)
+    np.testing.assert_allclose(result, expected, rtol=1e-9)
+
+
+def test_as_real_array_rejects_a_python_int_too_wide_for_any_integer_dtype() -> None:
+    with pytest.raises(TypeError, match="argument 'value' must be real numeric and array-like"):
+        exponential_logpdf([2**70], 1e-9)

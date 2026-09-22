@@ -101,6 +101,8 @@ def sample(
         Maximum draws evaluated together across chains when converting
         parameters and generating quantities. Smaller batches reduce working
         memory. This does not change NUTS or the number of retained draws.
+        Draws do not depend on the batch size under JAX's default threefry
+        generator. The rbg generators make vectorized draws batch dependent.
     progress : bool, default True
         Show warmup and sampling progress bars. Sampling bars restart for each
         chunk. Parallel counters reflect individual devices, not completion
@@ -283,6 +285,8 @@ def continue_sampling(
         Maximum additional draws per chain in each device sampling chunk.
     batch_size : int, default 64
         Maximum draws evaluated together when generating results.
+        Draws do not depend on the batch size under JAX's default threefry
+        generator. The rbg generators make vectorized draws batch dependent.
     progress : bool, default True
         Show sampling progress bars for the additional draws.
 
@@ -628,6 +632,8 @@ def sample_prior(
     batch_size : int, default 64
         Maximum prior draws evaluated together, including generated quantities.
         Smaller batches reduce working memory without reducing the draw count.
+        Draws do not depend on the batch size under JAX's default threefry
+        generator. The rbg generators make vectorized draws batch dependent.
 
     Returns
     -------
@@ -830,6 +836,8 @@ def generate_quantities(
     batch_size : int, default 64
         Maximum posterior draws evaluated together across chains. Smaller
         batches reduce working memory without changing the selected draws.
+        Draws do not depend on the batch size under JAX's default threefry
+        generator. The rbg generators make vectorized draws batch dependent.
 
     Returns
     -------
