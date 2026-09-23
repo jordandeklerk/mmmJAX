@@ -20,6 +20,12 @@ hide-navigation: true
   .md-footer__link--prev {
     display: none;
   }
+  /* Without the navigation sidebar the text would run the full width, so it stops a little short. */
+  .md-content__inner {
+    max-width: 52rem;
+    margin-left: auto;
+    margin-right: auto;
+  }
 </style>
 
 # Home
@@ -29,31 +35,16 @@ hide-navigation: true
 </p>
 
 mmmJAX is a library for Bayesian marketing mix modeling in
-[JAX](https://docs.jax.dev/). It borrows the shape of a
-[Stan](https://mc-stan.org/) program, so a model is a sequence of named blocks,
-each a plain Python function or dictionary, and every prior and structural
-assumption is written where you would change it.
+[JAX](https://docs.jax.dev/). Packaged MMM APIs fix the model for you, which
+suits a first model but rarely the questions that follow. mmmJAX takes the
+shape of a [Stan](https://mc-stan.org/) program instead, so a model is a few
+named blocks of plain Python, and every prior and assumption is written where
+you would change it.
 
-Because the blocks are ordinary JAX code, the finished model can be
-differentiated, compiled, and vectorized. mmmJAX supplies the marketing pieces
-that go inside them, such as adstock and saturation functions, seasonal
-features, and a NUTS sampler, and none of them are required.
-
-## Why mmmJAX
-
-We believe packaged marketing mix modeling APIs are a great way to get
-started. They fix the structure of the model in advance and choose most of
-the assumptions for you, and for a first model that is exactly what you want.
-
-Once MMM scales, the business starts asking more specific questions than a
-first model was built to answer. Answering those questions means changing the
-model itself, and even a flexible packaged API only lets you do that where and
-how its authors chose.
-
-mmmJAX intends to fill that gap. The model is a program you write, so
-extending it means editing a function instead of waiting for a new option.
-Everything else the library offers, from data preparation to budget
-optimization, keeps working as the model grows.
+The blocks are JAX code, so the model can be differentiated, compiled, and
+vectorized. mmmJAX supplies optional marketing pieces such as adstock,
+saturation, seasonality, and a NUTS sampler, and its tools, from data
+preparation to budget optimization, keep working as the model grows.
 
 ## Installation
 
@@ -86,7 +77,7 @@ precision, and running chains at the same time.
 
 ## Program blocks
 
-A model is built from up to six blocks, given to {class}`~mmmjax.Model` in the order they
+In mmmJAX, a model is built from up to six blocks, given to {class}`~mmmjax.Model` in the order they
 run. This skeleton shows all of them with their bodies left as comments. Each
 function asks for what it needs by argument name, and mmmJAX supplies it from
 the prepared data, the outputs of earlier blocks, or the parameter draws.

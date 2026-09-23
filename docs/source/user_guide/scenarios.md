@@ -10,8 +10,9 @@ kernelspec:
 Every analysis function answers its question by running your blocks again on
 data that differs from the training data, with the same draws. You can do the
 same with any data you prepare. Doing it well takes the right inputs and
-blocks that respond to them in the right way, and this page covers both. The
-examples use the model from [A first model](first_model).
+blocks that respond to them in the right way, and this page covers both
+before it ends with renaming the inputs a block requests. The examples use the
+model from [A first model](first_model).
 
 ```{code-cell} ipython3
 :tags: [remove-cell]
@@ -31,40 +32,32 @@ values. Replaying weeks the model was trained on makes a good first test,
 because the result should match the fit exactly.
 
 ```{code-cell} ipython3
-first_draw = results["posterior"].isel(chain=0, draw=0)
-draw = {name: value.values for name, value in first_draw.items()}
-fitted = model.evaluate(draw)["mu"]
+point = results["posterior"].mean(("chain", "draw"))
+fitted = model.evaluate(point)["mu"]
 
 quarter = example.frame.iloc[143:]
-replayed = model.evaluate(draw, model.prepare_data(quarter))["mu"]
+replayed = model.evaluate(point, model.prepare_data(quarter))["mu"]
 round(float(abs(replayed - fitted[143:]).max()), 3)
 ```
 
-The replay misses by more than three quarters of a standard deviation of
-revenue, about \$7,900, in its first week. The quarter starts at the end of
-September, and without the weeks before it, the carryover from August and
-September is gone. A scenario needs the same history the training data had.
+At the posterior mean the replay misses by 0.82 standard deviations of
+revenue, about \$8,400, in its first week. The quarter starts at the end of
+September, and on its own it has no weeks before it, so the carryover from
+August and September is gone. Replaying the eight weeks before the quarter
+along with it, and keeping only the quarter's own weeks, brings that carryover
+back.
 
 ```{code-cell} ipython3
-quarter_data = mj.prepare_data(
-    quarter,
-    time="week",
-    outcome="revenue",
-    media=["linear_tv_impressions", "generic_search_impressions"],
-    spend=["linear_tv_spend", "generic_search_spend"],
-    channels=["TV", "Search"],
-    controls=["price"],
-    media_history=example.frame.iloc[135:143],
-)
-replayed = model.evaluate(draw, model.prepare_data(quarter_data))["mu"]
+extended = example.frame.iloc[135:]
+replayed = model.evaluate(point, model.prepare_data(extended))["mu"][8:]
 round(float(abs(replayed - fitted[143:]).max()), 3)
 ```
 
-With the eight weeks before it as history, the quarter reproduces the fit.
-The analysis functions keep the training history in place on their own, so
-this matters for data you prepare yourself, such as a forecast or a plan
-that never ran. {func}`~mmmjax.generate_quantities` takes the same prepared
-data through `new_data` and runs the generated quantities on every draw.
+With the eight weeks before it included, the quarter reproduces the fit. The
+analysis functions keep the earlier weeks in place on their own, so this
+matters for data you prepare yourself, such as a forecast or a plan that never
+ran. {func}`~mmmjax.generate_quantities` takes the same prepared data through
+`new_data` and runs the generated quantities on every draw.
 
 ## Predictions and definitions
 
@@ -83,8 +76,20 @@ the data changes.
 :::
 
 A trend scaled by the length of the training window is a definition, and the
-cell below replays a quarter from the middle of the data through two versions
-of a small trend model.
+cell below replays the last quarter of 2022 through two versions
+of a small trend model,
+
+$$
+y_t = \alpha + g\, \tau_t + \varepsilon_t, \qquad
+\varepsilon_t \sim \operatorname{Normal}(0, \sigma), \qquad
+\alpha, g \sim \operatorname{Normal}(0, 1), \qquad
+\sigma \sim \operatorname{HalfNormal}(1).
+$$
+
+The versions differ only in the trend $\tau_t$. The first divides week $t$ by
+the last training week, $\tau_t = t / T_{\text{train}}$, and the second
+divides it by the last week of whatever data it receives, $\tau_t = t /
+T_{\text{data}}$.
 
 ```{code-cell} ipython3
 def trend_from_training(time, reference):
@@ -124,17 +129,16 @@ for definition in (trend_from_training, trend_from_current):
     print(definition.__name__, round(float(abs(replayed_trend - fitted_trend).max()), 3))
 ```
 
-The first version divides by the last training date, which `reference.time`
-keeps in every evaluation, so the quarter gets back the trend it had when the
-model was fitted. The second divides by the last date of whatever data it
-receives, which stretches the quarter's trend up to the level at the end of
-the data. Nothing raises an error, and every scenario on that model would be
+The first version reproduces the fit exactly, because `reference.time` keeps
+the last training week in every evaluation. The second misses by as much as
+0.67 on the model's standardized scale, about \$6,900 of weekly revenue,
+because the quarter's own last week becomes the divisor and stretches its
+trend up to the level at the end of the data. Nothing raises an error, and every scenario on that model would be
 quietly wrong. Any formula that defines a quantity from the data, such as a
 normalization, a centering, or a coefficient implied by a prior on returns,
 reads its training arrays from `reference` for this reason. Fitted scaling is
 already anchored this way, so only the definitions you write yourself need
-it. Under a `variables` mapping, `reference` is declared like any other input
-and its arrays follow the new names, as in `training.impressions`.
+it.
 
 ## Arrays captured from outside a block
 
@@ -148,7 +152,6 @@ training_media = scaling.transform(data).arrays["media"]
 
 def captured_transformed_parameters(
     controls,
-    n_periods,
     intercept,
     coefficient,
     retention,
@@ -157,7 +160,7 @@ def captured_transformed_parameters(
 ):
     carried = mj.geometric_adstock(training_media, alpha=retention, max_lag=8)
     saturated = mj.hill_saturation(carried, half_saturation=half_saturation, slope=1.0)
-    mu = intercept + saturated[-n_periods:] @ coefficient + controls @ control_coefficient
+    mu = intercept + saturated @ coefficient + controls @ control_coefficient
     return {"mu": mu}
 
 
@@ -171,7 +174,70 @@ captured = mj.contributions(captured_model, results, quantity="mu")
 captured["contribution_share"].mean(("chain", "draw")).to_series()
 ```
 
-For the training weeks this model computes exactly what the first model
-computes, yet removing a channel changes nothing, so both channels appear to
+As a generative model this is still [A first model](first_model), line for
+line, and for the training weeks it computes exactly what the first model
+computes. Yet removing a channel changes nothing, so both channels appear to
 contribute nothing. Anything a prediction depends on should arrive as a block
 argument.
+
+## Your own names
+
+The names a block requests are yours to choose. A `variables` mapping on
+{class}`~mmmjax.Data` renames inputs, and `constants` adds settings that are
+not arrays.
+
+```{code-cell} ipython3
+named_data = mj.Data(
+    data,
+    scaling=scaling,
+    variables={
+        "outcome": "outcome",
+        "impressions": "media",
+        "price": "controls",
+    },
+    constants={"max_lag": 8},
+)
+
+
+def named_transformed_parameters(
+    impressions,
+    price,
+    max_lag,
+    intercept,
+    coefficient,
+    retention,
+    half_saturation,
+    control_coefficient,
+):
+    carried = mj.geometric_adstock(impressions, alpha=retention, max_lag=max_lag)
+    saturated = mj.hill_saturation(carried, half_saturation=half_saturation, slope=1.0)
+    mu = intercept + saturated @ coefficient + price @ control_coefficient
+    return {"mu": mu}
+
+
+named_model = mj.Model(
+    parameters=parameters,
+    data=named_data,
+    transformed_parameters=named_transformed_parameters,
+    log_density=log_density,
+)
+point = results["posterior"].mean(("chain", "draw"))
+renamed = named_model.evaluate(point)["mu"]
+original = model.evaluate(point)["mu"]
+bool((renamed == original).all())
+```
+
+:::{note}
+Once `variables` is given, the only data inputs blocks see are the ones it
+declares, while constants keep their own names. Built-in inputs such as
+`reference` and `outcome_scaling` need declaring too, and a
+declared `reference` holds its arrays under the new names, so a mapping entry
+`"training": "reference"` gives a block `training.impressions`.
+:::
+
+That is why the mapping keeps `outcome` under its own name, so the first
+model's density still finds it. Constants
+pass through unchanged, so `max_lag` stays a Python integer that JAX can use
+to set an array's shape. The renamed model computes the same expected revenue
+as the original, because renaming inputs leaves every line of the generative
+model from [A first model](first_model) unchanged.

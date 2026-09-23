@@ -68,8 +68,8 @@ randomness and changing global state inside `transformed_parameters` and
 `log_density`. It does not have to be normalized, since samplers only use
 differences in the log density and its gradient, but mmmJAX's distributions
 keep their constants, so pointwise log likelihoods stay comparable across
-models. [User-defined functions](functions) covers the JAX rules that keep a
-block differentiable.
+models. [User-defined functions](functions) covers the rules JAX sets for code
+that runs inside a block.
 
 ## BlackJAX
 
@@ -128,13 +128,14 @@ def to_results(draws, diverging=None):
     return results
 ```
 
-Four chains, each from its own key, stack into one set of results.
+`jax.vmap` runs four chains at once, one for each key, and stacks them into
+one set of results.
 
 ```{code-cell} ipython3
 :tags: [skip-execution]
 
-chains = [run_chain(key) for key in jax.random.split(jax.random.key(1), 4)]
-positions, diverging = jax.tree.map(lambda *values: jnp.stack(values), *chains)
+keys = jax.random.split(jax.random.key(1), 4)
+positions, diverging = jax.vmap(run_chain)(keys)
 blackjax_results = to_results(positions, diverging)
 ```
 
@@ -142,8 +143,8 @@ blackjax_results = to_results(positions, diverging)
 :tags: [remove-cell]
 
 def fit_blackjax():
-    chains = [run_chain(key) for key in jax.random.split(jax.random.key(1), 4)]
-    positions, diverging = jax.tree.map(lambda *values: jnp.stack(values), *chains)
+    keys = jax.random.split(jax.random.key(1), 4)
+    positions, diverging = jax.vmap(run_chain)(keys)
     return to_results(positions, diverging)
 
 
@@ -237,7 +238,8 @@ state, _ = blackjax.vi.pathfinder.approximate(
     approximate_key, logdensity, model.initialize_random(jax.random.key(5))
 )
 draws, _ = blackjax.vi.pathfinder.sample(sample_key, state, 1000)
-pathfinder_results = to_results(jax.tree.map(lambda values: values[None], draws))
+one_chain = {name: values[None] for name, values in draws.items()}
+pathfinder_results = to_results(one_chain)
 ```
 
 ```{code-cell} ipython3
@@ -249,7 +251,8 @@ def fit_pathfinder():
         approximate_key, logdensity, model.initialize_random(jax.random.key(5))
     )
     draws, _ = blackjax.vi.pathfinder.sample(sample_key, state, 1000)
-    return to_results(jax.tree.map(lambda values: values[None], draws))
+    one_chain = {name: values[None] for name, values in draws.items()}
+    return to_results(one_chain)
 
 
 pathfinder_results = stored("pathfinder", fit_pathfinder)
@@ -260,9 +263,9 @@ shares = mj.contributions(model, pathfinder_results, quantity="mu")
 shares["contribution_share"].mean(("chain", "draw")).to_series().round(3)
 ```
 
-The approximation puts search's share at about 4 percent, well below the 5.7
-percent both NUTS runs found and the true 6.1 percent, so it serves for a
-quick look or as starting points for MCMC rather than as the final fit.
+The approximation puts search's share at about 5.1 percent, below the 5.6 and
+5.7 percent the two NUTS runs found and the true 6.1 percent, so it serves for
+a quick look or as starting points for MCMC rather than as the final fit.
 
 ## From draws to everything else
 
@@ -271,7 +274,7 @@ Once the draws are labeled, the rest of mmmJAX treats them like its own.
 likelihoods that ArviZ uses for the checks in [Fitting and checking](checking).
 
 ```{code-cell} ipython3
-sorted(mj.generate_quantities(model, blackjax_results).children)
+mj.generate_quantities(model, blackjax_results)
 ```
 
 The one exception is {func}`~mmmjax.continue_sampling`, which resumes from the

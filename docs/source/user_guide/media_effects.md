@@ -5,7 +5,7 @@ kernelspec:
   display_name: Python 3
 ---
 
-# Media effects and budgets
+# Media effects
 
 mmmJAX's analysis functions answer the usual marketing mix questions from a
 fitted model, and they all work the same way. Each takes the model, the draws,
@@ -40,6 +40,17 @@ $$
 
 ```{code-cell} ipython3
 shares = mj.contributions(model, results, quantity="mu")
+shares
+```
+
+Like the other analysis functions, it returns an xarray Dataset with a value
+for every draw and the settings behind the result in its attributes.
+`incremental_response` holds
+each channel's $\Delta_c$ in dollars and `contribution_share` its share of
+revenue, while `baseline_response` holds the revenue left with every channel
+removed.
+
+```{code-cell} ipython3
 incremental = shares["incremental_response"].quantile(
     [0.05, 0.5, 0.95], dim=("chain", "draw")
 )
@@ -52,9 +63,7 @@ about \$1.7 million in the middle of the posterior, against true values of
 TV's effect is pinned down to within about \$150,000 either way, while search's
 interval is more than four times as wide. Search runs every week, so the data
 never shows revenue without it, and its coefficient trades off against the
-intercept, with a correlation of -0.71 across draws. The same result holds
-each channel's share of revenue in `contribution_share` and the revenue left
-with every channel removed in `baseline_response`.
+intercept, with a correlation of -0.69 across draws.
 
 ## Returns on spending
 
@@ -74,12 +83,12 @@ returns = mj.media_metrics(model, results, quantity="mu")
 returns[["roi", "marginal_roi"]].median(("chain", "draw")).to_pandas().round(2)
 ```
 
-Each dollar spent on TV over the period returned about \$3.50 in revenue, and
-each dollar on search about \$4.10, close to the true \$3.70 and \$4.50. The
+Each dollar spent on TV over the period returned about \$3.60 in revenue, and
+each dollar on search about \$4.00, close to the true \$3.70 and \$4.50. The
 marginal return, measured on one more percent of spending, tells a different
-story. It is about \$2.50 for TV and \$1.80 for search, because search already
-runs where its curve has flattened. That gap is what a budget decision turns
-on.
+story. It is about \$2.50 for TV and \$1.80 for search, because in the model
+search already runs where its curve has flattened. That gap is what a budget
+decision turns on.
 
 ## Response curves
 
@@ -93,41 +102,21 @@ curves = mj.response_curves(
 curves["incremental_response"].median(("chain", "draw")).to_pandas().round(-3)
 ```
 
+`curves["spend"]` holds the spending behind each multiplier.
+
+```{code-cell} ipython3
+curves["spend"].to_pandas().round(-2)
+```
+
 Doubling TV spending from about \$366,500 to \$733,000 would add another
-\$741,000 in revenue, about two dollars for each extra dollar, well below the
-\$3.50 it earns on average. Spending converts to exposure at the observed cost
-per impression, and `curves["spend"]` holds the spending behind each
-multiplier.
-
-## Budgets
-
-{func}`~mmmjax.optimize_budget` looks for the split of a fixed budget that
-maximizes expected revenue.
-
-```{code-cell} ipython3
-plan = mj.optimize_budget(model, results, quantity="mu")
-plan["spend"].to_pandas().round(-2)
-```
-
-It keeps the total at the \$792,000 spent over the three years and moves about
-\$89,000 from search to TV, where the marginal return is higher. The draws say
-how much that move is worth.
-
-```{code-cell} ipython3
-change = plan["response_change"]
-print(change.quantile([0.05, 0.5, 0.95]).round(-3).values)
-print(float((change > 0).mean()))
-```
-
-The median gain is about \$35,000 over the three years, the interval runs from
-a loss of \$13,000 to a gain of \$81,000, and 89 percent of the draws favor the
-new split. The optimizer maximizes the posterior mean, and the draws show how
-confident the model is in the move. Spending bounds, constraints on groups of
-channels, and other objectives, such as one that penalizes risk, are options
-on the same function.
+\$733,000 in revenue, about two dollars for each extra dollar, well below the
+\$3.60 it earns on average. Spending converts to exposure at the observed cost
+per impression. [Budget optimization](budgets) uses the same curves to split a
+budget between the channels.
 
 Every number on this page is what the model implies under its assumptions.
 The functions run the model's own equations on changed data, so their answers
 are only as causal as the model is, and they add no evidence of their own.
-[Scenarios](scenarios) explains how the data gets changed and what that asks
-of the blocks.
+[Recovering the truth](recovery) checks these numbers against the simulation,
+and [Scenarios](scenarios) explains how the data gets changed and what that
+asks of the blocks.

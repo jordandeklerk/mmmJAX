@@ -50,6 +50,7 @@ benchmark-run = "spin asv run --show-stderr"
 
 [feature.docs.dependencies]
 polars = ">=1.0"
+pyarrow = ">=16.0"
 sphinx = ">=8,<9"
 sphinx-copybutton = ">=0.5"
 sphinx-design = ">=0.7"

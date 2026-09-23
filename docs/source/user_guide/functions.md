@@ -73,8 +73,18 @@ the heavy tail that sets the half-Cauchy apart.
 ## Both in a model
 
 The helper replaces the Hill curve in `transformed_parameters`, with a `rate`
-parameter in place of `half_saturation`, and the new distribution becomes the
-prior on `sigma`.
+parameter $\lambda_c$ in place of `half_saturation`, and the new distribution
+becomes the prior on `sigma`. The model equation and the priors that change
+are
+
+$$
+\begin{aligned}
+y_t &= \alpha + \sum_{c} \beta_c \Big(1 - \exp\big(-\lambda_c \operatorname{Adstock}(\{x_{t-\ell,c}\}_{\ell=0}^{8};\, \rho_c)\big)\Big) + \gamma\, p_t + \varepsilon_t, \\
+\lambda_c &\sim \operatorname{LogNormal}(0, 0.5), \qquad \sigma \sim \operatorname{HalfCauchy}(1),
+\end{aligned}
+$$
+
+with everything else as in [A first model](first_model).
 
 ```{code-cell} ipython3
 exponential_parameters = {
@@ -90,7 +100,6 @@ exponential_parameters = {
 def exponential_transformed_parameters(
     media,
     controls,
-    n_periods,
     intercept,
     coefficient,
     retention,
@@ -99,8 +108,7 @@ def exponential_transformed_parameters(
 ):
     carried = mj.geometric_adstock(media, alpha=retention, max_lag=8)
     saturated = exponential_saturation(carried, rate)
-    recent = saturated[-n_periods:]
-    mu = intercept + recent @ coefficient + controls @ control_coefficient
+    mu = intercept + saturated @ coefficient + controls @ control_coefficient
     return {"mu": mu}
 
 
@@ -155,9 +163,9 @@ exponential = stored(
 exponential["posterior"]["rate"].mean(("chain", "draw")).to_series().round(2)
 ```
 
-A typical week of TV, which sits at one on the scaled axis, reaches about 61
+A typical week of TV, which sits at one on the scaled axis, reaches about 63
 percent of the channel's maximum effect under this curve, and a typical week
-of search about 55 percent. Nothing about either function is special to
+of search about 53 percent. Nothing about either function is special to
 mmmJAX. They run inside the blocks because they are written with JAX, which is
 the one requirement the next section spells out.
 
@@ -196,7 +204,7 @@ NumPy functions fail on placeholders in the same way, which is why helpers use
 `jax.numpy`. Anything that sets an array's shape, such as the carryover
 length or the number of Fourier terms, has to be a Python integer, written in
 the block or passed as a constant through {class}`~mmmjax.Data`, as
-[Data and scaling](data.md) shows. Tracing also explains why `print` is the wrong
+[Scenarios](scenarios) shows. Tracing also explains why `print` is the wrong
 tool for looking inside a block.
 
 ```{code-cell} ipython3

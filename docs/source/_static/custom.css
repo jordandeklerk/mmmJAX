@@ -16,6 +16,12 @@ body[data-md-color-scheme="slate"] {
   --mmmj-search-placeholder: rgba(255, 255, 255, 0.7);
 }
 
+/* Both schemes take the sea green of the logo's contours for the accent instead of the theme's teal. */
+body[data-md-color-accent] {
+  --md-accent-fg-color: #509a80;
+  --md-accent-fg-color--transparent: rgba(80, 154, 128, 0.1);
+}
+
 header.md-header,
 .md-tabs {
   background-color: var(--mmmj-header-bg);
@@ -204,46 +210,107 @@ the search bar and repository widget in place.
 }
 
 /*
-Executed cells render pandas and ArviZ tables as raw HTML with a border on every
-cell. These rules give them the look of the theme's own tables.
+pandas and polars frames render the way JupyterLab draws them, with a rule
+under the header, striped rows, and no cell borders. The colors come from the
+theme so the frames read in both schemes.
 */
 .md-typeset .cell_output .output.text_html {
   overflow-x: auto;
 }
 
 .md-typeset .cell_output table.dataframe {
-  background-color: var(--md-default-bg-color);
-  border: 0.05rem solid var(--md-typeset-table-color);
-  border-radius: 0.1rem;
+  border: none;
+  border-collapse: collapse;
   border-spacing: 0;
-  font-size: 0.64rem;
-  font-variant-numeric: tabular-nums;
   margin: 0.5em 0 1em;
+  color: var(--md-default-fg-color);
+  font-size: 0.65rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.md-typeset .cell_output table.dataframe thead {
+  border-bottom: 0.05rem solid var(--md-default-fg-color--lighter);
+  vertical-align: bottom;
 }
 
 .md-typeset .cell_output table.dataframe th,
 .md-typeset .cell_output table.dataframe td {
   border: none;
-  padding: 0.6em 0.9em;
+  padding: 0.5em;
+  line-height: normal;
   text-align: right;
-  vertical-align: top;
-  white-space: nowrap;
+  white-space: normal;
 }
 
-.md-typeset .cell_output table.dataframe thead th {
+.md-typeset .cell_output table.dataframe th {
   font-weight: 700;
 }
 
-.md-typeset .cell_output table.dataframe tbody th,
-.md-typeset .cell_output table.dataframe tbody td {
-  border-top: 0.05rem solid var(--md-typeset-table-color);
+.md-typeset .cell_output table.dataframe td {
+  vertical-align: middle;
 }
 
-.md-typeset .cell_output table.dataframe tbody th {
-  font-weight: 400;
-  text-align: left;
+.md-typeset .cell_output table.dataframe tbody tr:nth-child(even) {
+  background-color: var(--md-code-bg-color);
 }
 
 .md-typeset .cell_output table.dataframe tbody tr:hover {
-  background-color: var(--md-typeset-table-color--light);
+  background-color: rgba(3, 169, 244, 0.12);
+}
+
+/*
+xarray draws datasets and trees with its own markup, colored from JupyterLab's
+or the PyData theme's variables, neither of which exists here. These rules take
+the colors from this theme in both schemes and undo the typeset list margins
+that would pull its grid apart.
+*/
+.md-typeset .xr-wrap {
+  --xr-font-color0: var(--md-default-fg-color);
+  --xr-font-color2: var(--md-default-fg-color--light);
+  --xr-font-color3: var(--md-default-fg-color--lighter);
+  --xr-border-color: var(--md-typeset-table-color);
+  --xr-disabled-color: var(--md-default-fg-color--lighter);
+  --xr-background-color: var(--md-default-bg-color);
+  --xr-background-color-row-even: var(--md-default-bg-color);
+  --xr-background-color-row-odd: var(--md-code-bg-color);
+  max-width: 44rem;
+  margin: 0.5em 0 1em;
+  color: var(--md-default-fg-color);
+  font-size: 0.64rem;
+}
+
+/* The theme's rule for pre outranks xarray's own and would show the plain-text copy too. */
+.md-typeset .xr-text-repr-fallback {
+  display: none;
+}
+
+.md-typeset .xr-wrap ul,
+.md-typeset .xr-wrap ul li,
+.md-typeset .xr-wrap dl,
+.md-typeset .xr-wrap dd {
+  margin: 0;
+}
+
+/* The theme lays out every list as flow-root, which stacks the cells of xarray's grid. */
+.md-typeset .xr-wrap .xr-sections {
+  display: grid;
+}
+
+.md-typeset .xr-wrap .xr-var-list {
+  display: contents;
+}
+
+.md-typeset .xr-wrap .xr-dim-list {
+  list-style: none;
+}
+
+/* The toggles sit in zero-width grid columns, and their labels show the state. */
+.md-typeset .xr-wrap .xr-var-item > input {
+  opacity: 0;
+  margin: 0;
+}
+
+.md-typeset .xr-wrap pre {
+  margin: 0;
+  font-size: 0.95em;
 }

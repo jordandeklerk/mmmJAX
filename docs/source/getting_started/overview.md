@@ -18,10 +18,12 @@ tools that turn a posterior into channel returns and budgets.
 Nothing is added on your behalf. The log density is exactly the terms you
 write, no prior is chosen for you, and every transformation of the data is a
 function call you can see. That is what lets you change the response curve,
-the likelihood, or the hierarchy without leaving the package, and it is also
-why the package asks more of you than a tool with a fixed model would. It
-expects you to be comfortable with Bayesian modeling and JAX arrays, and it
-leaves the assumptions, and whether the data can support them, in your hands.
+the likelihood, or the hierarchy without leaving the package. As the economist
+Milton Friedman put it, "There's no such thing as a free lunch," and the same
+freedom is why the package asks more of you than a tool with a fixed model
+would. It expects you to be comfortable with Bayesian modeling and JAX arrays,
+and it leaves the assumptions, and whether the data can support them, in your
+hands.
 
 ```{code-cell} ipython3
 :tags: [remove-cell]
@@ -75,6 +77,19 @@ model = mj.Model(
 )
 ```
 
+The program is the model
+
+$$
+y_t = \alpha + \varepsilon_t, \qquad
+\varepsilon_t \sim \operatorname{Normal}(0, \sigma), \qquad
+\alpha \sim \operatorname{Normal}(0, 1), \qquad
+\sigma \sim \operatorname{HalfNormal}(1),
+$$
+
+where $y_t$ is standardized revenue in week $t$, the level $\alpha$ is
+`level`, and the noise scale $\sigma$ is `noise`. Every line of the density
+is one line of the model.
+
 A block never receives its inputs by position. Each argument name is a
 request, and mmmJAX fills it from the prepared data, from the declared
 parameters, or from what an earlier block returned. A name it can't fill
@@ -119,7 +134,9 @@ and array shapes that depend on parameters, as
 ## What the library handles and what you decide
 
 mmmJAX handles the work that is the same in every marketing mix model. It
-validates and labels the data, fits scaling once and reuses it, provides
+takes data from pandas, polars, PyArrow, or any other eager frame that
+[narwhals](https://narwhals-dev.github.io/narwhals/) supports, validates and
+labels it, fits scaling once and reuses it, provides
 carryover, saturation, seasonality, Gaussian process, and distribution
 functions, samples the posterior, and evaluates what the fitted model implies
 for contributions, returns, response curves, and budgets. Results come back as

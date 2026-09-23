@@ -22,7 +22,8 @@ def stored(name: str, fit: Callable[[], xr.DataTree], groups: Sequence[str] | No
             kept.attrs = dict(results.attrs)
             results = kept
         results.to_netcdf(path, engine="h5netcdf")
-    loaded = xr.open_datatree(path, engine="h5netcdf")
+    # Loading into memory lets the pages display values the way a fresh fit does.
+    loaded = xr.load_datatree(path, engine="h5netcdf")
     return loaded
 
 

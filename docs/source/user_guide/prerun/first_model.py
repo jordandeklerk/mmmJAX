@@ -9,7 +9,6 @@ data = mj.prepare_data(
     spend=["linear_tv_spend", "generic_search_spend"],
     channels=["TV", "Search"],
     controls=["price"],
-    media_history=example.media_history,
 )
 scaling = mj.fit_data_scaling(data, scale_outcome=True)
 
@@ -26,7 +25,6 @@ parameters = {
 def transformed_parameters(
     media,
     controls,
-    n_periods,
     intercept,
     coefficient,
     retention,
@@ -35,8 +33,7 @@ def transformed_parameters(
 ):
     carried = mj.geometric_adstock(media, alpha=retention, max_lag=8)
     saturated = mj.hill_saturation(carried, half_saturation=half_saturation, slope=1.0)
-    recent = saturated[-n_periods:]
-    mu = intercept + recent @ coefficient + controls @ control_coefficient
+    mu = intercept + saturated @ coefficient + controls @ control_coefficient
     return {"mu": mu}
 
 
@@ -64,8 +61,8 @@ def generated_quantities(key, outcome, mu, sigma):
     prediction = mj.normal_rng(key, mu, sigma)
     pointwise = mj.normal_logpdf(outcome, mu, sigma)
     return {
-        "predictive": {"prediction": prediction},
-        "log_likelihood": {"pointwise": pointwise},
+        "predictive": {"outcome": prediction},
+        "log_likelihood": {"outcome": pointwise},
     }
 
 

@@ -13,7 +13,7 @@ them, so the terms compose with the rest of a block and work under `jax.jit`,
 `jax.grad`, and `jax.vmap`. This page covers how the functions are named, how
 their shapes behave, and what happens at the edges of a family's support.
 
-## One family, five functions
+## One name, several functions
 
 Each distribution comes as a family of functions that share its name.
 
@@ -35,8 +35,9 @@ print(mj.normal_logsf(1.0, 0.0, 1.0))
 terms such as the log likelihood, and `normal_rng` draws. `normal_logcdf` and
 `normal_logsf` give the log probability below and above a value, which is how
 truncation and censoring are written. Discrete families use `_logpmf` in place
-of `_logpdf`, and every family in the
-[distribution reference](../api/distributions) follows the same pattern.
+of `_logpdf`. Every family in the [distribution reference](../api/distributions)
+has the summed, pointwise, and `_rng` forms, and families with a closed-form
+distribution function also have `_logcdf` and `_logsf`.
 
 ## Shapes
 
@@ -87,11 +88,12 @@ print(mj.beta(1.5, 2.0, 2.0))
 print(mj.poisson(2.5, 3.0))
 ```
 
-Declarations keep parameters inside their supports, so this mostly shows up
-through the data. A negative week under a lognormal likelihood or a
-fractional count under a Poisson one gives the whole model a log density of
-minus infinity, and {func}`~mmmjax.sample` refuses to start because the
-starting point is not finite. The results follow JAX's precision setting, in
+A parameter declared with {class}`~mmmjax.Positive` or
+{class}`~mmmjax.Interval` stays inside its support, so this mostly shows up
+through the data. A negative week under a lognormal likelihood or a fractional
+count under a Poisson one gives the whole model a log density of minus
+infinity, and a sampler can't start from a point where the density is not
+finite. The results follow JAX's precision setting, in
 32-bit unless 64-bit is enabled as [Installation](../getting_started/installation)
 describes.
 
@@ -111,7 +113,6 @@ print(jax.grad(mj.normal, argnums=1)(values, 0.5, 1.0))
 The summed normal is the same number TensorFlow Probability gives, and its
 gradient with respect to the location comes from `jax.grad` like any other JAX
 function. mmmJAX adds Stan's names and the summed, pointwise, and draw forms
-on top. A {class}`~mmmjax.Prior` binds a family to fixed settings, which
-[Priors](priors) uses to check the first model's priors, and a family the
+on top. A {class}`~mmmjax.Prior` binds a family to fixed settings, which [Priors](priors) uses to check a model's priors, and a family the
 library lacks can be written with {func}`~mmmjax.custom_distribution`, as
 [User-defined functions](functions) shows.

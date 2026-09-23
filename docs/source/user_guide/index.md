@@ -1,23 +1,27 @@
 # User Guide
 
 The User Guide builds one marketing mix model and then works through each
-part of it. [The example data](example_data) describes the simulated data
-every page fits, and [A first model](first_model) fits the model from start
-to finish. Every later page starts from that model and either examines one
-piece closely or changes it, so after those two pages the others can be read
-in any order.
+part of it. [The example data](example_data) describes the simulated data the
+guide uses, [Data and scaling](data.md) prepares, checks, and scales it,
+[Distributions](distributions) covers the functions every prior and
+likelihood is written with, and [A first model](first_model) fits the model
+from start to finish. Most pages after those four start from that model and
+either examine one piece closely or change it, and [Recovering the
+truth](recovery) checks its answers against the simulation.
 
 ```{toctree}
 :maxdepth: 1
 
 example_data
-first_model
 data
 distributions
+first_model
 priors
 checking
 inference
 media_effects
+recovery
+budgets
 scenarios
 changing
 functions
