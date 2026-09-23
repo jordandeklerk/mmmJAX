@@ -231,6 +231,43 @@ def test_revenue_components_and_paid_media_costs_reconcile(groups):
 
 
 @pytest.mark.parametrize("groups", [None, ("west", "east")])
+def test_simple_setting_keeps_two_channels_a_constant_baseline_and_price(groups):
+    result = simulate_data(seed=11, n_periods=30, groups=groups, complexity="simple")
+    truth = result.truth
+    assert list(truth.channel.values) == ["linear_tv", "generic_search"]
+    assert list(truth.paid_channel.values) == ["linear_tv", "generic_search"]
+    assert truth.attrs["complexity"] == "simple"
+    assert not {"demand", "promotion", "holiday"} & set(result.frame.columns)
+    expected = truth.baseline + truth.price_effect + truth.contribution.sum("channel")
+    xr.testing.assert_allclose(truth.expected_revenue, expected)
+    baseline = truth.baseline.transpose("time", ...).values
+    np.testing.assert_array_equal(baseline, np.broadcast_to(baseline[0], baseline.shape))
+    assert truth.price_effect.std() > 0
+
+
+def test_simple_setting_shares_the_full_campaign_calendar():
+    full = simulate_data(seed=5, n_periods=40, groups=None)
+    simple = simulate_data(seed=5, n_periods=40, groups=None, complexity="simple")
+    xr.testing.assert_equal(simple.truth.campaign, full.truth.campaign)
+
+
+def test_simple_setting_prepares_two_channels_and_price():
+    result = simulate_data(seed=3, n_periods=30, groups=None, complexity="simple")
+    data = prepare_data(
+        result.frame,
+        time="week",
+        outcome="revenue",
+        media=["linear_tv_impressions", "generic_search_impressions"],
+        spend=["linear_tv_spend", "generic_search_spend"],
+        channels=["TV", "Search"],
+        controls=["price"],
+        media_history=result.media_history,
+    )
+    np.testing.assert_array_equal(data.arrays["outcome"], result.truth.revenue.values)
+    np.testing.assert_array_equal(data.arrays["media"], result.truth.observed_exposure.values)
+
+
+@pytest.mark.parametrize("groups", [None, ("west", "east")])
 def test_baseline_is_positive_smooth_and_nonperiodic(groups):
     truth = simulate_data(seed=41, n_periods=130, groups=groups).truth
     baseline = np.asarray(truth.baseline).reshape(len(truth.time), -1)
@@ -418,6 +455,7 @@ def test_generated_frames_prepare_paid_organic_and_history_inputs(groups):
         ("start", None, TypeError),
         ("campaign_overlap", -0.1, ValueError),
         ("campaign_overlap", 1.1, ValueError),
+        ("complexity", "medium", ValueError),
     ],
 )
 def test_simulation_rejects_invalid_arguments(argument, value, error):

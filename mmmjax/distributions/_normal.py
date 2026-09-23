@@ -48,7 +48,7 @@ def normal_logpdf(
     Examples
     --------
     Evaluate a separate log density for each value under a standard Normal
-    distribution:
+    distribution.
 
     .. ipython::
 
@@ -94,7 +94,7 @@ def normal(
     Examples
     --------
     Compute a single log likelihood by summing the log densities of
-    independent observations:
+    independent observations.
 
     .. ipython::
 
@@ -104,7 +104,7 @@ def normal(
            ...: normal(values, location=0.0, scale=1.0)
 
     Differentiate with respect to location, the second argument, and compile
-    the gradient function for repeated evaluation:
+    the gradient function for repeated evaluation.
 
     .. ipython::
 
@@ -153,7 +153,7 @@ def normal_logcdf(
     Examples
     --------
     Evaluate :math:`\log P(X \leq x)` at three thresholds under a standard
-    Normal distribution, then convert the results to probabilities:
+    Normal distribution, then convert the results to probabilities.
 
     .. ipython::
 
@@ -211,7 +211,7 @@ def normal_logsf(
     Examples
     --------
     Evaluate :math:`\log P(X > x)` at three thresholds under a standard
-    Normal distribution, then convert the results to probabilities:
+    Normal distribution, then convert the results to probabilities.
 
     .. ipython::
 
@@ -263,7 +263,7 @@ def normal_rng(
     Examples
     --------
     Draw five samples from a standard Normal distribution. The key makes
-    the draw reproducible:
+    the draw reproducible.
 
     .. ipython::
 

@@ -129,7 +129,7 @@ class Prior:
         return result
 
     def logpdf(self, value: ArrayLike) -> jax.Array:
-        """Return log densities or masses, reducing only distribution event axes.
+        """Return log densities or masses summed over distribution event axes only.
 
         Parameters
         ----------
@@ -199,7 +199,7 @@ class Prior:
             raise ValueError(f"Prior batch shape {self._batch_shape} cannot broadcast to declared shape {shape}")
 
     def _sample(self, key: jax.Array, shape: tuple[int, ...], dtype: DTypeLike) -> jax.Array:
-        """Draw exactly the declared shape, including any existing batch axes."""
+        """Draw exactly the declared shape with any existing batch axes."""
         self._validate_shape(shape)
         batch_shape = shape[: -self.event_ndims] if self.event_ndims else shape
         ndims_by_name = dict(self._spec.parameter_events)

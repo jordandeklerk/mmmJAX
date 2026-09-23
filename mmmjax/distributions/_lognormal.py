@@ -50,7 +50,7 @@ def lognormal_logpdf(
     --------
     Evaluate a separate log density for each positive value. Here, the
     logarithms follow a Normal distribution with mean zero and standard
-    deviation 0.5:
+    deviation 0.5.
 
     .. ipython::
 
@@ -102,7 +102,7 @@ def lognormal(
     Examples
     --------
     Compute a single log likelihood by summing the log densities of
-    independent positive observations:
+    independent positive observations.
 
     .. ipython::
 
@@ -155,7 +155,7 @@ def lognormal_logcdf(
     Examples
     --------
     Evaluate :math:`\log P(X \leq x)` at three positive thresholds, then
-    convert the results to probabilities:
+    convert the results to probabilities.
 
     .. ipython::
 
@@ -215,7 +215,7 @@ def lognormal_logsf(
     Examples
     --------
     Evaluate :math:`\log P(X > x)` at three positive thresholds, then
-    convert the results to probabilities:
+    convert the results to probabilities.
 
     .. ipython::
 
@@ -268,7 +268,7 @@ def lognormal_rng(
     Examples
     --------
     Draw five positive samples. The location and scale describe the
-    underlying Normal distribution, not the samples themselves:
+    underlying Normal distribution, not the samples themselves.
 
     .. ipython::
 

@@ -1,6 +1,7 @@
 """Bayesian marketing mix modeling expressed entirely in JAX."""
 
 from mmmjax.adstock import delayed_adstock, geometric_adstock, weibull_cdf_adstock, weibull_pdf_adstock
+from mmmjax.calibration import contribution_coefficient, roi_coefficient
 from mmmjax.contribution import contributions
 from mmmjax.data import Data, ModelInput, PreparedData, Reference, prepare_data, select_channels
 from mmmjax.distributions import (
@@ -205,6 +206,7 @@ __all__ = [
     "check_data",
     "check_prior",
     "continue_sampling",
+    "contribution_coefficient",
     "contributions",
     "custom_distribution",
     "delayed_adstock",
@@ -297,6 +299,7 @@ __all__ = [
     "prepare_hsgp",
     "reach_frequency_response",
     "response_curves",
+    "roi_coefficient",
     "root_saturation",
     "sample",
     "sample_prior",

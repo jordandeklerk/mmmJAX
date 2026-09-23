@@ -473,7 +473,7 @@ def _exposures(
     period_indices: NDArray[np.intp],
     n_periods: int,
 ) -> NDArray[np.float64]:
-    """Sum original-unit exposures during the removal periods, leaving treatments undefined."""
+    """Sum original-unit exposures during the removal periods and leave treatments undefined."""
     exposure = np.full(len(chosen), np.nan)
     for position, (family, index, _) in enumerate(chosen):
         if family is _Family.TREATMENT:

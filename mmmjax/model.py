@@ -222,7 +222,7 @@ class _Declarations:
 
     @property
     def constant_values(self) -> dict[str, object]:
-        """Return the declared constants, empty when none were declared."""
+        """Return the declared constants or an empty mapping when there are none."""
         return {} if self.constants is None else self.constants
 
 
@@ -440,7 +440,7 @@ class Model:
         -------
         object
             JAX-compatible observation arrays. Callbacks
-            receive their requested inputs without unpacking this bundle.
+            receive their requested inputs one by one rather than this bundle.
             Requires prepared ``data`` at construction.
         """
         if self._data is None:
@@ -761,7 +761,7 @@ class Model:
         parameters: ParameterValues,
         data: object,
     ) -> tuple[dict[_OutputKey, jax.Array], dict[str, object]]:
-        """Return outputs keyed by result group and name, with the callback inputs for labeling."""
+        """Return outputs keyed by result group and name along with the callback inputs used for labeling."""
         if not self._has_generated_quantities:
             raise RuntimeError(
                 "Generated quantities are unavailable because this model has no generated_quantities callback"
@@ -856,7 +856,10 @@ def _fit_scaling(
 
 
 def _outcome_scaling(data: PreparedData, fitted: DataScaling | None, has_outcome: bool) -> tuple[Scaling | None, bool]:
-    """Expose the outcome transform to blocks with one factor per region, or scalars."""
+    """Expose the outcome transform to blocks.
+
+    An outcome scaled by population across regions gets one factor per region. Any other outcome gets scalars.
+    """
     population_outcome = fitted is not None and "outcome" in fitted._population_roles and bool(data.group_columns)
     if not has_outcome:
         return None, population_outcome
@@ -1154,7 +1157,10 @@ def _copy_reference(reference: Reference | None) -> Reference | None:
 
 
 def _prepare_parameterizations(parameters: Mapping[str, Parameterization]) -> _Parameterizations:
-    """Validate parameter names and declarations, then fix their evaluation order."""
+    """Validate parameter names and declarations.
+
+    Sorting the pairs by name fixes their evaluation order.
+    """
     if not isinstance(parameters, Mapping):
         raise TypeError(
             f"parameters must be a mapping from names to Parameterization objects, got {type(parameters).__name__}"

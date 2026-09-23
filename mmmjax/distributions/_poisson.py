@@ -248,7 +248,7 @@ def poisson_rng(
            ...: first_key, second_key = random.split(random.key(0))
            ...: poisson_rng(first_key, rate=3.0, sample_shape=(5,))
 
-    Use the other key for a fresh draw, rather than reusing the first key:
+    Use the other key for a fresh draw instead of reusing the first key.
 
     .. ipython::
 

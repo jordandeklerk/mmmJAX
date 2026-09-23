@@ -117,7 +117,7 @@ class _Dimensioned(Protocol):
 
     @property
     def shape(self) -> tuple[int, ...]:
-        """Explicit model-space shape, empty when inferred from ``dims``."""
+        """Explicit model-space shape that is left empty when inferred from ``dims``."""
         ...
 
     @property

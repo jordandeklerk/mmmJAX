@@ -3,6 +3,7 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -50,6 +51,7 @@ def simulate_data(
     campaign_overlap: float = 0.7,
     noise_scale: float = 0.05,
     measurement_error: float = 0.0,
+    complexity: Literal["full", "simple"] = "full",
 ) -> SyntheticData:
     r"""Generate a fictional consumer brand's weekly marketing data.
 
@@ -68,6 +70,13 @@ def simulate_data(
     The data is complete and nonnegative where required.
     Zero exposures mean inactivity, not missing reports.
     Measurement error changes reported exposures without changing true effects.
+
+    The simple setting keeps only linear TV and generic search on the same
+    campaign calendar. Revenue there is a constant regional baseline plus a
+    price effect and the two channels. Price moves independently of the media,
+    and there are no demand, seasonal, promotion, or holiday effects. Every model
+    input a regression on the two channels and price needs is present, which
+    makes the true effects recoverable.
 
     Parameters
     ----------
@@ -90,6 +99,9 @@ def simulate_data(
     measurement_error : float, default 0.0
         Nonnegative relative noise in reported exposures. True zero activity
         remains zero. Spend and the underlying response remain unchanged.
+    complexity : {"full", "simple"}, default "full"
+        The full brand with every channel and revenue driver, or the simple
+        setting with two channels and a price effect described above.
 
     Returns
     -------
@@ -143,9 +155,14 @@ def simulate_data(
         In [5]: example.frame[["week", "region", "revenue"]].head()
     """
     first_date, group_names = _validate_inputs(
-        seed, n_periods, groups, start, campaign_overlap, noise_scale, measurement_error
+        seed, n_periods, groups, start, campaign_overlap, noise_scale, measurement_error, complexity
     )
+    simple = complexity == "simple"
     channels = _channel_catalog()
+    if simple:
+        channels = channels[channels["channel"].isin(["linear_tv", "generic_search"])].reset_index(drop=True)
+    # The catalog lists paid channels first, so slices select them in both settings.
+    n_paid = int((channels["kind"] == "paid").sum())
     channel_names = channels["channel"].to_list()
     paid_names = channels.loc[channels["kind"] == "paid", "channel"].to_list()
     n_groups, n_channels = len(group_names), len(channel_names)
@@ -166,6 +183,12 @@ def simulate_data(
     promotion = ((campaign > 0) | (holiday > 0.5)).astype(float)
     price = 20 * (1 + 0.04 * np.arange(len(dates))[:, None] / 52) * (1 - 0.15 * promotion)
     price = np.broadcast_to(price, demand.shape).copy()
+    if simple:
+        # Drawing after the campaigns keeps the flight calendar shared with the full setting.
+        demand = np.ones_like(demand)
+        holiday = np.zeros_like(holiday)
+        promotion = np.zeros_like(promotion)
+        price = 20 * np.exp(0.08 * _persistent_noise(driver_rng, demand.shape))
 
     independent = np.stack([_campaigns(media_rng, len(dates), n_groups) for _ in channel_names], axis=-1)
     shared = media_rng.uniform(size=(n_groups, n_channels)) < campaign_overlap
@@ -174,24 +197,25 @@ def simulate_data(
     activity = np.where(always_on, 0.5 + channel_campaign, channel_campaign)
     # A newly introduced platform has no execution before its regional launch.
     launch = 26 + np.arange(n_groups) * 2
-    activity[..., channel_names.index("snapchat")] *= periods[:, None] >= launch
+    if "snapchat" in channel_names:
+        activity[..., channel_names.index("snapchat")] *= periods[:, None] >= launch
     budget = np.exp(0.16 * _persistent_noise(media_rng, (len(dates), n_groups, 1)))
     allocation = media_rng.lognormal(0, 0.15, size=(n_groups, n_channels))
     execution = activity * budget * allocation * demand[..., None] ** 0.6 * (1 + 0.4 * holiday[..., None])
     execution *= np.exp(0.08 * _persistent_noise(media_rng, execution.shape))
     # Search execution responds more strongly to demand even at the same campaign intensity.
-    for channel in ("branded_search", "generic_search"):
+    for channel in {"branded_search", "generic_search"} & set(channel_names):
         execution[..., channel_names.index(channel)] *= demand**0.7
 
-    cpm = channels["cpm"].to_numpy()[:-1] * np.exp(
+    cpm = channels["cpm"].to_numpy(dtype=np.float64)[:n_paid] * np.exp(
         0.08 * _persistent_noise(media_rng, (len(dates), n_groups, len(paid_names)))
         + 0.25 * holiday[..., None]
         + 0.03 * np.arange(len(dates))[:, None, None] / 52
     )
-    spend = execution[..., :-1] * population[None, :, None] * channels["spend_per_person"].to_numpy()[:-1]
+    spend = execution[..., :n_paid] * population[None, :, None] * channels["spend_per_person"].to_numpy()[:n_paid]
     exposure = np.empty_like(execution)
-    exposure[..., :-1] = 1000 * spend / cpm
-    exposure[..., -1] = execution[..., -1] * population[None, :] * 0.15
+    exposure[..., :n_paid] = 1000 * spend / cpm
+    exposure[..., n_paid:] = execution[..., n_paid:] * population[None, :, None] * 0.15
     observed_exposure = exposure * _multiplicative_noise(measurement_rng, exposure.shape, measurement_error)
 
     retention = channels["retention"].to_numpy()
@@ -204,7 +228,10 @@ def simulate_data(
     contribution = response * coefficient
 
     regional_baseline = population * response_rng.uniform(0.8, 1.2, n_groups)
-    baseline = regional_baseline * _baseline_multiplier(baseline_rng, periods, n_groups)
+    if simple:
+        baseline = np.broadcast_to(regional_baseline, (len(periods), n_groups)).astype(np.float64)
+    else:
+        baseline = regional_baseline * _baseline_multiplier(baseline_rng, periods, n_groups)
 
     seasonal_wave = (0.08 + 0.02 * np.sin(2 * np.pi * periods / (3 * 52))) * np.sin(angle)
     seasonal_wave += 0.04 * np.cos(2 * angle)
@@ -221,11 +248,13 @@ def simulate_data(
         "promotion_effect": promotion_effect[max_lag:],
         "holiday_effect": holiday_effect[max_lag:],
     }
+    if simple:
+        baseline_terms = {name: baseline_terms[name] for name in ("baseline", "price_effect")}
     expected = sum(baseline_terms.values()) + contribution.sum(axis=-1)
     revenue = expected * _multiplicative_noise(noise_rng, expected.shape, noise_scale)
     observed_spend = spend[max_lag:].sum(axis=0)
     roi = np.divide(
-        contribution[..., :-1].sum(axis=0),
+        contribution[..., :n_paid].sum(axis=0),
         observed_spend,
         out=np.full_like(observed_spend, np.nan),
         where=observed_spend > 0,
@@ -233,15 +262,10 @@ def simulate_data(
 
     columns = {name: observed_exposure[..., index] for index, name in enumerate(channels["exposure_column"])}
     columns.update({f"{name}_spend": spend[..., index] for index, name in enumerate(paid_names)})
-    columns.update(
-        {
-            "population": np.broadcast_to(population, demand.shape),
-            "demand": demand,
-            "price": price,
-            "promotion": promotion,
-            "holiday": holiday,
-        }
-    )
+    drivers = {"demand": demand, "price": price, "promotion": promotion, "holiday": holiday}
+    if simple:
+        drivers = {"price": price}
+    columns.update({"population": np.broadcast_to(population, demand.shape), **drivers})
     frame = _frame(dates[max_lag:], group_names, {name: values[max_lag:] for name, values in columns.items()}, groups)
     frame["revenue"] = revenue.ravel()
     history = _frame(
@@ -289,6 +313,7 @@ def simulate_data(
             "campaign_overlap": campaign_overlap,
             "noise_scale": noise_scale,
             "measurement_error": measurement_error,
+            "complexity": complexity,
             "adstock": "geometric",
             "saturation": "hill",
             "normalize": "true",
@@ -458,6 +483,7 @@ def _validate_inputs(
     campaign_overlap: float,
     noise_scale: float,
     measurement_error: float,
+    complexity: str,
 ) -> tuple[date, tuple[str, ...]]:
     """Check simulation sizes, dates, and settings before allocating arrays."""
     for name, value, minimum in (("seed", seed, 0), ("n_periods", n_periods, 1)):
@@ -504,4 +530,6 @@ def _validate_inputs(
             raise ValueError(f"{name} must be a finite nonnegative number")
     if campaign_overlap > 1:
         raise ValueError("campaign_overlap must be between zero and one")
+    if complexity not in ("full", "simple"):
+        raise ValueError("complexity must be 'full' or 'simple'")
     return first_date, group_names

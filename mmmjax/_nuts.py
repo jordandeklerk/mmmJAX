@@ -57,7 +57,7 @@ def _sample_nuts(
     progress: bool = True,
     continuation: _NUTSContinuation | None = None,
 ) -> tuple[_Samples, _NUTSContinuation]:
-    """Adapt or continue chains, copying bounded sampling chunks into host arrays.
+    """Adapt or continue chains and copy bounded sampling chunks into host arrays.
 
     Returns the host-side draws and statistics together with the final chain
     positions and tuning, from which sampling can resume without warmup.
@@ -260,7 +260,7 @@ def _sample_nuts(
 
 @contextmanager
 def _progress(enabled: bool, label: str) -> Iterator[None]:
-    """Keep scan callbacks within their display context, including on errors."""
+    """Keep scan callbacks within their display context even when an error occurs."""
     if not enabled:
         yield
         return

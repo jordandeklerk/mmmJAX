@@ -165,7 +165,7 @@ def _metadata_source(name: str, source: _Source, data: _ModelData) -> _Origin:
 
 
 def _concrete_array(array: jax.Array) -> np.ndarray[Any, Any] | None:
-    """Return the host values of an array, or None while it is being traced."""
+    """Return the host values of an array or None while it is being traced."""
     try:
         return np.asarray(array)
     except (jax.errors.ConcretizationTypeError, jax.errors.TracerArrayConversionError):
@@ -405,7 +405,7 @@ def _lookup_input(
     effects: Mapping[str, jax.Array],
     parameters: Mapping[str, object],
 ) -> object:
-    """Read one resolved input from its container, raising LookupError when it is absent."""
+    """Read one resolved input from its container or raise LookupError when it is absent."""
     kind, source_name = origin
     match kind:
         case "builtin":
@@ -475,7 +475,10 @@ def _validate_generate_signature(
     function: Callable[..., object],
     expected_names: tuple[str, ...],
 ) -> tuple[str, ...] | None:
-    """Return the declared parameters a data-first generator requests, or None for ``**parameters``."""
+    """Return the declared parameters a data-first generator requests.
+
+    The result is None when the generator accepts ``**parameters``.
+    """
     actual_names = _model_parameter_names(
         function,
         expected_names,

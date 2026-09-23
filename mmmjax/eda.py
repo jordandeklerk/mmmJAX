@@ -603,7 +603,7 @@ def _predictor_checks(
 
 
 def _variance_inflation(unit: NDArray[np.float64]) -> NDArray[np.float64]:
-    """Compute VIFs from centered unit-norm columns, including singular designs."""
+    """Compute VIFs from centered unit-norm columns and handle singular designs."""
     # Retain all right singular vectors without building an observation-sized
     # square matrix when there are more observations than predictors.
     _, singular_values, right = np.linalg.svd(unit, full_matrices=unit.shape[0] < unit.shape[1])

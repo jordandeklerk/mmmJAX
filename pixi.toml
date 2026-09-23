@@ -55,6 +55,9 @@ sphinx-copybutton = ">=0.5"
 sphinx-design = ">=0.7"
 ipython = "*"
 matplotlib-base = "*"
+arviz = ">=1.3"
+h5netcdf = ">=1.8"
+numpyro = ">=0.22"
 
 [feature.docs.pypi-dependencies]
 myst-parser = { version = ">=5.0.0", extras = ["linkify"] }

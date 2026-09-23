@@ -12,7 +12,7 @@
 [![Build status](https://github.com/jordandeklerk/mmmJAX/actions/workflows/test.yml/badge.svg)](https://github.com/jordandeklerk/mmmJAX/actions/workflows/test.yml)
 [![Documentation](https://readthedocs.org/projects/mmmjax/badge/?version=latest)](https://mmmjax.readthedocs.io/en/latest/)
 
-[Installation](#installation) | [Program blocks](#program-blocks) | [Distributions](#distributions) | [Inference](#inference-is-separate-from-the-model) | [Documentation](https://mmmjax.readthedocs.io/en/latest/)
+[Why mmmJAX](#why-mmmjax) | [Installation](#installation) | [Program blocks](#program-blocks) | [Distributions](#distributions) | [Inference](#inference-is-separate-from-the-model) | [Documentation](https://mmmjax.readthedocs.io/en/latest/)
 
 </div>
 
@@ -21,6 +21,14 @@
 mmmJAX is a library for Bayesian marketing mix modeling in [JAX](https://docs.jax.dev/). It borrows the shape of a [Stan](https://mc-stan.org/) program, so a model is a sequence of named blocks, each a plain Python function or dictionary, and every prior and structural assumption is written where you would change it.
 
 Because the blocks are ordinary JAX code, the finished model can be differentiated, compiled, and vectorized. mmmJAX supplies the marketing pieces that go inside them, such as adstock and saturation functions, seasonal features, and a NUTS sampler, and none of them are required.
+
+## Why mmmJAX
+
+We believe packaged marketing mix modeling APIs are a great way to get started. They fix the structure of the model in advance and choose most of the assumptions for you, and for a first model that is exactly what you want.
+
+Once MMM scales, the business starts asking more specific questions than a first model was built to answer. Answering those questions means changing the model itself, and even a flexible packaged API only lets you do that where and how its authors chose.
+
+mmmJAX intends to fill that gap. The model is a program you write, so extending it means editing a function instead of waiting for a new option. Everything else the library offers, from data preparation to budget optimization, keeps working as the model grows.
 
 ## Installation
 

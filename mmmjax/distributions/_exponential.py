@@ -51,7 +51,7 @@ def exponential_logpdf(value: ArrayLike, rate: ArrayLike) -> jax.Array:
            ...: exponential_logpdf(values, rate=2.0)
 
     Broadcasting evaluates all three values at two rates. The extra axis
-    keeps values in rows and rates in columns:
+    keeps values in rows and rates in columns.
 
     .. ipython::
 

@@ -36,6 +36,22 @@ differentiated, compiled, and vectorized. mmmJAX supplies the marketing pieces
 that go inside them, such as adstock and saturation functions, seasonal
 features, and a NUTS sampler, and none of them are required.
 
+## Why mmmJAX
+
+We believe packaged marketing mix modeling APIs are a great way to get
+started. They fix the structure of the model in advance and choose most of
+the assumptions for you, and for a first model that is exactly what you want.
+
+Once MMM scales, the business starts asking more specific questions than a
+first model was built to answer. Answering those questions means changing the
+model itself, and even a flexible packaged API only lets you do that where and
+how its authors chose.
+
+mmmJAX intends to fill that gap. The model is a program you write, so
+extending it means editing a function instead of waiting for a new option.
+Everything else the library offers, from data preparation to budget
+optimization, keeps working as the model grows.
+
 ## Installation
 
 mmmJAX is in alpha and requires Python 3.12 or later. Install the development
@@ -61,10 +77,9 @@ uv add "git+https://github.com/jordandeklerk/mmmJAX.git"
 
 ::::
 
-JAX runs on the CPU by default. For GPU sampling, install the JAX wheel for
-your accelerator first, following the
-[JAX installation guide](https://docs.jax.dev/en/latest/installation.html),
-and mmmJAX will use it without further configuration.
+JAX runs on the CPU by default. The
+[installation guide](getting_started/installation) covers GPUs, 64-bit
+precision, and running chains at the same time.
 
 ## Program blocks
 
@@ -161,7 +176,9 @@ BlackJAX, or your own code, works with the same object.
 
 ## Where to go next
 
-[Getting Started](getting_started/index) fits a first model end to end. The
+[Getting Started](getting_started/index) covers installation and how mmmJAX
+approaches a model. The [User Guide](user_guide/index) builds a first model
+and then examines and changes each part of it, and the
 [API Reference](api/index) documents every block input, declaration, and
 function with worked examples. The
 [repository](https://github.com/jordandeklerk/mmmJAX) has the source and the
@@ -176,7 +193,7 @@ issue tracker.
 :maxdepth: 1
 
 self
-getting_started/index
+Getting Started <getting_started/index>
 user_guide/index
 examples/index
 api/index

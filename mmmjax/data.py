@@ -162,7 +162,10 @@ class PreparedData:
 
     @property
     def media_time_positions(self) -> NDArray[np.float64]:
-        """Return elapsed positions of the exposure periods, with history negative."""
+        """Return elapsed positions of the exposure periods.
+
+        History periods fall before the origin, so their positions are negative.
+        """
         if not self.media_time_values:
             return np.empty(0, dtype=np.float64)
         _, origin = _time_positions(self.time_values)
@@ -183,7 +186,7 @@ class PreparedData:
 
     @property
     def model_inputs(self) -> dict[str, ModelInput]:
-        """Return the names model functions can request, with kind, axes, and source."""
+        """Return the names model functions can request along with their kind, axes, and source."""
         return _model_inputs(self)
 
     def _to_jax(
@@ -521,7 +524,10 @@ def _data_dimensions(data: PreparedData) -> dict[str, tuple[str, ...]]:
 
 
 def _time_input_names(data: PreparedData) -> tuple[str, ...]:
-    """List the time inputs the data can supply, with calendar names only for dates."""
+    """List the time inputs the data can supply.
+
+    Calendar inputs such as the day of the year exist only when the time labels are dates.
+    """
     try:
         _, origin = _time_positions(data.time_values)
     except (TypeError, ValueError):
@@ -1228,7 +1234,7 @@ def _calendar_dates(labels: Sequence[object], *, time: str, frequency: str) -> l
 def _time_positions(
     labels: tuple[object, ...], *, origin: float | datetime | None = None
 ) -> tuple[NDArray[np.float64], float | datetime]:
-    """Convert time labels to fixed-origin positions, using days for dates."""
+    """Convert time labels to fixed-origin positions that count days for dates."""
     if not labels:
         raise ValueError("Time positions require at least one observation time")
     numeric = all(
@@ -1293,7 +1299,7 @@ def _parse_dates(labels: tuple[object, ...]) -> list[datetime]:
 
 
 def _resolve_frequency(labels: Sequence[object], *, time: str, frequency: str | None) -> str | None:
-    """Infer only complete supported calendars, leaving numeric periods unassigned."""
+    """Infer only complete supported calendars and leave numeric periods unassigned."""
     if frequency != "auto":
         if frequency is not None:
             _validate_calendar(labels, time=time, frequency=frequency)

@@ -44,6 +44,7 @@ html_theme_options = {
         "navigation.tabs.sticky",
         "navigation.path",
         "navigation.top",
+        "navigation.footer",
         "navigation.tracking",
         "announce.dismiss",
         "search.highlight",
@@ -105,7 +106,11 @@ intersphinx_mapping = {
 
 myst_enable_extensions = ["linkify", "colon_fence", "dollarmath"]
 myst_heading_anchors = 3
-nb_execution_mode = "off"
+# Guide pages run only when they change. They load stored fits instead of sampling.
+nb_execution_mode = "cache"
+nb_execution_raise_on_error = True
+nb_execution_timeout = 600
+nb_output_stderr = "remove"
 
 
 def _format_signature_defaults(app, what, name, obj, options, signature, return_annotation):
@@ -117,11 +122,14 @@ def _format_signature_defaults(app, what, name, obj, options, signature, return_
 
 
 def _open_examples_boxes(app, doctree):
-    """Render napoleon's Examples admonitions as open, collapsible example boxes."""
+    """Render napoleon's Examples admonitions as open, collapsible example boxes.
+
+    Boxes that set their own collapsible state keep it.
+    """
     from docutils import nodes
 
     for node in doctree.findall(nodes.admonition):
-        if "example" in node["classes"]:
+        if "example" in node["classes"] and node.get("collapsible") is None:
             node["collapsible"] = "open"
 
 

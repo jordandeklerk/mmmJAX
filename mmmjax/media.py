@@ -18,7 +18,7 @@ def media_response(
     n_periods: int | None = None,
     adstock_first: bool = True,
 ) -> jax.Array:
-    """Apply carryover and saturation, retaining the requested modeling periods.
+    """Apply carryover and saturation and keep the requested modeling periods.
 
     Apply both transformations to the full exposure history before selecting
     modeling periods. Scaling and coefficient multiplication remain separate.

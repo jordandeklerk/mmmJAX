@@ -264,7 +264,7 @@ def weibull_pdf_adstock(
 
     For shape :math:`k > 0`, scale :math:`\lambda > 0`, and lags
     :math:`\ell = 0, \ldots, L`, sample the Weibull density at
-    :math:`\ell + 1` and rescale it over the full lag window:
+    :math:`\ell + 1` and rescale it over the full lag window,
 
     .. math::
 

@@ -599,7 +599,7 @@ def _tighten_bounds(
     matrix: NDArray[np.float64],
     limits: NDArray[np.float64],
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """Propagate group and total limits, including channels forced to zero."""
+    """Propagate group and total limits into channel bounds that may force a channel to zero."""
     lower, upper = lower.copy(), upper.copy()
     rows = np.vstack((np.ones(len(lower)), matrix)).astype(bool)
     targets = np.vstack(([1.0, 1.0], limits))

@@ -33,10 +33,6 @@ header.md-header,
   color: var(--mmmj-search-placeholder);
 }
 
-.md-footer {
-  border-top: 1px solid var(--md-default-fg-color--lightest);
-}
-
 /* Content width and type scale, following marimo's documentation. */
 .md-grid {
   max-width: 1440px;
@@ -205,4 +201,49 @@ the search bar and repository widget in place.
 
 .md-header__title .md-header__topic + .md-header__topic {
   display: none;
+}
+
+/*
+Executed cells render pandas and ArviZ tables as raw HTML with a border on every
+cell. These rules give them the look of the theme's own tables.
+*/
+.md-typeset .cell_output .output.text_html {
+  overflow-x: auto;
+}
+
+.md-typeset .cell_output table.dataframe {
+  background-color: var(--md-default-bg-color);
+  border: 0.05rem solid var(--md-typeset-table-color);
+  border-radius: 0.1rem;
+  border-spacing: 0;
+  font-size: 0.64rem;
+  font-variant-numeric: tabular-nums;
+  margin: 0.5em 0 1em;
+}
+
+.md-typeset .cell_output table.dataframe th,
+.md-typeset .cell_output table.dataframe td {
+  border: none;
+  padding: 0.6em 0.9em;
+  text-align: right;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.md-typeset .cell_output table.dataframe thead th {
+  font-weight: 700;
+}
+
+.md-typeset .cell_output table.dataframe tbody th,
+.md-typeset .cell_output table.dataframe tbody td {
+  border-top: 0.05rem solid var(--md-typeset-table-color);
+}
+
+.md-typeset .cell_output table.dataframe tbody th {
+  font-weight: 400;
+  text-align: left;
+}
+
+.md-typeset .cell_output table.dataframe tbody tr:hover {
+  background-color: var(--md-typeset-table-color--light);
 }
