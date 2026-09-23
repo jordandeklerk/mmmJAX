@@ -26,8 +26,8 @@ mathjax_path = "https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-mml-chtml.js"
 
 html_theme = "sphinx_immaterial"
 html_static_path = ["_static"]
-html_css_files = ["custom.css"]
-html_js_files = [("copybutton-shim.js", {"priority": 200}), "header-title-link.js"]
+html_css_files = ["custom.css", "landing.css"]
+html_js_files = [("copybutton-shim.js", {"priority": 200}), "header-title-link.js", "landing.js"]
 html_title = "mmmJAX"
 html_logo = "_static/mmmjax-logo.svg"
 html_favicon = "_static/favicon.ico"
@@ -133,7 +133,15 @@ def _open_examples_boxes(app, doctree):
             node["collapsible"] = "open"
 
 
+def _landing_template(app, pagename, templatename, context, doctree):
+    """Draw the root document with the landing page template."""
+    if pagename == app.config.root_doc:
+        return "landing.html"
+    return None
+
+
 def setup(app):
-    """Register API signature formatting and example box styling."""
+    """Register API signature formatting, example box styling, and the landing page."""
     app.connect("autodoc-process-signature", _format_signature_defaults)
     app.connect("doctree-read", _open_examples_boxes)
+    app.connect("html-page-context", _landing_template)
