@@ -5,7 +5,7 @@ description: Writes, changes, refactors, and reviews Python code and tests in mm
 
 # Writing mmmJAX code
 
-The Code section of `.claude/CLAUDE.md` sets the rules, and this skill adds the specifics and reasons behind them, taken from the code. `pixi run lint` and `pixi run typecheck` already catch line length, import order, a sorted `__all__`, PEP 695 syntax, `zip(strict=True)`, `raise ... from` inside `except`, blind and bare excepts (BLE001, E722), backslashes in a docstring that is not raw (D301), imperative docstring summaries, missing annotations in `mmmjax/`, relative imports in `mmmjax/`, and `print`, so this skill leaves those out. `mmmjax/calibration.py` and `mmmjax/seasonality.py` each show most of what follows in one file.
+The Code section of `.claude/CLAUDE.md` sets the rules, and this skill adds the specifics and reasons behind them, taken from the code. `pixi run lint` and `pixi run typecheck` already enforce formatting, imports, a sorted `__all__`, annotations, exception chaining, raw docstrings with backslashes, imperative summaries, and the `print` ban, so this skill leaves those out. `mmmjax/calibration.py` and `mmmjax/seasonality.py` each show most of what follows in one file.
 
 ## Before handing over
 
@@ -18,7 +18,7 @@ The Code section of `.claude/CLAUDE.md` sets the rules, and this skill adds the 
 - RUF022 keeps `__all__` sorted isort-style, classes first and then functions alphabetically. The public API in `__all__` order therefore means a new public name goes at its sorted position in the file.
 - Type aliases, StrEnums, and small private classes that signatures reference come right after `__all__`, because annotations evaluate at definition time and the package never adds `from __future__ import annotations`. Helpers never need to precede their callers, so they follow the public API.
 - Private modules such as `_binding.py`, `_nuts.py`, `_results.py`, and `distributions/_normal.py` define no `__all__`. The one exception is `distributions/_distribution.py`, whose `__all__` lists the re-exported `custom_distribution`.
-- `adstock.py`, `saturation.py`, `hsgp.py`, `scaling.py`, `sampling.py`, `data.py`, `response.py`, `eda.py`, and `parameters.py` break the order. Do not copy their layout, and fix them only as pure moves on a separate branch, never inside a feature diff.
+- Several older modules break this order. Do not copy their layout, and reorder one only as a pure move on a separate branch, never inside a feature diff.
 - Module scope holds only `__all__`, `type` aliases, `__version__`, and the `_bind_distribution(...)` calls at the bottom of distribution modules. A missing value raises `LookupError` instead of returning a sentinel (`_lookup_input` in `_binding.py`), and a name used in several places stays a literal at each use, as `{"chain", "draw", "sample", "pred_id"}` does.
 - The ban covers `mmmjax/` only. Tests keep small data constants such as `DISTRIBUTION_EXPORTS`.
 
@@ -27,8 +27,8 @@ The Code section of `.claude/CLAUDE.md` sets the rules, and this skill adds the 
 - Take arrays as `ArrayLike` and dtypes as `DTypeLike` from `jax.typing`, return `jax.Array`, and type host arrays as `NDArray[np.float64]` or `NDArray[np.generic]`. jaxtyping is a declared dependency that no module imports, so do not start using it, and never write `jnp.ndarray`.
 - Accept `Mapping` and `Sequence`, return `dict` and `tuple`, and return copies from accessors, as in `return dict(self._parameterizations)` (`Model.parameters`).
 - Wrap untyped TFP and blackjax results in `cast(jax.Array, ...)` (`_normal_logpdf_kernel`). Keep `# type: ignore[code]` for untyped imports and calls, as on the `blackjax` import in `_nuts.py`.
-- Public string options are `Literal[...]` in the signature and checked at runtime with `if effects not in ("lognormal", "normal")`. A reused option set gets a private alias, as in `type _Effects = Literal["lognormal", "normal"]` in `calibration.py`. Older modules still repeat their option literals, as `response.py` does with `Literal["prior", "posterior"]` and `hsgp.py` does with the covariance names. Do not copy them.
-- Leading data or model arguments stay positional and every setting goes after `*`, as in `fourier_features(time, *, period, order)`. Distribution functions take their settings positionally with only `sample_shape` keyword-only. `synthetic.py` is an older exception. Learned parameters are positional in `adstock.py` and `saturation.py` and keyword-only in `hsgp_weights`, so follow the module when adding one.
+- Public string options are `Literal[...]` in the signature and checked at runtime with `if effects not in ("lognormal", "normal")`. A reused option set gets a private alias, as in `type _Effects = Literal["lognormal", "normal"]` in `calibration.py`. Older modules that repeat an option literal are not precedent.
+- Leading data or model arguments stay positional and every setting goes after `*`, as in `fourier_features(time, *, period, order)`. Distribution functions take their settings positionally with only `sample_shape` keyword-only. Learned parameters are positional in `adstock.py` and `saturation.py` and keyword-only in `hsgp_weights`, so follow the module when adding one.
 - Analysis functions take `model` and `results` positionally and the rest after `*`. They reuse the shared keywords `quantity`, `group`, `spend_to_media`, `spend_to_rf`, `channels`, `new_data`, `spend_periods` or `periods`, `response_periods`, `by`, and `batch_size` in that relative order.
 - Workflow functions take `seed: int`, and primitives take `key: jax.Array` as the first argument.
 - Distribution arguments spell out the setting (`location`, `scale`, `probability`, `trials`, `concentration`) and map to the TFP names in the `_bind_distribution(...)` call.
@@ -38,12 +38,12 @@ The Code section of `.claude/CLAUDE.md` sets the rules, and this skill adds the 
 Validate at the top of a public function, before any computation. Workflow functions check the model first with `if not isinstance(model, Model): raise TypeError("model must be a Model")`. Analysis functions get that check and their draws from `_response_inputs` or `_prepare_response` in `response.py` instead of repeating them.
 
 - Raise `TypeError` for a wrong Python type or dtype and `ValueError` for a wrong value, range, or shape. `RuntimeError` is for a failure after valid input, such as nonfinite draws or a solver failure, and sampler diagnostics use `warnings.warn(..., RuntimeWarning, stacklevel=3)`. There are no custom exception classes.
-- `sampling.py`, `optimization.py`, `response.py`, `data.py`, and `contribution.py` fold some type and range checks into one `ValueError`. Tests pin exception types with `pytest.raises`, so keep the existing type when editing an old check.
+- Some older checks fold a type error and a range error into one `ValueError`. Tests pin exception types with `pytest.raises`, so keep the existing type when editing an old check.
 - `bool` is an `int`, so reject it with `isinstance(x, bool) or not isinstance(x, int)`. Workflow settings that may arrive as NumPy scalars use `numbers.Integral` or `numbers.Real` and exclude `(bool, np.bool_)` (`SpendConstraint.__post_init__`).
 - Use `from None` only to replace an internal lookup failure with a user-facing message.
 - `assert x is not None` narrows a type after an invariant holds and never validates input.
 
-Messages have no trailing period. A message about an argument starts with its name exactly as the signature spells it, and any other message is in sentence case. A remedy follows as a second sentence after ". ", also without a final period. Report the bad input as `got {value!r}`, `got shape {x.shape}`, `got dtype {x.dtype}`, or `got {type(value).__name__}`, quote user-supplied names with `{name!r}`, and put option values in single quotes. The messages in `SpendConstraint.__post_init__` and `Data.__init__` predate these rules and are not precedent.
+Messages have no trailing period. A message about an argument starts with its name exactly as the signature spells it, and any other message is in sentence case. A remedy follows as a second sentence after ". ", also without a final period. Report the bad input as `got {value!r}`, `got shape {x.shape}`, `got dtype {x.dtype}`, or `got {type(value).__name__}`, quote user-supplied names with `{name!r}`, and put option values in single quotes. Some older messages predate these rules and are not precedent.
 
 ```python
 # media_response
@@ -62,7 +62,7 @@ The `writing-jax-code` skill covers JAX practice, from where `jax.jit` goes to t
 
 ## Classes and pytrees
 
-- Every dataclass is `frozen=True`, usually with `slots=True`, and adds `eq=False` when it holds arrays. The private `_ResponseContext` and `_BudgetResponse` in `response.py` and `_NUTSContinuation` in `_nuts.py` are older and lack it.
+- Every dataclass is `frozen=True`, usually with `slots=True`, and adds `eq=False` when it holds arrays.
 - A pytree is a frozen dataclass under `@jax.tree_util.register_dataclass`. Non-array fields carry `metadata={"static": True}` and must be hashable because they key the jit cache, which is why static mappings are `_FrozenMapping` and not `dict` (`_ModelData` in `_binding.py`).
 - A public class that normalizes its inputs uses `init=False` with an `__init__` that validates, normalizes, and assigns through `object.__setattr__`, so equal specifications share jit cache keys (`Real.__init__` in `parameters.py`). A simpler class validates in `__post_init__`, as `SpendConstraint` does.
 - Copy inputs at construction and return copies from accessors, so a caller's later edits never reach a model and results never alias their inputs.

@@ -44,8 +44,6 @@ Each line gives the old form and its replacement, checked against 0.10.2. Remove
 - `x.device()` → `x.device` or `x.devices()`. CPU devices are now named `cpu:0`, so never match device name strings.
 - Names under `jax.core`, `jax.interpreters`, and `jax.lib` are deprecated → the public modules. mmmjax imports none of them.
 
-Write code that also holds on 0.11. There `jnp.empty` returns uninitialized memory, so write `jnp.zeros` where zeros matter. `jnp.broadcast_arrays` and `jnp.meshgrid` return tuples, and `jnp.take_along_axis` wraps negative indices by default in every mode, including `promise_in_bounds`. Moving to 0.11 also means raising the `numpy` and `scipy` floors in `pyproject.toml`, since 0.11.0 dropped NumPy 2.0 and SciPy 1.14.
-
 ## Where jit goes and what it caches
 
 - Never decorate a public function with `@jax.jit` or give it `static_argnums`. Users compose the primitives inside their own `jit`, `vmap`, and `grad`, and only drivers that own a whole computation call `jax.jit` (`sampling.py`, `_nuts.py`, `response.py`, `optimization.py`, `contribution.py`).
@@ -103,24 +101,6 @@ Write code that also holds on 0.11. There `jnp.empty` returns uninitialized memo
 - Apply `jax.lax.stop_gradient` to a factor that cancels (`hill_saturation`). To take the value from a stable path and the derivative from the analytic one, write `raw + jax.lax.stop_gradient(stable - raw)` (`_stable_log_ratio` in `distributions/_utils.py`).
 - In traced code, derive guards and tolerances from the working dtype, as in `32 * np.finfo(value.dtype).eps`, or pick them per dtype width as `_is_valid_simplex` in `distributions/_utils.py` does. Host-side SciPy code runs in float64 and may use fixed tolerances, as `optimization.py` does.
 
-## Custom derivatives
-
-- Use `jax.custom_jvp`, never `custom_vjp`. A JVP rule serves forward and reverse mode, while a `custom_vjp` function cannot be forward-differentiated. Give each rule a why-comment.
-- Compute the primal inside the rule by calling the decorated function, so the rule still applies at every order of differentiation.
-
-  ```python
-  # _standardize in distributions/_normal.py, shortened
-  @_standardize.defjvp
-  def _standardize_jvp(primals, tangents):
-      value, location, scale = primals
-      value_tangent, location_tangent, scale_tangent = tangents
-      standardized = _standardize(value, location, scale)
-      ...
-      return standardized, standardized_tangent
-  ```
-
-- Use `nondiff_argnums` or `nondiff_argnames` only for Python values such as a bool, which then come first in the rule's signature (`_log_betainc` in `distributions/_beta_cdf.py`). Integer arrays stay ordinary arguments.
-
 ## Dtypes and precision
 
 - The library assumes one precision per process, set at startup with `JAX_ENABLE_X64` or `jax.config.update`, and `with jax.enable_x64(...)` scopes it, which only tests should do. Precision errors tell the user to enable it (`PreparedData._to_jax` in `data.py`). Objects record the precision in effect when they are built (`Model.__init__`), and `continue_sampling` checks the stored one.
@@ -155,36 +135,6 @@ Write code that also holds on 0.11. There `jnp.empty` returns uninitialized memo
 - `writing-mmmjax-code` covers registered dataclasses and their static fields, which the package writes as `field(..., metadata={"static": True})`. A static field never holds an array, and `Data.__init__` in `data.py` checks that its constants hash.
 - Keep validation and array conversion out of a registered class's `__init__` and `__post_init__`, because transformations rebuild instances with placeholder leaves. Validate in a factory, as `fit_scaling` does for `Scaling`.
 
-## Devices and host transfer
+## Pin changes, custom rules, devices, debugging, and testing
 
-- Parallel chains follow the mesh setup in `_sample_nuts` (`_nuts.py`). Build the mesh with `jax.make_mesh((chains,), ("chain",), axis_types=(AxisType.Auto,), devices=jax.local_devices()[:chains])`, because `make_mesh` has defaulted to `Explicit` axes since 0.9. Enter it with `jax.set_mesh`, place inputs with `NamedSharding` and `jax.device_put`, and wrap `jax.jit(jax.shard_map(...))`. `check_vma=False` there is safe only because every `out_specs` entry is sharded on `"chain"`, and a replicated spec would fail silently. `jax.P` is the short alias for `PartitionSpec`. mypy treats both constructors and `jax.effects_barrier()` as untyped calls, so they carry `# type: ignore[no-untyped-call]` as in `_nuts.py`.
-- Check the device count before any work (`sample` in `sampling.py`). JAX fixes the CPU device count when its backend starts, so set `JAX_NUM_CPU_DEVICES` before importing JAX.
-- Stream long results to the host in bounded chunks with `jax.device_get` into preallocated NumPy buffers, and `del` the device chunk before the next one (`transfer` in `_sample_nuts`, `_evaluate_draws` in `sampling.py`). `np.asarray(x)` and `jax.device_get(x)` both return read-only arrays, so copy with `np.array(x, copy=True)` before writing into one (`optimize_budget` in `optimization.py`).
-- blackjax's progress bar runs `jax.debug.callback` inside `scan`, so `_progress` in `_nuts.py` calls `jax.effects_barrier()` in its `finally`.
-
-## Debugging and dependencies
-
-- Find recompiles with `with jax.log_compiles(True):` or `jax.explain_cache_misses(True)`. Find captured constants with `JAX_CAPTURED_CONSTANTS_WARN_BYTES=1000` and `JAX_CAPTURED_CONSTANTS_REPORT_FRAMES=40`, since the `-1` that JAX's own warning suggests fails in 0.10.2.
-- Inspect a staged program with `jax.jit(f).trace(*args).jaxpr` or `jax.jit(f).lower(*args).as_text()`. Lowered objects work only in the process that made them.
-- `jax.debug_nans(True)` also stops on the `nan` that mmmjax returns on purpose for invalid parameters. Chase a non-finite log density with `jax.debug.print` or `jax.experimental.checkify` instead.
-- The TFP JAX substrate reads the deprecated `jax.core.pytype_aval_mappings` on import, and the gamma, beta, student-t, inverse-gamma, Dirichlet, uniform, binomial, negative binomial, multinomial, and LKJ `_rng` functions, including their logit and log variants, warn that a TFP `jnp.shape(None)` call will become an error. pytest sets no `filterwarnings`, so these never fail a test and show up only in the warnings summary. Before widening the JAX pin, surface them against the pinned tfp-nightly.
-
-  ```bash
-  .pixi/envs/default/bin/python -W default::DeprecationWarning -c "import jax, mmmjax as mj; mj.gamma_rng(jax.random.key(0), 2.0, 1.0)"
-  ```
-
-## Testing JAX behavior
-
-`writing-mmmjax-code` covers test layout, eager and `jax.jit` checks, both precisions, and multi-device subprocesses. These points add to it.
-
-- Compare jitted and eager floating results with a tolerance, since XLA may fuse or reorder operations. Exact equality stays right for integer or boolean outputs such as discrete draws, and for one key through one code path.
-- For a new or changed custom JVP, check the kernel against a closed form or against float64 finite differences, skipped when x64 is off, at interior, tail, and branch points. Check linearity in the tangents as `test_normal_log_probability_jvp_is_linear` does. `jax.test_util` needs its own import, and the float32 defaults are too loose.
-
-  ```python
-  from jax.test_util import check_grads
-
-  check_grads(kernel, (alpha, beta, value), order=1, modes=("fwd", "rev"))
-  ```
-
-- Guard against retracing by warming a jitted function and calling it again under `with jax.no_tracing(True):`. Create every input before the context and check outputs after it, since any eager `jnp` call that has not yet run with that shape and dtype traces inside it, even `jnp.ones` or `x + 1`.
-- Scope checks to one test with `jax.debug_key_reuse(True)`, `jax.numpy_dtype_promotion("strict")`, and `jax.check_tracer_leaks()` (`test_model_density_and_gradient_do_not_retain_tracers` in `tests/test_model.py`). Under key-reuse checking, `split` consumes its key and `fold_in` does not.
+Read [reference.md](reference.md) before changing the JAX pin, writing or changing a custom JVP rule, touching the device mesh or host transfer in `_nuts.py` or `sampling.py`, chasing a recompile, a captured constant, or a `nan`, or testing JAX behavior such as jit agreement, gradients, or retracing.
