@@ -355,14 +355,14 @@ def test_population_outcome_scaling_reuses_training_factors_and_result_labels(in
     per_capita = raw.arrays["outcome"] / raw.arrays["population"]
     expected = (canonical.arrays["outcome"] / raw.arrays["population"] - per_capita.mean()) / per_capita.std()
 
-    np.testing.assert_allclose(evaluated["observed_data"]["outcome"], expected, rtol=1e-6)
-    np.testing.assert_array_equal(evaluated["constant_data"]["media"], canonical.arrays["media"])
-    for group in ("observed_data", "posterior_predictive"):
+    np.testing.assert_allclose(evaluated["predictions_constant_data"]["outcome"], expected, rtol=1e-6)
+    np.testing.assert_array_equal(evaluated["predictions_constant_data"]["media"], canonical.arrays["media"])
+    for group in ("predictions_constant_data", "predictions"):
         np.testing.assert_array_equal(evaluated[group]["time"], [4, 5, 6])
         np.testing.assert_array_equal(evaluated[group]["group"], ["west", "east"])
-    assert evaluated["posterior_predictive"]["prediction"].dims == ("chain", "draw", "time", "group")
+    assert evaluated["predictions"]["prediction"].dims == ("chain", "draw", "time", "group")
     assert incoming.group_values == (("east",), ("west",))
-    np.testing.assert_array_equal(evaluated["constant_data"]["channel"], ["video", "search"])
+    np.testing.assert_array_equal(evaluated["predictions_constant_data"]["channel"], ["video", "search"])
     np.testing.assert_allclose(model.data.values["outcome"], (per_capita - per_capita.mean()) / per_capita.std())
 
 

@@ -232,10 +232,10 @@ def test_dataframe_scenario_matches_explicit_preparation_with_saved_selections(b
     expected = generate_quantities(model, results, new_data=prepared, seed=11)
 
     xr.testing.assert_identical(actual, expected)
-    assert "observed_data" not in actual.children
-    np.testing.assert_array_equal(actual["constant_data"]["channel"], ["Online video", "Paid search"])
-    np.testing.assert_array_equal(actual["posterior_predictive"]["group"], ["west", "east"])
-    np.testing.assert_array_equal(actual["posterior_predictive"]["time"], np.arange(5))
+    assert "outcome" not in actual["predictions_constant_data"].data_vars
+    np.testing.assert_array_equal(actual["predictions_constant_data"]["channel"], ["Online video", "Paid search"])
+    np.testing.assert_array_equal(actual["predictions"]["group"], ["west", "east"])
+    np.testing.assert_array_equal(actual["predictions"]["time"], np.arange(5))
     pd.testing.assert_frame_equal(scenario, original)
 
 
@@ -265,10 +265,13 @@ def test_dataframe_scenario_does_not_infer_exposure_from_spend():
     exposure_changed = generate_quantities(model, results, new_data=higher_exposure, seed=6)
 
     xr.testing.assert_identical(cost_only["generated_quantities"], baseline["generated_quantities"])
-    xr.testing.assert_identical(cost_only["posterior_predictive"], baseline["posterior_predictive"])
-    np.testing.assert_array_equal(cost_only["constant_data"]["media"], baseline["constant_data"]["media"])
+    xr.testing.assert_identical(cost_only["predictions"], baseline["predictions"])
+    np.testing.assert_array_equal(
+        cost_only["predictions_constant_data"]["media"], baseline["predictions_constant_data"]["media"]
+    )
     np.testing.assert_allclose(
-        cost_only["constant_data"]["spend"].values[..., 0], frame["video_cost"].to_numpy().reshape(4, 2) * 1.2
+        cost_only["predictions_constant_data"]["spend"].values[..., 0],
+        frame["video_cost"].to_numpy().reshape(4, 2) * 1.2,
     )
     assert np.all(
         exposure_changed["generated_quantities"]["mean"].values > baseline["generated_quantities"]["mean"].values
@@ -291,8 +294,8 @@ def test_dataframe_scenario_does_not_reuse_original_media_history():
     explicit = generate_quantities(model, results, new_data=_prepare_frame(observations), seed=15)
 
     xr.testing.assert_identical(raw, explicit)
-    np.testing.assert_array_equal(raw["constant_data"]["time"], [2, 3, 4])
-    assert raw["constant_data"]["media"].shape[0] == 3
+    np.testing.assert_array_equal(raw["predictions_constant_data"]["time"], [2, 3, 4])
+    assert raw["predictions_constant_data"]["media"].shape[0] == 3
     assert original["constant_data"]["media"].shape[0] == 5
     assert not np.allclose(
         raw["generated_quantities"]["mean"].values[:, :, :2], original["generated_quantities"]["mean"].values[:, :, :2]
@@ -361,9 +364,9 @@ def test_dataframe_scenario_preserves_additional_data_roles_and_channel_labels()
     expected = generate_quantities(model, results, new_data=prepare_data(scenario, **selections))
 
     xr.testing.assert_identical(actual, expected)
-    np.testing.assert_array_equal(actual["constant_data"]["organic_channel"], ["Email"])
-    np.testing.assert_array_equal(actual["constant_data"]["rf_channel"], ["Streaming video"])
-    np.testing.assert_array_equal(actual["constant_data"]["organic_rf_channel"], ["Organic social"])
+    np.testing.assert_array_equal(actual["predictions_constant_data"]["organic_channel"], ["Email"])
+    np.testing.assert_array_equal(actual["predictions_constant_data"]["rf_channel"], ["Streaming video"])
+    np.testing.assert_array_equal(actual["predictions_constant_data"]["organic_rf_channel"], ["Organic social"])
 
 
 def test_grouped_scenario_reuses_training_scaling_and_preserves_original_objects():
@@ -383,25 +386,23 @@ def test_grouped_scenario_reuses_training_scaling_and_preserves_original_objects
     xr.testing.assert_identical(generated, ordered)
     assert set(generated.children) == {
         "posterior",
-        "posterior_predictive",
+        "predictions",
         "generated_quantities",
-        "observed_data",
-        "constant_data",
+        "predictions_constant_data",
     }
     assert not {"inference_library", "inference_method", "warmup_steps"} & generated.attrs.keys()
     xr.testing.assert_identical(generated["posterior"].to_dataset(), results["posterior"].to_dataset())
     np.testing.assert_array_equal(generated["posterior"]["group"], ["west", "east"])
     np.testing.assert_array_equal(generated["posterior"]["channel"], ["video", "search"])
     np.testing.assert_array_equal(generated["generated_quantities"]["time"], [12, 13, 14, 15])
-    np.testing.assert_array_equal(generated["constant_data"]["media_time"], [10, 11, 12, 13, 14, 15])
+    np.testing.assert_array_equal(generated["predictions_constant_data"]["media_time"], [10, 11, 12, 13, 14, 15])
     assert generated["generated_quantities"]["contribution"].dims == ("chain", "draw", "time", "group", "channel")
     assert generated["generated_quantities"]["seasonal"].dims == ("chain", "draw", "time", "group")
     expected_data = scaling.transform(scenario)
     for name, expected in expected_data.arrays.items():
-        group = "observed_data" if name == "outcome" else "constant_data"
-        np.testing.assert_allclose(generated[group][name], expected, rtol=2e-6)
+        np.testing.assert_allclose(generated["predictions_constant_data"][name], expected, rtol=2e-6)
     refitted = fit_data_scaling(scenario, scale_outcome=True).transform(scenario)
-    assert not np.allclose(generated["constant_data"]["media"], refitted.arrays["media"][:, ::-1, ::-1])
+    assert not np.allclose(generated["predictions_constant_data"]["media"], refitted.arrays["media"][:, ::-1, ::-1])
     _assert_direct_quantities(model, results, scenario, generated)
 
     xr.testing.assert_identical(results, results_before)
@@ -416,7 +417,7 @@ def test_grouped_scenario_reuses_training_scaling_and_preserves_original_objects
         np.testing.assert_array_equal(model.data.values[name], expected)
 
     generated["posterior"]["intercept"].values[:] = -999.0
-    generated["constant_data"]["media"].values[:] = -999.0
+    generated["predictions_constant_data"]["media"].values[:] = -999.0
     xr.testing.assert_identical(results, results_before)
     np.testing.assert_array_equal(model.data.values["media"], model_before["media"])
     np.testing.assert_array_equal(scenario.arrays["media"], scenario_before["media"])
@@ -438,9 +439,13 @@ def test_explicit_scenario_history_changes_only_affected_periods_and_is_retained
     assert np.all(changed_paid[:, :, :2] > baseline_paid[:, :, :2])
     np.testing.assert_allclose(changed_paid[:, :, 2:], baseline_paid[:, :, 2:], rtol=2e-6)
     np.testing.assert_array_equal(changed["generated_quantities"]["time"], [22, 23, 24, 25])
-    np.testing.assert_array_equal(changed["constant_data"]["media_time"], [20, 21, 22, 23, 24, 25])
-    np.testing.assert_allclose(changed["constant_data"]["media"], model.scaling.transform(scenario).arrays["media"])
-    np.testing.assert_array_equal(changed["observed_data"]["outcome"], baseline["observed_data"]["outcome"])
+    np.testing.assert_array_equal(changed["predictions_constant_data"]["media_time"], [20, 21, 22, 23, 24, 25])
+    np.testing.assert_allclose(
+        changed["predictions_constant_data"]["media"], model.scaling.transform(scenario).arrays["media"]
+    )
+    np.testing.assert_array_equal(
+        changed["predictions_constant_data"]["outcome"], baseline["predictions_constant_data"]["outcome"]
+    )
     _assert_direct_quantities(model, results, scenario, changed)
 
 
@@ -453,9 +458,9 @@ def test_outcome_free_scenario_infers_predictive_time_and_group_axes():
     generated = generate_quantities(model, results, new_data=future, seed=12)
 
     assert "outcome" not in future.arrays
-    assert "observed_data" not in generated.children
-    assert "log_likelihood" not in generated.children
-    prediction = generated["posterior_predictive"]["prediction"]
+    assert "outcome" not in generated["predictions_constant_data"].data_vars
+    assert "predictions_log_likelihood" not in generated.children
+    prediction = generated["predictions"]["prediction"]
     assert prediction.dims == ("chain", "draw", "time", "group")
     assert prediction.shape == (2, 3, 4, 2)
     np.testing.assert_array_equal(prediction["time"], [32, 33, 34, 35])

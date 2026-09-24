@@ -46,6 +46,7 @@ def sample(
     max_tree_depth: int = 10,
     initial_values: Mapping[str, ArrayLike] | None = None,
     generate: bool = True,
+    save_unconstrained: bool = True,
     chunk_size: int = 100,
     batch_size: int = 64,
     progress: bool = True,
@@ -94,6 +95,9 @@ def sample(
     generate : bool, default True
         Evaluate mapped log-prior terms and outputs from the
         ``generated_quantities`` callback.
+    save_unconstrained : bool, default True
+        Also store the retained draws in the sampler's unconstrained space as
+        an ``unconstrained_posterior`` group.
     chunk_size : int, default 100
         Maximum retained draws per chain in a sampling chunk before transfer
         to host memory. Smaller chunks reduce device memory use without
@@ -121,11 +125,14 @@ def sample(
         - **generated_quantities** — Other generated outputs
         - **observed_data**, **constant_data** — Inputs in evaluated units,
           including fitted scaling. Auxiliary ``Data`` uses **constant_data**
+        - **unconstrained_posterior** — Draws in the sampler's unconstrained
+          space unless ``save_unconstrained=False``
         - **sampling_state** — Chain positions, tuning, and random streams
           for continued sampling
 
         Declared axes retain labels. Predictive and likelihood outputs matching
-        observations inherit outcome labels. Custom axes use model ``dims``,
+        observations inherit outcome labels, and log-prior terms named after a
+        parameter inherit its axes. Custom axes use model ``dims``,
         ``generated_dims``, and ``coords``. Inspect diagnostics before interpretation.
     """
     if not isinstance(model, Model):
@@ -156,6 +163,8 @@ def sample(
         raise ValueError("target_accept must be between zero and one")
     if not isinstance(generate, bool):
         raise TypeError("generate must be a bool")
+    if not isinstance(save_unconstrained, bool):
+        raise TypeError("save_unconstrained must be a bool")
     if not isinstance(progress, bool):
         raise TypeError("progress must be a bool")
     if model._data is not None and data is not None:
@@ -220,6 +229,8 @@ def sample(
     if not np.isfinite(np.asarray(stats["lp"])).all():
         raise RuntimeError("Sampling produced nonfinite log densities. Check the model and initial_values")
 
+    # One stored key per chain keeps each chain's generated draws when results keep a subset of chains.
+    generation_keys = jax.random.split(generation_key, chains)
     results = _run_results(
         model,
         inputs,
@@ -228,8 +239,9 @@ def sample(
         chains=chains,
         draws=draws,
         start=0,
-        generation_key=generation_key,
+        generation_keys=generation_keys,
         generate=generate,
+        save_unconstrained=save_unconstrained,
         output_dimensions=output_dimensions,
         batch_size=batch_size,
     )
@@ -246,7 +258,7 @@ def sample(
         data_scale="model" if model.scaling is not None else "original",
     )
     _warn_sampling(stats)
-    return _with_state(results, continuation, generation_key, generate)
+    return _with_state(results, continuation, generation_keys, generate)
 
 
 def continue_sampling(
@@ -263,8 +275,10 @@ def continue_sampling(
 
     Resumes every chain from the final position, tuning, and random stream
     stored in the ``sampling_state`` group, so the combined draws match a
-    single longer run. The supplied results are not modified. For a
-    different model or dataset, start a new run with :func:`sample`.
+    single longer run. Results cut to a subset of chains with ``sel`` or
+    ``isel`` continue only those chains. The supplied results are not
+    modified. For a different model or dataset, start a new run with
+    :func:`sample`.
 
     Parameters
     ----------
@@ -303,7 +317,7 @@ def continue_sampling(
         raise TypeError("progress must be a bool")
     if model._data is not None and data is not None:
         raise ValueError("Prepared models use their stored data. Omit data when continuing")
-    continuation, generation_key, generate = _restore_continuation(results, model)
+    continuation, generation_keys, generate = _restore_continuation(results, model)
 
     settings = results.attrs
     missing = [name for name in ("chain_method", "warmup_steps", "target_accept", "max_tree_depth", "mass_matrix")]
@@ -330,7 +344,7 @@ def continue_sampling(
     dimensions, _ = _parameter_metadata(model)
     initial_parameters = model.constrain({name: value[0] for name, value in continuation.positions.items()})
     _, output_dimensions = _generation_layout(
-        model, inputs, initial_parameters, generation_key, dimensions, prepared, generate=generate
+        model, inputs, initial_parameters, generation_keys[0], dimensions, prepared, generate=generate
     )
     (unconstrained, stats), resumed = _sample_nuts(
         logdensity,
@@ -349,6 +363,7 @@ def continue_sampling(
     if not np.isfinite(np.asarray(stats["lp"])).all():
         raise RuntimeError("Sampling produced nonfinite log densities. The supplied results are unchanged")
 
+    save_unconstrained = "unconstrained_posterior" in results.children
     additional = _run_results(
         model,
         inputs,
@@ -357,14 +372,15 @@ def continue_sampling(
         chains=chains,
         draws=int(draws),
         start=completed,
-        generation_key=generation_key,
+        generation_keys=generation_keys,
         generate=generate,
+        save_unconstrained=save_unconstrained,
         output_dimensions=output_dimensions,
         batch_size=batch_size,
     )
     combined = _concatenate_draws(results, additional, start=completed, stop=stop)
     _warn_sampling(stats)
-    return _with_state(combined, resumed, generation_key, generate)
+    return _with_state(combined, resumed, generation_keys, generate)
 
 
 def _generation_layout(
@@ -393,8 +409,9 @@ def _run_results(
     chains: int,
     draws: int,
     start: int,
-    generation_key: jax.Array,
+    generation_keys: jax.Array,
     generate: bool,
+    save_unconstrained: bool,
     output_dimensions: dict[str, tuple[str, ...]],
     batch_size: int,
 ) -> xr.DataTree:
@@ -402,7 +419,7 @@ def _run_results(
     posterior = _evaluate_draws(model.constrain, unconstrained, sample_shape=(chains, draws), batch_size=batch_size)
     generated: dict[_OutputKey, NDArray[np.generic]] = {}
     if generate and model._has_generated_quantities:
-        keys = _generation_keys(generation_key, chains, start, start + draws)
+        keys = _generation_keys(generation_keys, start, start + draws)
         generated = _evaluate_draws(
             lambda key, parameters: model._generate_with_inputs(key, parameters, inputs)[0],
             keys,
@@ -410,7 +427,11 @@ def _run_results(
             sample_shape=(chains, draws),
             batch_size=batch_size,
         )
-    return _collect_sampling_results(model, posterior, generated, stats, output_dimensions)
+    results = _collect_sampling_results(model, posterior, generated, stats, output_dimensions)
+    if save_unconstrained:
+        unconstrained_draws = _unconstrained_dataset(model, unconstrained, results["posterior"].to_dataset())
+        results["unconstrained_posterior"] = xr.DataTree(unconstrained_draws)
+    return results
 
 
 def _concatenate_draws(previous: xr.DataTree, additional: xr.DataTree, *, start: int, stop: int) -> xr.DataTree:
@@ -422,7 +443,11 @@ def _concatenate_draws(previous: xr.DataTree, additional: xr.DataTree, *, start:
         earlier = original.to_dataset()
         current = additional[name].to_dataset()
         if "draw" in earlier.dims:
-            current = current.assign_coords(draw=np.arange(start, stop))
+            labels = {"draw": np.arange(start, stop)}
+            if "chain" in earlier.coords:
+                # New draws number chains from zero, while results cut to a subset keep their original labels.
+                labels["chain"] = earlier.coords["chain"].values
+            current = current.assign_coords(labels)
             joined = xr.concat(
                 (earlier, current),
                 dim="draw",
@@ -444,14 +469,14 @@ def _concatenate_draws(previous: xr.DataTree, additional: xr.DataTree, *, start:
 
 
 def _with_state(
-    results: xr.DataTree, continuation: _NUTSContinuation, generation_key: jax.Array, generate: bool
+    results: xr.DataTree, continuation: _NUTSContinuation, generation_keys: jax.Array, generate: bool
 ) -> xr.DataTree:
     """Store the resumable sampler state beside the results as writable numpy arrays."""
     groups = {name: node.to_dataset() for name, node in results.children.items() if name != "sampling_state"}
     mass_matrix = np.array(continuation.inverse_mass_matrix, copy=True)
     # netCDF stores dimensions beside child groups. Reusing the position group's name makes results unwritable.
     mass_dims = ("chain", "unconstrained") if mass_matrix.ndim == 2 else ("chain", "unconstrained", "unconstrained_")
-    key_impl = str(jax.random.key_impl(generation_key))
+    key_impl = str(jax.random.key_impl(generation_keys))
     groups["sampling_state"] = xr.Dataset(
         {
             "logdensity": ("chain", np.array(continuation.logdensity, copy=True)),
@@ -461,7 +486,10 @@ def _with_state(
                 ("chain", "key_data"),
                 np.array(jax.random.key_data(continuation.sampling_keys), copy=True),
             ),
-            "generation_key": ("key_data", np.array(jax.random.key_data(generation_key), copy=True)),
+            "generation_key": (
+                ("chain", "key_data"),
+                np.array(jax.random.key_data(generation_keys), copy=True),
+            ),
         },
         attrs={
             "completed_draws": int(continuation.completed_draws),
@@ -485,6 +513,28 @@ def _position_dataset(values: Mapping[str, jax.Array]) -> xr.Dataset:
         axes = ("chain", *(f"{name}_position_{index}" for index in range(array.ndim - 1)))
         variables[name] = xr.Variable(axes, array)
     return xr.Dataset(variables)
+
+
+def _unconstrained_dataset(
+    model: Model, unconstrained: Mapping[str, NDArray[np.generic]], posterior: xr.Dataset
+) -> xr.Dataset:
+    """Label unconstrained draws with the posterior's axes wherever the transform keeps a parameter's shape."""
+    variables = {}
+    for name, parameter in model.parameters.items():
+        array = np.array(unconstrained[name], copy=True)
+        if tuple(parameter.position_shape) == tuple(parameter.shape):
+            axes = tuple(str(axis) for axis in posterior[name].dims)
+        else:
+            axes = ("chain", "draw", *(f"{name}_position_{index}" for index in range(array.ndim - 2)))
+        variables[name] = xr.Variable(axes, array)
+    dataset = xr.Dataset(variables)
+    labels = {
+        axis: posterior.coords[axis].values.copy() if axis in posterior.coords else np.arange(size)
+        for axis, size in dataset.sizes.items()
+    }
+    labeled = dataset.assign_coords(labels)
+    labeled.attrs["sample_dims"] = ["chain", "draw"]
+    return labeled
 
 
 def _restore_continuation(results: object, model: Model) -> tuple[_NUTSContinuation, jax.Array, bool]:
@@ -525,8 +575,11 @@ def _restore_continuation(results: object, model: Model) -> tuple[_NUTSContinuat
         sampling_keys=_restore_keys(stored["sampling_key"].values, key_impl),
         completed_draws=int(state.attrs["completed_draws"]),
     )
-    generation_key = _restore_keys(stored["generation_key"].values, key_impl)
-    return continuation, generation_key, bool(int(state.attrs["generate"]))
+    generation_keys = _restore_keys(stored["generation_key"].values, key_impl)
+    if generation_keys.ndim == 0:
+        # Results saved before per-chain keys hold one key that each run split by chain position.
+        generation_keys = jax.random.split(generation_keys, continuation.step_size.shape[0])
+    return continuation, generation_keys, bool(int(state.attrs["generate"]))
 
 
 def _restore_keys(words: NDArray[np.generic], impl: str | None) -> jax.Array:
@@ -536,11 +589,11 @@ def _restore_keys(words: NDArray[np.generic], impl: str | None) -> jax.Array:
     return keys
 
 
-def _generation_keys(key: jax.Array, chains: int, start: int, stop: int) -> jax.Array:
-    """Assign random draws by chain and absolute draw index."""
+def _generation_keys(chain_keys: jax.Array, start: int, stop: int) -> jax.Array:
+    """Assign random draws by chain key and absolute draw index."""
     indices = jnp.arange(start, stop, dtype=jnp.uint32)
-    chain_keys = jax.random.split(key, chains)
-    return jax.vmap(lambda chain_key: jax.vmap(lambda index: jax.random.fold_in(chain_key, index))(indices))(chain_keys)
+    keys = jax.vmap(lambda chain_key: jax.vmap(lambda index: jax.random.fold_in(chain_key, index))(indices))(chain_keys)
+    return keys
 
 
 def _grouped_outputs[Value](generated: Mapping[_OutputKey, Value]) -> dict[_OutputGroup, dict[str, Value]]:
@@ -850,7 +903,12 @@ def generate_quantities(
           **generated_quantities** — Newly evaluated model outputs
         - **observed_data**, **constant_data** — Inputs in model units
 
-        Original sampler diagnostics are omitted.
+        With ``new_data`` and prepared data, predictive draws go to
+        **predictions**, pointwise log likelihoods to
+        **predictions_log_likelihood**, and the new inputs and outcome to
+        **predictions_constant_data**. ArviZ's in-sample checks such as
+        ``loo`` never read these groups. Original sampler diagnostics are
+        omitted.
     """
     if not isinstance(model, Model):
         raise TypeError("model must be a Model")
@@ -897,7 +955,25 @@ def generate_quantities(
         copy_draws=False,
     )
     evaluated.attrs.update(generation_seed=int(seed), data_scale="model" if model.scaling is not None else "original")
+    if model._data is not None and new_data is not None:
+        evaluated = _as_predictions(evaluated)
     return evaluated
+
+
+def _as_predictions(results: xr.DataTree) -> xr.DataTree:
+    """Move outputs and inputs evaluated on new data into ArviZ's prediction groups."""
+    renamed = {"posterior_predictive": "predictions", "log_likelihood": "predictions_log_likelihood"}
+    groups = {
+        renamed.get(name, name): node.to_dataset()
+        for name, node in results.children.items()
+        if name not in ("observed_data", "constant_data")
+    }
+    inputs = [results[name].to_dataset() for name in ("observed_data", "constant_data") if name in results.children]
+    if inputs:
+        groups["predictions_constant_data"] = xr.merge(inputs, join="exact", compat="equals")
+    predictions = xr.DataTree.from_dict(groups, name=results.name)
+    predictions.attrs = dict(results.attrs)
+    return predictions
 
 
 def _parameter_draws(
@@ -1127,6 +1203,13 @@ def _output_dimensions(
                 member_axes.add(("group",) if grouped_scale else ())
         if name in model._generated_dims:
             axes = model._generated_dims[name]
+        elif (
+            group == _ResultGroup.LOG_PRIOR
+            and name in model.parameters
+            and value.shape == tuple(model.parameters[name].shape)
+        ):
+            # A prior term is a new array, so it cannot inherit axes from the parameter it scores.
+            axes = parameter_dimensions[name]
         elif member_axes or any(value is arguments.get(argument) for argument in reference_inputs):
             candidates = inherited | member_axes
             axes = candidates.pop() if len(candidates) == 1 else fallback

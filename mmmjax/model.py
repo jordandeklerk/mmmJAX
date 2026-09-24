@@ -287,9 +287,10 @@ class Model:
         ``log_prior`` are mappings of named outputs stored in the matching
         result groups, and all other entries are ordinary generated quantities.
         Predictive draws and pointwise log likelihoods matching the outcome
-        shape inherit its observation labels. Pointwise log likelihoods exclude
-        priors and adjustments. Log-prior terms are prior factors, each once
-        and without constraint adjustments.
+        shape inherit its observation labels. With prepared data, name both
+        ``outcome``. Pointwise log likelihoods exclude priors and adjustments.
+        Log-prior terms are prior factors, each once and without constraint
+        adjustments.
     dims : mapping of str to str or sequence of str, optional
         Named axes for constrained parameter arrays, excluding chain and draw.
         A single string names one axis.

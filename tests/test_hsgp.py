@@ -849,15 +849,15 @@ def test_explicit_hsgp_prior_and_scenario_replay_preserve_axes_and_frozen_center
         outcome=False,
     )
     generated = generate_quantities(model, posterior, new_data=scenario, seed=11)
-    assert generated["posterior_predictive"]["prediction"].dims == ("chain", "draw", *observation_dims)
-    np.testing.assert_array_equal(generated["posterior_predictive"]["group"], ["west", "east"])
+    assert generated["predictions"]["prediction"].dims == ("chain", "draw", *observation_dims)
+    np.testing.assert_array_equal(generated["predictions"]["group"], ["west", "east"])
     if channel_specific:
-        np.testing.assert_array_equal(generated["posterior_predictive"]["channel"], ["video", "search"])
+        np.testing.assert_array_equal(generated["predictions"]["channel"], ["video", "search"])
     for draw in range(3):
         parameters = {name: draws["prior"][name].values[0, draw] for name in model.parameters}
         expected = transformed(jnp.array([4.0, 5.0]), **parameters)["baseline"]
         np.testing.assert_allclose(
-            generated["posterior_predictive"]["prediction"].values[0, draw],
+            generated["predictions"]["prediction"].values[0, draw],
             expected,
             rtol=5e-6,
             atol=3e-6,

@@ -71,6 +71,9 @@ The `writing-jax-code` skill covers JAX practice, from where `jax.jit` goes to t
 
 ## Naming
 
+- Choose every name for how it reads to a user at the call site, from functions, classes, and parameters to result groups and variables. Use the plain word a modeler or marketer already knows, spell it out instead of abbreviating, and reuse the name the API already gives a concept (`quantity`, `channels`, `new_data`, `batch_size`) instead of a synonym.
+- Where ArviZ, NumPyro, or Meridian already name the same thing, use their name, as `unconstrained_posterior` and `predictions` follow ArviZ's groups and `save_unconstrained` follows its `save_warmup`. A boolean names what it turns on, as `generate` does.
+- When more than one public name reads well, put the options to the user instead of picking one silently. Private helpers and local variables name what they hold for the next reader, as `generation_keys` does.
 - Underscore names are package-private, not module-private. Other mmmjax modules import them and read attributes such as `model._data`.
 - Helpers are named by role, as `_validate_*` (returns None or raises), `_prepare_*`, `_resolve_*`, `_as_*` (converts and checks), and `_*_kernel` in distributions.
 - Counts start with `n_` (`n_periods`, `n_basis`), never `num_`.

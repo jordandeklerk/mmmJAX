@@ -60,7 +60,10 @@ ran. To run the generated quantities on every draw for such data, pass the
 frame itself to {func}`~mmmjax.generate_quantities`, as in
 `new_data=extended`, and drop the first eight weeks of the result as above. It
 prepares the frame the way `model.prepare_data` does and does not accept that
-method's output.
+method's output. The draws land in ArviZ's `predictions` group, the new
+inputs in `predictions_constant_data`, and the log likelihood of any new
+outcomes in `predictions_log_likelihood`, so checks such as `az.loo` never
+mistake a scenario for the fit.
 
 ## Predictions and definitions
 

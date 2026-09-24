@@ -537,12 +537,13 @@ def test_auxiliary_inputs_remain_fixed_across_shorter_reordered_scenarios():
     np.testing.assert_array_equal(prepared.values["experiment_spend"], model.data.values["experiment_spend"])
     evaluated = generate_quantities(model, results, new_data=scenario)
 
-    assert "observed_data" not in evaluated.children
-    assert evaluated["constant_data"]["experiment_spend"].dims == ("experiment", "channel")
-    np.testing.assert_array_equal(evaluated["constant_data"]["experiment"], inputs.experiment)
-    np.testing.assert_array_equal(evaluated["constant_data"]["channel"], ["video", "search"])
-    np.testing.assert_array_equal(evaluated["constant_data"]["media_time"], [8, 9])
-    np.testing.assert_array_equal(evaluated["constant_data"]["experiment_spend"], inputs.experiment_spend)
+    scenario_inputs = evaluated["predictions_constant_data"]
+    assert "outcome" not in scenario_inputs.data_vars
+    assert scenario_inputs["experiment_spend"].dims == ("experiment", "channel")
+    np.testing.assert_array_equal(scenario_inputs["experiment"], inputs.experiment)
+    np.testing.assert_array_equal(scenario_inputs["channel"], ["video", "search"])
+    np.testing.assert_array_equal(scenario_inputs["media_time"], [8, 9])
+    np.testing.assert_array_equal(scenario_inputs["experiment_spend"], inputs.experiment_spend)
     generated = evaluated["generated_quantities"]
     assert generated["experiment_copy"].dims == ("chain", "draw", "experiment", "channel")
     np.testing.assert_array_equal(generated["experiment_response"], [[[8.0, 18.0, 28.0]]])
@@ -595,7 +596,7 @@ def test_generated_reference_inputs_keep_training_labels_for_new_observation_win
     )
     evaluated = generate_quantities(model, results, new_data=scenario, batch_size=1)
     generated_values = evaluated["generated_quantities"]
-    predictive = evaluated["posterior_predictive"]
+    predictive = evaluated["predictions"]
 
     assert generated_values["current_media"].dims == ("chain", "draw", "media_time", "group", "channel")
     assert generated_values["original_media"].dims == ("chain", "draw", "reference_media_time", "group", "channel")
@@ -799,7 +800,7 @@ def test_declared_reference_variables_keep_original_labels_in_scenarios(periods)
     )
     evaluated = generate_quantities(model, results, new_data=scenario, batch_size=1)
     generated_values = evaluated["generated_quantities"]
-    predictive = evaluated["posterior_predictive"]
+    predictive = evaluated["predictions"]
 
     assert generated_values["current"].dims == ("chain", "draw", "media_time", "group", "channel")
     assert generated_values["original"].dims == ("chain", "draw", "reference_media_time", "group", "channel")
@@ -814,8 +815,7 @@ def test_declared_reference_variables_keep_original_labels_in_scenarios(periods)
     np.testing.assert_array_equal(generated_values["original"][0, 0], model.data.values["media"])
     np.testing.assert_array_equal(predictive["original_sales"][0, 0], model.data.values["outcome"])
     np.testing.assert_array_equal(generated_values["original_elapsed"][0, 0], [0.0, 1.0, 2.0])
-    assert "observed_data" not in evaluated.children
-    assert set(evaluated["constant_data"].data_vars) == {"media"}
+    assert set(evaluated["predictions_constant_data"].data_vars) == {"media"}
 
 
 def test_result_collection_rejects_auxiliary_coordinate_alignment():
