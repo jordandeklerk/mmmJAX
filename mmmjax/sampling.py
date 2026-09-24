@@ -83,8 +83,8 @@ def sample(
     mass_matrix : {"diagonal", "dense"}, default "diagonal"
         Adapt individual unconstrained parameter scales, or also their
         correlations with a full dense matrix. Dense adaptation uses more
-        computation, with matrix storage growing quadratically in the
-        number of unconstrained parameter values.
+        computation. Its matrix storage grows quadratically in the number of
+        unconstrained parameter values.
     max_tree_depth : int, default 10
         Maximum trajectory expansion depth for each NUTS step.
     initial_values : mapping of str to array_like, optional
@@ -111,17 +111,17 @@ def sample(
     xarray.DataTree
         Results with chain and draw dimensions that must fit in host memory.
 
-        - **posterior** contains constrained parameter draws.
-        - **sample_stats** contains diagnostics including divergences and
-          unconstrained log density ``lp``.
-        - **posterior_predictive** contains outputs returned under ``predictive``.
-        - **log_likelihood** and **log_prior** contain outputs returned under
-          the corresponding keys by ``generated_quantities``.
-        - **generated_quantities** contains other generated outputs.
-        - **observed_data** and **constant_data** contain inputs in evaluated
-          units, including fitted scaling. Auxiliary ``Data`` uses **constant_data**.
-        - **sampling_state** stores chain positions, tuning, and random streams
-          for continued sampling.
+        - **posterior** — Constrained parameter draws
+        - **sample_stats** — Diagnostics including divergences and
+          unconstrained log density ``lp``
+        - **posterior_predictive** — Outputs returned under ``predictive``
+        - **log_likelihood**, **log_prior** — Outputs returned under the
+          corresponding keys by ``generated_quantities``
+        - **generated_quantities** — Other generated outputs
+        - **observed_data**, **constant_data** — Inputs in evaluated units,
+          including fitted scaling. Auxiliary ``Data`` uses **constant_data**
+        - **sampling_state** — Chain positions, tuning, and random streams
+          for continued sampling
 
         Declared axes retain labels. Predictive and likelihood outputs matching
         observations inherit outcome labels. Custom axes use model ``dims``,
@@ -275,7 +275,7 @@ def continue_sampling(
         Results returned by :func:`sample` or this function, including the
         ``sampling_state`` group. Results restored from disk are accepted.
     data : object, optional
-        Inputs for a model without prepared data, matching the original run.
+        Inputs from the original run for a model without prepared data.
         Prepared models use their stored observations automatically.
     draws : int, default 1000
         Additional retained draws per chain.
@@ -289,9 +289,9 @@ def continue_sampling(
     Returns
     -------
     xarray.DataTree
-        Original and additional draws in every sampled group, with continuous
-        draw numbering, unchanged observation labels, and an advanced
-        ``sampling_state`` for further continuation.
+        Original and additional draws in every sampled group. Draw numbering
+        is continuous, observation labels are unchanged, and the advanced
+        ``sampling_state`` supports further continuation.
     """
     if not isinstance(model, Model):
         raise TypeError("model must be a Model")
@@ -398,7 +398,7 @@ def _run_results(
     output_dimensions: dict[str, tuple[str, ...]],
     batch_size: int,
 ) -> xr.DataTree:
-    """Constrain new draws, generate their quantities, and label them as result groups."""
+    """Constrain new draws and label them with their generated quantities as result groups."""
     posterior = _evaluate_draws(model.constrain, unconstrained, sample_shape=(chains, draws), batch_size=batch_size)
     generated: dict[_OutputKey, NDArray[np.generic]] = {}
     if generate and model._has_generated_quantities:
@@ -449,7 +449,8 @@ def _with_state(
     """Store the resumable sampler state beside the results as writable numpy arrays."""
     groups = {name: node.to_dataset() for name, node in results.children.items() if name != "sampling_state"}
     mass_matrix = np.array(continuation.inverse_mass_matrix, copy=True)
-    mass_dims = ("chain", "position") if mass_matrix.ndim == 2 else ("chain", "position", "position_")
+    # netCDF stores dimensions beside child groups. Reusing the position group's name makes results unwritable.
+    mass_dims = ("chain", "unconstrained") if mass_matrix.ndim == 2 else ("chain", "unconstrained", "unconstrained_")
     groups["sampling_state"] = xr.Dataset(
         {
             "logdensity": ("chain", np.array(continuation.logdensity, copy=True)),
@@ -485,7 +486,7 @@ def _position_dataset(values: Mapping[str, jax.Array]) -> xr.Dataset:
 
 
 def _restore_continuation(results: object, model: Model) -> tuple[_NUTSContinuation, jax.Array, bool]:
-    """Rebuild the sampler continuation stored with results, checking it belongs to the model."""
+    """Rebuild the sampler continuation stored with results and check that it belongs to the model."""
     if (
         not isinstance(results, xr.DataTree)
         or "sampling_state" not in results.children
@@ -525,7 +526,7 @@ def _restore_continuation(results: object, model: Model) -> tuple[_NUTSContinuat
 
 
 def _restore_keys(words: NDArray[np.generic]) -> jax.Array:
-    """Rebuild typed random keys from stored key words, whatever integer dtype they were saved as."""
+    """Rebuild typed random keys from stored key words of any integer dtype."""
     return jnp.asarray(jax.random.wrap_key_data(jnp.asarray(np.asarray(words, dtype=np.uint32))))
 
 
@@ -635,11 +636,11 @@ def sample_prior(
         Labeled results with one chain and ``draws`` draws that must fit in
         host memory. The chain axis serves result compatibility, not MCMC.
 
-        - **prior** contains constrained parameter draws.
-        - **prior_predictive** contains callback outputs under ``predictive``.
-        - **prior_generated_quantities** contains other generated outputs.
-        - **observed_data** and **constant_data** contain inputs in evaluated
-          units, including fitted scaling. Auxiliary ``Data`` uses **constant_data**.
+        - **prior** — Constrained parameter draws
+        - **prior_predictive** — Callback outputs under ``predictive``
+        - **prior_generated_quantities** — Other generated outputs
+        - **observed_data**, **constant_data** — Inputs in evaluated units,
+          including fitted scaling. Auxiliary ``Data`` uses **constant_data**
 
         Log-likelihood and log-prior outputs are omitted. Without generation,
         only prior draws and available inputs are returned.
@@ -826,7 +827,7 @@ def generate_quantities(
         evaluated callback needs them. Auxiliary ``Data`` inputs remain
         fixed across scenarios.
     seed : int, default 0
-        Random seed for generated quantities, with an independent key per draw.
+        Random seed for generated quantities. Draws get independent keys.
     batch_size : int, default 64
         Maximum posterior draws evaluated together across chains. Smaller
         batches reduce working memory without changing the selected draws.
@@ -834,12 +835,13 @@ def generate_quantities(
     Returns
     -------
     xarray.DataTree
-        New results that must fit in host memory, leaving inputs unchanged.
+        New results that must fit in host memory. The supplied results are
+        not modified.
 
-        - **posterior** retains the draws and sample labels.
-        - **posterior_predictive**, **log_likelihood**, **log_prior**, and
-          **generated_quantities** contain newly evaluated model outputs.
-        - **observed_data** and **constant_data** contain inputs in model units.
+        - **posterior** — Draws and sample labels from ``results``
+        - **posterior_predictive**, **log_likelihood**, **log_prior**,
+          **generated_quantities** — Newly evaluated model outputs
+        - **observed_data**, **constant_data** — Inputs in model units
 
         Original sampler diagnostics are omitted.
     """

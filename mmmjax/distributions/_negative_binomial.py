@@ -176,8 +176,8 @@ def negative_binomial_logcdf(
 
     Examples
     --------
-    Evaluate :math:`\log P(X \leq x)` at three thresholds, then convert the
-    results to probabilities.
+    Evaluate :math:`\log P(X \leq x)` at three thresholds. Convert the results
+    to probabilities.
 
     .. ipython::
 
@@ -231,8 +231,8 @@ def negative_binomial_logsf(
 
     Examples
     --------
-    Evaluate :math:`\log P(X > x)` at three thresholds, then convert the results
-    to probabilities.
+    Evaluate :math:`\log P(X > x)` at three thresholds. Convert the results to
+    probabilities.
 
     .. ipython::
 
@@ -472,8 +472,8 @@ def negative_binomial_log_logcdf(
 
     Examples
     --------
-    Evaluate :math:`\log P(X \leq x)` at three thresholds, then convert the
-    results to probabilities.
+    Evaluate :math:`\log P(X \leq x)` at three thresholds. Convert the results
+    to probabilities.
 
     .. ipython::
 
@@ -528,8 +528,8 @@ def negative_binomial_log_logsf(
 
     Examples
     --------
-    Evaluate :math:`\log P(X > x)` at three thresholds, then convert the results
-    to probabilities.
+    Evaluate :math:`\log P(X > x)` at three thresholds. Convert the results to
+    probabilities.
 
     .. ipython::
 

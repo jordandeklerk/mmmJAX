@@ -65,7 +65,7 @@ def _betainc(alpha: jax.Array, beta: jax.Array, value: jax.Array) -> jax.Array:
     """Evaluate regularized incomplete Beta with differentiable shape parameters.
 
     Callers must supply finite positive shapes and values strictly between
-    zero and one, handling support boundaries in the distribution function.
+    zero and one. The distribution function handles support boundaries.
     """
     return cast(jax.Array, tfp_math.betainc(alpha, beta, value))
 

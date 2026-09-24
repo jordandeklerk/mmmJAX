@@ -186,7 +186,7 @@ def dirichlet_rng(
 
     Examples
     --------
-    Draw three probability vectors, each with three components that sum to one.
+    Draw three probability vectors. Each has three components that sum to one.
 
     .. ipython::
 

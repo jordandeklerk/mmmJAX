@@ -74,8 +74,8 @@ class _ResultGroup(StrEnum):
 class _Blocks(ABC):
     """Hold the program blocks and decide how each one receives its inputs.
 
-    Prepared models resolve inputs by argument name once at construction,
-    while models without prepared data pass the caller's bundle positionally.
+    Prepared models resolve inputs by argument name once at construction.
+    Models without prepared data pass the caller's bundle positionally.
     Both strategies share the same evaluation interface so the model never
     branches on which one it holds.
     """
@@ -197,7 +197,7 @@ class _PreparedBlocks(_Blocks):
 
 @dataclass(frozen=True, slots=True, eq=False)
 class _Training:
-    """Record how the fitted observations were laid out, timed, and scaled."""
+    """Record the layout and calendar of the fitted observations along with their scaling."""
 
     layout: _DataLayout
     time_column: str | None
@@ -222,13 +222,13 @@ class _Declarations:
 
     @property
     def constant_values(self) -> dict[str, object]:
-        """Return the declared constants, empty when none were declared."""
+        """Return the declared constants or an empty mapping when there are none."""
         return {} if self.constants is None else self.constants
 
 
 @dataclass(frozen=True, slots=True, eq=False, init=False, repr=False)
 class Model:
-    """Compose parameter declarations, log density, and generated quantities.
+    """Compose parameter declarations and program blocks into one model.
 
     A model evaluates its program blocks in order, from ``data`` and
     ``transformed_data`` through ``parameters``, ``transformed_parameters``,
@@ -425,7 +425,7 @@ class Model:
             Fitted transformations available by role through
             ``transformations``. Use the outcome transformation to restore
             predicted levels to their original units. Multiply contributions
-            by its scale only, without adding the outcome offset.
+            by its scale without adding the outcome offset.
         """
         return None if self._training is None else self._training.scaling
 
@@ -440,7 +440,7 @@ class Model:
         -------
         object
             JAX-compatible observation arrays. Callbacks
-            receive their requested inputs without unpacking this bundle.
+            receive their requested inputs one by one rather than this bundle.
             Requires prepared ``data`` at construction.
         """
         if self._data is None:
@@ -466,7 +466,7 @@ class Model:
             Dataframes reuse the model's selections, and every scenario
             follows the calendar of the training periods without gaps.
             These calendar checks apply when the training data carries an
-            inferred or declared frequency, while training prepared with
+            inferred or declared frequency. Training prepared with
             ``frequency=None`` leaves scenario dates unchecked.
             Prepared inputs may be raw or use this model's fitted scaling.
             Omit inputs only when no evaluated callback needs them.
@@ -475,9 +475,9 @@ class Model:
         Returns
         -------
         object
-            JAX-compatible inputs for ``log_density`` or ``generate_quantities`` in the
-            fitted group and channel order, covering the supplied periods.
-            Independent of stored model data and later source edits.
+            JAX-compatible inputs for ``log_density`` or ``generate_quantities``
+            that cover the supplied periods in the fitted group and channel
+            order. Independent of stored model data and later source edits.
         """
         return self._prepare_data(data)[0]
 
@@ -554,8 +554,8 @@ class Model:
         Parameters
         ----------
         position : mapping of str to array_like
-            Unconstrained values for every declared parameter, with each
-            value matching its declaration's ``position_shape``.
+            Unconstrained values for every declared parameter. Each value
+            matches its declaration's ``position_shape``.
 
         Returns
         -------
@@ -572,8 +572,8 @@ class Model:
         Parameters
         ----------
         parameters : mapping of str to array_like
-            Constrained values for every declared parameter, with each
-            value matching its declaration's ``shape`` and constraints.
+            Constrained values for every declared parameter. Each value
+            matches its declaration's ``shape`` and constraints.
 
         Returns
         -------
@@ -617,8 +617,9 @@ class Model:
         Parameters
         ----------
         parameters : mapping of str to array_like
-            Constrained values for every declared parameter, matching its
-            shape and constraints. Values use the declaration's dtype.
+            Constrained values for every declared parameter. Each value
+            matches its declaration's shape and constraints. Values use the
+            declaration's dtype.
         data : object, optional
             Prepared model inputs from ``model.prepare_data``. Defaults to
             stored training inputs. Prepare new data outside JAX transformations.
@@ -635,15 +636,16 @@ class Model:
     def log_prob(self, parameters: ParameterValues, data: object = None) -> jax.Array:
         """Evaluate the scalar log density at constrained parameter values.
 
-        Includes the priors and likelihood written in the density callback,
-        without parameterization adjustments. This need not be a normalized
+        Includes the priors and likelihood written in the density callback
+        but no parameterization adjustments. This need not be a normalized
         probability density. Supports JIT, gradients, and ``jax.vmap``.
 
         Parameters
         ----------
         parameters : mapping of str to array_like
-            Constrained values for every declared parameter, matching its
-            shape and constraints. Values use the declaration's dtype.
+            Constrained values for every declared parameter. Each value
+            matches its declaration's shape and constraints. Values use the
+            declaration's dtype.
         data : object, optional
             Defaults to stored training inputs for prepared models. For new
             observations, pass ``model.prepare_data`` output. Otherwise, pass
@@ -693,8 +695,8 @@ class Model:
         Parameters
         ----------
         position : mapping of str to array_like
-            Unconstrained values for every declared parameter, with each
-            value matching its declaration's ``position_shape``.
+            Unconstrained values for every declared parameter. Each value
+            matches its declaration's ``position_shape``.
         data : object
             For a prepared model, pass ``model.data`` or the result of
             ``model.prepare_data``. Otherwise, pass a JAX-compatible PyTree
@@ -761,7 +763,7 @@ class Model:
         parameters: ParameterValues,
         data: object,
     ) -> tuple[dict[_OutputKey, jax.Array], dict[str, object]]:
-        """Return outputs keyed by result group and name, with the callback inputs for labeling."""
+        """Return outputs keyed by result group and name along with the callback inputs used for labeling."""
         if not self._has_generated_quantities:
             raise RuntimeError(
                 "Generated quantities are unavailable because this model has no generated_quantities callback"
@@ -856,7 +858,10 @@ def _fit_scaling(
 
 
 def _outcome_scaling(data: PreparedData, fitted: DataScaling | None, has_outcome: bool) -> tuple[Scaling | None, bool]:
-    """Expose the outcome transform to blocks with one factor per region, or scalars."""
+    """Expose the outcome transform to blocks.
+
+    An outcome scaled by population across regions gets one factor per region. Any other outcome gets scalars.
+    """
     population_outcome = fitted is not None and "outcome" in fitted._population_roles and bool(data.group_columns)
     if not has_outcome:
         return None, population_outcome
@@ -876,7 +881,7 @@ def _prepare_training(
     parameter_names: tuple[str, ...],
     coordinates: _Coordinates,
 ) -> tuple[_ModelData, _Training, _Coordinates]:
-    """Build the model-owned data bundle, its training record, and the merged axis labels."""
+    """Build the model-owned data bundle with its training record and merged axis labels."""
     constants = declarations.constant_values
     declared = declarations.variables is not None
     data, fitted_scaling = _fit_scaling(data, declarations.scaling)
@@ -1154,7 +1159,10 @@ def _copy_reference(reference: Reference | None) -> Reference | None:
 
 
 def _prepare_parameterizations(parameters: Mapping[str, Parameterization]) -> _Parameterizations:
-    """Validate parameter names and declarations, then fix their evaluation order."""
+    """Validate parameter names and declarations.
+
+    Sorting the pairs by name fixes their evaluation order.
+    """
     if not isinstance(parameters, Mapping):
         raise TypeError(
             f"parameters must be a mapping from names to Parameterization objects, got {type(parameters).__name__}"

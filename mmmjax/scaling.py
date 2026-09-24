@@ -158,20 +158,21 @@ class DataScaling:
         Parameters
         ----------
         data : PreparedData
-            Unscaled inputs from :func:`prepare_data`, retaining the fitted
+            Unscaled inputs from :func:`prepare_data` that retain the fitted
             columns, channel assignments, and groups. New periods, different
             ordering, and omitted inputs are allowed.
 
         Returns
         -------
         PreparedData
-            New prepared inputs containing
+            New prepared inputs with the following fields.
 
-            - **arrays** : Scaled selected inputs and copies of untouched inputs
-            - **columns** : Source columns in training order
-            - **group_values** : Groups in training order
-            - **time_values** : Supplied modeling periods
-            - **media_time_values** : Supplied exposure periods, including history
+            - **arrays** — Scaled selected inputs and copies of untouched inputs
+            - **columns** — Source columns in training order
+            - **group_values** — Groups in training order
+            - **time_values** — Supplied modeling periods
+            - **media_time_values** — Supplied exposure periods, including
+              history
 
             The original data is unchanged. Call outside JAX transformations.
         """
@@ -189,7 +190,7 @@ class DataScaling:
         Returns
         -------
         PreparedData
-            New inputs in original units, aligned as in :meth:`transform`.
+            New inputs in original units. Alignment matches :meth:`transform`.
             Restored arrays remain floating-point, including original integers.
         """
         return self._apply(data, inverse=True)
@@ -245,8 +246,8 @@ def fit_scaling(
     """Estimate reusable centering and scaling from training observations.
 
     Subtract the mean and divide by the standard deviation with ``ddof=0``.
-    Constant series use a scale of one. Fit outside JAX transformations,
-    then use the stored transformation with JIT, gradients, or vectorization.
+    Constant series use a scale of one. Fit outside JAX transformations.
+    Use the stored transformation with JIT, gradients, or vectorization.
 
     Parameters
     ----------
@@ -407,8 +408,8 @@ def fit_media_scaling(
         them, and the maximum uses the largest exposure. New values can
         exceed one after scaling.
     population : array_like, optional
-        Positive, finite population, supplied as a scalar for one series or
-        a vector shaped ``(n_groups,)``. Boolean values are not accepted.
+        Positive, finite population. Supply a scalar for one series or a
+        vector shaped ``(n_groups,)``. Boolean values are not accepted.
         Omit to skip adjustment. For one series, population cancels from
         the normalized result.
 
@@ -420,9 +421,9 @@ def fit_media_scaling(
         - **offset** — Zeros to preserve absent exposure
         - **scale** — Channel statistics multiplied by population where supplied
 
-        Time retains length one, as does group unless population-specific factors
-        are used.
-        Reuse fixed factors in the fitted group and channel order.
+        Time retains length one. Group also retains length one unless
+        population-specific factors are used. Reuse fixed factors in the fitted
+        group and channel order.
 
     Examples
     --------
@@ -439,7 +440,7 @@ def fit_media_scaling(
            ...:     "video": [2_000.0, 0.0, 6_000.0],
            ...: })
 
-    The default method divides by the mean of the nonzero values, so zeros
+    The default method divides by the median of the nonzero values, so zeros
     stay zero and a later week is scaled with the training statistics.
 
     .. ipython::
@@ -551,8 +552,8 @@ def fit_data_scaling(
     ----------
     data : PreparedData
         Unscaled inputs from :func:`prepare_data`. Statistics pool periods
-        and groups per feature. Exposure statistics include history, while
-        other statistics use only modeling periods. Inputs are not modified.
+        and groups per feature. Exposure statistics include history. Other
+        statistics use only modeling periods. Inputs are not modified.
     media_method : {"median", "mean", "max"} or None, default "median"
         Statistic for paid and organic impressions and reach. The median
         excludes zeros and the mean includes them. Each channel needs positive

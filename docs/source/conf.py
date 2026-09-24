@@ -26,8 +26,8 @@ mathjax_path = "https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-mml-chtml.js"
 
 html_theme = "sphinx_immaterial"
 html_static_path = ["_static"]
-html_css_files = ["custom.css"]
-html_js_files = [("copybutton-shim.js", {"priority": 200}), "header-title-link.js"]
+html_css_files = ["css/custom.css", "css/landing.css"]
+html_js_files = [("js/copybutton-shim.js", {"priority": 200}), "js/header-title-link.js", "js/landing.js"]
 html_title = "mmmJAX"
 html_logo = "_static/mmmjax-logo.svg"
 html_favicon = "_static/favicon.ico"
@@ -44,6 +44,7 @@ html_theme_options = {
         "navigation.tabs.sticky",
         "navigation.path",
         "navigation.top",
+        "navigation.footer",
         "navigation.tracking",
         "announce.dismiss",
         "search.highlight",
@@ -105,7 +106,11 @@ intersphinx_mapping = {
 
 myst_enable_extensions = ["linkify", "colon_fence", "dollarmath"]
 myst_heading_anchors = 3
-nb_execution_mode = "off"
+# Guide pages run only when they change. They load stored fits instead of sampling.
+nb_execution_mode = "cache"
+nb_execution_raise_on_error = True
+nb_execution_timeout = 600
+nb_output_stderr = "remove"
 
 
 def _format_signature_defaults(app, what, name, obj, options, signature, return_annotation):
@@ -117,15 +122,26 @@ def _format_signature_defaults(app, what, name, obj, options, signature, return_
 
 
 def _open_examples_boxes(app, doctree):
-    """Render napoleon's Examples admonitions as open, collapsible example boxes."""
+    """Render napoleon's Examples admonitions as open, collapsible example boxes.
+
+    Boxes that set their own collapsible state keep it.
+    """
     from docutils import nodes
 
     for node in doctree.findall(nodes.admonition):
-        if "example" in node["classes"]:
+        if "example" in node["classes"] and node.get("collapsible") is None:
             node["collapsible"] = "open"
 
 
+def _landing_template(app, pagename, templatename, context, doctree):
+    """Draw the root document with the landing page template."""
+    if pagename == app.config.root_doc:
+        return "landing.html"
+    return None
+
+
 def setup(app):
-    """Register API signature formatting and example box styling."""
+    """Register API signature formatting, example box styling, and the landing page."""
     app.connect("autodoc-process-signature", _format_signature_defaults)
     app.connect("doctree-read", _open_examples_boxes)
+    app.connect("html-page-context", _landing_template)

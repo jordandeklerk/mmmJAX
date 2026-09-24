@@ -258,7 +258,7 @@ def student_t(
            ...: )
 
     Use ``vmap`` to get a separate log likelihood for each dataset. Map over
-    the rows of ``datasets`` while sharing the three distribution parameters:
+    the rows of ``datasets`` while sharing the three distribution parameters.
 
     .. ipython::
 

@@ -26,7 +26,7 @@ def lkj_cholesky_logpdf(value: ArrayLike, concentration: ArrayLike) -> jax.Array
     ----------
     value : array_like
         Lower Cholesky factors of correlation matrices. The final two axes
-        are square, with positive diagonals and unit-length rows.
+        are square. Each factor has a positive diagonal and unit-length rows.
     concentration : array_like
         Positive concentration. One gives a uniform distribution over
         correlation matrices. Larger values favor weaker correlations.
@@ -115,12 +115,13 @@ def lkj_cholesky_rng(
     key : jax.Array
         JAX random key. Use a fresh key for independent draws.
     dimension : int
-        Positive number of rows and columns. Must be static under JIT.
+        Positive number of rows and columns. Keep this argument static when
+        using ``jax.jit``.
     concentration : array_like
         Positive concentration. Its shape defines the batch dimensions.
     sample_shape : tuple of int, default ()
         Independent sample dimensions prepended to the batch shape.
-        Must be static under JIT.
+        The tuple must be static when the function is JIT-compiled.
 
     Returns
     -------

@@ -31,7 +31,7 @@ def _collect_results(
     sample_group: Literal["posterior", "prior"] = "posterior",
     copy_draws: bool = True,
 ) -> xr.DataTree:
-    """Collect labeled groups, copying draws unless the caller transfers ownership."""
+    """Collect labeled groups and copy draws unless the caller transfers ownership."""
     if sample_group not in ("posterior", "prior"):
         raise ValueError("sample_group must be posterior or prior")
     if sample_group == "prior" and (log_likelihood is not None or log_prior is not None or sample_stats is not None):

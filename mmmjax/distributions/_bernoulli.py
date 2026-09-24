@@ -140,7 +140,7 @@ def bernoulli_logcdf(value: ArrayLike, probability: ArrayLike) -> jax.Array:
 
     Examples
     --------
-    Evaluate the log probability of outcome zero, then convert it to a
+    Evaluate the log probability of outcome zero. Convert the result to a
     probability.
 
     .. ipython::
@@ -196,7 +196,7 @@ def bernoulli_logsf(value: ArrayLike, probability: ArrayLike) -> jax.Array:
 
     Examples
     --------
-    Evaluate the log probability of outcome one, then convert it to a
+    Evaluate the log probability of outcome one. Convert the result to a
     probability.
 
     .. ipython::
@@ -383,7 +383,7 @@ def bernoulli_logit_logcdf(value: ArrayLike, logits: ArrayLike) -> jax.Array:
 
     Examples
     --------
-    Evaluate the log probability of outcome zero, then convert it to a
+    Evaluate the log probability of outcome zero. Convert the result to a
     probability.
 
     .. ipython::
@@ -439,7 +439,7 @@ def bernoulli_logit_logsf(value: ArrayLike, logits: ArrayLike) -> jax.Array:
 
     Examples
     --------
-    Evaluate the log probability of outcome one, then convert it to a
+    Evaluate the log probability of outcome one. Convert the result to a
     probability.
 
     .. ipython::

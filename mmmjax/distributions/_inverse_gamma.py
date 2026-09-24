@@ -143,8 +143,8 @@ def inverse_gamma_logcdf(
 
     Examples
     --------
-    Evaluate :math:`\log P(X \leq x)` at three thresholds, then convert the
-    results to probabilities.
+    Evaluate :math:`\log P(X \leq x)` at three thresholds. Convert the results
+    to probabilities.
 
     .. ipython::
 
@@ -196,8 +196,8 @@ def inverse_gamma_logsf(
 
     Examples
     --------
-    Evaluate :math:`\log P(X > x)` at three thresholds, then convert the results
-    to probabilities.
+    Evaluate :math:`\log P(X > x)` at three thresholds. Convert the results to
+    probabilities.
 
     .. ipython::
 

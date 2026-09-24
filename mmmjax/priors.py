@@ -30,7 +30,7 @@ class Prior:
         ``lognormal``, or ``dirichlet``, or one returned by
         ``custom_distribution`` for a distribution written as plain functions.
     **parameters : array_like
-        All named distribution settings, copied at construction in the
+        All named distribution settings. Construction copies them in the
         precision in effect at that moment, so enable JAX 64-bit mode before
         building priors as with any other array. Multinomial priors also
         require ``trials`` and reject counts with another total. LKJ priors
@@ -129,7 +129,7 @@ class Prior:
         return result
 
     def logpdf(self, value: ArrayLike) -> jax.Array:
-        """Return log densities or masses, reducing only distribution event axes.
+        """Return log densities or masses summed over distribution event axes only.
 
         Parameters
         ----------
@@ -155,7 +155,8 @@ class Prior:
         key : jax.Array
             Random key for this draw. Use a fresh key for independent draws.
         sample_shape : tuple of int, default ()
-            Independent sample dimensions, fixed when compiling with JAX.
+            Independent sample dimensions. Keep this argument static when
+            using ``jax.jit``.
 
         Returns
         -------
@@ -199,7 +200,7 @@ class Prior:
             raise ValueError(f"Prior batch shape {self._batch_shape} cannot broadcast to declared shape {shape}")
 
     def _sample(self, key: jax.Array, shape: tuple[int, ...], dtype: DTypeLike) -> jax.Array:
-        """Draw exactly the declared shape, including any existing batch axes."""
+        """Draw exactly the declared shape with any existing batch axes."""
         self._validate_shape(shape)
         batch_shape = shape[: -self.event_ndims] if self.event_ndims else shape
         ndims_by_name = dict(self._spec.parameter_events)

@@ -18,7 +18,7 @@ def media_response(
     n_periods: int | None = None,
     adstock_first: bool = True,
 ) -> jax.Array:
-    """Apply carryover and saturation, retaining the requested modeling periods.
+    """Apply carryover and saturation and keep the requested modeling periods.
 
     Apply both transformations to the full exposure history before selecting
     modeling periods. Scaling and coefficient multiplication remain separate.
@@ -31,18 +31,21 @@ def media_response(
         exposure history needed by the carryover transformation.
     adstock : callable
         Function applying carryover along axis zero while preserving shape.
-        Supply parameters with a function or ``functools.partial``.
+        Supply parameters with a function or ``functools.partial``. Keep this
+        argument static when using ``jax.jit``.
     saturation : callable
         Shape-preserving response curve with parameters supplied as for
         ``adstock``. For learned parameters, define both callbacks inside
         ``transformed_parameters`` or the log density using current values.
+        Keep this argument static when using ``jax.jit``.
     n_periods : int, optional
         Number of final periods to return, such as ``len(data.time_values)``.
-        Must be positive and not exceed the exposure window. If omitted,
-        return all periods, including history.
+        Must be positive and not exceed the exposure window. Omit to return
+        all periods, including history. Keep this argument static when using
+        ``jax.jit``.
     adstock_first : bool, default True
         Apply carryover before saturation, or reverse the order with ``False``.
-        Callbacks, this flag, and ``n_periods`` must stay fixed when compiling.
+        Keep this argument static when using ``jax.jit``.
 
     Returns
     -------
@@ -61,7 +64,12 @@ def media_response(
         In [1]: from functools import partial
            ...: import numpy as np
            ...: import polars as pl
-           ...: import mmmjax as mm
+           ...: from mmmjax import (
+           ...:     geometric_adstock,
+           ...:     hill_saturation,
+           ...:     media_response,
+           ...:     prepare_data,
+           ...: )
 
         In [2]: frame = pl.DataFrame({
            ...:     "week": [2, 3, 4],
@@ -70,21 +78,21 @@ def media_response(
            ...: })
            ...: history = pl.DataFrame({"week": [1], "video": [100.0]})
 
-        In [3]: data = mm.prepare_data(
+        In [3]: data = prepare_data(
            ...:     frame, time="week", outcome="sales", media=["video"],
            ...:     media_history=history,
            ...: )
 
-    Apply adstock and then saturation over the full media history, keeping
+    Apply adstock and then saturation over the full media history and keep
     one response for each modeling period.
 
     .. ipython::
 
-        In [4]: response = mm.media_response(
+        In [4]: response = media_response(
            ...:     data.arrays["media"],
-           ...:     adstock=partial(mm.geometric_adstock, alpha=0.5, max_lag=2),
+           ...:     adstock=partial(geometric_adstock, alpha=0.5, max_lag=2),
            ...:     saturation=partial(
-           ...:         mm.hill_saturation, half_saturation=200.0, slope=1.0,
+           ...:         hill_saturation, half_saturation=200.0, slope=1.0,
            ...:     ),
            ...:     n_periods=len(data.time_values),
            ...: )
@@ -140,7 +148,7 @@ def reach_frequency_response(
     saturation: Callable[[ArrayLike], ArrayLike],
     n_periods: int | None = None,
 ) -> jax.Array:
-    r"""Apply saturation to frequency, weight by reach, then apply carryover.
+    r"""Saturate frequency and weight it by reach before applying carryover.
 
     For reach :math:`r` and frequency :math:`f`, the response is
 
@@ -160,21 +168,24 @@ def reach_frequency_response(
         Prepared shapes are ``(time, channel)`` or ``(time, group, channel)``.
         Supply raw reach or reach transformed using fitted scales.
     frequency : array_like
-        Finite, nonnegative average exposures per person, matching the shape
+        Finite, nonnegative average exposures per person. Must match the shape
         and order of ``reach``. Keep its original units when scaling inputs.
         Use :func:`prepare_data` to validate and order reach and frequency.
     adstock : callable
         Function applying carryover along axis zero without changing the
         input shape. It receives reach multiplied by saturated frequency.
+        Keep this argument static when using ``jax.jit``.
     saturation : callable
         Shape-preserving response curve with thresholds in frequency units.
         Supply parameters with a function or ``functools.partial``. For
         learned parameters, define callbacks inside ``transformed_parameters``
-        or the log density using current values.
+        or the log density using current values. Keep this argument static
+        when using ``jax.jit``.
     n_periods : int, optional
-        Number of final modeling periods to return, such as ``len(data.time_values)``.
-        Must be positive and not exceed the exposure window. If omitted,
-        return all periods. Callbacks and ``n_periods`` must stay fixed when compiling.
+        Number of final modeling periods to return, such as
+        ``len(data.time_values)``. Must be positive and not exceed the
+        exposure window. Omit to return all periods. Keep this argument
+        static when using ``jax.jit``.
 
     Returns
     -------
@@ -194,7 +205,12 @@ def reach_frequency_response(
         In [1]: from functools import partial
            ...: import numpy as np
            ...: import polars as pl
-           ...: import mmmjax as mm
+           ...: from mmmjax import (
+           ...:     geometric_adstock,
+           ...:     hill_saturation,
+           ...:     prepare_data,
+           ...:     reach_frequency_response,
+           ...: )
 
         In [2]: frame = pl.DataFrame({
            ...:     "week": [2, 3, 4],
@@ -206,21 +222,21 @@ def reach_frequency_response(
            ...:     "video_frequency": [1.5],
            ...: })
 
-        In [3]: data = mm.prepare_data(
+        In [3]: data = prepare_data(
            ...:     frame, time="week", reach=["video_reach"],
            ...:     media_frequency=["video_frequency"], media_history=history,
            ...: )
 
-    Saturation applies to frequency and the result is weighted by reach,
-    with adstock carrying earlier exposure into the week with none.
+    Saturation applies to frequency and the result is weighted by reach.
+    Adstock carries earlier exposure into the week with none.
 
     .. ipython::
 
-        In [4]: response = mm.reach_frequency_response(
+        In [4]: response = reach_frequency_response(
            ...:     data.arrays["reach"], data.arrays["media_frequency"],
-           ...:     adstock=partial(mm.geometric_adstock, alpha=0.5, max_lag=2),
+           ...:     adstock=partial(geometric_adstock, alpha=0.5, max_lag=2),
            ...:     saturation=partial(
-           ...:         mm.hill_saturation, half_saturation=2.0, slope=1.0,
+           ...:         hill_saturation, half_saturation=2.0, slope=1.0,
            ...:     ),
            ...:     n_periods=len(data.time_values),
            ...: )

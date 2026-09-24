@@ -42,7 +42,7 @@ def half_normal_logpdf(value: ArrayLike, scale: ArrayLike) -> jax.Array:
 
     Examples
     --------
-    Evaluate a separate log density for each nonnegative value:
+    Evaluate a separate log density for each nonnegative value.
 
     .. ipython::
 
@@ -83,7 +83,7 @@ def half_normal(value: ArrayLike, scale: ArrayLike) -> jax.Array:
     Examples
     --------
     Compute a single log likelihood by summing the log densities of
-    independent nonnegative observations:
+    independent nonnegative observations.
 
     .. ipython::
 
@@ -124,8 +124,8 @@ def half_normal_logcdf(value: ArrayLike, scale: ArrayLike) -> jax.Array:
 
     Examples
     --------
-    Evaluate :math:`\log P(X \leq x)` at three thresholds, then convert
-    the results to probabilities:
+    Evaluate :math:`\log P(X \leq x)` at three thresholds. Convert the results
+    to probabilities.
 
     .. ipython::
 
@@ -171,8 +171,8 @@ def half_normal_logsf(value: ArrayLike, scale: ArrayLike) -> jax.Array:
 
     Examples
     --------
-    Evaluate :math:`\log P(X > x)` at three thresholds, then convert
-    the results to probabilities:
+    Evaluate :math:`\log P(X > x)` at three thresholds. Convert the results to
+    probabilities.
 
     .. ipython::
 
@@ -215,7 +215,7 @@ def half_normal_rng(
 
     Examples
     --------
-    Draw five nonnegative samples using a key to make the draw reproducible:
+    Draw five nonnegative samples using a key to make the draw reproducible.
 
     .. ipython::
 

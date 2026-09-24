@@ -121,6 +121,10 @@ def optimize_budget(
     By default, redistribute the same total spending across those channels.
     Other spending and earlier media history stay fixed. The result is a
     local constrained solution and can depend on the starting allocation.
+    ``ValueError`` is raised for invalid inputs, infeasible constraints, and
+    model evaluations that produce invalid responses, utility values, or
+    gradients. ``RuntimeError`` is raised when the solver fails to converge
+    or returns an infeasible allocation.
 
     Parameters
     ----------
@@ -132,7 +136,7 @@ def optimize_budget(
     budget : float, optional
         Positive total spending for the selected channels and spending
         periods, in original spend units. Defaults to their total reference
-        spending, using ``new_data`` when supplied.
+        spending. The reference comes from ``new_data`` when supplied.
     quantity : str
         Key returned by ``transformed_parameters`` holding the expected outcome
         for every observation on the scale the likelihood uses, such as
@@ -148,19 +152,19 @@ def optimize_budget(
         penalize uncertainty. Inputs are total expected responses in original
         outcome units, not changes from the reference allocation. Because they
         are absolute totals, a custom utility that differences them works on
-        offset-laden float32 values and should be scaled sensibly, while the
+        offset-laden float32 values and should be scaled sensibly. The
         default objective differences paired responses and is unaffected.
     spend_to_media : {"proportional"} or callable, default "proportional"
-        By default, exposure scales with spending at each period and group,
-        retaining reference exposure per unit spend. A differentiable JAX
-        callable instead receives only ordinary-media spending in original
+        By default, exposure scales with spending at each period and group.
+        Exposure per unit spend keeps its reference value. A differentiable
+        JAX callable instead receives only ordinary-media spending in original
         channel order and returns raw exposures of the same shape.
     spend_to_rf : {"reach", "frequency"} or callable, default "reach"
-        Scale reach at fixed frequency, or frequency at fixed reach, assuming
-        constant cost per impression. A differentiable JAX callable instead
-        receives raw RF spending in original ``rf_channels`` order and returns
-        ``(reach, frequency)`` arrays of the same shape. Conversion covers
-        supplied modeling periods. Earlier history stays fixed.
+        Scale reach at fixed frequency, or frequency at fixed reach. Both
+        assume constant cost per impression. A differentiable JAX callable
+        instead receives raw RF spending in original ``rf_channels`` order and
+        returns ``(reach, frequency)`` arrays of the same shape. Conversion
+        covers supplied modeling periods. Earlier history stays fixed.
     bounds : tuple of float or mapping of str to tuple of float, optional
         Finite nonnegative lower and upper spending limits in original units.
         Supply one pair for all selected channels or one pair per channel name.
@@ -219,37 +223,31 @@ def optimize_budget(
     xarray.Dataset
         Reference and optimized allocations with posterior uncertainty.
 
-        - **spend** gives channel budgets in original spend units.
-        - **response** gives each allocation's response per chain and draw.
-        - **response_change** gives paired optimized-minus-reference responses.
-        - **utility** gives the objective value for each allocation.
-        - **lower_bound**, **upper_bound**, and **initial_spend** give channel
-          limits and starting budgets in original spend units.
-        - **spend_period**, **response_period**, and **channel_type** label
-          selected dates and ordinary-media or reach/frequency channels.
-        - **constraint_spend** and **constraint_satisfied** report supplied
-          group constraints for both allocations. The reference may violate them.
-        - **constraint_lower_bound**, **constraint_upper_bound**, and
-          **constraint_channels** give group limits in spend units and membership.
-        - **incremental_response**, **roi**, **marginal_response**, **marginal_roi**,
-          **incremental_spend**, **cost_per_incremental_response**, and
-          **spend_share** are added with ``include_metrics=True``. Definitions
-          follow :func:`media_metrics`, evaluated at each allocation without
-          restricting the metric interventions to optimization bounds.
+        - **spend** — Channel budgets in original spend units
+        - **response** — Each allocation's response per chain and draw
+        - **response_change** — Paired optimized-minus-reference responses
+        - **utility** — Objective value for each allocation
+        - **lower_bound**, **upper_bound**, **initial_spend** — Channel limits
+          and starting budgets in original spend units
+        - **spend_period**, **response_period**, **channel_type** — Labels for
+          selected dates and ordinary-media or reach/frequency channels
+        - **constraint_spend**, **constraint_satisfied** — Group spending and
+          whether each allocation meets the supplied constraints. The reference
+          may violate them
+        - **constraint_lower_bound**, **constraint_upper_bound**,
+          **constraint_channels** — Group limits in spend units and membership
+        - **incremental_response**, **roi**, **marginal_response**,
+          **marginal_roi**, **incremental_spend**,
+          **cost_per_incremental_response**, **spend_share** — Metrics added
+          with ``include_metrics=True`` and evaluated at each allocation as
+          defined in :func:`media_metrics`. Their interventions are not
+          restricted to optimization bounds
 
         Responses use original outcome units and retain chain, draw, and
         optional ``by`` axes. Channel ratios retain chain, draw, allocation,
-        and channel axes, using totals across periods and groups. Spending
+        and channel axes. They use totals across periods and groups. Spending
         and ``spend_share`` have only allocation and channel axes. Breakdowns
         describe one joint allocation, not separately optimized budgets.
-
-    Raises
-    ------
-    ValueError
-        Inputs are invalid, constraints are infeasible, or model evaluation
-        produces invalid responses, utility values, or gradients.
-    RuntimeError
-        The solver fails to converge or returns an infeasible allocation.
     """
     tolerance = _positive_number(tolerance, "tolerance")
     if tolerance >= 1:
@@ -599,7 +597,7 @@ def _tighten_bounds(
     matrix: NDArray[np.float64],
     limits: NDArray[np.float64],
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """Propagate group and total limits, including channels forced to zero."""
+    """Propagate group and total limits into channel bounds that may force a channel to zero."""
     lower, upper = lower.copy(), upper.copy()
     rows = np.vstack((np.ones(len(lower)), matrix)).astype(bool)
     targets = np.vstack(([1.0, 1.0], limits))

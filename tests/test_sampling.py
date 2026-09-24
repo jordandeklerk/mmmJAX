@@ -1721,6 +1721,15 @@ def test_continuation_resumes_from_results_rebuilt_from_plain_data(normal_model)
     assert continued["sampling_state"].attrs["completed_draws"] == 6
 
 
+@pytest.mark.parametrize("mass_matrix", ["diagonal", "dense"])
+def test_result_dimensions_never_share_a_name_with_a_child_group(normal_model, mass_matrix):
+    # netCDF writes dimensions beside child groups. A shared name makes results impossible to save.
+    options = {"data": 0.0, "draws": 2, "warmup": 20, "chains": 2, "seed": 5, "progress": False}
+    results = sample(normal_model, mass_matrix=mass_matrix, **options)
+    for node in results.subtree:
+        assert not set(node.dims) & set(node.children), node.path
+
+
 def test_continuation_coordinate_edits_do_not_change_other_results():
     data = prepare_data(
         pd.DataFrame(

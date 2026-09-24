@@ -37,12 +37,13 @@ def custom_distribution(
     """Make a distribution written as plain functions usable like the built-in families.
 
     Write the pointwise log density as ``logpdf(value, *settings)`` and the
-    draw function as ``rng(key, *settings, sample_shape=())``, following the
-    conventions of the built-in families. The returned function sums the log
-    density over every axis, so it adds to the target in ``log_density`` the
-    way ``normal`` or ``gamma`` does, and ``Prior`` accepts it with fixed
-    settings for prior draws and pointwise log-prior terms. Both functions
-    must be pure JAX code whose settings broadcast against the values.
+    draw function as ``rng(key, *settings, sample_shape=())``. These
+    signatures follow the conventions of the built-in families. The returned
+    function sums the log density over every axis, so it adds to the target
+    in ``log_density`` the way ``normal`` or ``gamma`` does, and ``Prior``
+    accepts it with fixed settings for prior draws and pointwise log-prior
+    terms. Both functions must be pure JAX code whose settings broadcast
+    against the values.
 
     Parameters
     ----------
@@ -58,10 +59,10 @@ def custom_distribution(
         Name of the returned function. Defaults to the ``logpdf`` name
         without its ``_logpdf`` or ``_logpmf`` suffix.
     event_ndims : int, default 0
-        Trailing value axes that form one event, zero for scalar families
-        and one for vector families such as a Dirichlet. A vector family
-        needs at least one setting listed in ``parameter_event_ndims`` so
-        the event size is known.
+        Trailing value axes that form one event. Use zero for scalar
+        families and one for vector families such as a Dirichlet. A vector
+        family needs at least one setting listed in ``parameter_event_ndims``
+        so the event size is known.
     parameter_event_ndims : mapping of str to int, optional
         Trailing event axes of any setting that is a vector per batch entry,
         such as ``{"concentration": 1}``. Unlisted settings are scalars.
@@ -69,7 +70,7 @@ def custom_distribution(
     Returns
     -------
     callable
-        Summed log density with the ``logpdf`` signature, carrying the
+        Summed log density with the ``logpdf`` signature. It carries the
         metadata that ``Prior`` needs.
 
     Examples
@@ -81,7 +82,7 @@ def custom_distribution(
 
         In [1]: import jax
            ...: import jax.numpy as jnp
-           ...: import mmmjax as mj
+           ...: from mmmjax import Prior, custom_distribution
            ...:
            ...: def half_cauchy_logpdf(value, scale):
            ...:     standardized = value / scale
@@ -92,7 +93,7 @@ def custom_distribution(
            ...:     shape = sample_shape + jnp.shape(jnp.asarray(scale))
            ...:     return jnp.abs(scale * jax.random.cauchy(key, shape))
            ...:
-           ...: half_cauchy = mj.custom_distribution(half_cauchy_logpdf, half_cauchy_rng)
+           ...: half_cauchy = custom_distribution(half_cauchy_logpdf, half_cauchy_rng)
 
     The returned function sums the log density, and a prior binds its setting
     for draws and pointwise terms.
@@ -101,7 +102,7 @@ def custom_distribution(
 
         In [2]: half_cauchy(jnp.array([0.5, 2.0]), 1.0)
 
-        In [3]: prior = mj.Prior(half_cauchy, scale=1.0)
+        In [3]: prior = Prior(half_cauchy, scale=1.0)
            ...: prior.sample(jax.random.key(0), sample_shape=(3,))
     """
     if not callable(logpdf) or not callable(rng):

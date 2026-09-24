@@ -12,15 +12,15 @@
 [![Build status](https://github.com/jordandeklerk/mmmJAX/actions/workflows/test.yml/badge.svg)](https://github.com/jordandeklerk/mmmJAX/actions/workflows/test.yml)
 [![Documentation](https://readthedocs.org/projects/mmmjax/badge/?version=latest)](https://mmmjax.readthedocs.io/en/latest/)
 
-[Installation](#installation) | [Program blocks](#program-blocks) | [Distributions](#distributions) | [Inference](#inference-is-separate-from-the-model) | [Documentation](https://mmmjax.readthedocs.io/en/latest/)
+[What is mmmJAX](#what-is-mmmjax) | [Installation](#installation) | [Program blocks](#program-blocks) | [Distributions](#distributions) | [Inference](#inference-is-separate-from-the-model) | [Documentation](https://mmmjax.readthedocs.io/en/latest/)
 
 </div>
 
 ## What is mmmJAX?
 
-mmmJAX is a library for Bayesian marketing mix modeling in [JAX](https://docs.jax.dev/). It borrows the shape of a [Stan](https://mc-stan.org/) program, so a model is a sequence of named blocks, each a plain Python function or dictionary, and every prior and structural assumption is written where you would change it.
+mmmJAX is a library for Bayesian marketing mix modeling in [JAX](https://docs.jax.dev/). Packaged MMM APIs fix the model for you, which suits a first model but rarely the questions that follow. mmmJAX takes the shape of a [Stan](https://mc-stan.org/) program instead, so a model is a few named blocks of plain Python, and every prior and assumption is written where you would change it.
 
-Because the blocks are ordinary JAX code, the finished model can be differentiated, compiled, and vectorized. mmmJAX supplies the marketing pieces that go inside them, such as adstock and saturation functions, seasonal features, and a NUTS sampler, and none of them are required.
+The blocks are JAX code, so the model can be differentiated, compiled, and vectorized. mmmJAX supplies optional marketing pieces such as adstock, saturation, seasonality, and a NUTS sampler, and its tools, from data preparation to budget optimization, keep working as the model grows.
 
 ## Installation
 

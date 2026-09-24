@@ -51,7 +51,7 @@ def exponential_logpdf(value: ArrayLike, rate: ArrayLike) -> jax.Array:
            ...: exponential_logpdf(values, rate=2.0)
 
     Broadcasting evaluates all three values at two rates. The extra axis
-    keeps values in rows and rates in columns:
+    keeps values in rows and rates in columns.
 
     .. ipython::
 
@@ -128,8 +128,8 @@ def exponential_logcdf(value: ArrayLike, rate: ArrayLike) -> jax.Array:
 
     Examples
     --------
-    Evaluate :math:`\log P(X \leq x)` at three thresholds, then convert the
-    results to probabilities.
+    Evaluate :math:`\log P(X \leq x)` at three thresholds. Convert the results
+    to probabilities.
 
     .. ipython::
 
@@ -192,8 +192,8 @@ def exponential_logsf(value: ArrayLike, rate: ArrayLike) -> jax.Array:
 
     Examples
     --------
-    Evaluate :math:`\log P(X > x)` at three thresholds, then convert the results
-    to probabilities.
+    Evaluate :math:`\log P(X > x)` at three thresholds. Convert the results to
+    probabilities.
 
     .. ipython::
 

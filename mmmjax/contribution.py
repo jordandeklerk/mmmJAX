@@ -59,15 +59,15 @@ def contributions(
     """Decompose the expected response into a baseline and channel contributions.
 
     Remove one input at a time and compare the result with the reference
-    response, then remove every input at once to measure the baseline. Paid
-    and organic exposures are set to zero during ``periods``, only reach is
-    set to zero for reach and frequency families while frequency stays fixed,
-    and treatments are set to baseline levels, while controls, seasonality,
-    earlier history, and every other input stay fixed. Each scenario rewrites
-    only the input it removes, while the baseline necessarily rewrites every
-    removable input at once. The full model is evaluated for each selected
-    parameter draw and differences are taken within draws, so the returned
-    draws support credible intervals.
+    response. Remove every input at once to measure the baseline. Paid and
+    organic exposures are set to zero during ``periods``, only reach is set to
+    zero for reach and frequency families while frequency stays fixed, and
+    treatments are set to baseline levels. Controls, seasonality, earlier
+    history, and every other input stay fixed. Each scenario rewrites only the
+    input it removes. The baseline necessarily rewrites every removable input
+    at once. The full model is evaluated for each selected parameter draw and
+    differences are taken within draws, so the returned draws support credible
+    intervals.
 
     Parameters
     ----------
@@ -90,9 +90,10 @@ def contributions(
         No sampling is performed. Compare groups using separate calls.
     channels : sequence of str, optional
         Labels to report, in the desired order. Defaults to every member of
-        every family present, ordered paid media, reach and frequency, organic
-        media, organic reach and frequency, and then treatments by their
-        column names. Labels must be unique across families.
+        every family present. The default order is paid media, reach and
+        frequency, organic media, organic reach and frequency, and then
+        treatments by their column names. Labels must be unique across
+        families.
     treatment_baselines : {"min", "max"} or mapping, default "min"
         Counterfactual level for each treatment in original data units. A word
         applies the minimum or maximum observed in the training data to every
@@ -119,22 +120,23 @@ def contributions(
     Returns
     -------
     xarray.Dataset
-        Draw-level responses in original outcome units, with the selected
-        prior or posterior ``group`` recorded in attributes.
+        Responses in original outcome units with chain and draw labels and a
+        ``group`` attribute identifying the parameter draws.
 
-        - **reference_response** gives the full model response.
-        - **baseline_response** removes all exposures and sets treatments to
-          baseline levels during ``periods``, retaining earlier history.
-        - **joint_incremental_response** is reference minus baseline response.
-        - **incremental_response** is the response lost by removing each input alone.
-        - **contribution_share** and **baseline_share** divide each increment
-          and the baseline, respectively, by the reference response.
-        - **exposure** totals exposures during ``periods``, using reach times
-          frequency for RF channels. **effectiveness** is increment per exposure.
-          Both are missing for treatments.
-        - **treatment_baseline** records treatment counterfactual levels.
-        - **channel_type**, **period**, and **response_period** label input
-          families and selected dates.
+        - **reference_response** — Full model response
+        - **baseline_response** — Response with all exposures removed and
+          treatments at baseline levels during ``periods``. Earlier history is
+          unchanged
+        - **joint_incremental_response** — Reference minus baseline response
+        - **incremental_response** — Response lost by removing each input alone
+        - **contribution_share**, **baseline_share** — Each increment and the
+          baseline, respectively, divided by the reference response
+        - **exposure**, **effectiveness** — Total exposure during ``periods``
+          and increment per exposure. RF channels use reach times frequency.
+          Both are missing for treatments
+        - **treatment_baseline** — Treatment counterfactual levels
+        - **channel_type**, **period**, **response_period** — Input families
+          and selected dates
 
         Responses retain chain, draw, and optional ``by`` axes. Shares and
         effectiveness use totals across periods and groups within each draw.
@@ -448,9 +450,9 @@ def _removed_role(family: _Family) -> str:
 def _counterfactual_dtype(current: jax.Array, replacement: NDArray[np.generic], model_dtype: DTypeLike) -> DTypeLike:
     """Keep a boolean or integer input's dtype when its counterfactual level is exactly representable in it.
 
-    A model that indexes with an integer input, or negates a boolean one, still receives
-    that dtype from the scenarios that rewrite it, including the baseline, which rewrites
-    every removable input.
+    A model that indexes with an integer input, or negates a boolean one, still
+    receives that dtype from the scenarios that rewrite it. Those include the
+    baseline because it rewrites every removable input.
     """
     values = np.asarray(replacement, dtype=np.float64)
     if jnp.issubdtype(current.dtype, jnp.bool_):
@@ -473,7 +475,7 @@ def _exposures(
     period_indices: NDArray[np.intp],
     n_periods: int,
 ) -> NDArray[np.float64]:
-    """Sum original-unit exposures during the removal periods, leaving treatments undefined."""
+    """Sum original-unit exposures during the removal periods and leave treatments undefined."""
     exposure = np.full(len(chosen), np.nan)
     for position, (family, index, _) in enumerate(chosen):
         if family is _Family.TREATMENT:

@@ -1,0 +1,284 @@
+/*
+The landing page drawn by _templates/landing.html. Every rule is scoped to
+.mmmj-landing, because instant navigation keeps this stylesheet loaded on
+every other page.
+*/
+
+.mmmj-landing {
+  --mmmj-ink: #0c1e18;
+  --mmmj-ink-soft: #4d5f58;
+  --mmmj-brand: #074230;
+  --mmmj-accent: #0b5c43;
+  --mmmj-line: rgba(7, 66, 48, 0.16);
+  --mmmj-coral: #fb5639;
+  --mmmj-contour: #074230;
+  --mmmj-contour-opacity: 0.9;
+  --mmmj-press-face: #ffffff;
+  --mmmj-press-edge: #0c1e18;
+}
+
+[data-md-color-scheme="slate"] .mmmj-landing {
+  --mmmj-ink: #eef5f1;
+  --mmmj-ink-soft: #a4b4ad;
+  --mmmj-brand: #509a80;
+  --mmmj-accent: #509a80;
+  --mmmj-line: rgba(255, 255, 255, 0.16);
+  --mmmj-contour: #5fc39b;
+  --mmmj-contour-opacity: 0.55;
+  --mmmj-press-face: var(--md-default-bg-color);
+  --mmmj-press-edge: #dfe7e3;
+}
+
+.mmmj-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+  align-items: center;
+  column-gap: clamp(2.5rem, 5vw, 5.5rem);
+  min-height: min(calc(100vh - 10rem), 52rem);
+  padding: 0 clamp(0.8rem, 2.5vw, 2.4rem) clamp(2rem, 5vh, 4rem);
+  color: var(--mmmj-ink);
+  font-family: var(--md-text-font-family);
+}
+
+/* The copy column. */
+
+.mmmj-name {
+  margin: 0 0 1.5rem;
+  line-height: 0;
+}
+
+/* The logo's own lettering is drawn as a mask so it takes the scheme's color. */
+.mmmj-name__mark {
+  display: block;
+  width: clamp(190px, 17vw, 260px);
+  aspect-ratio: 1212 / 232;
+  background: var(--mmmj-brand);
+  -webkit-mask: url("../landing/wordmark.svg") left center / contain no-repeat;
+  mask: url("../landing/wordmark.svg") left center / contain no-repeat;
+}
+
+.mmmj-name__text {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
+.mmmj-title {
+  margin: 0;
+  color: var(--mmmj-ink);
+  font-size: clamp(36px, 3.9vw, 58px);
+  font-weight: 700;
+  letter-spacing: -0.028em;
+  line-height: 1.08;
+}
+
+.mmmj-title__accent {
+  color: var(--mmmj-accent);
+}
+
+.mmmj-lede {
+  max-width: 27em;
+  margin: 1.9rem 0 0;
+  color: var(--mmmj-ink-soft);
+  font-size: clamp(17px, 1.35vw, 20px);
+  line-height: 1.55;
+}
+
+/*
+The buttons follow marimo's. Each sits on a colored block offset down and to
+the left, and on hover it slides onto the block as if pressed.
+*/
+.mmmj-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.4rem;
+  margin-top: 2.6rem;
+}
+
+.mmmj-press {
+  position: relative;
+}
+
+.mmmj-press__block {
+  position: absolute;
+  bottom: -4px;
+  left: -4px;
+  width: 100%;
+  height: 100%;
+  border-radius: 6px;
+  background: var(--mmmj-press-block);
+}
+
+.mmmj-press--brand {
+  --mmmj-press-block: rgba(7, 66, 48, 0.85);
+}
+
+.mmmj-press--coral {
+  --mmmj-press-block: rgba(251, 86, 57, 0.8);
+}
+
+[data-md-color-scheme="slate"] .mmmj-press--brand {
+  --mmmj-press-block: rgba(80, 154, 128, 0.85);
+}
+
+.mmmj-press__button {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 160px;
+  height: 58px;
+  border: 1px solid var(--mmmj-press-edge);
+  border-radius: 6px;
+  background: var(--mmmj-press-face);
+  color: var(--mmmj-ink);
+  font-size: 19px;
+  text-decoration: none;
+  transition: transform 0.2s ease;
+}
+
+.mmmj-press__button:hover,
+.mmmj-press__button:focus-visible {
+  color: var(--mmmj-ink);
+  transform: translate(-4px, 4px);
+}
+
+.mmmj-link {
+  display: flex;
+  width: fit-content;
+  align-items: center;
+  gap: 0.45em;
+  margin-top: 1.8rem;
+  color: var(--mmmj-accent);
+  font-size: 15px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.mmmj-link span {
+  display: inline-block;
+  transition: transform 0.18s ease;
+}
+
+.mmmj-link:hover,
+.mmmj-link:focus-visible {
+  color: var(--mmmj-accent);
+  text-decoration: underline;
+  text-underline-offset: 0.3em;
+}
+
+.mmmj-link:hover span {
+  transform: translateX(3px);
+}
+
+.mmmj-press__button:focus-visible,
+.mmmj-link:focus-visible {
+  outline: 2px solid var(--mmmj-coral);
+  outline-offset: 3px;
+}
+
+/*
+The visual is the logo mark. landing.js sketches the contours stroke by stroke
+through the mmmj-sketch mask and then writes the mmm with a coral pen. These
+rules give the finished mark, and without motion that is all that shows.
+*/
+
+.mmmj-hero__visual {
+  position: relative;
+}
+
+.mmmj-mark {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.mmmj-mark__contours {
+  fill: var(--mmmj-contour);
+  fill-opacity: var(--mmmj-contour-opacity);
+}
+
+.mmmj-mark__mmm {
+  fill: var(--mmmj-coral);
+}
+
+.mmmj-sketch,
+.mmmj-ink {
+  fill: none;
+  stroke: #fff;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.mmmj-sketch {
+  stroke-width: 11;
+}
+
+.mmmj-ink {
+  stroke-width: 26;
+}
+
+.mmmj-sketch-fill,
+.mmmj-ink-dot {
+  fill: #fff;
+}
+
+.mmmj-ink-dot {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.mmmj-pen {
+  filter: drop-shadow(0 0 5px rgba(251, 86, 57, 0.9));
+  fill: var(--mmmj-coral);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+/*
+With motion, every stroke starts hidden. Dashes use a gap twice the path and
+an offset just past it, so no round cap can leave a dot before a stroke draws.
+The sketch fill covers any sliver the strokes miss once the sketch is done.
+*/
+.mmmj-motion .mmmj-sketch,
+.mmmj-motion .mmmj-ink {
+  stroke-dasharray: 1 2;
+  stroke-dashoffset: 1.05;
+}
+
+.mmmj-motion .mmmj-sketch-fill {
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+
+.mmmj-motion .mmmj-ink-dot {
+  transform: scale(0);
+  transition: transform 0.45s cubic-bezier(0.3, 1.7, 0.5, 1);
+}
+
+.mmmj-motion .mmmj-sketch-fill.is-drawn {
+  opacity: 1;
+}
+
+.mmmj-motion .mmmj-ink-dot.is-drawn {
+  transform: none;
+}
+
+/* The columns stack where the theme folds its tabs into the drawer. */
+
+@media screen and (max-width: 76.1875em) {
+  .mmmj-hero {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 3rem;
+    min-height: 0;
+    padding-top: 2rem;
+  }
+
+  .mmmj-hero__visual {
+    max-width: 36rem;
+  }
+}

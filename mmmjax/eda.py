@@ -176,8 +176,9 @@ def check_data(
           nonzero periods, zero fraction, longest zero run, quartiles, and
           ``constant``/``sparse`` flags by feature and optional group.
           ``outlier_periods`` counts values beyond quartiles plus or minus
-          1.5 interquartile ranges. ``std_without_outliers`` excludes these values,
-          and ``outlier_driven_variation`` flags variation lost entirely without them.
+          1.5 interquartile ranges. ``std_without_outliers`` excludes these
+          values, and ``outlier_driven_variation`` flags variation lost
+          entirely without them
         - **pairs** — Predictor correlations and ``high_correlation`` flags,
           excluding outcomes and spend. ``within_group_correlation`` removes
           group temporal means and has its own flag. Constant inputs give NaN.
@@ -186,15 +187,15 @@ def check_data(
           identical nonzero patterns with temporal on/off variation. These count
           observations, not campaigns. Other pairs have NaN overlap and -1 counts.
           All-inactive pairs have NaN overlap. Constant or always-active pairs
-          are not flagged as matching.
+          are not flagged as matching
         - **spend** — Dated spend/exposure mismatches and cost-per-exposure
           outliers. Reach-frequency exposure is reach times frequency. Costs are
           NaN without exposure. Fences use quartiles plus or minus 1.5 interquartile
-          ranges across time within each channel and group.
-        - **predictors** — ``vif`` variance inflation factors, with NaN for constant
-          predictors and infinity for linear dependence. Grouped inputs also
-          report unadjusted variation explained by group and time indicators,
-          separately and together.
+          ranges across time within each channel and group
+        - **predictors** — ``vif`` variance inflation factors. Constant
+          predictors give NaN and linear dependence gives infinity. Grouped
+          inputs also report unadjusted variation explained by group and time
+          indicators, separately and together
     """
     if not isinstance(data, PreparedData):
         raise TypeError("data must be PreparedData returned by prepare_data")
@@ -357,7 +358,7 @@ def _spend_checks(
 def _data_values(
     data: PreparedData,
 ) -> tuple[NDArray[np.float64], list[str], list[str], list[str], list[str]]:
-    """Collect unscaled modeling observations in time, group, feature order."""
+    """Collect unscaled modeling observations in time-group-feature order."""
     n_periods = len(data.time_values)
     n_groups = len(data.group_values) if data.group_columns else 1
     if n_periods == 0 or n_groups == 0:
@@ -603,7 +604,7 @@ def _predictor_checks(
 
 
 def _variance_inflation(unit: NDArray[np.float64]) -> NDArray[np.float64]:
-    """Compute VIFs from centered unit-norm columns, including singular designs."""
+    """Compute VIFs from centered unit-norm columns and handle singular designs."""
     # Retain all right singular vectors without building an observation-sized
     # square matrix when there are more observations than predictors.
     _, singular_values, right = np.linalg.svd(unit, full_matrices=unit.shape[0] < unit.shape[1])
