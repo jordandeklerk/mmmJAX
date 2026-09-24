@@ -54,8 +54,11 @@ def test_generated_time_inputs_retain_date_labels_without_becoming_observed_data
         assert evaluated["generated_quantities"]["exposure_elapsed"].dims == ("chain", "draw", "media_time")
         np.testing.assert_array_equal(evaluated["generated_quantities"]["elapsed"][0, 0], expected)
         np.testing.assert_array_equal(evaluated["generated_quantities"]["exposure_elapsed"][0, 0], expected)
-        assert set(evaluated["observed_data"].data_vars) == {"outcome"}
-        assert set(evaluated["constant_data"].data_vars) == {"media"}
+        if new_data is None:
+            assert set(evaluated["observed_data"].data_vars) == {"outcome"}
+            assert set(evaluated["constant_data"].data_vars) == {"media"}
+        else:
+            assert set(evaluated["predictions_constant_data"].data_vars) == {"outcome", "media"}
 
 
 def _unused_density(data, scale):
@@ -563,3 +566,63 @@ def test_returned_custom_outputs_keep_fallback_axes_without_guessing_observation
     assert result["generated_quantities"]["signal"].dims == ("chain", "draw", "signal_dim_0")
     assert result["generated_quantities"]["pointwise"].dims == ("chain", "draw", "pointwise_dim_0")
     assert result["generated_quantities"]["total"].dims == ("chain", "draw")
+
+
+def test_scenarios_for_prepared_models_use_arviz_prediction_groups():
+    frame = pl.DataFrame({"period": [10, 11, 12], "sales": [1.0, 2.0, 3.0], "search": [5.0, 6.0, 7.0]})
+    data = prepare_data(frame, time="period", outcome="sales", media=["search"])
+
+    def generate(key, outcome, media, level):
+        mean = level + media[:, 0]
+        return {"predictive": {"outcome": mean}, "log_likelihood": {"outcome": normal_logpdf(outcome, mean, 1.0)}}
+
+    model = Model(
+        data=data,
+        parameters={"level": Real()},
+        log_density=lambda outcome, level: normal(outcome, level, 1.0),
+        generated_quantities=generate,
+    )
+    results = _collect_results({"level": np.zeros((1, 2), dtype=np.float32)})
+
+    fitted = generate_quantities(model, results)
+    scenario = generate_quantities(model, results, new_data=frame.slice(1))
+
+    in_sample = {"posterior", "posterior_predictive", "log_likelihood", "observed_data", "constant_data"}
+    predictions = {"posterior", "predictions", "predictions_log_likelihood", "predictions_constant_data"}
+    assert set(fitted.children) == in_sample
+    assert set(scenario.children) == predictions
+    np.testing.assert_array_equal(scenario["predictions"]["time"], [11, 12])
+    np.testing.assert_array_equal(scenario["predictions_constant_data"]["outcome"], [2.0, 3.0])
+    np.testing.assert_array_equal(scenario["predictions_constant_data"]["media"], [[6.0], [7.0]])
+    np.testing.assert_allclose(
+        scenario["predictions_log_likelihood"]["outcome"], fitted["log_likelihood"]["outcome"].isel(time=[1, 2])
+    )
+
+
+def test_log_prior_terms_named_after_parameters_take_their_axes():
+    def density(data, scale, offset):
+        raise AssertionError("Generation must not evaluate the log density")
+
+    def generate(key, data, scale, offset):
+        terms = normal_logpdf(scale, 0.0, 1.0)
+        return {"log_prior": {"scale": terms, "offset": normal_logpdf(offset, 0.0, 1.0), "total": terms.sum()}}
+
+    model = Model(
+        parameters={"scale": Positive((2,)), "offset": Real()},
+        log_density=density,
+        generated_quantities=generate,
+        dims={"scale": ("channel",)},
+        coords={"channel": ["search", "video"]},
+    )
+    results = _collect_results(
+        {"scale": np.ones((1, 2, 2), dtype=np.float32), "offset": np.zeros((1, 2), dtype=np.float32)},
+        dims=model._result_dims,
+        coords=model._result_coords,
+    )
+
+    evaluated = generate_quantities(model, results, new_data={"value": 0.0})
+
+    assert evaluated["log_prior"]["scale"].dims == ("chain", "draw", "channel")
+    np.testing.assert_array_equal(evaluated["log_prior"]["channel"], ["search", "video"])
+    assert evaluated["log_prior"]["offset"].dims == ("chain", "draw")
+    assert evaluated["log_prior"]["total"].dims == ("chain", "draw")

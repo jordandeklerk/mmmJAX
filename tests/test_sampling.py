@@ -678,7 +678,12 @@ def test_parallel_nuts_on_two_cpu_devices_preserves_targets_generation_and_label
             result = sample(model, **options, chain_method=method)
             assert result.attrs["chain_method"] == method
             assert set(result.children) == {
-                "posterior", "sample_stats", "posterior_predictive", "generated_quantities", "sampling_state"
+                "posterior",
+                "sample_stats",
+                "posterior_predictive",
+                "generated_quantities",
+                "unconstrained_posterior",
+                "sampling_state",
             }
             location = result["posterior"]["location"]
             assert location.dims == ("chain", "draw")
@@ -720,7 +725,7 @@ def test_parallel_nuts_on_two_cpu_devices_preserves_targets_generation_and_label
         }
         single = sample(model, **single_options, chain_method="parallel", generate=False)
         assert single["posterior"]["location"].shape == (1, 8)
-        assert set(single.children) == {"posterior", "sample_stats", "sampling_state"}
+        assert set(single.children) == {"posterior", "sample_stats", "unconstrained_posterior", "sampling_state"}
         np.testing.assert_allclose(
             single["sample_stats"]["lp"],
             -0.5 * (single["posterior"]["location"].values**2 + np.log(2 * np.pi)),
@@ -845,6 +850,7 @@ def test_prepared_data_and_selected_generated_outputs_are_collected_automaticall
         "generated_quantities",
         "observed_data",
         "constant_data",
+        "unconstrained_posterior",
         "sampling_state",
     }
     for group, name in (
@@ -880,7 +886,14 @@ def test_sampling_collects_log_prior_without_sampling_jacobian(nuts_calls, batch
     scale = result["posterior"]["scale"].values
     expected_prior = -0.5 * np.log(scale) ** 2 - np.log(scale) - 0.5 * np.log(2 * np.pi)
     expected_likelihood = -0.5 * ((1.5 - scale) / 0.5) ** 2 - np.log(0.5) - 0.5 * np.log(2 * np.pi)
-    assert set(result.children) == {"posterior", "sample_stats", "log_likelihood", "log_prior", "sampling_state"}
+    assert set(result.children) == {
+        "posterior",
+        "sample_stats",
+        "log_likelihood",
+        "log_prior",
+        "unconstrained_posterior",
+        "sampling_state",
+    }
     prior_name = "lp_scale"
     assert result["log_prior"][prior_name].dims == ("chain", "draw")
     np.testing.assert_allclose(result["log_prior"][prior_name], expected_prior, rtol=2e-6)
@@ -1016,7 +1029,7 @@ def test_generation_can_be_disabled_without_executing_the_callback(nuts_calls, b
         generated_quantities=forbidden_generate,
     )
     result = sample(model, draws=3, warmup=3, chains=2, generate=False, batch_size=batch_size)
-    assert set(result.children) == {"posterior", "sample_stats", "sampling_state"}
+    assert set(result.children) == {"posterior", "sample_stats", "unconstrained_posterior", "sampling_state"}
 
 
 @pytest.mark.parametrize("generate", [False, True])
@@ -1777,6 +1790,56 @@ def test_continuation_restores_results_saved_without_a_key_implementation(normal
     assert continued["sampling_state"].attrs["key_impl"] == impl
 
 
+@pytest.mark.parametrize(
+    "select",
+    [lambda results: results.isel(chain=[0, 2]), lambda results: results.sel(chain=[0, 2])],
+    ids=["isel", "sel"],
+)
+def test_continuation_of_selected_chains_keeps_their_labels_and_random_streams(nuts_calls, select):
+    model = Model(
+        parameters={"location": Real()},
+        log_density=lambda data, location: normal(location, data, 1.0),
+        generated_quantities=lambda key, data, location: {"key_words": jax.random.key_data(key)},
+    )
+    first = sample(model, data=0.0, draws=2, warmup=3, chains=3, seed=5, progress=False)
+    full = continue_sampling(model, first, data=0.0, draws=3, progress=False)
+
+    kept = continue_sampling(model, select(first), data=0.0, draws=3, progress=False)
+
+    np.testing.assert_array_equal(kept["posterior"]["chain"], [0, 2])
+    for group in ("posterior", "generated_quantities", "sample_stats"):
+        xr.testing.assert_identical(kept[group].to_dataset(), full[group].to_dataset().sel(chain=[0, 2]))
+
+
+def test_unconstrained_draws_are_saved_by_default_and_grow_with_continuation(nuts_calls):
+    model = Model(
+        parameters={"scale": Positive((2,)), "weights": Simplex((3,))},
+        log_density=lambda data, scale, weights: half_normal(scale, 1.0) + dirichlet(weights, jnp.ones(3)),
+        dims={"scale": ("channel",)},
+        coords={"channel": ["search", "video"]},
+    )
+    first = sample(model, draws=2, warmup=3, chains=2, seed=5, progress=False)
+    positions = nuts_calls[0]["positions"]
+    unconstrained = first["unconstrained_posterior"]
+
+    continued = continue_sampling(model, first, draws=3, progress=False)
+
+    assert unconstrained["scale"].dims == ("chain", "draw", "channel")
+    np.testing.assert_array_equal(unconstrained["channel"], ["search", "video"])
+    assert unconstrained["weights"].dims == ("chain", "draw", "weights_position_0")
+    assert unconstrained.sizes["weights_position_0"] == 2
+    for name in model.parameters:
+        np.testing.assert_array_equal(unconstrained[name], np.repeat(positions[name][:, None], 2, axis=1))
+    assert continued["unconstrained_posterior"].sizes["draw"] == 5
+    xr.testing.assert_identical(
+        continued["unconstrained_posterior"].to_dataset().isel(draw=slice(0, 2)), unconstrained.to_dataset()
+    )
+    omitted = sample(model, draws=2, warmup=3, chains=2, save_unconstrained=False, progress=False)
+    assert "unconstrained_posterior" not in omitted.children
+    with pytest.raises(TypeError, match="save_unconstrained must be a bool"):
+        sample(model, draws=2, warmup=3, chains=2, save_unconstrained="yes", progress=False)
+
+
 @pytest.mark.parametrize("mass_matrix", ["diagonal", "dense"])
 def test_result_dimensions_never_share_a_name_with_a_child_group(normal_model, mass_matrix):
     # netCDF writes dimensions beside child groups. A shared name makes results impossible to save.
@@ -1847,7 +1910,7 @@ def test_continuation_keeps_generation_disabled_and_only_shows_retained_progress
     )
     first = sample(model, draws=2, warmup=60, chains=2, seed=13, generate=False, progress=False)
     result = continue_sampling(model, first, draws=3, chunk_size=2, progress=True)
-    assert set(result.children) == {"posterior", "sample_stats", "sampling_state"}
+    assert set(result.children) == {"posterior", "sample_stats", "unconstrained_posterior", "sampling_state"}
     assert result["sampling_state"].attrs["generate"] == 0
     assert [context.n_steps for context in progress_contexts] == [2, 1, 2, 1]
     assert all(context.closed for context in progress_contexts)

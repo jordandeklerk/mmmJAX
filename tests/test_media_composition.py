@@ -720,11 +720,11 @@ def test_reach_frequency_prior_and_posterior_replay_retain_saved_totals_and_dist
         observed=False,
     )
     replay = generate_quantities(model, posterior, new_data=future)
-    assert "observed_data" not in replay.children
-    assert "rf_spend" not in replay["constant_data"]
+    assert "outcome" not in replay["predictions_constant_data"].data_vars
+    assert "rf_spend" not in replay["predictions_constant_data"]
     for tree, group, predictive, times, inputs in (
         (result, "prior_generated_quantities", "prior_predictive", [2, 3, 4], model.data),
-        (replay, "generated_quantities", "posterior_predictive", [8, 9], model.prepare_data(future)),
+        (replay, "generated_quantities", "predictions", [8, 9], model.prepare_data(future)),
     ):
         saved = tree[group]
         assert saved["paid_rf"].dims == ("chain", "draw", "time", "group", "rf_channel")
