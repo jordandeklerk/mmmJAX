@@ -44,18 +44,6 @@ def normal_logpdf(
         Normalized log densities with the broadcast shape of the arguments.
         A nonfinite location or a nonpositive or nonfinite scale produces
         ``nan``.
-
-    Examples
-    --------
-    Evaluate a separate log density for each value under a standard Normal
-    distribution.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import normal_logpdf
-           ...: values = jnp.array([-1.0, 0.0, 1.0])
-           ...: normal_logpdf(values, location=0.0, scale=1.0)
     """
     value_array, location_array, scale_array = _promote_inexact(
         ("value", value),
@@ -149,19 +137,6 @@ def normal_logcdf(
         Log cumulative probabilities with the broadcast shape of the
         arguments. A nonfinite location or a nonpositive or nonfinite scale
         produces ``nan``.
-
-    Examples
-    --------
-    Evaluate :math:`\log P(X \leq x)` at three thresholds under a standard
-    Normal distribution. Convert the results to probabilities.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import normal_logcdf
-           ...: thresholds = jnp.array([-1.0, 0.0, 1.0])
-           ...: log_prob = normal_logcdf(thresholds, location=0.0, scale=1.0)
-           ...: jnp.exp(log_prob)
     """
     value_array, location_array, scale_array = _promote_inexact(
         ("value", value),
@@ -207,19 +182,6 @@ def normal_logsf(
         Log survival probabilities with the broadcast shape of the arguments.
         A nonfinite location or a nonpositive or nonfinite scale produces
         ``nan``.
-
-    Examples
-    --------
-    Evaluate :math:`\log P(X > x)` at three thresholds under a standard Normal
-    distribution. Convert the results to probabilities.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import normal_logsf
-           ...: thresholds = jnp.array([-1.0, 0.0, 1.0])
-           ...: log_prob = normal_logsf(thresholds, location=0.0, scale=1.0)
-           ...: jnp.exp(log_prob)
     """
     value_array, location_array, scale_array = _promote_inexact(
         ("value", value),

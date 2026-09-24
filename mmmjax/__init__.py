@@ -1,9 +1,14 @@
 """Bayesian marketing mix modeling expressed entirely in JAX."""
 
-from mmmjax.adstock import delayed_adstock, geometric_adstock, weibull_cdf_adstock, weibull_pdf_adstock
-from mmmjax.calibration import contribution_coefficient, roi_coefficient
-from mmmjax.contribution import contributions
-from mmmjax.data import Data, ModelInput, PreparedData, Reference, prepare_data, select_channels
+from mmmjax.analysis.contribution import contributions
+from mmmjax.analysis.optimization import SpendConstraint, optimize_budget
+from mmmjax.analysis.response import frequency_curves, media_metrics, response_curves
+from mmmjax.baselines.hsgp import HSGPApproximation, hsgp_basis, hsgp_weights, prepare_hsgp
+from mmmjax.baselines.seasonality import fourier_features
+from mmmjax.data.checks import check_data, check_prior
+from mmmjax.data.prepare import Data, ModelInput, PreparedData, Reference, prepare_data, select_channels
+from mmmjax.data.scaling import DataScaling, Scaling, fit_data_scaling, fit_media_scaling, fit_scaling
+from mmmjax.data.synthetic import SyntheticData, simulate_data
 from mmmjax.distributions import (
     bernoulli,
     bernoulli_logcdf,
@@ -124,11 +129,14 @@ from mmmjax.distributions import (
     uniform_logsf,
     uniform_rng,
 )
-from mmmjax.hsgp import HSGPApproximation, hsgp_basis, hsgp_weights, prepare_hsgp
-from mmmjax.media import media_response, reach_frequency_response
-from mmmjax.model import Model
-from mmmjax.optimization import SpendConstraint, optimize_budget
-from mmmjax.parameters import (
+from mmmjax.inference.priors import Prior
+from mmmjax.inference.sampling import continue_sampling, generate_quantities, sample, sample_prior
+from mmmjax.media.adstock import delayed_adstock, geometric_adstock, weibull_cdf_adstock, weibull_pdf_adstock
+from mmmjax.media.calibration import contribution_coefficient, roi_coefficient
+from mmmjax.media.composition import media_response, reach_frequency_response
+from mmmjax.media.saturation import hill_saturation, log_saturation, logistic_saturation, root_saturation
+from mmmjax.model.model import Model
+from mmmjax.model.parameters import (
     CorrelationCholesky,
     Interval,
     LowerBound,
@@ -138,14 +146,6 @@ from mmmjax.parameters import (
     Simplex,
     UpperBound,
 )
-from mmmjax.eda import check_data, check_prior
-from mmmjax.priors import Prior
-from mmmjax.response import frequency_curves, media_metrics, response_curves
-from mmmjax.saturation import hill_saturation, log_saturation, logistic_saturation, root_saturation
-from mmmjax.scaling import DataScaling, Scaling, fit_data_scaling, fit_media_scaling, fit_scaling
-from mmmjax.seasonality import fourier_features
-from mmmjax.sampling import continue_sampling, generate_quantities, sample, sample_prior
-from mmmjax.synthetic import SyntheticData, simulate_data
 
 __version__ = "0.0.1"
 

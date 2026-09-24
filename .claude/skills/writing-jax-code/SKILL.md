@@ -37,7 +37,7 @@ Each line gives the old form and its replacement, checked against 0.10.2. Remove
 - `dtype=array` and `x.astype(array)` → `dtype=array.dtype`.
 - `jnp.round_`, `fix`, `product`, `cumproduct`, `sometrue`, `alltrue`, `in1d`, `trapz`, `row_stack`, `NINF`, `NaN`, `Inf` → `jnp.round`, `trunc`, `prod`, `cumprod`, `any`, `all`, `isin`, `trapezoid`, `vstack`, `-jnp.inf`, `jnp.nan`, `jnp.inf`. `jnp.reshape(newshape=)` → `shape=`, and `jnp.sort(kind=)` → `stable=True`.
 - `jnp.shape`, `jnp.ndim`, or `jnp.sum` on a Python list warn or raise → `np.shape(value)` on the host, or `jnp.asarray(value)` first.
-- A generator, `zip` object, or `dict.values()` as a pytree leaf warns since 0.10.1 → `tuple(...)` first. Primitives that read input dtypes through tree leaves see it too (`_prepare_adstock` in `adstock.py`). `jax.tree.map(f, None, x)` raises → pass `is_leaf=lambda x: x is None`.
+- A generator, `zip` object, or `dict.values()` as a pytree leaf warns since 0.10.1 → `tuple(...)` first. Primitives that read input dtypes through tree leaves see it too (`_prepare_adstock` in `media/adstock.py`). `jax.tree.map(f, None, x)` raises → pass `is_leaf=lambda x: x is None`.
 - `jax.core.get_aval` → `jax.typeof`. `jax.core.ConcretizationTypeError` → `jax.errors.ConcretizationTypeError`. `jax.xla_computation` → `jax.jit(f).trace(*args)` or `.lower(*args)`. `jax.interpreters.xla.canonicalize_dtype` → `jax.dtypes.canonicalize_dtype`.
 - `jax.experimental.shard_map.shard_map(check_rep=...)` → `jax.shard_map(check_vma=...)`. `pjit` → `jax.jit`, `with mesh:` → `with jax.set_mesh(mesh):`, and `jax.device_put_replicated` or `device_put_sharded` → `jax.device_put` with a `NamedSharding`. `jax.pmap` is in maintenance mode.
 - `jax.experimental.host_callback` → `jax.debug.callback`, or `jax.pure_callback(..., vmap_method=...)`, which raises under `vmap` when `vmap_method` is missing.
@@ -46,8 +46,8 @@ Each line gives the old form and its replacement, checked against 0.10.2. Remove
 
 ## Where jit goes and what it caches
 
-- Never decorate a public function with `@jax.jit` or give it `static_argnums`. Users compose the primitives inside their own `jit`, `vmap`, and `grad`, and only drivers that own a whole computation call `jax.jit` (`sampling.py`, `_nuts.py`, `response.py`, `optimization.py`, `contribution.py`).
-- Pass data and posterior draws to a jitted function as arguments. JAX 0.10.2 inlines every closed-over array into the program as a constant, so a captured 4000 by 500 array adds 16 MB of HLO and several times the compile time. `Model.log_density(position, data)` takes its data as a pytree, and one jitted log density serves new array data of the same shape (`test_compiled_log_density_accepts_new_data` in `tests/test_model.py`).
+- Never decorate a public function with `@jax.jit` or give it `static_argnums`. Users compose the primitives inside their own `jit`, `vmap`, and `grad`, and only drivers that own a whole computation call `jax.jit` (`inference/sampling.py`, `inference/_nuts.py`, and the three modules in `analysis/`).
+- Pass data and posterior draws to a jitted function as arguments. JAX 0.10.2 inlines every closed-over array into the program as a constant, so a captured 4000 by 500 array adds 16 MB of HLO and several times the compile time. `Model.log_density(position, data)` takes its data as a pytree, and one jitted log density serves new array data of the same shape (`test_compiled_log_density_accepts_new_data` in `tests/model/test_model.py`).
 
   ```python
   # Bad, since it captures inputs as constants
@@ -62,18 +62,18 @@ Each line gives the old form and its replacement, checked against 0.10.2. Remove
   ```
 
   This is safe for a prepared model, whose `_ModelData` keeps ints and constants static. An unprepared `data` pytree may hold Python ints that a block uses as shapes or slice bounds, and each becomes a traced `int32` when passed as an argument, so keep those leaves static or `mj.sample(model, data={..., "n": 3})` stops working. blackjax wants a one-argument `logdensity`, so build that closure inside the traced function from a `data` argument.
-- Within one driver call, build each jitted callable once and reuse it across chunks and batches, as `_sample_nuts` in `_nuts.py` does. The cache keys on function identity, so `jax.jit(lambda ...)`, `jax.jit(jax.vmap(f))`, or `jax.jit(model.log_density)` built again traces again, since a bound method is a new object on every access. The Good example above fixes constant capture but still compiles on every driver call. Caching across calls needs a home that the module-scope rule allows and a key that includes `progress`, because blackjax's progress bar patches `scan` at trace time, so propose it before adding one.
-- Keep argument shapes fixed across calls, because each new shape or dtype compiles again, and a short last chunk or batch is a new shape. In a stateless map such as `_evaluate_draws` in `sampling.py`, pad the last batch to full size and keep its valid rows, or run `jax.lax.map(f, xs, batch_size=n)` inside one jit, which handles the remainder in the same program (`_sample_response` in `response.py`). Never pad a stateful scan such as the NUTS chunk in `_nuts.py`, since padded steps would carry the sampler state past the last kept draw that `continue_sampling` resumes from. Choose a `chunk_size` that divides `draws` there, or mask the extra steps with `jnp.where(valid, new_state, state)`.
-- Shape-setting arguments (`order`, `n_basis`, `max_lag`, `n_periods`, `sample_shape`) are Python values. Reject anything else with a `TypeError` that says the value must stay fixed under JIT compilation, and say in its Parameters entry to keep it static. Tests jit such functions with `static_argnames` (the static `order` test in `tests/test_seasonality.py`).
-- `_ModelData.owner` in `_binding.py` is a static `object()` token that ties prepared data to its model (`_PreparedBlocks.validated_data` in `model.py`). Because it is static and compared by identity, each model's data also traces separately.
+- Within one driver call, build each jitted callable once and reuse it across chunks and batches, as `_sample_nuts` in `inference/_nuts.py` does. The cache keys on function identity, so `jax.jit(lambda ...)`, `jax.jit(jax.vmap(f))`, or `jax.jit(model.log_density)` built again traces again, since a bound method is a new object on every access. The Good example above fixes constant capture but still compiles on every driver call. Caching across calls needs a home that the module-scope rule allows and a key that includes `progress`, because blackjax's progress bar patches `scan` at trace time, so propose it before adding one.
+- Keep argument shapes fixed across calls, because each new shape or dtype compiles again, and a short last chunk or batch is a new shape. In a stateless map such as `_evaluate_draws` in `inference/sampling.py`, pad the last batch to full size and keep its valid rows, or run `jax.lax.map(f, xs, batch_size=n)` inside one jit, which handles the remainder in the same program (`_sample_response` in `analysis/response.py`). Never pad a stateful scan such as the NUTS chunk in `inference/_nuts.py`, since padded steps would carry the sampler state past the last kept draw that `continue_sampling` resumes from. Choose a `chunk_size` that divides `draws` there, or mask the extra steps with `jnp.where(valid, new_state, state)`.
+- Shape-setting arguments (`order`, `n_basis`, `max_lag`, `n_periods`, `sample_shape`) are Python values. Reject anything else with a `TypeError` that says the value must stay fixed under JIT compilation, and say in its Parameters entry to keep it static. Tests jit such functions with `static_argnames` (the static `order` test in `tests/baselines/test_seasonality.py`).
+- `_ModelData.owner` in `model/_binding.py` is a static `object()` token that ties prepared data to its model (`_PreparedBlocks.validated_data` in `model/model.py`). Because it is static and compared by identity, each model's data also traces separately.
 - Library code never calls `jax.config.update` and never sets the persistent compilation cache. Those belong to the application.
 
 ## Tracing
 
 - Raise only on facts known at trace time, which are Python types, static ints, shapes, and dtypes. An invalid numeric value becomes `nan` through `jnp.where`, as the gradient section shows.
-- A value check that should run whenever values are concrete goes through `_concrete_array` in `_binding.py`. It catches `jax.errors.ConcretizationTypeError`, the base of `TracerBoolConversionError`, and `jax.errors.TracerArrayConversionError`, and skips the check under tracing.
-- Never detect tracing by type. A traced array passes `isinstance(value, jax.Array)` through the metaclass JAX 0.8.2 added, even though `jax.core.Tracer` no longer subclasses `jax.Array` at runtime. Use `isinstance(value, jax.Array)` only to separate arrays from host objects (`_transformed_array` in `_binding.py`).
-- Host preparation (`prepare_data`, `prepare_hsgp`, `fit_*_scaling`, `Model` construction) runs outside JAX transformations with NumPy, checks values with `np.isfinite(...).all()`, and ends in one `jax.device_put` (`PreparedData._to_jax` in `data.py`). Anything that may be traced uses `jnp`.
+- A value check that should run whenever values are concrete goes through `_concrete_array` in `model/_binding.py`. It catches `jax.errors.ConcretizationTypeError`, the base of `TracerBoolConversionError`, and `jax.errors.TracerArrayConversionError`, and skips the check under tracing.
+- Never detect tracing by type. A traced array passes `isinstance(value, jax.Array)` through the metaclass JAX 0.8.2 added, even though `jax.core.Tracer` no longer subclasses `jax.Array` at runtime. Use `isinstance(value, jax.Array)` only to separate arrays from host objects (`_transformed_array` in `model/_binding.py`).
+- Host preparation (`prepare_data`, `prepare_hsgp`, `fit_*_scaling`, `Model` construction) runs outside JAX transformations with NumPy, checks values with `np.isfinite(...).all()`, and ends in one `jax.device_put` (`PreparedData._to_jax` in `data/prepare.py`). Anything that may be traced uses `jnp`.
 - Convert user sequences once at the boundary, since `ArrayLike` excludes lists and a list under `jit` becomes one input per element.
 - Outside tracing, `jax.lax.stop_gradient(1.0)` returns a JAX literal type that is not a `jax.Array`, so pass it arrays or wrap the result in `jnp.asarray`.
 
@@ -99,16 +99,16 @@ Each line gives the old form and its replacement, checked against 0.10.2. Remove
 
 - `xlogy` fixes the value of `0 * log(0)` but not its gradient, so substitute safe values instead (`poisson_logpmf` in `distributions/_poisson.py`).
 - Apply `jax.lax.stop_gradient` to a factor that cancels (`hill_saturation`). To take the value from a stable path and the derivative from the analytic one, write `raw + jax.lax.stop_gradient(stable - raw)` (`_stable_log_ratio` in `distributions/_utils.py`).
-- In traced code, derive guards and tolerances from the working dtype, as in `32 * np.finfo(value.dtype).eps`, or pick them per dtype width as `_is_valid_simplex` in `distributions/_utils.py` does. Host-side SciPy code runs in float64 and may use fixed tolerances, as `optimization.py` does.
+- In traced code, derive guards and tolerances from the working dtype, as in `32 * np.finfo(value.dtype).eps`, or pick them per dtype width as `_is_valid_simplex` in `distributions/_utils.py` does. Host-side SciPy code runs in float64 and may use fixed tolerances, as `analysis/optimization.py` does.
 
 ## Dtypes and precision
 
-- The library assumes one precision per process, set at startup with `JAX_ENABLE_X64` or `jax.config.update`, and `with jax.enable_x64(...)` scopes it, which only tests should do. Precision errors tell the user to enable it (`PreparedData._to_jax` in `data.py`). Objects record the precision in effect when they are built (`Model.__init__`), and `continue_sampling` checks the stored one.
+- The library assumes one precision per process, set at startup with `JAX_ENABLE_X64` or `jax.config.update`, and `with jax.enable_x64(...)` scopes it, which only tests should do. Precision errors tell the user to enable it (`PreparedData._to_jax` in `data/prepare.py`). Objects record the precision in effect when they are built (`Model.__init__`), and `continue_sampling` checks the stored one.
 - `bool(jax.enable_x64)` raises `TypeError`. The flag is part of the jit cache key, so toggling it retraces.
 - Promote numeric inputs to one floating dtype of at least float32 that follows the x64 setting, and convert integer counts straight to it so they never narrow to int32.
 
   ```python
-  # fourier_features in seasonality.py
+  # fourier_features in baselines/seasonality.py
   dtype = jnp.result_type(*leaves)
   if not jnp.issubdtype(dtype, jnp.floating):
       dtype = jnp.float64 if jax.dtypes.itemsize_bits(dtype) == 64 else jnp.float32
@@ -117,24 +117,13 @@ Each line gives the old form and its replacement, checked against 0.10.2. Remove
 
   Each module keeps its own copy of this helper, and the copies differ on bool inputs, so match the one in the module you edit.
 - Python scalars are weakly typed and keep an array's dtype, while NumPy scalars and arrays are strong and turn float32 math into float64 under x64. Combine traced arrays with Python floats or with constants cast to `x.dtype` (`_log_ratio_deviance_series` in `distributions/_utils.py`). A Python float and a NumPy scalar in the same argument slot also compile separately.
-- With x64 off, an explicit float64 request becomes float32 with only a `UserWarning`, a NumPy int64 array wraps silently (`np.array([2**40])` becomes 0), and an oversized Python int raises `OverflowError`. Check integer ranges on the host before converting (`PreparedData._to_jax` in `data.py`, `_transformed_array` in `_binding.py`).
-
-## PRNG keys
-
-- Workflow functions call `jax.random.key(int(seed))` and split once into one named key per consumer (`sample` in `sampling.py`).
-- Where draws must match across chunking and `continue_sampling`, derive each key with `jax.random.fold_in` on the absolute draw index as `uint32` (`draw_keys` in `_nuts.py`, `_generation_keys` in `sampling.py`). `jax.random.split(key, (chains, draws))` makes every chain after the first depend on `draws`. A 1-D split keeps its prefix under the default `jax_threefry_partitionable`, but that rests on a config flag, so use `fold_in` wherever stability matters.
-- Never both split a key and fold indices into that same key. Under the default `jax_threefry_partitionable`, `fold_in(key, i)` equals `split(key, n)[i]`, and key-reuse checking misses the overlap, so split once and fold indices only into the child keys.
-- A typed `split` returns shape `(n,)` and accepts a shape tuple (`generate_quantities` in `sampling.py`).
-- Accept seeds in `[0, 2**32)`. With x64 off, `jax.random.key` drops bits above 32, so `2**32` and `np.int64(2**40)` both give the stream of 0. `2**63` raises `OverflowError` in either mode.
-- Store a key's implementation with its data, as `str(jax.random.key_impl(key))`, and pass it as `impl=` to `wrap_key_data`. Key data alone restores under whatever `JAX_DEFAULT_PRNG_IMPL` is set, which raises for an impl with a different key shape and silently switches streams under `philox4x32`, whose key data shares threefry's `(2,)` shape.
-- Only the output distribution of `jax.random` is stable across JAX versions, so never hardcode draws, and treat a stored sampling state as reproducible within one JAX version.
-- Host simulation uses `np.random.default_rng` with `SeedSequence.spawn` (`simulate_data`).
+- With x64 off, an explicit float64 request becomes float32 with only a `UserWarning`, a NumPy int64 array wraps silently (`np.array([2**40])` becomes 0), and an oversized Python int raises `OverflowError`. Check integer ranges on the host before converting (`PreparedData._to_jax` in `data/prepare.py`, `_transformed_array` in `model/_binding.py`).
 
 ## Pytrees
 
-- `writing-mmmjax-code` covers registered dataclasses and their static fields, which the package writes as `field(..., metadata={"static": True})`. A static field never holds an array, and `Data.__init__` in `data.py` checks that its constants hash.
+- `writing-mmmjax-code` covers registered dataclasses and their static fields, which the package writes as `field(..., metadata={"static": True})`. A static field never holds an array, and `Data.__init__` in `data/prepare.py` checks that its constants hash.
 - Keep validation and array conversion out of a registered class's `__init__` and `__post_init__`, because transformations rebuild instances with placeholder leaves. Validate in a factory, as `fit_scaling` does for `Scaling`.
 
-## Pin changes, custom rules, devices, debugging, and testing
+## Pin changes, custom rules, PRNG keys, devices, debugging, and testing
 
-Read [reference.md](reference.md) before changing the JAX pin, writing or changing a custom JVP rule, touching the device mesh or host transfer in `_nuts.py` or `sampling.py`, chasing a recompile, a captured constant, or a `nan`, or testing JAX behavior such as jit agreement, gradients, or retracing.
+Read [reference.md](reference.md) before changing the JAX pin, writing or changing a custom JVP rule, creating, splitting, folding, or storing PRNG keys, touching the device mesh or host transfer in `inference/_nuts.py` or `inference/sampling.py`, chasing a recompile, a captured constant, or a `nan`, or testing JAX behavior such as jit agreement, gradients, or retracing.

@@ -46,17 +46,6 @@ def poisson_logpmf(value: ArrayLike, rate: ArrayLike) -> jax.Array:
         Normalized log probability masses with the broadcast shape of the
         arguments. Values outside the nonnegative integer support produce
         ``-inf``. A negative or nonfinite rate produces ``nan``.
-
-    Examples
-    --------
-    Evaluate one log probability mass per value. The rate is the expected count.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import poisson_logpmf
-           ...: counts = jnp.array([0, 2, 5])
-           ...: poisson_logpmf(counts, rate=3.0)
     """
     value_array = _as_real_array("value", value)
     (rate_array,) = _promote_inexact(("rate", rate))
@@ -145,19 +134,6 @@ def poisson_logcdf(value: ArrayLike, rate: ArrayLike) -> jax.Array:
         arguments. Negative thresholds produce ``-inf`` and positive
         infinity produces zero. Invalid rates or ``nan`` thresholds produce
         ``nan``.
-
-    Examples
-    --------
-    Evaluate :math:`\log P(X \leq x)` at three thresholds. Convert the results
-    to probabilities.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import poisson_logcdf
-           ...: thresholds = jnp.array([1, 3, 5])
-           ...: log_prob = poisson_logcdf(thresholds, rate=3.0)
-           ...: jnp.exp(log_prob)
     """
     return _poisson_log_probability(value, rate, upper_tail=False)
 
@@ -193,19 +169,6 @@ def poisson_logsf(value: ArrayLike, rate: ArrayLike) -> jax.Array:
         arguments. Negative thresholds produce zero and positive infinity
         produces ``-inf``. Invalid rates or ``nan`` thresholds produce
         ``nan``.
-
-    Examples
-    --------
-    Evaluate :math:`\log P(X > x)` at three thresholds. Convert the results to
-    probabilities.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import poisson_logsf
-           ...: thresholds = jnp.array([1, 3, 5])
-           ...: log_prob = poisson_logsf(thresholds, rate=3.0)
-           ...: jnp.exp(log_prob)
     """
     return _poisson_log_probability(value, rate, upper_tail=True)
 
@@ -288,18 +251,6 @@ def poisson_log_logpmf(value: ArrayLike, log_rate: ArrayLike) -> jax.Array:
         Normalized log probability masses with the broadcast shape of the
         arguments. Values outside the nonnegative integer support produce
         ``-inf``. A ``nan`` log rate produces ``nan``.
-
-    Examples
-    --------
-    Evaluate one log probability mass per value. Supply the logarithm of the
-    expected count.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import poisson_log_logpmf
-           ...: counts = jnp.array([0, 2, 5])
-           ...: poisson_log_logpmf(counts, log_rate=jnp.log(3.0))
     """
     value_array = _as_real_array("value", value)
     (log_rate_array,) = _promote_inexact(("log_rate", log_rate))
@@ -345,18 +296,6 @@ def poisson_log(value: ArrayLike, log_rate: ArrayLike) -> jax.Array:
     jax.Array
         Complete normalized log probability mass summed across every
         dimension of the broadcast result.
-
-    Examples
-    --------
-    Sum the log probability masses of independent observations into a single log
-    likelihood. Supply the logarithm of the expected count.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import poisson_log
-           ...: counts = jnp.array([0, 2, 5])
-           ...: poisson_log(counts, log_rate=jnp.log(3.0))
     """
     return jnp.sum(poisson_log_logpmf(value, log_rate))
 
@@ -390,19 +329,6 @@ def poisson_log_logcdf(value: ArrayLike, log_rate: ArrayLike) -> jax.Array:
         Log cumulative probabilities with the broadcast shape of the
         arguments. Negative thresholds produce ``-inf`` and positive
         infinity produces zero. A ``nan`` input produces ``nan``.
-
-    Examples
-    --------
-    Evaluate :math:`\log P(X \leq x)` at three thresholds. Convert the results
-    to probabilities.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import poisson_log_logcdf
-           ...: thresholds = jnp.array([1, 3, 5])
-           ...: log_prob = poisson_log_logcdf(thresholds, log_rate=jnp.log(3.0))
-           ...: jnp.exp(log_prob)
     """
     return _poisson_log_rate_probability(value, log_rate, upper_tail=False)
 
@@ -438,19 +364,6 @@ def poisson_log_logsf(value: ArrayLike, log_rate: ArrayLike) -> jax.Array:
         Log survival probabilities with the broadcast shape of the
         arguments. Negative thresholds produce zero and positive infinity
         produces ``-inf``. A ``nan`` input produces ``nan``.
-
-    Examples
-    --------
-    Evaluate :math:`\log P(X > x)` at three thresholds. Convert the results to
-    probabilities.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import poisson_log_logsf
-           ...: thresholds = jnp.array([1, 3, 5])
-           ...: log_prob = poisson_log_logsf(thresholds, log_rate=jnp.log(3.0))
-           ...: jnp.exp(log_prob)
     """
     return _poisson_log_rate_probability(value, log_rate, upper_tail=True)
 
@@ -480,18 +393,6 @@ def poisson_log_rng(
     -------
     jax.Array
         Integer outcomes with shape ``sample_shape + log_rate.shape``.
-
-    Examples
-    --------
-    Draw five outcomes using a key to make the draw reproducible.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from jax import random
-           ...: from mmmjax import poisson_log_rng
-           ...: key = random.key(0)
-           ...: poisson_log_rng(key, log_rate=jnp.log(3.0), sample_shape=(5,))
     """
     (log_rate_array,) = _promote_inexact(("log_rate", log_rate))
     return poisson_rng(

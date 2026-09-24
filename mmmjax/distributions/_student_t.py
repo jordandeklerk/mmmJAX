@@ -53,23 +53,6 @@ def student_t_logpdf(
         Normalized log densities with the broadcast shape of the arguments. A
         nonpositive or nonfinite degrees of freedom or scale, or a nonfinite
         location, produces ``nan``.
-
-    Examples
-    --------
-    Evaluate one log density per value. Use five degrees of freedom with
-    location zero and scale one.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import student_t_logpdf
-           ...: values = jnp.array([-1.0, 0.0, 1.0])
-           ...: student_t_logpdf(
-           ...:     values,
-           ...:     degrees_of_freedom=5.0,
-           ...:     location=0.0,
-           ...:     scale=1.0,
-           ...: )
     """
     value_array, degrees_array, location_array, scale_array = _promote_inexact(
         ("value", value),

@@ -43,17 +43,6 @@ def cauchy_logpdf(
         Normalized log densities with the broadcast shape of the arguments. A
         nonfinite location or a nonpositive or nonfinite scale produces
         ``nan``.
-
-    Examples
-    --------
-    Evaluate one log density per value.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import cauchy_logpdf
-           ...: values = jnp.array([-1.0, 0.0, 1.0])
-           ...: cauchy_logpdf(values, location=0.0, scale=1.0)
     """
     value_array, location_array, scale_array = _promote_inexact(
         ("value", value),
@@ -178,19 +167,6 @@ def cauchy_logcdf(
         Log cumulative probabilities with the broadcast shape of the
         arguments. A nonfinite location or a nonpositive or nonfinite scale
         produces ``nan``.
-
-    Examples
-    --------
-    Evaluate :math:`\log P(X \leq x)` at three thresholds. Convert the results
-    to probabilities.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import cauchy_logcdf
-           ...: thresholds = jnp.array([-1.0, 0.0, 1.0])
-           ...: log_prob = cauchy_logcdf(thresholds, location=0.0, scale=1.0)
-           ...: jnp.exp(log_prob)
     """
     value_array, location_array, scale_array = _promote_inexact(
         ("value", value),
@@ -233,19 +209,6 @@ def cauchy_logsf(
         Log survival probabilities with the broadcast shape of the arguments.
         A nonfinite location or a nonpositive or nonfinite scale produces
         ``nan``.
-
-    Examples
-    --------
-    Evaluate :math:`\log P(X > x)` at three thresholds. Convert the results to
-    probabilities.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import cauchy_logsf
-           ...: thresholds = jnp.array([-1.0, 0.0, 1.0])
-           ...: log_prob = cauchy_logsf(thresholds, location=0.0, scale=1.0)
-           ...: jnp.exp(log_prob)
     """
     value_array, location_array, scale_array = _promote_inexact(
         ("value", value),

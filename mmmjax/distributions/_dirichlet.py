@@ -57,19 +57,6 @@ def dirichlet_logpdf(
         ``inf``, zero, or ``-inf`` when its concentration is below, equal to,
         or above one. Opposing infinite terms produce ``nan`` because the
         multivariate boundary limit depends on the path of approach.
-
-    Examples
-    --------
-    Evaluate one log density per row. Each row is a probability vector whose
-    components sum to one.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import dirichlet_logpdf
-           ...: values = jnp.array([[0.2, 0.3, 0.5], [0.4, 0.4, 0.2]])
-           ...: concentration = jnp.array([2.0, 3.0, 4.0])
-           ...: dirichlet_logpdf(values, concentration=concentration)
     """
     value_array, concentration_array = _promote_inexact(
         ("value", value),

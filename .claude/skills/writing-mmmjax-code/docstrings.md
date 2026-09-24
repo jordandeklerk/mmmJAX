@@ -1,6 +1,11 @@
 # mmmJAX docstrings
 
-The templates below cover a numerical primitive, a workflow or analysis function, and a class, and the last section holds the rules every docstring follows.
+## Contents
+
+- Numerical primitive, the template for a jit-safe array transform
+- Workflow or analysis function, the template for a function that takes a `Model` and its draws
+- Class, the template for a public class
+- Every docstring, the wrapping, type spellings, default forms, and section rules every docstring follows
 
 Sphinx renders numpydoc through napoleon with `autodoc_typehints = "none"`, so the docstring is the only place a reader sees types. Start from the template for the kind of object and replace each `<placeholder>`. Text outside the angle brackets, including section underlines, type spellings, and default forms, is the wording new code uses.
 
@@ -68,7 +73,7 @@ def <name>(<input>: ArrayLike, *, <count>: int) -> jax.Array:
 - Drop the lead-in and `.. math::` block when there is no formula, and keep the `r` prefix only when the docstring holds a backslash. The display ends in a period, or in a comma before a "where ..." paragraph, and a `cases` block puts that mark inside its last case.
 - Examples use the executed `.. ipython::` directive and never `>>>` or `.. code-block:: python`. Each must run, because the docs build executes it. Each later block gets its own lead-in and continues the prompt numbers. From `In [10]` on, continuation lines use `   ....:` with four dots, because the directive silently skips a `   ...:` line there.
 - Adstock, saturation, media, seasonality, HSGP, and scaling examples start from a tiny polars frame with a `"week"` column. Several channels use `frame.select("<a>", "<b>").to_numpy()` and read `<output>[:, 0]`. Other primitives use small `jnp.array` inputs or `simulate_data`.
-- Distribution functions copy the summaries, Parameters, Returns, and one-cell Examples of `distributions/_normal.py`, and the scalar sum adds a `grad` cell. A `_logcdf` or `_logsf` lead-in puts the conversion to probabilities in its own sentence.
+- Distribution functions copy the summaries, Parameters, and Returns of `distributions/_normal.py`. Only a family's scalar sum and `_rng` carry Examples, as there. The pointwise, CDF, and survival functions and the `_logit` and `_log` parameterizations would repeat those examples under another name, so they have none.
 
 ## Workflow or analysis function
 
@@ -136,7 +141,7 @@ class <Name>:
 - Constructor arguments go in signature order in the class docstring, since Sphinx never renders an `__init__` docstring. A custom `__init__` gets one line naming what it normalizes, copies, or validates, and why when the reason is not obvious, as in `Real.__init__`.
 - The summary starts with a verb, and parameterization classes such as `Real` use a noun phrase.
 - A class the library builds and returns, such as `Scaling` or `PreparedData`, lists its public fields under Attributes instead of Parameters, in declaration order with no default markers. Its body names the factory with a `:func:` role. Attribute types name the stored type (`dict of str to jax.Array`), and Parameters name what they accept (`mapping of str to array_like`). No class has both sections.
-- Class Examples appear only where construction is the lesson, as in `SpendConstraint`.
+- Class Examples appear only where construction is the lesson, as in `Model`, `Prior`, and `SpendConstraint`.
 - A property's summary starts with "Return", or is a noun phrase on parameterization classes (`Real.position_shape`). Most are one line. One whose value needs a type, unit, or None note adds a Returns section, as `Model.scaling` does.
 
 ## Every docstring
@@ -144,6 +149,7 @@ class <Name>:
 - Wrap text near 79 columns as the templates do, because ruff format never rewraps it.
 - Other type spellings are `callable`, `bool`, `tuple of int`, `sequence of str`, `mapping of str to array_like`, and `dataframe-like or PreparedData`. `optional` marks a `None` default, and its entry says "Defaults to <value>" when the function computes one (`channels`, `budget`) or "Omit to <effect>" when leaving it out changes the behavior (`new_data`, `by`). Every other default is written `default X`, including `default ()`, and never `default=X`.
 - The sections in use are Parameters, Returns, Examples, and Attributes. The errors a function raises go in its body, as in `optimize_budget`, and no docstring uses Notes, Raises, See Also, or References.
+- Examples show what the summary, Parameters, and Returns cannot, such as realistic inputs and their layout, the visible effect of a transform, or how the object works with the rest of the API. Leave them out when they would repeat a sibling's or a factory's example, as the methods of `HSGPApproximation` and `Scaling` would, or when the call needs a fit.
 - A Parameters entry says only what the argument is and what it requires, such as its meaning, units, shape, allowed values, and whether it must stay static. Leave out what other functions later do with the result, such as which ArviZ function reads a group, and describe outputs under Returns.
 - Body paragraphs read like a methods section, and details about one argument go in its Parameters entry. Keep Returns sections short, and never restore longer text from an earlier version of a docstring.
 - Names in running text use double backticks. Sphinx roles (`:func:`, `:class:`, `:meth:`) are rare and unqualified, since the API pages set `.. currentmodule:: mmmjax`.
