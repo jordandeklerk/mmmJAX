@@ -46,7 +46,7 @@ calendar, and `n_periods` counts the modeled weeks. The `media_` versions do
 the same for the media's weeks, which match the modeled weeks unless
 `media_history` adds earlier ones, as a note in [A first model](first_model)
 explains. `outcome_scaling` lets a
-block report its output in revenue, as [Fitting and checking](checking)
+block report its output in revenue, as [Sampling and diagnostics](sampling)
 shows, and `reference` keeps the training arrays in reach when the model runs
 on other data, which [Scenarios](scenarios) covers.
 

@@ -5,10 +5,10 @@ kernelspec:
   display_name: Python 3
 ---
 
-# Fitting and checking
+# Sampling and diagnostics
 
-Fitting a model takes one call to {func}`~mmmjax.sample`, and deciding whether
-to trust the result takes a few more. This page fits the model from [A first
+Sampling a model takes one call to {func}`~mmmjax.sample`, and deciding whether
+to trust the draws takes a few more. This page samples the model from [A first
 model](first_model), reads its diagnostics, and compares its predictions with
 the data.
 
@@ -196,7 +196,12 @@ patterns in revenue that its noise term cannot absorb. ArviZ draws the same
 intervals week by week.
 
 ```{code-cell} ipython3
-az.plot_ppc_interval(results, ci_probs=(0.5, 0.9), visuals={"xlabel": {"text": "week"}})
+az.plot_ppc_interval(
+    results,
+    ci_probs=(0.5, 0.9),
+    visuals={"xlabel": {"text": "week"}},
+    figure_kwargs={"figsize": (12, 7)},
+)
 plt.show()
 ```
 
@@ -224,7 +229,7 @@ def lag_one_autocorrelation(series):
     return correlation
 
 
-az.plot_ppc_tstat(results, t_stat=lag_one_autocorrelation)
+az.plot_ppc_tstat(results, t_stat=lag_one_autocorrelation, figure_kwargs={"figsize": (12, 7)})
 plt.show()
 ```
 
@@ -253,7 +258,7 @@ $k$ values check the shortcut behind the estimate, and all 156 weeks fall in
 the good range. The same shortcut gives a calibration check.
 
 ```{code-cell} ipython3
-az.plot_loo_pit(results)
+az.plot_loo_pit(results, figure_kwargs={"figsize": (12, 7)})
 plt.show()
 ```
 

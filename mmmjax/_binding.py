@@ -387,7 +387,7 @@ def _callback_inputs(
     *,
     name: str,
 ) -> dict[str, object]:
-    """Supply current inputs, fixed references, and explicit unit conversions."""
+    """Supply current inputs together with fixed references and explicit unit conversions."""
     arguments: dict[str, object] = {}
     for argument, source in bindings:
         origin = _input_source(argument, source, data)

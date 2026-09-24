@@ -7,7 +7,7 @@ kernelspec:
 
 # Recovering the truth
 
-The checks on [Fitting and checking](checking) compare the model with the
+The checks on [Sampling and diagnostics](sampling) compare the model with the
 data, and a model can pass them while crediting revenue to the wrong cause.
 Real data never records the right answer, but `example.truth` does, so this
 page checks the model from [A first model](first_model) against it. Besides
@@ -175,7 +175,7 @@ price_effect.quantile(quantiles).values.round(), -0.015 * population
 Each dollar added to the price costs about \$3,378 of weekly revenue in the
 middle of the posterior, and the interval holds the true \$3,332, the
 simulation's 1.5 cents per person across 222,147 people. TV's retention came
-back as 0.69 against a true 0.70 on [Fitting and checking](checking). TV's
+back as 0.69 against a true 0.70 on [Sampling and diagnostics](sampling). TV's
 curve parameters need one more step. With $u$ carried impressions per person,
 $m$ TV's median nonzero week, and $P$ the population, the model's curve is
 

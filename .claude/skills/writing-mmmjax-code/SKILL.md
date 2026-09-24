@@ -100,7 +100,7 @@ A new distribution module follows `distributions/_normal.py`. It defines `<famil
 
 ## Docstrings
 
-Every public docstring starts from a template in [docstrings.md](docstrings.md), which also holds the type spellings, default forms, section rules, and the older docstrings not to copy. Read it before writing or editing a docstring.
+Every public docstring starts from a template in [docstrings.md](docstrings.md), which also holds the type spellings, default forms, and section rules. Read it before writing or editing a docstring.
 
 ## Comments
 

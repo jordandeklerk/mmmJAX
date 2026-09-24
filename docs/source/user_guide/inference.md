@@ -271,7 +271,8 @@ a quick look or as starting points for MCMC rather than as the final fit.
 
 Once the draws are labeled, the rest of mmmJAX treats them like its own.
 {func}`~mmmjax.generate_quantities` adds the predictions and pointwise log
-likelihoods that ArviZ uses for the checks in [Fitting and checking](checking).
+likelihoods that ArviZ uses for the checks in [Sampling and
+diagnostics](sampling).
 
 ```{code-cell} ipython3
 mj.generate_quantities(model, blackjax_results)

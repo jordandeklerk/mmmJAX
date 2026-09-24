@@ -152,6 +152,9 @@ def binomial_logcdf(value: ArrayLike, trials: ArrayLike, probability: ArrayLike)
 
     where :math:`I` is the regularized incomplete Beta function.
 
+    Large trial counts can lose accuracy in float32. Enable JAX 64-bit mode
+    when additional precision is needed.
+
     Parameters
     ----------
     value : array_like
@@ -171,15 +174,10 @@ def binomial_logcdf(value: ArrayLike, trials: ArrayLike, probability: ArrayLike)
         or above the trial count produce zero. Invalid parameters or
         ``nan`` thresholds produce ``nan``.
 
-    Notes
-    -----
-    Large trial counts can lose accuracy in float32. Enable JAX 64-bit mode
-    when additional precision is needed.
-
     Examples
     --------
-    Evaluate :math:`\log P(X \leq x)` at three thresholds, then convert the
-    results to probabilities.
+    Evaluate :math:`\log P(X \leq x)` at three thresholds. Convert the results
+    to probabilities.
 
     .. ipython::
 
@@ -210,6 +208,9 @@ def binomial_logsf(value: ArrayLike, trials: ArrayLike, probability: ArrayLike) 
     where :math:`I` is the regularized incomplete Beta function. This avoids
     obtaining a small survival probability by subtracting the CDF from one.
 
+    Large trial counts can lose accuracy in float32. Enable JAX 64-bit mode
+    when additional precision is needed.
+
     Parameters
     ----------
     value : array_like
@@ -229,15 +230,10 @@ def binomial_logsf(value: ArrayLike, trials: ArrayLike, probability: ArrayLike) 
         above the trial count produce ``-inf``. Invalid parameters or
         ``nan`` thresholds produce ``nan``.
 
-    Notes
-    -----
-    Large trial counts can lose accuracy in float32. Enable JAX 64-bit mode
-    when additional precision is needed.
-
     Examples
     --------
-    Evaluate :math:`\log P(X > x)` at three thresholds, then convert the results
-    to probabilities.
+    Evaluate :math:`\log P(X > x)` at three thresholds. Convert the results to
+    probabilities.
 
     .. ipython::
 
@@ -445,6 +441,9 @@ def binomial_logit_logcdf(value: ArrayLike, trials: ArrayLike, logits: ArrayLike
     are retained in tail calculations to avoid rounding rare probabilities
     away when converting to the probability scale.
 
+    Large trial counts can lose accuracy in float32. Enable JAX 64-bit mode
+    when additional precision is needed.
+
     Parameters
     ----------
     value : array_like
@@ -465,15 +464,10 @@ def binomial_logit_logcdf(value: ArrayLike, trials: ArrayLike, logits: ArrayLike
         or above the trial count produce zero. Invalid parameters or
         ``nan`` thresholds produce ``nan``.
 
-    Notes
-    -----
-    Large trial counts can lose accuracy in float32. Enable JAX 64-bit mode
-    when additional precision is needed.
-
     Examples
     --------
-    Evaluate :math:`\log P(X \leq x)` at three thresholds, then convert the
-    results to probabilities.
+    Evaluate :math:`\log P(X \leq x)` at three thresholds. Convert the results
+    to probabilities.
 
     .. ipython::
 
@@ -504,6 +498,9 @@ def binomial_logit_logsf(value: ArrayLike, trials: ArrayLike, logits: ArrayLike)
     where :math:`I` is the regularized incomplete Beta function. This
     computes the strict upper tail without subtracting the CDF from one.
 
+    Large trial counts can lose accuracy in float32. Enable JAX 64-bit mode
+    when additional precision is needed.
+
     Parameters
     ----------
     value : array_like
@@ -524,15 +521,10 @@ def binomial_logit_logsf(value: ArrayLike, trials: ArrayLike, logits: ArrayLike)
         above the trial count produce ``-inf``. Invalid parameters or
         ``nan`` thresholds produce ``nan``.
 
-    Notes
-    -----
-    Large trial counts can lose accuracy in float32. Enable JAX 64-bit mode
-    when additional precision is needed.
-
     Examples
     --------
-    Evaluate :math:`\log P(X > x)` at three thresholds, then convert the results
-    to probabilities.
+    Evaluate :math:`\log P(X > x)` at three thresholds. Convert the results to
+    probabilities.
 
     .. ipython::
 

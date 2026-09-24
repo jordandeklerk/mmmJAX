@@ -211,8 +211,8 @@ def root_saturation(media: ArrayLike, exponent: ArrayLike) -> jax.Array:
         f(x; a) = x^a.
 
     An exponent of one half gives a square-root response. Smaller
-    exponents give stronger diminishing returns, while one leaves the
-    input values unchanged. Unlike Hill and logistic curves, root curves
+    exponents give stronger diminishing returns. An exponent of one leaves
+    the input values unchanged. Unlike Hill and logistic curves, root curves
     have no fixed upper limit and their responses can exceed one.
 
     Parameters
@@ -302,7 +302,7 @@ def log_saturation(media: ArrayLike) -> jax.Array:
         Finite, nonnegative exposures, either raw or transformed. Scalars
         and arrays are accepted. For grouped data, use the prepared layout
         ``(time, group, channel)``. Choose the input units before applying
-        this function, since rescaling the inputs changes the response.
+        this function. Rescaling the inputs changes the response.
 
     Returns
     -------

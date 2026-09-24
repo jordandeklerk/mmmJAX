@@ -34,8 +34,8 @@ class HSGPApproximation:
     length_scale_range : tuple of float or None
         Length scales the settings were prepared for.
     column_means : tuple of float or None
-        Basis column means over the preparation positions, subtracted by
-        :meth:`basis` when the approximation was prepared with centering.
+        Basis column means over the preparation positions. :meth:`basis`
+        subtracts them when the approximation was prepared with centering.
     """
 
     center: float
@@ -65,8 +65,8 @@ class HSGPApproximation:
         Returns
         -------
         jax.Array
-            Matrix with shape ``(len(time), n_basis)``, with the preparation
-            column means subtracted when centering was requested. Nonfinite
+            Matrix with shape ``(len(time), n_basis)``. The preparation column
+            means are subtracted when centering was requested. Nonfinite
             positions or positions outside the domain give ``nan`` rows.
 
         Examples
@@ -145,12 +145,12 @@ def prepare_hsgp(
     Parameters
     ----------
     time_range : array_like
-        Two finite numeric endpoints in increasing order, covering both
+        Two finite numeric endpoints in increasing order that cover both
         training observations and planned forecasts. For example, use
         ``(0, 116)`` for observations in weeks 0 through 104 and predictions
         through week 116. Keep the same time origin for later predictions.
-        Observed positions such as ``data.time_positions`` may be passed
-        directly, in which case their smallest and largest values are used.
+        When observed positions such as ``data.time_positions`` are passed
+        directly, their smallest and largest values are used.
     length_scale_range : array_like
         Two positive, finite endpoints in increasing order, in the same
         units as ``time_range``. Choose a range covering the length scales
@@ -342,9 +342,9 @@ def hsgp_basis(
     Returns
     -------
     basis : jax.Array
-        Shape ``(len(time), n_basis)`` in increasing frequency order, with
-        floating dtype of at least float32. Nonfinite or out-of-domain times
-        give ``nan`` rows. Invalid center or boundary gives an invalid basis.
+        Shape ``(len(time), n_basis)`` in increasing frequency order. Floating
+        dtype is at least float32. Nonfinite or out-of-domain times give
+        ``nan`` rows. Invalid center or boundary gives an invalid basis.
     frequencies : jax.Array
         Angular frequencies shaped ``(n_basis,)`` in inverse time units for
         :func:`hsgp_weights`. Invalid boundary gives ``nan`` frequencies.
@@ -442,8 +442,8 @@ def hsgp_weights(
         One-dimensional, finite angular frequencies returned by
         :func:`hsgp_basis`. Zero and negative frequencies are also accepted.
     length_scale : array_like
-        Positive, finite scale controlling how quickly the curve changes,
-        measured in the same time units used to build the basis. Larger
+        Positive, finite scale controlling how quickly the curve changes. It
+        is measured in the same time units used to build the basis. Larger
         values favor slower changes. Use a scalar for a shared scale or
         an array such as ``(group, channel)`` for separate scales.
     amplitude : array_like, default 1.0
@@ -459,10 +459,10 @@ def hsgp_weights(
     Returns
     -------
     jax.Array
-        Nonnegative weights shaped ``batch_shape + (len(frequencies),)``,
-        where ``batch_shape`` broadcasts ``length_scale`` and ``amplitude``.
-        Floating dtype is at least float32. Invalid numeric inputs give ``nan``
-        in affected positions.
+        Nonnegative weights shaped ``batch_shape + (len(frequencies),)``.
+        ``batch_shape`` is the broadcast shape of ``length_scale`` and
+        ``amplitude``. Floating dtype is at least float32. Invalid numeric
+        inputs give ``nan`` in affected positions.
 
     Examples
     --------

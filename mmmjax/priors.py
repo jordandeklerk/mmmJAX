@@ -30,7 +30,7 @@ class Prior:
         ``lognormal``, or ``dirichlet``, or one returned by
         ``custom_distribution`` for a distribution written as plain functions.
     **parameters : array_like
-        All named distribution settings, copied at construction in the
+        All named distribution settings. Construction copies them in the
         precision in effect at that moment, so enable JAX 64-bit mode before
         building priors as with any other array. Multinomial priors also
         require ``trials`` and reject counts with another total. LKJ priors
@@ -155,7 +155,8 @@ class Prior:
         key : jax.Array
             Random key for this draw. Use a fresh key for independent draws.
         sample_shape : tuple of int, default ()
-            Independent sample dimensions, fixed when compiling with JAX.
+            Independent sample dimensions. Keep this argument static when
+            using ``jax.jit``.
 
         Returns
         -------

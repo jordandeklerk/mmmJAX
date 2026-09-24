@@ -18,7 +18,9 @@ __all__ = ["SyntheticData", "simulate_data"]
 
 @dataclass(frozen=True, slots=True, eq=False)
 class SyntheticData:
-    """Store synthetic observations, channel descriptions, and known effects.
+    """Store synthetic observations with their channel descriptions and known effects.
+
+    Generate a simulation with :func:`simulate_data`.
 
     Attributes
     ----------
@@ -75,8 +77,8 @@ def simulate_data(
     campaign calendar. Revenue there is a constant regional baseline plus a
     price effect and the two channels. Price moves independently of the media,
     and there are no demand, seasonal, promotion, or holiday effects. Every model
-    input a regression on the two channels and price needs is present, which
-    makes the true effects recoverable.
+    input a regression on the two channels and price needs is present, so the
+    true effects are recoverable.
 
     Parameters
     ----------
@@ -112,9 +114,10 @@ def simulate_data(
         - **channels** — Channel labels, columns, and settings
         - **truth** — Parameters, effects, and paid-channel revenue ROI
 
-        ROI is the modeling-window revenue difference when removing a channel
-        from both lead-in and modeling periods, holding other inputs fixed,
-        divided by modeling-window spend. Zero spend gives undefined ROI.
+        ROI is the modeling-window revenue difference divided by
+        modeling-window spend. The difference comes from removing a channel
+        from both lead-in and modeling periods with other inputs held fixed.
+        Zero spend gives undefined ROI.
 
     Examples
     --------
@@ -134,7 +137,7 @@ def simulate_data(
         In [3]: paid = example.channels.query("kind == 'paid'")
            ...: organic = example.channels.query("kind == 'organic'")
 
-    Prepare model inputs from the frame, keeping the true effects aside for
+    Prepare model inputs from the frame and keep the true effects aside for
     comparison with the fit later.
 
     .. ipython::
@@ -485,7 +488,7 @@ def _validate_inputs(
     measurement_error: float,
     complexity: str,
 ) -> tuple[date, tuple[str, ...]]:
-    """Check simulation sizes, dates, and settings before allocating arrays."""
+    """Check the simulation settings before allocating arrays."""
     for name, value, minimum in (("seed", seed, 0), ("n_periods", n_periods, 1)):
         if not isinstance(value, int) or isinstance(value, bool):
             raise TypeError(f"{name} must be a Python integer")

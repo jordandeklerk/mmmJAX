@@ -42,11 +42,11 @@ def response_curves(
 ) -> xr.Dataset:
     """Evaluate paid-media spending curves using prior or posterior draws.
 
-    Vary one channel's spending at a time, retaining its allocation across
+    Vary one channel's spending at a time and keep its allocation across
     selected periods and groups. Spending and exposures outside those periods
-    stay fixed. Evaluate the full model for every draw, summing responses
-    by default or retaining time and group breakdowns. Include later
-    measurement dates to count carryover. No observations are added automatically.
+    stay fixed. Evaluate the full model for every draw and sum responses by
+    default or retain time and group breakdowns. Include later measurement
+    dates to count carryover. No observations are added automatically.
 
     Parameters
     ----------
@@ -71,21 +71,21 @@ def response_curves(
         ``sample_prior`` to inspect responses implied by the priors.
         No sampling is performed. Compare groups using separate calls.
     spend_to_media : {"proportional"} or callable, default "proportional"
-        By default, exposure scales with spend at each period and group,
-        retaining reference exposure per unit spend. A JAX-compatible function
-        instead receives ordinary media spend in original units and its channel
-        order, then returns nonnegative exposures of the same shape. Only
-        exposures during ``spend_periods`` are replaced. Earlier history is
-        excluded from the conversion.
+        By default, exposure scales with spend at each period and group.
+        Exposure per unit spend keeps its reference value. A JAX-compatible
+        function instead receives ordinary media spend in original units and
+        its channel order. It returns nonnegative exposures of the same shape.
+        Only exposures during ``spend_periods`` are replaced. Earlier history
+        is excluded from the conversion.
     spend_to_rf : {"reach", "frequency"} or callable, default "reach"
-        Scale reach with spending while keeping frequency fixed, or choose
-        ``"frequency"`` to scale frequency at fixed reach. Both assume constant
-        cost per impression. A JAX-compatible callable receives raw RF spending
-        in ``rf_channels`` order and returns ``(reach, frequency)`` in original
-        units, each with the same shape. Only spending periods are changed.
+        Scale reach at fixed frequency, or frequency at fixed reach. Both
+        assume constant cost per impression. A JAX-compatible callable
+        receives raw RF spending in ``rf_channels`` order and returns
+        ``(reach, frequency)`` arrays of the same shape in original units. Only
+        spending periods are changed.
     channels : sequence of str, optional
         Channel labels to evaluate, in the desired order. Defaults to all
-        paid channels with spending, ordinary media first and RF second.
+        paid channels with spending. Ordinary media come first and RF second.
         Names must be unique across both families. Each selected channel needs
         positive reference spending.
     new_data : dataframe-like or PreparedData, optional
@@ -111,15 +111,16 @@ def response_curves(
         Curves in original outcome units with chain and draw labels and a
         ``group`` attribute identifying the parameter draws.
 
-        - **response** gives responses by channel and multiplier.
-        - **incremental_response** subtracts each channel's zero-spend response
-          during ``spend_periods``, with other inputs fixed.
-        - **spend** and **reference_spend** give candidate and reference totals
-          for the spending periods in original spend units.
-        - **reference_response** evaluates reference spending with the selected
-          conversion.
-        - **spend_period** and **response_period** record the selected dates.
-        - **channel_type** identifies ordinary media and reach/frequency channels.
+        - **response** — Responses by channel and multiplier
+        - **incremental_response** — Response minus each channel's zero-spend
+          response during ``spend_periods``, with other inputs fixed
+        - **spend**, **reference_spend** — Candidate and reference totals for
+          the spending periods in original spend units
+        - **reference_response** — Response at reference spending with the
+          selected conversion
+        - **spend_period**, **response_period** — Selected dates
+        - **channel_type** — Whether each channel is ordinary media or
+          reach/frequency
 
         ``by`` retains response axes for the same overall intervention. Spending
         stays totaled across periods and groups. Channel interactions can make
@@ -212,8 +213,9 @@ def frequency_curves(
     constant cost per impression. Choose frequencies feasible for your audience.
 
     Select each channel's best tested frequency using mean response across
-    the selected parameter draws. These choices are conditional on the other channels'
-    reference inputs, not a jointly optimized plan when channels interact.
+    the selected parameter draws. These choices are conditional on the other
+    channels' reference inputs, not a jointly optimized plan when channels
+    interact.
 
     Parameters
     ----------
@@ -246,24 +248,25 @@ def frequency_curves(
     periods : sequence, optional
         Time labels whose frequency changes. Defaults to all modeling periods.
     response_periods : sequence, optional
-        Time labels whose responses count, summed across groups. Defaults to
-        all modeling periods. Include later supplied dates to measure carryover.
+        Time labels whose responses count. Defaults to all modeling periods.
+        Include later supplied dates to measure carryover. Responses are summed
+        across groups.
     batch_size : int, default 64
         Maximum parameter draws evaluated together. Scenarios run sequentially.
 
     Returns
     -------
     xarray.Dataset
-        Comparisons in original outcome units with a ``group`` attribute
-        identifying the parameter draws.
+        Comparisons in original outcome units with chain and draw labels and a
+        ``group`` attribute identifying the parameter draws.
 
-        - **response** and **response_change** give totals and paired changes
-          from reference by chain, draw, channel, and frequency.
-        - **reference_response** gives the reference total per draw.
-        - **reference_spend** gives fixed spending in original spend units.
-        - **best_frequency** maximizes mean change across draws over the grid.
-          Exact ties select the first supplied frequency.
-        - **frequency_period** and **response_period** record the selected dates.
+        - **response**, **response_change** — Totals and paired changes from
+          reference by chain, draw, channel, and frequency
+        - **reference_response** — Reference total per draw
+        - **reference_spend** — Fixed spending in original spend units
+        - **best_frequency** — Grid frequency that maximizes mean change across
+          draws. Exact ties select the first supplied frequency
+        - **frequency_period**, **response_period** — Selected dates
 
         No audience cap is inferred, and the model is not refitted.
     """
@@ -433,11 +436,11 @@ def media_metrics(
     by: str | Sequence[str] | None = None,
     batch_size: int = 64,
 ) -> xr.Dataset:
-    """Calculate incremental response, ROI, and marginal ROI by paid-media channel.
+    """Calculate response and ROI metrics for each paid-media channel.
 
     Compare reference spending with removing or increasing one channel's
-    spending at a time. Evaluate the full model for each selected parameter draw,
-    keeping other spending and earlier history fixed. Channel effects need
+    spending at a time. Evaluate the full model for each selected parameter
+    draw. Other spending and earlier history stay fixed. Channel effects need
     not add up when channels interact.
 
     Parameters
@@ -463,19 +466,20 @@ def media_metrics(
         Positive fractional spend increase used for marginal ROI. The default
         measures return on a 1% increase, not an exact derivative.
     spend_to_media : {"proportional"} or callable, default "proportional"
-        Scale exposures with spending at their reference ratios. Alternatively,
+        By default, exposure scales with spending at each period and group.
+        Exposure per unit spend keeps its reference value. Alternatively,
         supply a JAX-compatible function mapping ordinary media spending in
         its channel order to nonnegative exposures of the same shape.
     spend_to_rf : {"reach", "frequency"} or callable, default "reach"
-        Scale reach at fixed frequency, or frequency at fixed reach, assuming
-        constant cost per impression. A JAX-compatible callable instead maps
-        raw RF spending in ``rf_channels`` order to ``(reach, frequency)`` in
-        original units, each with the same shape. Marginal ROI follows this
+        Scale reach at fixed frequency, or frequency at fixed reach. Both
+        assume constant cost per impression. A JAX-compatible callable instead
+        maps raw RF spending in ``rf_channels`` order to ``(reach, frequency)``
+        arrays of the same shape in original units. Marginal ROI follows this
         selected spending change.
     channels : sequence of str, optional
         Paid channels to report, in the desired order. Defaults to all channels
-        with spending, ordinary media first and RF second. Names must be unique.
-        Each needs positive reference spending during ``spend_periods``.
+        with spending. Ordinary media come first and RF second. Names must be
+        unique. Each needs positive reference spending during ``spend_periods``.
     new_data : dataframe-like or PreparedData, optional
         Reference observations. Omit to use stored observations. Fitted scales
         are reused. Earlier exposures can be supplied through ``PreparedData``.
@@ -498,20 +502,22 @@ def media_metrics(
         Channel metrics with chain and draw labels and a ``group`` attribute
         identifying the parameter draws. Responses and spend use original units.
 
-        - **incremental_response** subtracts each channel's zero-spend response
-          during ``spend_periods`` from reference response.
-        - **roi** divides total incremental response by **reference_spend**,
-          without subtracting spending to calculate profit.
-        - **marginal_response** gives the increase from additional spending.
-        - **marginal_roi** divides total marginal response by **incremental_spend**,
-          the additional spending.
-        - **cost_per_incremental_response** divides **reference_spend** by total
-          incremental response. It is missing if spending or the increment is zero.
-        - **spend_share** gives each channel's share of all paid spending during
-          ``spend_periods``, including unselected channels.
-        - **reference_response** gives the full response at reference spending.
-        - **spend_period** and **response_period** record the selected dates.
-        - **channel_type** identifies ordinary media and reach/frequency channels.
+        - **incremental_response** — Reference response minus each channel's
+          zero-spend response during ``spend_periods``
+        - **roi** — Total incremental response divided by **reference_spend**.
+          Spending is not subtracted to calculate profit
+        - **marginal_response** — Increase from additional spending
+        - **marginal_roi** — Total marginal response divided by
+          **incremental_spend**, the additional spending
+        - **cost_per_incremental_response** — Ratio of **reference_spend** to
+          total incremental response. It is missing if spending or the
+          increment is zero
+        - **spend_share** — Each channel's share of all paid spending during
+          ``spend_periods``, including unselected channels
+        - **reference_response** — Full response at reference spending
+        - **spend_period**, **response_period** — Selected dates
+        - **channel_type** — Whether each channel is ordinary media or
+          reach/frequency
 
         ``by`` retains response axes for the same overall intervention. Ratios
         and spending aggregate periods and groups. Ratios are NaN at zero spend.

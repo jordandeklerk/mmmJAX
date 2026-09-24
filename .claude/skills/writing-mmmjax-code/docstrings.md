@@ -113,7 +113,7 @@ def <name>(
 ```
 
 - It has one body paragraph, no math, and no Examples when it needs a fit. The `results`, `quantity`, and `group` entries are shared word for word by the analysis functions that take `group`.
-- Field bullets use the dash form of `fit_scaling` and `check_prior`. No analysis function has it yet, so `media_metrics` is a model for the body and Parameters only. Named `name : type` Returns entries are only for a tuple, as in `hsgp_basis`.
+- Field bullets use the dash form, as `media_metrics` and `fit_scaling` show. Named `name : type` Returns entries are only for a tuple, as in `hsgp_basis`.
 - A host-side preparation function such as `fit_scaling` shares this body and these bullets, opens its Returns with "<Noun> with the following fields.", and adds the primitive's Examples when it runs on small inline data.
 
 ## Class
@@ -143,9 +143,9 @@ class <Name>:
 
 - Wrap text near 79 columns as the templates do, because ruff format never rewraps it.
 - Other type spellings are `callable`, `bool`, `tuple of int`, `sequence of str`, `mapping of str to array_like`, and `dataframe-like or PreparedData`. `optional` marks a `None` default, and its entry says "Defaults to <value>" when the function computes one (`channels`, `budget`) or "Omit to <effect>" when leaving it out changes the behavior (`new_data`, `by`). Every other default is written `default X`, including `default ()`, and never `default=X`.
-- The sections in use are Parameters, Returns, Examples, and Attributes. No docstring uses See Also or References, and the Raises section in `optimize_budget` and the Notes in `_binomial.py` are outliers.
+- The sections in use are Parameters, Returns, Examples, and Attributes. The errors a function raises go in its body, as in `optimize_budget`, and no docstring uses Notes, Raises, See Also, or References.
 - Body paragraphs read like a methods section, and details about one argument go in its Parameters entry. Keep Returns sections short, and never restore longer text from an earlier version of a docstring.
 - Names in running text use double backticks. Sphinx roles (`:func:`, `:class:`, `:meth:`) are rare and unqualified, since the API pages set `.. currentmodule:: mmmjax`.
-- Besides ", <verb>ing", no sentence ends in a comma plus a trailing clause such as ", which", ", with", ", or None while", ", empty when", or ", then". Split it into two sentences. "A, B, and C" lists are fine.
+- The summary line never contains a comma, not even in a list, so write it as one clause, as in "Prepare a dataframe for modeling while keeping its observation labels."
+- Elsewhere a comma is fine wherever the sentence needs one, so never drop or reword one away for its own sake. Only a clause tacked onto the end of a sentence with ", <verb>ing", ", which", ", with", or ", then" gets split into its own sentence.
 - Private helpers in the core modules get a one-line docstring stating their intent or the constraint they keep, as in `"""Broadcast a scalar or per-channel setting to one value per channel."""`. Private functions under `distributions/` mostly have none.
-- Some older docstrings break these rules, so never cite them as precedent. They include the sentence bullets in `sampling.py`, `response.py`, `contribution.py`, and `optimization.py`, the colon bullets in `DataScaling.transform`, and the trailing clauses in `sampling.py`, `data.py`, `synthetic.py`, and the distribution `_logcdf` and `_logsf` lead-ins. `adstock.py` restates literal defaults, gathers its static notes on `normalize`, and names the group axis `geo`. The `import mmmjax as mm` Examples in `media.py` and `import mmmjax as mj` in `distributions/_distribution.py`, the missing helper docstrings in `adstock.py` and `parameters.py`, the missing factory role in `SyntheticData`, and the missing `Data.__init__` docstring are older too.

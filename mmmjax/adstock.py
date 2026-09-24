@@ -40,21 +40,23 @@ def geometric_adstock(
     media : array_like
         Real-valued array with at least one dimension. Observations along
         ``axis`` must represent equally spaced time periods. Other axes
-        identify independent series, such as channels and geographies.
+        identify independent series, such as channels and groups.
     alpha : array_like
         Finite retention parameter between zero and one, inclusive. Its
         shape must broadcast to the shape of ``media`` with the time axis
-        removed. For ``media.shape == (time, geo, channel)``, channel-level
-        parameters have shape ``(channel,)`` and geo-channel parameters
-        have shape ``(geo, channel)``. Use ``jax.vmap`` for additional draws.
+        removed. For ``media.shape == (time, group, channel)``, channel-level
+        parameters have shape ``(channel,)`` and group-channel parameters
+        have shape ``(group, channel)``. Use ``jax.vmap`` for additional draws.
     max_lag : int
         Nonnegative number of previous periods to include. The window has
-        ``max_lag + 1`` weights, including the current period.
+        ``max_lag + 1`` weights, including the current period. Keep this
+        argument static when using ``jax.jit``.
     axis : int, default 0
-        Time axis in ``media``. Defaults to the first axis.
+        Time axis in ``media``. Keep this argument static when using
+        ``jax.jit``.
     normalize : bool, default True
-        Whether to divide the weights by their sum. Defaults to ``True``.
-        ``max_lag``, ``axis``, and ``normalize`` must be static under JIT.
+        Whether to divide the weights by their sum. Keep this argument static
+        when using ``jax.jit``.
 
     Returns
     -------
@@ -163,7 +165,7 @@ def delayed_adstock(
     media : array_like
         Real-valued array with at least one dimension. Observations along
         ``axis`` must represent equally spaced periods. Other axes identify
-        independent series, such as channels and geographies.
+        independent series, such as channels and groups.
     alpha : array_like
         Finite retention parameter greater than zero and at most one.
         Smaller values concentrate the effect around ``theta``. Zero is
@@ -173,16 +175,18 @@ def delayed_adstock(
         Finite peak delay between zero and ``max_lag``, inclusive, measured
         in periods. Its shape must broadcast to the non-time shape of
         ``media`` independently of ``alpha``. For inputs shaped
-        ``(time, geo, channel)``, parameters can have shape ``(channel,)``,
-        ``(geo, 1)``, or ``(geo, channel)``. Use ``jax.vmap`` for extra draws.
+        ``(time, group, channel)``, parameters can have shape ``(channel,)``,
+        ``(group, 1)``, or ``(group, channel)``. Use ``jax.vmap`` for extra draws.
     max_lag : int
         Nonnegative number of previous periods to include. The window has
-        ``max_lag + 1`` weights, including the current period.
+        ``max_lag + 1`` weights, including the current period. Keep this
+        argument static when using ``jax.jit``.
     axis : int, default 0
-        Time axis in ``media``. Defaults to the first axis.
+        Time axis in ``media``. Keep this argument static when using
+        ``jax.jit``.
     normalize : bool, default True
-        Whether to divide the weights by their sum. Defaults to ``True``.
-        ``max_lag``, ``axis``, and ``normalize`` must be static under JIT.
+        Whether to divide the weights by their sum. Keep this argument static
+        when using ``jax.jit``.
 
     Returns
     -------
@@ -207,7 +211,7 @@ def delayed_adstock(
            ...:     "video": [100.0, 0.0, 0.0, 0.0],
            ...: })
 
-    Let the effect build for two weeks before it peaks, then fade with a
+    Let the effect build for two weeks before it peaks. It then fades with a
     retention of one half.
 
     .. ipython::
@@ -287,8 +291,8 @@ def weibull_pdf_adstock(
 
     Sampling starts at one to avoid a singular density at zero for shapes
     below one. The min/max rescaling is applied even with ``normalize=False``;
-    the weights are not raw density values. It is piecewise differentiable,
-    with possible kinks where the sampled minimum or maximum changes.
+    the weights are not raw density values. It is piecewise differentiable
+    and can have kinks where the sampled minimum or maximum changes.
     A flat sampled kernel has undefined min/max rescaling and produces
     ``nan``. Setting ``max_lag=0`` retains only the current period.
 
@@ -301,7 +305,7 @@ def weibull_pdf_adstock(
     media : array_like
         Real-valued array with at least one dimension. Observations along
         ``axis`` must represent equally spaced periods. Other axes identify
-        independent series, such as channels and geographies.
+        independent series, such as channels and groups.
     shape : array_like
         Finite positive Weibull shape. Shapes at most one give decreasing
         density weights; larger shapes can give a delayed peak. Its shape
@@ -309,16 +313,18 @@ def weibull_pdf_adstock(
     scale : array_like
         Finite positive Weibull scale, measured in periods. Its shape must
         broadcast to the non-time shape of ``media`` independently of
-        ``shape``. For ``(time, geo, channel)`` inputs, parameters can have
-        shape ``(channel,)``, ``(geo, 1)``, or ``(geo, channel)``.
+        ``shape``. For ``(time, group, channel)`` inputs, parameters can have
+        shape ``(channel,)``, ``(group, 1)``, or ``(group, channel)``.
     max_lag : int
         Nonnegative number of previous periods to include. The window has
-        ``max_lag + 1`` weights, including the current period.
+        ``max_lag + 1`` weights, including the current period. Keep this
+        argument static when using ``jax.jit``.
     axis : int, default 0
-        Time axis in ``media``.
+        Time axis in ``media``. Keep this argument static when using
+        ``jax.jit``.
     normalize : bool, default True
-        Whether to divide the rescaled weights by their sum.
-        ``max_lag``, ``axis``, and ``normalize`` must be static under JIT.
+        Whether to divide the rescaled weights by their sum. Keep this argument
+        static when using ``jax.jit``.
 
     Returns
     -------
@@ -436,24 +442,27 @@ def weibull_cdf_adstock(
     media : array_like
         Real-valued array with at least one dimension. Observations along
         ``axis`` must represent equally spaced periods. Other axes identify
-        independent series, such as channels and geographies.
+        independent series, such as channels and groups.
     shape : array_like
-        Finite positive Weibull shape, controlling how retention changes
-        across lags. Its shape must broadcast to the non-time shape of ``media``.
+        Finite positive Weibull shape that controls how retention changes
+        across lags. Its shape must broadcast to the non-time shape of
+        ``media``.
     scale : array_like
         Finite positive Weibull scale, measured in periods. Larger values
         retain more of earlier inputs. Its shape must broadcast to the
         non-time shape of ``media`` independently of ``shape``. For
-        ``(time, geo, channel)`` inputs, parameters can have shape
-        ``(channel,)``, ``(geo, 1)``, or ``(geo, channel)``.
+        ``(time, group, channel)`` inputs, parameters can have shape
+        ``(channel,)``, ``(group, 1)``, or ``(group, channel)``.
     max_lag : int
         Nonnegative number of previous periods to include. The window has
-        ``max_lag + 1`` weights, including the current period.
+        ``max_lag + 1`` weights, including the current period. Keep this
+        argument static when using ``jax.jit``.
     axis : int, default 0
-        Time axis in ``media``.
+        Time axis in ``media``. Keep this argument static when using
+        ``jax.jit``.
     normalize : bool, default True
-        Whether to divide the weights by their sum.
-        ``max_lag``, ``axis``, and ``normalize`` must be static under JIT.
+        Whether to divide the weights by their sum. Keep this argument static
+        when using ``jax.jit``.
 
     Returns
     -------
@@ -525,6 +534,7 @@ def _prepare_adstock(
     normalize: bool,
     **parameters: ArrayLike,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
+    """Promote real inputs before conversion and broadcast parameters over non-time axes."""
     if isinstance(max_lag, bool) or not isinstance(max_lag, int):
         raise TypeError("max_lag must be a static nonnegative integer")
     if max_lag < 0:
@@ -584,6 +594,7 @@ def _prepare_adstock(
 
 
 def _convolve_adstock(media: jax.Array, weights: jax.Array, *, axis: int) -> jax.Array:
+    """Convolve each series with its own lag weights after zero-padding its start."""
     if media.size == 0:
         return media
 

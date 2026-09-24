@@ -153,7 +153,7 @@ def normal_logcdf(
     Examples
     --------
     Evaluate :math:`\log P(X \leq x)` at three thresholds under a standard
-    Normal distribution, then convert the results to probabilities.
+    Normal distribution. Convert the results to probabilities.
 
     .. ipython::
 
@@ -210,8 +210,8 @@ def normal_logsf(
 
     Examples
     --------
-    Evaluate :math:`\log P(X > x)` at three thresholds under a standard
-    Normal distribution, then convert the results to probabilities.
+    Evaluate :math:`\log P(X > x)` at three thresholds under a standard Normal
+    distribution. Convert the results to probabilities.
 
     .. ipython::
 

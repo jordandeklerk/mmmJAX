@@ -119,7 +119,12 @@ in_dollars = xr.DataTree.from_dict(
         "observed_data": xr.Dataset({"outcome": observed}),
     }
 )
-az.plot_ppc_dist(in_dollars, group="prior_predictive", visuals={"observed_dist": {}})
+az.plot_ppc_dist(
+    in_dollars,
+    group="prior_predictive",
+    visuals={"observed_dist": {}},
+    figure_kwargs={"figsize": (12, 7)},
+)
 plt.show()
 ```
 
@@ -213,6 +218,6 @@ near 0.7 and pulling Search's toward zero, and it moves both coefficients,
 TV's into the upper tail of its prior. Half-saturation moves least. TV's
 posterior narrows to about half its prior's width, and Search's keeps most of
 its prior's spread, since search never goes dark and the fit can trade its
-curve against the intercept, as the pair plot on [Fitting and
-checking](checking) shows. Where a posterior repeats its prior, the answer
+curve against the intercept, as the pair plot on [Sampling and
+diagnostics](sampling) shows. Where a posterior repeats its prior, the answer
 comes from the prior, so that prior needs the most thought.

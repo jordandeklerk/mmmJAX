@@ -290,8 +290,8 @@ results["posterior"]
 ```
 
 The channel parameters carry the channel names from the data, and
-`control_coefficient` carries the name of the price column. [Fitting and
-checking](checking) covers the other groups and what to look at before
+`control_coefficient` carries the name of the price column. [Sampling and
+diagnostics](sampling) covers the other groups and what to look at before
 trusting a fit.
 
 ## Asking a question

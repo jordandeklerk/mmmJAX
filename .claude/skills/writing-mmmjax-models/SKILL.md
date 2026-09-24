@@ -37,7 +37,7 @@ shares = mj.contributions(model, results, quantity="mu")
 `finite` must be true and `mu_shape` must equal `data.arrays["outcome"].shape`
 before sampling. The `contributions` call reruns the blocks on scenario data,
 so shares of exactly zero point to rule 4. Check convergence as
-`docs/source/user_guide/checking.md` shows.
+`docs/source/user_guide/sampling.md` shows.
 
 ## How blocks bind
 
@@ -171,7 +171,7 @@ These User Guide pages in `docs/source/user_guide/` are executed examples.
   Fourier seasonality with `coords`
 - `functions.md` for custom functions, `custom_distribution`, and tracing
 - `scenarios.md` for new data, `reference`, and `Data` variables and constants
-- `checking.md` for diagnostics, `continue_sampling`, `generate_quantities`,
+- `sampling.md` for diagnostics, `continue_sampling`, `generate_quantities`,
   and `outcome_scaling` inside a block
 - `inference.md` for external samplers
 - `media_effects.md` and `budgets.md` for the analysis functions

@@ -22,7 +22,7 @@ type _Adapted = tuple[_State, _Parameters, jax.Array]
 
 @dataclass(frozen=True)
 class _NUTSContinuation:
-    """Retain each chain's final position, tuning, and sampling-key stream as plain arrays.
+    """Retain each chain's final sampler state and key stream as plain arrays.
 
     Every field is an array or an integer so the continuation can be stored
     alongside results and restored without live Python objects.

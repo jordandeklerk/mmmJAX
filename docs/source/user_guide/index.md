@@ -17,7 +17,7 @@ data
 distributions
 first_model
 priors
-checking
+sampling
 inference
 media_effects
 recovery

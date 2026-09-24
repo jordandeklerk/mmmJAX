@@ -154,8 +154,8 @@ def lognormal_logcdf(
 
     Examples
     --------
-    Evaluate :math:`\log P(X \leq x)` at three positive thresholds, then
-    convert the results to probabilities.
+    Evaluate :math:`\log P(X \leq x)` at three positive thresholds. Convert the
+    results to probabilities.
 
     .. ipython::
 
@@ -214,8 +214,8 @@ def lognormal_logsf(
 
     Examples
     --------
-    Evaluate :math:`\log P(X > x)` at three positive thresholds, then
-    convert the results to probabilities.
+    Evaluate :math:`\log P(X > x)` at three positive thresholds. Convert the
+    results to probabilities.
 
     .. ipython::
 

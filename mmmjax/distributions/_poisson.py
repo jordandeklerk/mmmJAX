@@ -38,8 +38,7 @@ def poisson_logpmf(value: ArrayLike, rate: ArrayLike) -> jax.Array:
         Counts at which to evaluate the probability mass. Values must be
         nonnegative integers.
     rate : array_like
-        Finite nonnegative rate parameter, equal to both the mean and
-        variance.
+        Finite nonnegative rate parameter, equal to both the mean and variance.
 
     Returns
     -------
@@ -94,8 +93,7 @@ def poisson(value: ArrayLike, rate: ArrayLike) -> jax.Array:
         Counts at which to evaluate the probability mass. Values must be
         nonnegative integers.
     rate : array_like
-        Finite nonnegative rate parameter, equal to both the mean and
-        variance.
+        Finite nonnegative rate parameter, equal to both the mean and variance.
 
     Returns
     -------
@@ -150,8 +148,8 @@ def poisson_logcdf(value: ArrayLike, rate: ArrayLike) -> jax.Array:
 
     Examples
     --------
-    Evaluate :math:`\log P(X \leq x)` at three thresholds, then convert the
-    results to probabilities.
+    Evaluate :math:`\log P(X \leq x)` at three thresholds. Convert the results
+    to probabilities.
 
     .. ipython::
 
@@ -198,8 +196,8 @@ def poisson_logsf(value: ArrayLike, rate: ArrayLike) -> jax.Array:
 
     Examples
     --------
-    Evaluate :math:`\log P(X > x)` at three thresholds, then convert the results
-    to probabilities.
+    Evaluate :math:`\log P(X > x)` at three thresholds. Convert the results to
+    probabilities.
 
     .. ipython::
 
@@ -395,8 +393,8 @@ def poisson_log_logcdf(value: ArrayLike, log_rate: ArrayLike) -> jax.Array:
 
     Examples
     --------
-    Evaluate :math:`\log P(X \leq x)` at three thresholds, then convert the
-    results to probabilities.
+    Evaluate :math:`\log P(X \leq x)` at three thresholds. Convert the results
+    to probabilities.
 
     .. ipython::
 
@@ -443,8 +441,8 @@ def poisson_log_logsf(value: ArrayLike, log_rate: ArrayLike) -> jax.Array:
 
     Examples
     --------
-    Evaluate :math:`\log P(X > x)` at three thresholds, then convert the results
-    to probabilities.
+    Evaluate :math:`\log P(X > x)` at three thresholds. Convert the results to
+    probabilities.
 
     .. ipython::
 

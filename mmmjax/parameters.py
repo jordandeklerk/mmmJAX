@@ -63,7 +63,7 @@ class Parameterization(Protocol):
         Parameters
         ----------
         parameter : array_like
-            Model-space values with shape ``shape``, satisfying the declared
+            Model-space values with shape ``shape`` that satisfy the declared
             parameter constraints. Values are converted to the declared ``dtype``.
 
         Returns
@@ -193,7 +193,7 @@ class Real:
         Parameters
         ----------
         parameter : array_like
-            Model-space values with shape ``shape``, satisfying the declared
+            Model-space values with shape ``shape`` that satisfy the declared
             parameter constraints. Values are converted to the declared ``dtype``.
 
         Returns
@@ -231,7 +231,7 @@ class Real:
         return jnp.zeros((), dtype=position.dtype)
 
     def initialize(self, key: jax.Array) -> jax.Array:
-        """Draw an unconstrained initial position uniformly from ``[-2, 2)``.
+        """Draw an unconstrained initial position uniformly between -2 and 2.
 
         Parameters
         ----------
@@ -319,7 +319,7 @@ class Positive:
         Parameters
         ----------
         parameter : array_like
-            Model-space values with shape ``shape``, satisfying the declared
+            Model-space values with shape ``shape`` that satisfy the declared
             parameter constraints. Values are converted to the declared ``dtype``.
 
         Returns
@@ -359,7 +359,7 @@ class Positive:
         return jnp.sum(position)
 
     def initialize(self, key: jax.Array) -> jax.Array:
-        """Draw an unconstrained initial position uniformly from ``[-2, 2)``.
+        """Draw an unconstrained initial position uniformly between -2 and 2.
 
         Parameters
         ----------
@@ -458,7 +458,7 @@ class LowerBound:
         Parameters
         ----------
         parameter : array_like
-            Model-space values with shape ``shape``, satisfying the declared
+            Model-space values with shape ``shape`` that satisfy the declared
             parameter constraints. Values are converted to the declared ``dtype``.
 
         Returns
@@ -499,7 +499,7 @@ class LowerBound:
         return jnp.sum(position)
 
     def initialize(self, key: jax.Array) -> jax.Array:
-        """Draw an unconstrained initial position uniformly from ``[-2, 2)``.
+        """Draw an unconstrained initial position uniformly between -2 and 2.
 
         Parameters
         ----------
@@ -598,7 +598,7 @@ class UpperBound:
         Parameters
         ----------
         parameter : array_like
-            Model-space values with shape ``shape``, satisfying the declared
+            Model-space values with shape ``shape`` that satisfy the declared
             parameter constraints. Values are converted to the declared ``dtype``.
 
         Returns
@@ -639,7 +639,7 @@ class UpperBound:
         return jnp.sum(position)
 
     def initialize(self, key: jax.Array) -> jax.Array:
-        """Draw an unconstrained initial position uniformly from ``[-2, 2)``.
+        """Draw an unconstrained initial position uniformly between -2 and 2.
 
         Parameters
         ----------
@@ -756,7 +756,7 @@ class Interval:
         Parameters
         ----------
         parameter : array_like
-            Model-space values with shape ``shape``, satisfying the declared
+            Model-space values with shape ``shape`` that satisfy the declared
             parameter constraints. Values are converted to the declared ``dtype``.
 
         Returns
@@ -799,7 +799,7 @@ class Interval:
         return jnp.sum(adjustment)
 
     def initialize(self, key: jax.Array) -> jax.Array:
-        """Draw an unconstrained initial position uniformly from ``[-2, 2)``.
+        """Draw an unconstrained initial position uniformly between -2 and 2.
 
         Parameters
         ----------
@@ -895,7 +895,7 @@ class Simplex:
         Parameters
         ----------
         parameter : array_like
-            Model-space values with shape ``shape``, satisfying the declared
+            Model-space values with shape ``shape`` that satisfy the declared
             parameter constraints. Values are converted to the declared ``dtype``.
 
         Returns
@@ -939,7 +939,7 @@ class Simplex:
         return jnp.sum(log_weights) + prod(self.shape[:-1]) * 0.5 * jnp.log(event_size)
 
     def initialize(self, key: jax.Array) -> jax.Array:
-        """Draw an unconstrained initial position uniformly from ``[-2, 2)``.
+        """Draw an unconstrained initial position uniformly between -2 and 2.
 
         Parameters
         ----------
@@ -1058,7 +1058,7 @@ class CorrelationCholesky:
         return jnp.sum(adjustment)
 
     def initialize(self, key: jax.Array) -> jax.Array:
-        """Draw an unconstrained initial position uniformly from ``[-2, 2)``.
+        """Draw an unconstrained initial position uniformly between -2 and 2.
 
         Parameters
         ----------
@@ -1074,6 +1074,7 @@ class CorrelationCholesky:
 
 
 def _simplex_logits(position: jax.Array) -> jax.Array:
+    """Convert isometric log-ratio coordinates to logits for the simplex softmax."""
     dimensions = jnp.arange(1, position.shape[-1] + 1, dtype=position.dtype)
     coordinates = position / jnp.sqrt(dimensions * (dimensions + 1))
     tail_sums = jax.lax.cumsum(
@@ -1125,6 +1126,7 @@ def _normalize_shape(shape: object) -> tuple[int, ...]:
 
 
 def _validate_shape(shape: tuple[object, ...]) -> None:
+    """Require positive integer dimensions without accepting booleans."""
     for index, size in enumerate(shape):
         if isinstance(size, bool) or not isinstance(size, int):
             raise TypeError(f"shape[{index}] must be a positive integer, got {size!r} of type {type(size).__name__}")
@@ -1134,6 +1136,7 @@ def _validate_shape(shape: tuple[object, ...]) -> None:
 
 
 def _canonicalize_dtype(dtype: DTypeLike) -> DTypeLike:
+    """Resolve a canonical floating dtype with at least float32 precision."""
     follows_jax_default = dtype is float
     try:
         requested_dtype = jnp.dtype(dtype)
@@ -1154,6 +1157,7 @@ def _canonicalize_dtype(dtype: DTypeLike) -> DTypeLike:
 
 
 def _canonicalize_bound(value: object, *, name: str, dtype: DTypeLike) -> float:
+    """Require a finite real scalar bound after conversion to the parameter dtype."""
     try:
         value_dtype = jnp.result_type(value)
     except (TypeError, ValueError, OverflowError) as exc:
@@ -1180,6 +1184,7 @@ def _as_array(
     shape: tuple[int, ...],
     dtype: DTypeLike,
 ) -> jax.Array:
+    """Convert a value to the declared dtype and require the declared shape."""
     try:
         array = jnp.asarray(value, dtype=dtype)
     except (TypeError, ValueError) as exc:
@@ -1197,6 +1202,7 @@ def _initialize(
     shape: tuple[int, ...],
     dtype: DTypeLike,
 ) -> jax.Array:
+    """Draw unconstrained initial values uniformly between -2 and 2."""
     # Match Stan's default range so initialization is familiar to Stan users
     return jax.random.uniform(
         key,

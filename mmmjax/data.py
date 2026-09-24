@@ -47,7 +47,7 @@ class ModelInput(NamedTuple):
         namespace, or ``constant`` for declared Python values passed through
         unchanged.
     axes : tuple of str
-        Named axes of an array input, empty for scalars. Training references
+        Named axes of an array input. Empty for scalars. Training references
         use ``reference_time`` and ``reference_media_time`` for their time
         axes. Outcome conversions gain a group axis under population scaling.
     source : str
@@ -68,8 +68,8 @@ class Reference:
     """Training inputs retained while a model evaluates new data.
 
     Request ``reference`` in a program block and read the training arrays as
-    attributes, such as ``reference.spend`` or ``reference.time``, together
-    with the training period count ``reference.n_periods``. The attribute
+    attributes, such as ``reference.spend`` or ``reference.time``. The
+    training period count is ``reference.n_periods``. The attribute
     names are the input names the blocks use, so a mapping declared through
     ``Data`` variables applies here as well. These arrays never change for
     scenarios, forecasts, or response curves, so calculations that must stay
@@ -108,8 +108,8 @@ class PreparedData:
     arrays : dict of str to numpy.ndarray
         Independent arrays ordered by time, optional group, then feature.
         Outcome and revenue per outcome have no feature axis. Population
-        is a group vector or a scalar. Exposure inputs include history,
-        while other time-varying inputs cover only the modeling periods.
+        is a group vector or a scalar. Exposure inputs include history.
+        Other time-varying inputs cover only the modeling periods.
     time_column : str
         Source column identifying observation periods.
     time_values : tuple
@@ -186,7 +186,7 @@ class PreparedData:
 
     @property
     def model_inputs(self) -> dict[str, ModelInput]:
-        """Return the names model functions can request along with their kind, axes, and source."""
+        """Return each name a model function can request with its ``ModelInput`` description."""
         return _model_inputs(self)
 
     def _to_jax(
@@ -197,10 +197,11 @@ class PreparedData:
     ) -> dict[str, jax.Array]:
         """Copy input arrays to JAX before model evaluation.
 
-        Preserve keys and shapes, keeping integer and boolean inputs non-floating.
-        Floating-point inputs use ``dtype``, with ``float`` following JAX's precision setting.
-        Reject unavailable precision or overflowing casts. ``device`` selects
-        the destination device or sharding, with None using JAX's default.
+        Preserve keys and shapes. Integer and boolean inputs stay non-floating.
+        Floating-point inputs use ``dtype``, and ``float`` follows JAX's
+        precision setting. Reject unavailable precision or overflowing casts.
+        ``device`` selects the destination device or sharding. None uses JAX's
+        default.
         """
         try:
             requested_dtype = np.dtype(dtype)
@@ -364,7 +365,7 @@ class PreparedData:
 
 @dataclass(frozen=True, slots=True, eq=False, init=False)
 class Data:
-    """Declare model data, variable names, and fixed preprocessing together.
+    """Declare model data together with its variable names and fixed preprocessing.
 
     Supply this object to ``Model(data=...)``. Observations, variable names,
     and auxiliary inputs are copied. Fitted scaling objects are reused.
@@ -377,10 +378,10 @@ class Data:
         Model function argument names mapped to prepared or auxiliary input
         names. ``PreparedData.model_inputs`` lists the available names. If
         omitted, functions use the standard input names. When supplied, only
-        the declared names are available to model functions, and that includes
-        the model-supplied inputs ``reference``, ``outcome_scaling``, and
-        ``n_periods``, which need a declaration such as
-        ``{"training": "reference"}`` to be requested.
+        the declared names are available to model functions. Even the
+        model-supplied inputs ``reference``, ``outcome_scaling``, and
+        ``n_periods`` need a declaration such as ``{"training": "reference"}``
+        to be requested.
     inputs : xarray.Dataset, optional
         Additional fixed inputs, such as experiment measurements.
     constants : mapping of str to object, optional
@@ -407,6 +408,7 @@ class Data:
         constants: Mapping[str, object] | None = None,
         scaling: "DataScaling | Literal['auto'] | None" = None,
     ) -> None:
+        """Validate the arguments and copy all but fitted scaling to preserve applied-scaling identity."""
         from mmmjax.scaling import DataScaling
 
         if not isinstance(data, PreparedData):
@@ -478,7 +480,7 @@ class Data:
 
     @property
     def model_inputs(self) -> dict[str, ModelInput]:
-        """Return every requestable name across observations, inputs, and constants."""
+        """Return every name a block can request from this data declaration."""
         inputs = self._observations.model_inputs
         if self._inputs is not None:
             for name, variable in self._inputs.data_vars.items():
@@ -557,7 +559,7 @@ def _reference_dimensions(data: PreparedData) -> dict[str, tuple[str, ...]]:
 
 
 def _model_inputs(data: PreparedData) -> dict[str, ModelInput]:
-    """Enumerate the requestable inputs once for models, results, and users."""
+    """Enumerate the inputs a model can request from prepared data."""
     role_axes = _data_dimensions(data)
     inputs = {role: ModelInput("array", role_axes[role], "data") for role in data.arrays}
     for name in _time_input_names(data):
@@ -672,7 +674,7 @@ def prepare_data(
         Column containing the response, such as sales or conversions.
         Omit it when preparing prediction data without observed outcomes.
     revenue_per_outcome : str, optional
-        Nonnegative revenue per sale or conversion, varying by period and
+        Nonnegative revenue per sale or conversion that varies by period and
         group. Stored separately without converting the outcome to revenue.
         Boolean values are not accepted. Does not require an outcome.
     population : str, optional
@@ -692,18 +694,20 @@ def prepare_data(
         ``media_frequency`` in matching order. Uses a separate channel axis
         and does not require ``media``.
     media_frequency : sequence of str, optional
-        Nonnegative average exposures per person reached, ordered to match
-        ``reach``. This is advertising frequency, not calendar spacing.
+        Nonnegative average exposures per person reached. Pair with
+        ``reach`` in matching order. This is advertising frequency, not
+        calendar spacing.
     organic_reach : sequence of str, optional
         Nonnegative audience reached by unpaid channels. Pair with
         ``organic_frequency`` in matching order. Uses a separate channel axis
         and does not require other media inputs.
     organic_frequency : sequence of str, optional
-        Nonnegative average organic exposures per person reached, ordered to
-        match ``organic_reach``. This is separate from calendar spacing.
+        Nonnegative average organic exposures per person reached. Pair with
+        ``organic_reach`` in matching order. This is separate from calendar
+        spacing.
     media_history : dataframe-like, optional
         Earlier exposures for carryover into the first modeling periods.
-        Include all selected exposure columns and all groups, using the same
+        Include all selected exposure columns and all groups. Use the same
         time and group columns as ``frame``. All periods must precede ``frame``.
         Other inputs are not required. Requires at least one exposure selection.
         Calendar checks cover both frames. Preparation does not apply adstock.
@@ -990,10 +994,11 @@ def select_channels(
         Parameters or contributions with channels on the final axis.
     channels : sequence of str
         Unique channel labels in the array's current order, such as
-        ``data.channels``. Keep these labels fixed when compiling.
+        ``data.channels``. Keep this argument static when using ``jax.jit``.
     select : str or sequence of str
         One channel name or a nonempty sequence of unique names to retain,
-        in the desired output order. Keep this selection fixed when compiling.
+        in the desired output order. Keep this argument static when using
+        ``jax.jit``.
 
     Returns
     -------
@@ -1131,7 +1136,7 @@ def _prepare_frame(
     Returns
     -------
     narwhals.DataFrame
-        Selected columns, keys first, with the original row order and dtypes.
+        Selected columns with keys first. Row order and dtypes are unchanged.
         Calendar validation, alignment and array conversion happen separately.
     """
     for argument, names in (("keys", keys), ("values", values)):

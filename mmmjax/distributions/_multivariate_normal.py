@@ -17,8 +17,8 @@ from mmmjax.distributions._utils import (
 def multivariate_normal_logpdf(value: ArrayLike, location: ArrayLike, scale_tril: ArrayLike) -> jax.Array:
     r"""Evaluate the multivariate Normal log density along the final axis.
 
-    The covariance is :math:`\Sigma = LL^\mathsf{T}`, where :math:`L`
-    is ``scale_tril``. For event size :math:`K`, the log density is
+    The covariance is :math:`\Sigma = LL^\mathsf{T}` with :math:`L` given by
+    ``scale_tril``. For event size :math:`K`, the log density is
 
     .. math::
 
@@ -32,7 +32,7 @@ def multivariate_normal_logpdf(value: ArrayLike, location: ArrayLike, scale_tril
     location : array_like
         Mean vectors with the same final event size as ``value``.
     scale_tril : array_like
-        Lower Cholesky factors of the covariance, with positive diagonals.
+        Lower Cholesky factors of the covariance. Each has a positive diagonal.
         Final axes match the event size. Leading parameter axes broadcast.
 
     Returns
@@ -78,7 +78,7 @@ def multivariate_normal(value: ArrayLike, location: ArrayLike, scale_tril: Array
     location : array_like
         Mean vectors with the same final event size as ``value``.
     scale_tril : array_like
-        Lower Cholesky factors of the covariance, with positive diagonals.
+        Lower Cholesky factors of the covariance. Each has a positive diagonal.
 
     Returns
     -------
@@ -117,11 +117,11 @@ def multivariate_normal_rng(
     location : array_like
         Mean vectors with event components along the final axis.
     scale_tril : array_like
-        Lower Cholesky factors of the covariance, with positive diagonals.
+        Lower Cholesky factors of the covariance. Each has a positive diagonal.
         Leading axes broadcast with the location batch.
     sample_shape : tuple of int, default ()
         Independent sample dimensions prepended to the batch shape.
-        Must be static under JIT.
+        The tuple must be static when the function is JIT-compiled.
 
     Returns
     -------
