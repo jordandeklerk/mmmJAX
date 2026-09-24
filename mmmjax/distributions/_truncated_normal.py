@@ -65,24 +65,6 @@ def truncated_normal_logpdf(
         Normalized log densities with the broadcast shape of the arguments.
         Values outside the bounds produce ``-inf``. Invalid distribution
         parameters produce ``nan``.
-
-    Examples
-    --------
-    Evaluate one log density per value. Restrict a standard Normal distribution
-    to the interval from zero to two.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import truncated_normal_logpdf
-           ...: values = jnp.array([0.25, 0.75, 1.5])
-           ...: truncated_normal_logpdf(
-           ...:     values,
-           ...:     location=0.0,
-           ...:     scale=1.0,
-           ...:     lower=0.0,
-           ...:     upper=2.0,
-           ...: )
     """
     value_array, location_array, scale_array, lower_array, upper_array = _promote_inexact(
         ("value", value),
@@ -236,25 +218,6 @@ def truncated_normal_logcdf(
     jax.Array
         Log cumulative probabilities with the broadcast shape of the
         arguments. Invalid distribution parameters produce ``nan``.
-
-    Examples
-    --------
-    Evaluate :math:`\log P(X \leq x)` at three thresholds. Convert the results
-    to probabilities.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import truncated_normal_logcdf
-           ...: thresholds = jnp.array([0.25, 0.75, 1.5])
-           ...: log_prob = truncated_normal_logcdf(
-           ...:     thresholds,
-           ...:     location=0.0,
-           ...:     scale=1.0,
-           ...:     lower=0.0,
-           ...:     upper=2.0,
-           ...: )
-           ...: jnp.exp(log_prob)
     """
     return _truncated_normal_log_probability(
         value,
@@ -309,25 +272,6 @@ def truncated_normal_logsf(
     jax.Array
         Log survival probabilities with the broadcast shape of the arguments.
         Invalid distribution parameters produce ``nan``.
-
-    Examples
-    --------
-    Evaluate :math:`\log P(X > x)` at three thresholds. Convert the results to
-    probabilities.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import truncated_normal_logsf
-           ...: thresholds = jnp.array([0.25, 0.75, 1.5])
-           ...: log_prob = truncated_normal_logsf(
-           ...:     thresholds,
-           ...:     location=0.0,
-           ...:     scale=1.0,
-           ...:     lower=0.0,
-           ...:     upper=2.0,
-           ...: )
-           ...: jnp.exp(log_prob)
     """
     return _truncated_normal_log_probability(
         value,

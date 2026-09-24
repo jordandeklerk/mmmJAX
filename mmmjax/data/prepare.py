@@ -773,6 +773,43 @@ def prepare_data(
         axis, even for one column. Integer outcome and population dtypes are
         preserved separately from continuous inputs. Arrays share no memory
         with either dataframe. Unused group and channel labels are empty tuples.
+
+    Examples
+    --------
+    Start with a long frame that holds one row per week and region.
+
+    .. ipython::
+
+        In [1]: import polars as pl
+           ...: from mmmjax import prepare_data
+
+        In [2]: frame = pl.DataFrame({
+           ...:     "week": [1, 2, 3, 1, 2, 3],
+           ...:     "region": ["east"] * 3 + ["west"] * 3,
+           ...:     "sales": [120.0, 150.0, 130.0, 90.0, 110.0, 100.0],
+           ...:     "video": [2_000.0, 0.0, 3_000.0, 1_000.0, 500.0, 0.0],
+           ...:     "video_cost": [40.0, 0.0, 60.0, 20.0, 10.0, 0.0],
+           ...:     "price": [9.5, 9.5, 8.0, 9.0, 9.0, 8.5],
+           ...: })
+
+    Name the columns that fill each role. Spend columns follow the order of
+    the media columns.
+
+    .. ipython::
+
+        In [3]: data = prepare_data(
+           ...:     frame, time="week", groups=["region"], outcome="sales",
+           ...:     media=["video"], spend=["video_cost"], controls=["price"],
+           ...: )
+
+    Each array runs over time, region, and its channels or controls in that
+    order, and the prepared data keeps the labels of every axis.
+
+    .. ipython::
+
+        In [4]: {name: array.shape for name, array in data.arrays.items()}
+
+        In [5]: data.time_values, data.group_values, data.channels
     """
     selections = {
         "outcome": outcome,

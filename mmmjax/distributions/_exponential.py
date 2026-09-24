@@ -38,25 +38,6 @@ def exponential_logpdf(value: ArrayLike, rate: ArrayLike) -> jax.Array:
         Normalized log densities with the broadcast shape of the arguments.
         Values below zero produce ``-inf`` and a nonpositive or nonfinite rate
         produces ``nan``.
-
-    Examples
-    --------
-    Evaluate one log density per value. The rate is the reciprocal of the mean.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import exponential_logpdf
-           ...: values = jnp.array([0.5, 1.0, 2.0])
-           ...: exponential_logpdf(values, rate=2.0)
-
-    Broadcasting evaluates all three values at two rates. The extra axis
-    keeps values in rows and rates in columns.
-
-    .. ipython::
-
-        In [2]: rates = jnp.array([1.0, 2.0])
-           ...: exponential_logpdf(values[:, None], rate=rates)
     """
     value_array, rate_array = _promote_inexact(("value", value), ("rate", rate))
 
@@ -125,19 +106,6 @@ def exponential_logcdf(value: ArrayLike, rate: ArrayLike) -> jax.Array:
     jax.Array
         Log cumulative probabilities with the broadcast shape of the
         arguments. A nonpositive or nonfinite rate produces ``nan``.
-
-    Examples
-    --------
-    Evaluate :math:`\log P(X \leq x)` at three thresholds. Convert the results
-    to probabilities.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import exponential_logcdf
-           ...: thresholds = jnp.array([0.5, 1.0, 2.0])
-           ...: log_prob = exponential_logcdf(thresholds, rate=2.0)
-           ...: jnp.exp(log_prob)
     """
     value_array, rate_array = _promote_inexact(("value", value), ("rate", rate))
 
@@ -189,19 +157,6 @@ def exponential_logsf(value: ArrayLike, rate: ArrayLike) -> jax.Array:
     jax.Array
         Log survival probabilities with the broadcast shape of the arguments.
         A nonpositive or nonfinite rate produces ``nan``.
-
-    Examples
-    --------
-    Evaluate :math:`\log P(X > x)` at three thresholds. Convert the results to
-    probabilities.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import exponential_logsf
-           ...: thresholds = jnp.array([0.5, 1.0, 2.0])
-           ...: log_prob = exponential_logsf(thresholds, rate=2.0)
-           ...: jnp.exp(log_prob)
     """
     value_array, rate_array = _promote_inexact(("value", value), ("rate", rate))
 

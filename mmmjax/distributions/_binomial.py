@@ -50,18 +50,6 @@ def binomial_logpmf(
         Normalized log probability masses with the broadcast shape of the
         arguments. Values outside the integer support produce ``-inf``. An
         invalid trial count or probability produces ``nan``.
-
-    Examples
-    --------
-    Evaluate one log probability mass per value. Each count records successes
-    out of ten trials.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import binomial_logpmf
-           ...: counts = jnp.array([1, 3, 5])
-           ...: binomial_logpmf(counts, trials=10, probability=0.3)
     """
     value_array = _as_real_array("value", value)
     trials_array = _as_real_array("trials", trials)
@@ -173,23 +161,6 @@ def binomial_logcdf(value: ArrayLike, trials: ArrayLike, probability: ArrayLike)
         arguments. Negative thresholds produce ``-inf`` and thresholds at
         or above the trial count produce zero. Invalid parameters or
         ``nan`` thresholds produce ``nan``.
-
-    Examples
-    --------
-    Evaluate :math:`\log P(X \leq x)` at three thresholds. Convert the results
-    to probabilities.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import binomial_logcdf
-           ...: thresholds = jnp.array([2, 4, 6])
-           ...: log_prob = binomial_logcdf(
-           ...:     thresholds,
-           ...:     trials=10,
-           ...:     probability=0.3,
-           ...: )
-           ...: jnp.exp(log_prob)
     """
     return _binomial_log_probability(value, trials, probability, upper_tail=False)
 
@@ -229,23 +200,6 @@ def binomial_logsf(value: ArrayLike, trials: ArrayLike, probability: ArrayLike) 
         arguments. Negative thresholds produce zero and thresholds at or
         above the trial count produce ``-inf``. Invalid parameters or
         ``nan`` thresholds produce ``nan``.
-
-    Examples
-    --------
-    Evaluate :math:`\log P(X > x)` at three thresholds. Convert the results to
-    probabilities.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import binomial_logsf
-           ...: thresholds = jnp.array([2, 4, 6])
-           ...: log_prob = binomial_logsf(
-           ...:     thresholds,
-           ...:     trials=10,
-           ...:     probability=0.3,
-           ...: )
-           ...: jnp.exp(log_prob)
     """
     return _binomial_log_probability(value, trials, probability, upper_tail=True)
 
@@ -336,18 +290,6 @@ def binomial_logit_logpmf(
         Normalized log probability masses with the broadcast shape of the
         arguments. Values outside the integer support produce ``-inf``. An
         invalid trial count or a ``nan`` logit produces ``nan``.
-
-    Examples
-    --------
-    Evaluate one log probability mass per value. Specify ten trials and the log
-    odds of success.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import binomial_logit_logpmf
-           ...: counts = jnp.array([1, 3, 5])
-           ...: binomial_logit_logpmf(counts, trials=10, logits=-0.8)
     """
     value_array = _as_real_array("value", value)
     trials_array = _as_real_array("trials", trials)
@@ -410,18 +352,6 @@ def binomial_logit(
     jax.Array
         Complete normalized log probability mass summed across every
         dimension of the broadcast result.
-
-    Examples
-    --------
-    Sum the log probability masses of independent observations into a single log
-    likelihood. Specify ten trials and the log odds of success.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import binomial_logit
-           ...: counts = jnp.array([1, 3, 5])
-           ...: binomial_logit(counts, trials=10, logits=-0.8)
     """
     return jnp.sum(binomial_logit_logpmf(value, trials, logits))
 
@@ -463,23 +393,6 @@ def binomial_logit_logcdf(value: ArrayLike, trials: ArrayLike, logits: ArrayLike
         arguments. Negative thresholds produce ``-inf`` and thresholds at
         or above the trial count produce zero. Invalid parameters or
         ``nan`` thresholds produce ``nan``.
-
-    Examples
-    --------
-    Evaluate :math:`\log P(X \leq x)` at three thresholds. Convert the results
-    to probabilities.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import binomial_logit_logcdf
-           ...: thresholds = jnp.array([2, 4, 6])
-           ...: log_prob = binomial_logit_logcdf(
-           ...:     thresholds,
-           ...:     trials=10,
-           ...:     logits=-0.8,
-           ...: )
-           ...: jnp.exp(log_prob)
     """
     return _binomial_log_probability(value, trials, logits, upper_tail=False, logit=True)
 
@@ -520,23 +433,6 @@ def binomial_logit_logsf(value: ArrayLike, trials: ArrayLike, logits: ArrayLike)
         arguments. Negative thresholds produce zero and thresholds at or
         above the trial count produce ``-inf``. Invalid parameters or
         ``nan`` thresholds produce ``nan``.
-
-    Examples
-    --------
-    Evaluate :math:`\log P(X > x)` at three thresholds. Convert the results to
-    probabilities.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import binomial_logit_logsf
-           ...: thresholds = jnp.array([2, 4, 6])
-           ...: log_prob = binomial_logit_logsf(
-           ...:     thresholds,
-           ...:     trials=10,
-           ...:     logits=-0.8,
-           ...: )
-           ...: jnp.exp(log_prob)
     """
     return _binomial_log_probability(value, trials, logits, upper_tail=True, logit=True)
 
@@ -570,22 +466,6 @@ def binomial_logit_rng(
     -------
     jax.Array
         Integer outcomes with shape ``sample_shape + broadcast_shape``.
-
-    Examples
-    --------
-    Draw five outcomes using a key to make the draw reproducible.
-
-    .. ipython::
-
-        In [1]: from jax import random
-           ...: from mmmjax import binomial_logit_rng
-           ...: key = random.key(0)
-           ...: binomial_logit_rng(
-           ...:     key,
-           ...:     trials=10,
-           ...:     logits=-0.8,
-           ...:     sample_shape=(5,),
-           ...: )
     """
     trials_array = _as_real_array("trials", trials)
     (logits_array,) = _promote_inexact(("logits", logits))

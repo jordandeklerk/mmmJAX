@@ -304,6 +304,59 @@ class Model:
         Overrides labels inherited from unchanged data or parameter
         inputs and from observation-shaped predictive and log-likelihood
         outputs. A name shared by several result groups receives the same axes.
+
+    Examples
+    --------
+    Prepare four weeks of sales and video impressions.
+
+    .. ipython::
+
+        In [1]: import polars as pl
+           ...: from mmmjax import (
+           ...:     Model, Positive, Real, half_normal, normal, prepare_data,
+           ...: )
+
+        In [2]: frame = pl.DataFrame({
+           ...:     "week": [1, 2, 3, 4],
+           ...:     "sales": [1.2, 1.9, 1.4, 2.3],
+           ...:     "video": [0.0, 1.0, 0.5, 1.5],
+           ...: })
+           ...: data = prepare_data(
+           ...:     frame, time="week", outcome="sales", media=["video"],
+           ...: )
+
+    The density requests the prepared ``outcome`` and ``media`` arrays and
+    each parameter by argument name. A coefficient declared on the
+    ``channel`` axis holds one value per prepared channel.
+
+    .. ipython::
+
+        In [3]: def log_density(outcome, media, intercept, coefficient, sigma):
+           ...:     mu = intercept + media @ coefficient
+           ...:     target = normal(intercept, 0.0, 1.0)
+           ...:     target += half_normal(coefficient, 1.0)
+           ...:     target += half_normal(sigma, 1.0)
+           ...:     target += normal(outcome, mu, sigma)
+           ...:     return target
+
+        In [4]: model = Model(
+           ...:     parameters={
+           ...:         "intercept": Real(),
+           ...:         "coefficient": Positive(dims="channel"),
+           ...:         "sigma": Positive(),
+           ...:     },
+           ...:     log_density=log_density,
+           ...:     data=data,
+           ...: )
+
+    Evaluate the log density at chosen values to check the model before
+    sampling.
+
+    .. ipython::
+
+        In [5]: model.log_prob({
+           ...:     "intercept": 1.0, "coefficient": [0.6], "sigma": 0.3,
+           ...: })
     """
 
     _parameterizations: _Parameterizations

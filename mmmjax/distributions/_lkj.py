@@ -37,18 +37,6 @@ def lkj_cholesky_logpdf(value: ArrayLike, concentration: ArrayLike) -> jax.Array
     jax.Array
         One log density per broadcast batch. Invalid factors give ``-inf``.
         NaN factors or nonpositive or nonfinite concentrations give ``nan``.
-
-    Examples
-    --------
-    Evaluate the log density of a correlation factor.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import lkj_cholesky_logpdf
-           ...: correlation = jnp.array([[1.0, 0.4], [0.4, 1.0]])
-           ...: factor = jnp.linalg.cholesky(correlation)
-           ...: lkj_cholesky_logpdf(factor, concentration=2.0)
     """
     value = _as_real_array("value", value)
     factor_dtype = jnp.result_type(value.dtype, jnp.float32)

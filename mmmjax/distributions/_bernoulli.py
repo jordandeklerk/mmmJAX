@@ -37,17 +37,6 @@ def bernoulli_logpmf(value: ArrayLike, probability: ArrayLike) -> jax.Array:
         Normalized log probability masses with the broadcast shape of the
         arguments. Values outside the binary support produce ``-inf``. A
         nonfinite probability or one outside ``[0, 1]`` produces ``nan``.
-
-    Examples
-    --------
-    Evaluate one log probability mass per value. The success probability is 0.7.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import bernoulli_logpmf
-           ...: outcomes = jnp.array([0, 1, 1])
-           ...: bernoulli_logpmf(outcomes, probability=0.7)
     """
     value_array = _as_real_array("value", value)
     (probability_array,) = _promote_inexact(("probability", probability))
@@ -137,18 +126,6 @@ def bernoulli_logcdf(value: ArrayLike, probability: ArrayLike) -> jax.Array:
     jax.Array
         Log cumulative probabilities with the broadcast shape of the arguments.
         Invalid probabilities or ``nan`` thresholds produce ``nan``.
-
-    Examples
-    --------
-    Evaluate the log probability of outcome zero. Convert the result to a
-    probability.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import bernoulli_logcdf
-           ...: log_prob = bernoulli_logcdf(0, probability=0.7)
-           ...: jnp.exp(log_prob)
     """
     value_array = _as_real_array("value", value)
     (probability_array,) = _promote_inexact(("probability", probability))
@@ -193,18 +170,6 @@ def bernoulli_logsf(value: ArrayLike, probability: ArrayLike) -> jax.Array:
     jax.Array
         Log survival probabilities with the broadcast shape of the arguments.
         Invalid probabilities or ``nan`` thresholds produce ``nan``.
-
-    Examples
-    --------
-    Evaluate the log probability of outcome one. Convert the result to a
-    probability.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import bernoulli_logsf
-           ...: log_prob = bernoulli_logsf(0, probability=0.7)
-           ...: jnp.exp(log_prob)
     """
     value_array = _as_real_array("value", value)
     (probability_array,) = _promote_inexact(("probability", probability))
@@ -296,18 +261,6 @@ def bernoulli_logit_logpmf(value: ArrayLike, logits: ArrayLike) -> jax.Array:
         Normalized log probability masses with the broadcast shape of the
         arguments. Values outside the binary support produce ``-inf`` and a
         ``nan`` logit produces ``nan``.
-
-    Examples
-    --------
-    Evaluate one log probability mass per value. Use log odds directly instead
-    of a success probability.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import bernoulli_logit_logpmf
-           ...: outcomes = jnp.array([0, 1, 1])
-           ...: bernoulli_logit_logpmf(outcomes, logits=0.8)
     """
     value_array = _as_real_array("value", value)
     (logits_array,) = _promote_inexact(("logits", logits))
@@ -336,18 +289,6 @@ def bernoulli_logit(value: ArrayLike, logits: ArrayLike) -> jax.Array:
     jax.Array
         Complete normalized log probability mass summed across every
         dimension of the broadcast result.
-
-    Examples
-    --------
-    Sum the log probability masses of independent observations into a single log
-    likelihood. Use log odds directly instead of a success probability.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import bernoulli_logit
-           ...: outcomes = jnp.array([0, 1, 1])
-           ...: bernoulli_logit(outcomes, logits=0.8)
     """
     return jnp.sum(bernoulli_logit_logpmf(value, logits))
 
@@ -380,18 +321,6 @@ def bernoulli_logit_logcdf(value: ArrayLike, logits: ArrayLike) -> jax.Array:
     jax.Array
         Log cumulative probabilities with the broadcast shape of the arguments.
         A ``nan`` threshold or logit produces ``nan``.
-
-    Examples
-    --------
-    Evaluate the log probability of outcome zero. Convert the result to a
-    probability.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import bernoulli_logit_logcdf
-           ...: log_prob = bernoulli_logit_logcdf(0, logits=0.8)
-           ...: jnp.exp(log_prob)
     """
     value_array = _as_real_array("value", value)
     (logits_array,) = _promote_inexact(("logits", logits))
@@ -436,18 +365,6 @@ def bernoulli_logit_logsf(value: ArrayLike, logits: ArrayLike) -> jax.Array:
     jax.Array
         Log survival probabilities with the broadcast shape of the arguments.
         A ``nan`` threshold or logit produces ``nan``.
-
-    Examples
-    --------
-    Evaluate the log probability of outcome one. Convert the result to a
-    probability.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import bernoulli_logit_logsf
-           ...: log_prob = bernoulli_logit_logsf(0, logits=0.8)
-           ...: jnp.exp(log_prob)
     """
     value_array = _as_real_array("value", value)
     (logits_array,) = _promote_inexact(("logits", logits))
@@ -489,17 +406,6 @@ def bernoulli_logit_rng(
     -------
     jax.Array
         Integer outcomes with shape ``sample_shape + logits.shape``.
-
-    Examples
-    --------
-    Draw five outcomes using a key to make the draw reproducible.
-
-    .. ipython::
-
-        In [1]: from jax import random
-           ...: from mmmjax import bernoulli_logit_rng
-           ...: key = random.key(0)
-           ...: bernoulli_logit_rng(key, logits=0.8, sample_shape=(5,))
     """
     (logits_array,) = _promote_inexact(("logits", logits))
     output_shape = _random_shape(sample_shape, logits_array)

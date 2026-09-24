@@ -61,18 +61,6 @@ def negative_binomial_logpmf(
         Normalized log probability masses with the broadcast shape of the
         arguments. Values outside the nonnegative integer support produce
         ``-inf``. A nonpositive or nonfinite parameter produces ``nan``.
-
-    Examples
-    --------
-    Evaluate one log probability mass per value. Specify the mean count and
-    concentration.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import negative_binomial_logpmf
-           ...: counts = jnp.array([0, 2, 5])
-           ...: negative_binomial_logpmf(counts, mean=4.0, concentration=2.0)
     """
     value_array = _as_real_array("value", value)
     mean_array, concentration_array = _promote_inexact(
@@ -173,23 +161,6 @@ def negative_binomial_logcdf(
         arguments. Negative thresholds produce ``-inf`` and positive
         infinity produces zero. An invalid parameter or ``nan`` threshold
         produces ``nan``.
-
-    Examples
-    --------
-    Evaluate :math:`\log P(X \leq x)` at three thresholds. Convert the results
-    to probabilities.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import negative_binomial_logcdf
-           ...: thresholds = jnp.array([1, 4, 8])
-           ...: log_prob = negative_binomial_logcdf(
-           ...:     thresholds,
-           ...:     mean=4.0,
-           ...:     concentration=2.0,
-           ...: )
-           ...: jnp.exp(log_prob)
     """
     return _negative_binomial_log_probability(value, mean, concentration, upper_tail=False)
 
@@ -228,23 +199,6 @@ def negative_binomial_logsf(
         arguments. Negative thresholds produce zero and positive infinity
         produces ``-inf``. An invalid parameter or ``nan`` threshold
         produces ``nan``.
-
-    Examples
-    --------
-    Evaluate :math:`\log P(X > x)` at three thresholds. Convert the results to
-    probabilities.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import negative_binomial_logsf
-           ...: thresholds = jnp.array([1, 4, 8])
-           ...: log_prob = negative_binomial_logsf(
-           ...:     thresholds,
-           ...:     mean=4.0,
-           ...:     concentration=2.0,
-           ...: )
-           ...: jnp.exp(log_prob)
     """
     return _negative_binomial_log_probability(value, mean, concentration, upper_tail=True)
 
@@ -348,22 +302,6 @@ def negative_binomial_log_logpmf(
         arguments. Values outside the nonnegative integer support produce
         ``-inf``. A nonfinite log mean or a nonpositive or nonfinite
         concentration produces ``nan``.
-
-    Examples
-    --------
-    Evaluate one log probability mass per value. Supply the logarithm of the
-    mean count and a concentration.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import negative_binomial_log_logpmf
-           ...: counts = jnp.array([0, 2, 5])
-           ...: negative_binomial_log_logpmf(
-           ...:     counts,
-           ...:     log_mean=jnp.log(4.0),
-           ...:     concentration=2.0,
-           ...: )
     """
     value_array = _as_real_array("value", value)
     log_mean_array, concentration_array = _promote_inexact(
@@ -414,22 +352,6 @@ def negative_binomial_log(
     jax.Array
         Complete normalized log probability mass summed across every
         dimension of the broadcast result.
-
-    Examples
-    --------
-    Sum the log probability masses of independent observations into a single log
-    likelihood. Supply the logarithm of the mean count and a concentration.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import negative_binomial_log
-           ...: counts = jnp.array([0, 2, 5])
-           ...: negative_binomial_log(
-           ...:     counts,
-           ...:     log_mean=jnp.log(4.0),
-           ...:     concentration=2.0,
-           ...: )
     """
     return jnp.sum(negative_binomial_log_logpmf(value, log_mean, concentration))
 
@@ -469,23 +391,6 @@ def negative_binomial_log_logcdf(
         arguments. Negative thresholds produce ``-inf`` and positive
         infinity produces zero. An invalid parameter or ``nan`` threshold
         produces ``nan``.
-
-    Examples
-    --------
-    Evaluate :math:`\log P(X \leq x)` at three thresholds. Convert the results
-    to probabilities.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import negative_binomial_log_logcdf
-           ...: thresholds = jnp.array([1, 4, 8])
-           ...: log_prob = negative_binomial_log_logcdf(
-           ...:     thresholds,
-           ...:     log_mean=jnp.log(4.0),
-           ...:     concentration=2.0,
-           ...: )
-           ...: jnp.exp(log_prob)
     """
     return _negative_binomial_log_probability(value, log_mean, concentration, upper_tail=False, log_mean=True)
 
@@ -525,23 +430,6 @@ def negative_binomial_log_logsf(
         arguments. Negative thresholds produce zero and positive infinity
         produces ``-inf``. An invalid parameter or ``nan`` threshold
         produces ``nan``.
-
-    Examples
-    --------
-    Evaluate :math:`\log P(X > x)` at three thresholds. Convert the results to
-    probabilities.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import negative_binomial_log_logsf
-           ...: thresholds = jnp.array([1, 4, 8])
-           ...: log_prob = negative_binomial_log_logsf(
-           ...:     thresholds,
-           ...:     log_mean=jnp.log(4.0),
-           ...:     concentration=2.0,
-           ...: )
-           ...: jnp.exp(log_prob)
     """
     return _negative_binomial_log_probability(value, log_mean, concentration, upper_tail=True, log_mean=True)
 
@@ -573,23 +461,6 @@ def negative_binomial_log_rng(
     -------
     jax.Array
         Integer outcomes with shape ``sample_shape + broadcast_shape``.
-
-    Examples
-    --------
-    Draw five outcomes using a key to make the draw reproducible.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from jax import random
-           ...: from mmmjax import negative_binomial_log_rng
-           ...: key = random.key(0)
-           ...: negative_binomial_log_rng(
-           ...:     key,
-           ...:     log_mean=jnp.log(4.0),
-           ...:     concentration=2.0,
-           ...:     sample_shape=(5,),
-           ...: )
     """
     log_mean_array, concentration_array = _promote_inexact(
         ("log_mean", log_mean),

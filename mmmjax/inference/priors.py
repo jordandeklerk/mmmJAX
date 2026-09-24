@@ -36,6 +36,32 @@ class Prior:
         require ``trials`` and reject counts with another total. LKJ priors
         accept optional ``dimension`` for direct ``sample`` calls. A model's
         parameter declaration supplies it otherwise.
+
+    Examples
+    --------
+    Bind the settings of a Normal prior once.
+
+    .. ipython::
+
+        In [1]: import jax
+           ...: import jax.numpy as jnp
+           ...: from mmmjax import Prior, normal
+
+        In [2]: prior = Prior(normal, location=0.0, scale=1.0)
+           ...: values = jnp.array([-0.5, 0.0, 0.5])
+
+    Calling the prior returns the summed log density to add to a model
+    density, and ``logpdf`` returns one term per value.
+
+    .. ipython::
+
+        In [3]: prior(values), prior.logpdf(values)
+
+    Draws put the sample shape first.
+
+    .. ipython::
+
+        In [4]: prior.sample(jax.random.key(0), sample_shape=(4,))
     """
 
     _spec: _DistributionSpec

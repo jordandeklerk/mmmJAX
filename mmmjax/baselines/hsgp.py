@@ -68,14 +68,6 @@ class HSGPApproximation:
             Matrix with shape ``(len(time), n_basis)``. The preparation column
             means are subtracted when centering was requested. Nonfinite
             positions or positions outside the domain give ``nan`` rows.
-
-        Examples
-        --------
-        .. ipython::
-
-            In [1]: from mmmjax import prepare_hsgp
-               ...: approximation = prepare_hsgp((0, 16), length_scale_range=(2, 8))
-               ...: approximation.basis([0.0, 1.0, 2.0]).shape
         """
         basis, _ = hsgp_basis(time, center=self.center, boundary=self.boundary, n_basis=self.n_basis)
         if self.column_means is not None:
@@ -106,14 +98,6 @@ class HSGPApproximation:
             Coefficient standard deviations with shape
             ``batch_shape + (n_basis,)``. Invalid numeric inputs give
             ``nan`` in affected positions, as in :func:`hsgp_weights`.
-
-        Examples
-        --------
-        .. ipython::
-
-            In [1]: from mmmjax import prepare_hsgp
-               ...: approximation = prepare_hsgp((0, 16), length_scale_range=(2, 8))
-               ...: approximation.weights(length_scale=4.0).shape
         """
         return hsgp_weights(
             self.frequencies, length_scale=length_scale, amplitude=amplitude, covariance=self.covariance

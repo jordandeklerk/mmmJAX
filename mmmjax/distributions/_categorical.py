@@ -37,19 +37,6 @@ def categorical_logpmf(
         Values outside the integer support produce ``-inf`` and a ``nan``
         value produces ``nan``. A probability vector outside the simplex
         produces ``nan``.
-
-    Examples
-    --------
-    Evaluate one log probability mass per value. Categories are numbered zero,
-    one, and two.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import categorical_logpmf
-           ...: categories = jnp.array([0, 2, 1])
-           ...: probabilities = jnp.array([0.2, 0.3, 0.5])
-           ...: categorical_logpmf(categories, probabilities=probabilities)
     """
     value_array, probability_array, supported, safe_index = _prepare_categorical_inputs(
         value,
@@ -208,19 +195,6 @@ def categorical_logit_logpmf(
         Values outside the integer support produce ``-inf`` and a ``nan``
         value produces ``nan``. A logit event containing ``nan`` or ``+inf``,
         or containing no finite logit, produces ``nan``.
-
-    Examples
-    --------
-    Evaluate one log probability mass per value. Supply unnormalized log
-    probabilities for categories zero, one, and two.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import categorical_logit_logpmf
-           ...: categories = jnp.array([0, 2, 1])
-           ...: logits = jnp.array([-1.0, 0.0, 1.0])
-           ...: categorical_logit_logpmf(categories, logits=logits)
     """
     value_array, logits_array, supported, safe_index = _prepare_categorical_inputs(
         value,
@@ -274,20 +248,6 @@ def categorical_logit(
     jax.Array
         Complete normalized log probability mass summed across every
         broadcast batch dimension.
-
-    Examples
-    --------
-    Sum the log probability masses of independent observations into a single log
-    likelihood. Supply unnormalized log probabilities for categories zero, one,
-    and two.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import categorical_logit
-           ...: categories = jnp.array([0, 2, 1])
-           ...: logits = jnp.array([-1.0, 0.0, 1.0])
-           ...: categorical_logit(categories, logits=logits)
     """
     return jnp.sum(categorical_logit_logpmf(value, logits))
 
@@ -321,19 +281,6 @@ def categorical_logit_rng(
     jax.Array
         Zero-based integer categories with shape
         ``sample_shape + logits.shape[:-1]``.
-
-    Examples
-    --------
-    Draw five zero-based category indices.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from jax import random
-           ...: from mmmjax import categorical_logit_rng
-           ...: logits = jnp.array([-1.0, 0.0, 1.0])
-           ...: key = random.key(0)
-           ...: categorical_logit_rng(key, logits=logits, sample_shape=(5,))
     """
     (logits_array,) = _promote_inexact(("logits", logits))
     _validate_categorical_event_axis(logits_array, parameter_name="logits")

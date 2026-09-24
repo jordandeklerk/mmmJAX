@@ -40,18 +40,6 @@ def multivariate_normal_logpdf(value: ArrayLike, location: ArrayLike, scale_tril
     jax.Array
         One normalized log density per broadcast batch. Infinite observations
         give ``-inf``. NaN observations or invalid parameters give ``nan``.
-
-    Examples
-    --------
-    Evaluate two observations with correlated coordinates.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import multivariate_normal_logpdf
-           ...: values = jnp.array([[0.0, 1.0], [1.0, 0.5]])
-           ...: factor = jnp.array([[1.0, 0.0], [0.5, 1.0]])
-           ...: multivariate_normal_logpdf(values, jnp.zeros(2), factor)
     """
     value, location, scale_tril = _promote_inexact(("value", value), ("location", location), ("scale_tril", scale_tril))
     _validate_parameters(location, scale_tril)

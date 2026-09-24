@@ -42,17 +42,6 @@ def laplace_logpdf(
         The value and location gradients use a zero subgradient when
         ``value == location``. A nonfinite location or a nonpositive or
         nonfinite scale produces ``nan``.
-
-    Examples
-    --------
-    Evaluate one log density per value.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import laplace_logpdf
-           ...: values = jnp.array([-1.0, 0.0, 1.0])
-           ...: laplace_logpdf(values, location=0.0, scale=1.0)
     """
     value_array, location_array, scale_array = _promote_inexact(
         ("value", value),
@@ -150,19 +139,6 @@ def laplace_logcdf(
         Log cumulative probabilities with the broadcast shape of the
         arguments. A nonfinite location or a nonpositive or nonfinite scale
         produces ``nan``.
-
-    Examples
-    --------
-    Evaluate :math:`\log P(X \leq x)` at three thresholds. Convert the results
-    to probabilities.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import laplace_logcdf
-           ...: thresholds = jnp.array([-1.0, 0.0, 1.0])
-           ...: log_prob = laplace_logcdf(thresholds, location=0.0, scale=1.0)
-           ...: jnp.exp(log_prob)
     """
     value_array, location_array, scale_array = _promote_inexact(
         ("value", value),
@@ -211,19 +187,6 @@ def laplace_logsf(
         Log survival probabilities with the broadcast shape of the arguments.
         A nonfinite location or a nonpositive or nonfinite scale produces
         ``nan``.
-
-    Examples
-    --------
-    Evaluate :math:`\log P(X > x)` at three thresholds. Convert the results to
-    probabilities.
-
-    .. ipython::
-
-        In [1]: import jax.numpy as jnp
-           ...: from mmmjax import laplace_logsf
-           ...: thresholds = jnp.array([-1.0, 0.0, 1.0])
-           ...: log_prob = laplace_logsf(thresholds, location=0.0, scale=1.0)
-           ...: jnp.exp(log_prob)
     """
     value_array, location_array, scale_array = _promote_inexact(
         ("value", value),

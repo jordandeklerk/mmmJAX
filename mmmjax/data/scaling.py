@@ -55,16 +55,6 @@ class Scaling:
         -------
         jax.Array
             Transformed values with the input shape and a floating-point dtype.
-
-        Examples
-        --------
-        Apply training statistics to a new observation.
-
-        .. ipython::
-
-            In [1]: from mmmjax import fit_scaling
-               ...: scaling = fit_scaling([2.0, 4.0, 6.0])
-               ...: scaling.transform([8.0])
         """
         values_array = self._prepare_values(values)
         return (values_array - self.offset) / self.scale
@@ -82,16 +72,6 @@ class Scaling:
         -------
         jax.Array
             Values in original units with the input shape and a floating-point dtype.
-
-        Examples
-        --------
-        Convert predictions from the scaled units back to the original units.
-
-        .. ipython::
-
-            In [1]: from mmmjax import fit_scaling
-               ...: scaling = fit_scaling([2.0, 4.0, 6.0])
-               ...: scaling.inverse_transform([0.0, 1.0])
         """
         values_array = self._prepare_values(values)
         return values_array * self.scale + self.offset
