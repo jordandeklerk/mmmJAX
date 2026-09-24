@@ -271,7 +271,7 @@ def test_poisson_log_sums_log_masses() -> None:
     assert jnp.allclose(result, jnp.sum(poisson_log_logpmf(values, log_rate)))
 
 
-@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+@pytest.mark.skipif(not jax.enable_x64.value, reason="JAX 64-bit mode is disabled")
 def test_poisson_observations_do_not_control_parameter_dtype() -> None:
     values = jnp.array([0, 1], dtype=jnp.int64)
 
@@ -303,7 +303,7 @@ def test_poisson_tails_match_scipy_with_fractional_and_infinite_thresholds(funct
 
     result = function(values, rates)
     compiled = jax.jit(function)(values, rates)
-    tolerance = 2e-12 if jax.config.x64_enabled else 4e-6
+    tolerance = 2e-12 if jax.enable_x64.value else 4e-6
 
     assert result.shape == (9, 5)
     np.testing.assert_allclose(result, expected, rtol=tolerance, atol=tolerance, equal_nan=True)
@@ -370,8 +370,8 @@ def test_poisson_tail_rate_derivatives_match_analytic_formulas(function, referen
     forward = jax.jit(jax.vmap(jax.jacfwd(function, argnums=1)))(values, rates)
     reverse = jax.jit(jax.vmap(jax.grad(function, argnums=1)))(values, rates)
     curvature = jax.jit(jax.vmap(jax.jacfwd(jax.grad(function, argnums=1), argnums=1)))(values, rates)
-    gradient_tolerance = 2e-11 if jax.config.x64_enabled else 1e-5
-    curvature_tolerance = 2e-10 if jax.config.x64_enabled else 2e-5
+    gradient_tolerance = 2e-11 if jax.enable_x64.value else 1e-5
+    curvature_tolerance = 2e-10 if jax.enable_x64.value else 2e-5
 
     np.testing.assert_allclose(forward, expected_gradient, rtol=gradient_tolerance, atol=gradient_tolerance)
     np.testing.assert_allclose(reverse, expected_gradient, rtol=gradient_tolerance, atol=gradient_tolerance)
@@ -435,7 +435,7 @@ def test_poisson_tails_reuse_gamma_underflow_protection(function, reference, val
 @pytest.mark.parametrize("function", [poisson_logcdf, poisson_logsf, poisson_log_logcdf, poisson_log_logsf])
 @pytest.mark.parametrize("dtype", [jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64])
 def test_poisson_tails_follow_parameter_precision(function, dtype) -> None:
-    if dtype == jnp.float64 and not jax.config.x64_enabled:
+    if dtype == jnp.float64 and not jax.enable_x64.value:
         pytest.skip("float64 requires JAX 64-bit mode")
     values = jnp.array([0, 2, 5], dtype=jnp.int32)
     rates = jnp.asarray(2.0, dtype=dtype)
@@ -453,7 +453,7 @@ def test_poisson_tails_preserve_empty_batch_shapes(function) -> None:
     assert jax.jit(function)(values, rates).shape == (0, 3)
 
 
-@pytest.mark.skipif(not jax.config.x64_enabled, reason="float64 requires JAX 64-bit mode")
+@pytest.mark.skipif(not jax.enable_x64.value, reason="float64 requires JAX 64-bit mode")
 @pytest.mark.parametrize("function", [poisson_logcdf, poisson_logsf, poisson_log_logcdf, poisson_log_logsf])
 def test_poisson_tail_threshold_dtype_does_not_promote_rate_dtype(function) -> None:
     values = jnp.array([0.5, 1.5, 5.5], dtype=jnp.float64)
@@ -472,7 +472,7 @@ def test_poisson_log_rate_tails_match_scipy_and_rate_parameterization(function, 
     values = jnp.array([[-jnp.inf], [-0.5], [0.0], [0.5], [1.5], [10.0], [jnp.inf], [jnp.nan]])
     log_rates = jnp.array([-3.0, 0.0, 2.0])
     expected = reference(np.asarray(values, dtype=np.float64), np.exp(np.asarray(log_rates, dtype=np.float64)))
-    tolerance = 2e-12 if jax.config.x64_enabled else 5e-6
+    tolerance = 2e-12 if jax.enable_x64.value else 5e-6
 
     result = function(values, log_rates)
     compiled = jax.jit(function)(values, log_rates)
@@ -507,7 +507,7 @@ def test_poisson_log_rate_tail_derivatives_match_analytic_formulas(function, ref
         log_rates_reference + stats.poisson.logpmf(counts, rates) - reference(counts, rates)
     )
     expected_curvature = expected_gradient * (counts + 1 - rates - expected_gradient)
-    tolerance = 2e-10 if jax.config.x64_enabled else 3e-5
+    tolerance = 2e-10 if jax.enable_x64.value else 3e-5
 
     forward = jax.jit(jax.vmap(jax.jacfwd(function, argnums=1)))(values, log_rates)
     reverse = jax.jit(jax.vmap(jax.grad(function, argnums=1)))(values, log_rates)
@@ -556,7 +556,7 @@ def test_poisson_log_rate_survival_preserves_rates_below_floating_point_range() 
         [_poisson_logsf_decimal(int(count), float(eta)) for count, eta in zip(counts, log_rates, strict=True)]
     )
     expected, expected_gradient = references.T
-    tolerance = 2e-12 if jax.config.x64_enabled else 4e-6
+    tolerance = 2e-12 if jax.enable_x64.value else 4e-6
 
     result = jax.jit(poisson_log_logsf)(counts, log_rates)
     forward = jax.jit(jax.vmap(jax.jacfwd(poisson_log_logsf, argnums=1)))(counts, log_rates)

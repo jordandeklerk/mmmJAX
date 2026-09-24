@@ -100,7 +100,7 @@ class Scaling:
         """Check numeric inputs and broadcasting for either transformation."""
         try:
             # Choose floating-point precision before JAX can narrow integer observations
-            dtype = jnp.result_type(*jax.tree_util.tree_leaves(values), self.offset, self.scale)
+            dtype = jnp.result_type(*jax.tree.leaves(values), self.offset, self.scale)
             values_array = jnp.asarray(values, dtype=dtype)
         except (TypeError, ValueError) as error:
             raise TypeError("values must be a real numeric array or sequence") from error

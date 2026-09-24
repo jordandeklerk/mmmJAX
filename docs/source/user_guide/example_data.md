@@ -23,6 +23,13 @@ import matplotlib.pyplot as plt
 
 az.style.use("arviz-darkgrid")
 plt.rcParams["axes.grid"] = False
+plt.rcParams["axes.facecolor"] = "white"
+plt.rcParams["axes.edgecolor"] = ".33"
+plt.rcParams["axes.linewidth"] = 0.8
+plt.rcParams["axes.spines.top"] = False
+plt.rcParams["axes.spines.right"] = False
+plt.rcParams["xtick.major.size"] = 3.5
+plt.rcParams["ytick.major.size"] = 3.5
 plt.rcParams["figure.figsize"] = [12, 7]
 plt.rcParams["figure.dpi"] = 100
 plt.rcParams["date.converter"] = "concise"

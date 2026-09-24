@@ -111,6 +111,8 @@ nb_execution_mode = "cache"
 nb_execution_raise_on_error = True
 nb_execution_timeout = 600
 nb_output_stderr = "remove"
+# Draw each cell's prints in one box. The kernel sends them in chunks that vary with timing.
+nb_merge_streams = True
 
 
 def _format_signature_defaults(app, what, name, obj, options, signature, return_annotation):

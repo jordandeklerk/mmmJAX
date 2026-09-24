@@ -39,7 +39,7 @@ def test_lkj_broadcasts_concentrations_and_factors():
     np.testing.assert_allclose(result, expected, atol=2e-6)
 
 
-@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+@pytest.mark.skipif(not jax.enable_x64.value, reason="JAX 64-bit mode is disabled")
 @pytest.mark.parametrize("source", ["transformed", "sampled"])
 def test_lkj_preserves_factor_support_when_concentration_has_higher_precision(source):
     if source == "transformed":
@@ -60,7 +60,7 @@ def test_lkj_preserves_factor_support_when_concentration_has_higher_precision(so
     assert jnp.isfinite(gradient)
 
 
-@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+@pytest.mark.skipif(not jax.enable_x64.value, reason="JAX 64-bit mode is disabled")
 def test_lkj_row_tolerance_still_rejects_invalid_factors_at_their_input_precision():
     factors32 = jnp.eye(2, dtype=jnp.float32).at[1, 1].set(1.001)
     factors64 = jnp.eye(2, dtype=jnp.float64).at[1, 1].set(1 + 1e-8)

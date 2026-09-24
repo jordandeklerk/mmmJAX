@@ -425,7 +425,7 @@ def test_inverse_gamma_logpdf_is_monotonic_across_deviance_regions() -> None:
     assert jnp.all(jnp.diff(upper_tail) < 0)
 
 
-@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+@pytest.mark.skipif(not jax.enable_x64.value, reason="JAX 64-bit mode is disabled")
 def test_inverse_gamma_logpdf_remains_accurate_at_extreme_float64_shape() -> None:
     shape = jnp.float64(1e20)
 

@@ -348,11 +348,11 @@ def log_saturation(media: ArrayLike) -> jax.Array:
     return jnp.where(valid, response, jnp.nan)
 
 
-def _broadcast_saturation_inputs(*arguments: tuple[str, ArrayLike]) -> list[jax.Array]:
+def _broadcast_saturation_inputs(*arguments: tuple[str, ArrayLike]) -> tuple[jax.Array, ...]:
     """Promote real inputs before conversion and check their broadcast shapes."""
     leaves = []
     for name, value in arguments:
-        value_leaves = jax.tree_util.tree_leaves(value)
+        value_leaves = jax.tree.leaves(value)
         try:
             argument_dtype = jnp.result_type(*value_leaves)
         except (TypeError, ValueError) as error:
@@ -378,7 +378,8 @@ def _broadcast_saturation_inputs(*arguments: tuple[str, ArrayLike]) -> list[jax.
             raise TypeError(f"{name} must be real numeric and array-like") from error
 
     try:
-        return jnp.broadcast_arrays(*arrays)
+        broadcast = tuple(jnp.broadcast_arrays(*arrays))
     except ValueError as error:
         shapes = ", ".join(f"{name} shape {array.shape}" for (name, _), array in zip(arguments, arrays, strict=True))
         raise ValueError(f"{shapes} must broadcast together") from error
+    return broadcast

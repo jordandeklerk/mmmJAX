@@ -77,7 +77,8 @@ def sample(
         Vectorized chains use more memory and can wait for the longest
         trajectory, so they are not always faster.
     seed : int, default 0
-        Random seed for initialization, sampling, and generated quantities.
+        Random seed for initialization, sampling, and generated quantities,
+        from 0 to ``2**32 - 1``.
     target_accept : float, default 0.8
         Target acceptance probability during adaptation, between zero and one.
     mass_matrix : {"diagonal", "dense"}, default "diagonal"
@@ -150,8 +151,7 @@ def sample(
             "are available. Use fewer chains or choose 'sequential' or 'vectorized'"
         )
 
-    if isinstance(seed, bool) or not isinstance(seed, Integral) or seed < 0:
-        raise ValueError("seed must be a nonnegative integer")
+    _validate_seed(seed)
     if isinstance(target_accept, bool) or not isinstance(target_accept, Real) or not 0 < target_accept < 1:
         raise ValueError("target_accept must be between zero and one")
     if not isinstance(generate, bool):
@@ -451,6 +451,7 @@ def _with_state(
     mass_matrix = np.array(continuation.inverse_mass_matrix, copy=True)
     # netCDF stores dimensions beside child groups. Reusing the position group's name makes results unwritable.
     mass_dims = ("chain", "unconstrained") if mass_matrix.ndim == 2 else ("chain", "unconstrained", "unconstrained_")
+    key_impl = str(jax.random.key_impl(generation_key))
     groups["sampling_state"] = xr.Dataset(
         {
             "logdensity": ("chain", np.array(continuation.logdensity, copy=True)),
@@ -465,7 +466,8 @@ def _with_state(
         attrs={
             "completed_draws": int(continuation.completed_draws),
             "generate": int(generate),
-            "precision": "float64" if jax.config.values["jax_enable_x64"] else "float32",
+            "precision": "float64" if jax.enable_x64.value else "float32",
+            "key_impl": key_impl,
         },
     )
     groups["sampling_state/position"] = _position_dataset(continuation.positions)
@@ -498,7 +500,7 @@ def _restore_continuation(results: object, model: Model) -> tuple[_NUTSContinuat
     state = results["sampling_state"]
     if "position" not in state.children or "gradient" not in state.children:
         raise ValueError("The sampling_state group is incomplete. Continue from results returned by sample")
-    precision = "float64" if jax.config.values["jax_enable_x64"] else "float32"
+    precision = "float64" if jax.enable_x64.value else "float32"
     if state.attrs.get("precision") != precision:
         raise ValueError("Continue sampling with the same JAX precision setting as the original run")
 
@@ -512,22 +514,26 @@ def _restore_continuation(results: object, model: Model) -> tuple[_NUTSContinuat
         if positions[name].shape[1:] != tuple(parameter.position_shape):
             raise ValueError(f"Parameter {name!r} has a different shape in results than in the model")
 
+    # Results saved before key_impl was stored restore under the default implementation.
+    key_impl = state.attrs.get("key_impl")
     continuation = _NUTSContinuation(
         positions=positions,
         logdensity=jnp.asarray(stored["logdensity"].values),
         gradients=gradients,
         step_size=jnp.asarray(stored["step_size"].values),
         inverse_mass_matrix=jnp.asarray(stored["inverse_mass_matrix"].values),
-        sampling_keys=_restore_keys(stored["sampling_key"].values),
+        sampling_keys=_restore_keys(stored["sampling_key"].values, key_impl),
         completed_draws=int(state.attrs["completed_draws"]),
     )
-    generation_key = _restore_keys(stored["generation_key"].values)
+    generation_key = _restore_keys(stored["generation_key"].values, key_impl)
     return continuation, generation_key, bool(int(state.attrs["generate"]))
 
 
-def _restore_keys(words: NDArray[np.generic]) -> jax.Array:
-    """Rebuild typed random keys from stored key words of any integer dtype."""
-    return jnp.asarray(jax.random.wrap_key_data(jnp.asarray(np.asarray(words, dtype=np.uint32))))
+def _restore_keys(words: NDArray[np.generic], impl: str | None) -> jax.Array:
+    """Rebuild typed random keys in their stored implementation from key words of any integer dtype."""
+    key_data = jnp.asarray(np.asarray(words, dtype=np.uint32))
+    keys = jnp.asarray(jax.random.wrap_key_data(key_data, impl=impl))
+    return keys
 
 
 def _generation_keys(key: jax.Array, chains: int, start: int, stop: int) -> jax.Array:
@@ -623,7 +629,8 @@ def sample_prior(
     draws : int, default 500
         Number of independent prior draws.
     seed : int, default 0
-        Random seed for parameters and generated quantities.
+        Random seed for parameters and generated quantities, from 0 to
+        ``2**32 - 1``.
     generate : bool, default True
         Evaluate outputs from the ``generated_quantities`` callback.
     batch_size : int, default 64
@@ -654,8 +661,7 @@ def sample_prior(
         _validate_prior_sampler(prior)
     if isinstance(draws, bool) or not isinstance(draws, Integral) or draws < 1:
         raise ValueError("draws must be a positive integer")
-    if isinstance(seed, bool) or not isinstance(seed, Integral) or seed < 0:
-        raise ValueError("seed must be a nonnegative integer")
+    _validate_seed(seed)
     if not isinstance(generate, bool):
         raise TypeError("generate must be a bool")
     if model._data is not None and data is not None:
@@ -827,7 +833,8 @@ def generate_quantities(
         evaluated callback needs them. Auxiliary ``Data`` inputs remain
         fixed across scenarios.
     seed : int, default 0
-        Random seed for generated quantities. Draws get independent keys.
+        Random seed for generated quantities, from 0 to ``2**32 - 1``. Draws
+        get independent keys.
     batch_size : int, default 64
         Maximum posterior draws evaluated together across chains. Smaller
         batches reduce working memory without changing the selected draws.
@@ -850,8 +857,7 @@ def generate_quantities(
     _validate_batch_size(batch_size)
     if not model._has_generated_quantities:
         raise ValueError("The model must define a generated_quantities callback or map priors")
-    if isinstance(seed, bool) or not isinstance(seed, Integral) or seed < 0:
-        raise ValueError("seed must be a nonnegative integer")
+    _validate_seed(seed)
 
     dimensions, coordinates = _parameter_metadata(model)
     posterior, coordinates = _parameter_draws(model, results, dimensions, coordinates)
@@ -968,6 +974,12 @@ def _validate_batch_size(batch_size: int) -> None:
     """Reject invalid batch sizes before sampling or evaluating callbacks."""
     if isinstance(batch_size, bool) or not isinstance(batch_size, Integral) or batch_size < 1:
         raise ValueError("batch_size must be a positive integer")
+
+
+def _validate_seed(seed: int) -> None:
+    """Accept only seeds that give the same key stream in both JAX precisions."""
+    if isinstance(seed, bool) or not isinstance(seed, Integral) or not 0 <= seed < 2**32:
+        raise ValueError(f"seed must be a nonnegative integer below 2**32, got {seed!r}")
 
 
 def _evaluate_draws[Key: Hashable](

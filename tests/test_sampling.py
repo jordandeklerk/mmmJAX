@@ -72,6 +72,7 @@ def nuts_calls(monkeypatch):
             {
                 "positions": jax.tree.map(np.array, initial_positions),
                 "keys": np.asarray(jax.random.key_data(keys)),
+                "key_impl": str(jax.random.key_impl(keys)),
                 "draws": draws,
                 "warmup": warmup,
                 "target_accept": target_accept,
@@ -1385,11 +1386,30 @@ def test_acceptance_target_must_be_a_probability(normal_model, nuts_calls, value
     assert not nuts_calls
 
 
-@pytest.mark.parametrize("value", [-1, True, 1.5])
-def test_seed_requires_a_nonnegative_integer(normal_model, nuts_calls, value):
-    with pytest.raises(ValueError, match="seed"):
+@pytest.mark.parametrize("value", [-1, True, 1.5, 2**32, np.int64(2**40), 2**63])
+def test_seed_requires_a_nonnegative_32_bit_integer(normal_model, nuts_calls, value):
+    with pytest.raises(ValueError, match=r"seed must be a nonnegative integer below 2\*\*32, got"):
         sample(normal_model, data=0.0, seed=value, draws=2, warmup=3, chains=1)
     assert not nuts_calls
+
+
+@pytest.mark.parametrize("seed", [2**32 - 1, np.uint32(2**32 - 1), np.int64(2**32 - 1)])
+def test_largest_seed_gives_the_same_chain_keys_in_both_precisions(nuts_calls, seed):
+    sampling_key = jax.random.split(jax.random.key(2**32 - 1), 4)[1]
+    expected = jax.random.key_data(jax.random.split(sampling_key, 2))
+
+    for enabled in (False, True):
+        with jax.enable_x64(enabled):
+            model = Model(
+                parameters={"location": Real()},
+                log_density=lambda data, location: normal(location, data, 1.0),
+            )
+            result = sample(model, data=0.0, seed=seed, draws=2, warmup=3, chains=2, progress=False)
+        assert result.attrs["seed"] == 2**32 - 1
+
+    assert len(nuts_calls) == 2
+    for call in nuts_calls:
+        np.testing.assert_array_equal(call["keys"], expected)
 
 
 @pytest.mark.parametrize(
@@ -1721,6 +1741,42 @@ def test_continuation_resumes_from_results_rebuilt_from_plain_data(normal_model)
     assert continued["sampling_state"].attrs["completed_draws"] == 6
 
 
+@pytest.mark.parametrize(
+    "saved,current",
+    [("threefry2x32", "philox4x32"), ("threefry2x32", "rbg"), ("philox4x32", "threefry2x32"), ("rbg", "threefry2x32")],
+)
+def test_continuation_restores_keys_in_their_stored_implementation(normal_model, nuts_calls, saved, current):
+    # Key data alone would restore as the current default. That rejects rbg's
+    # longer keys and silently switches streams between same-shaped keys.
+    with jax.default_prng_impl(saved):
+        first = sample(normal_model, data=0.0, draws=2, warmup=3, chains=2, seed=5, progress=False)
+    state = first["sampling_state"]
+
+    with jax.default_prng_impl(current):
+        continued = continue_sampling(normal_model, first, data=0.0, draws=3, progress=False)
+
+    assert state.attrs["key_impl"] == saved
+    assert nuts_calls[1]["key_impl"] == saved
+    np.testing.assert_array_equal(nuts_calls[1]["keys"], state["sampling_key"])
+    assert continued["sampling_state"].attrs["key_impl"] == saved
+    np.testing.assert_array_equal(continued["sampling_state"]["generation_key"], state["generation_key"])
+
+
+@pytest.mark.parametrize("impl", ["threefry2x32", "philox4x32", "rbg"])
+def test_continuation_restores_results_saved_without_a_key_implementation(normal_model, nuts_calls, impl):
+    with jax.default_prng_impl(impl):
+        first = sample(normal_model, data=0.0, draws=2, warmup=3, chains=2, seed=5, progress=False)
+    legacy = first.copy(deep=True)
+    del legacy["sampling_state"].attrs["key_impl"]
+
+    with jax.default_prng_impl(impl):
+        continued = continue_sampling(normal_model, legacy, data=0.0, draws=3, progress=False)
+
+    assert nuts_calls[1]["key_impl"] == impl
+    np.testing.assert_array_equal(nuts_calls[1]["keys"], first["sampling_state"]["sampling_key"])
+    assert continued["sampling_state"].attrs["key_impl"] == impl
+
+
 @pytest.mark.parametrize("mass_matrix", ["diagonal", "dense"])
 def test_result_dimensions_never_share_a_name_with_a_child_group(normal_model, mass_matrix):
     # netCDF writes dimensions beside child groups. A shared name makes results impossible to save.
@@ -1804,7 +1860,7 @@ def test_continuation_rejects_invalid_results_counts_and_sampling_changes_before
         raise AssertionError("Continuation validation must run before sampling")
 
     monkeypatch.setattr(nuts.blackjax, "nuts", forbidden_sampling)
-    with jax.enable_x64(not jax.config.x64_enabled), pytest.raises(ValueError, match="precision"):
+    with jax.enable_x64(not jax.enable_x64.value), pytest.raises(ValueError, match="precision"):
         continue_sampling(normal_model, result, data=0.0, draws=2, progress=False)
     stripped = xr.DataTree.from_dict(
         {name: node.to_dataset() for name, node in result.children.items() if name != "sampling_state"}

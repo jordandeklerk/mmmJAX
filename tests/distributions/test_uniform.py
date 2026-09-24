@@ -414,7 +414,7 @@ def test_uniform_rng_excludes_an_adjacent_upper_bound() -> None:
     assert jnp.all(samples < upper)
 
 
-@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+@pytest.mark.skipif(not jax.enable_x64.value, reason="JAX 64-bit mode is disabled")
 def test_uniform_handles_opposite_sign_float64_bounds_at_finite_maximum() -> None:
     maximum = jnp.asarray(jnp.finfo(jnp.float64).max)
 

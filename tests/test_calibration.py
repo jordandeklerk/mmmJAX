@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 import polars as pl
 import pytest
+from jax.scipy.special import logsumexp
 
 from mmmjax import (
     Data,
@@ -147,6 +148,92 @@ def test_zero_exposure_leaves_no_finite_coefficient():
 
     assert np.isfinite(coefficient[0])
     assert not np.isfinite(coefficient[1])
+
+
+def test_lognormal_coefficients_and_gradients_match_the_unguarded_log_on_positive_exposures():
+    response, _, _, scale, deviations = _grouped_case()
+    contribution = jnp.array([40.0, 90.0, 25.0, 60.0])
+
+    # Every group sees every channel here, so the guarded log must equal the plain log of each weighted total.
+    def unguarded(values):
+        weighted = jnp.sum(values, axis=0) * scale[:, None]
+        center = jnp.log(contribution) - logsumexp(deviations + jnp.log(weighted), axis=0)
+        coefficient = jnp.exp(center + deviations)
+        return coefficient
+
+    def coefficients(values):
+        return contribution_coefficient(contribution, values, outcome_scale=scale, deviations=deviations)
+
+    expected = unguarded(response)
+    expected_gradient = jax.jacobian(unguarded)(response)
+
+    eager = (coefficients(response), jax.jacobian(coefficients)(response))
+    compiled = (jax.jit(coefficients)(response), jax.jit(jax.jacobian(coefficients))(response))
+
+    for result, gradient in (eager, compiled):
+        np.testing.assert_allclose(result, expected, rtol=1e-6, atol=0)
+        np.testing.assert_allclose(gradient, expected_gradient, rtol=1e-5, atol=1e-7)
+
+
+def test_lognormal_coefficients_keep_finite_gradients_when_a_group_never_sees_a_channel():
+    response, spend, roi, scale, deviations = _grouped_case()
+    # The second channel never runs in the first region, while its total across regions stays positive.
+    media = response.at[:, 0, 1].set(0.0)
+
+    def log_coefficients(retention):
+        carried = geometric_adstock(media, retention, max_lag=2)
+        coefficient = roi_coefficient(roi, carried, spend, outcome_scale=scale, deviations=deviations)
+        log_coefficient = jnp.log(coefficient)
+        return log_coefficient
+
+    # Meridian's form sums exposures before taking the log, so it stays smooth where one region's total is zero.
+    def meridian(retention):
+        carried = geometric_adstock(media, retention, max_lag=2)
+        a_gm = jnp.sum(carried, axis=0) * scale[:, None]
+        beta_m = jnp.log(roi * spend.sum(axis=(0, 1))) - jnp.log(jnp.sum(a_gm * jnp.exp(deviations), axis=0))
+        log_coefficient = beta_m + deviations
+        return log_coefficient
+
+    retention = jnp.asarray(0.5)
+    expected = meridian(retention)
+    expected_gradient = jax.jacobian(meridian)(retention)
+
+    eager = (log_coefficients(retention), jax.jacobian(log_coefficients)(retention))
+    compiled = (jax.jit(log_coefficients)(retention), jax.jit(jax.jacobian(log_coefficients))(retention))
+
+    for result, gradient in (eager, compiled):
+        np.testing.assert_allclose(result, expected, rtol=1e-5, atol=1e-6)
+        assert np.isfinite(gradient).all()
+        np.testing.assert_allclose(gradient, expected_gradient, rtol=1e-4, atol=1e-6)
+
+
+def test_lognormal_coefficient_jacobians_match_meridian_where_a_group_never_sees_a_channel():
+    response, _, _, scale, deviations = _grouped_case()
+    contribution = jnp.array([40.0, 90.0, 25.0, 60.0])
+    # The first region has no outcome scale, and the second channel also never runs in the second region.
+    media = response.at[:, 1, 1].set(0.0)
+    factor = scale.at[0].set(0.0)
+
+    def coefficients(values, outcome_scale):
+        return contribution_coefficient(contribution, values, outcome_scale=outcome_scale, deviations=deviations)
+
+    # The zero totals have nonzero partials in Meridian's form, since it sums exposures before taking the log.
+    def meridian(values, outcome_scale):
+        a_gm = jnp.sum(values, axis=0) * outcome_scale[:, None]
+        beta_m = jnp.log(contribution) - jnp.log(jnp.sum(a_gm * jnp.exp(deviations), axis=0))
+        coefficient = jnp.exp(beta_m + deviations)
+        return coefficient
+
+    expected = jax.jacobian(meridian, argnums=(0, 1))(media, factor)
+
+    reverse = jax.jacrev(coefficients, argnums=(0, 1))(media, factor)
+    forward = jax.jacfwd(coefficients, argnums=(0, 1))(media, factor)
+    compiled = jax.jit(jax.jacrev(coefficients, argnums=(0, 1)))(media, factor)
+
+    for result in (reverse, forward, compiled):
+        for derivative, expected_derivative in zip(result, expected, strict=True):
+            assert np.isfinite(derivative).all()
+            np.testing.assert_allclose(derivative, expected_derivative, rtol=1e-5, atol=1e-6)
 
 
 @pytest.mark.parametrize(

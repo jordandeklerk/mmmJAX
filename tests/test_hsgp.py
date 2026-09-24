@@ -340,7 +340,7 @@ def test_preparation_explains_that_dynamic_ranges_are_not_supported_under_jit():
 
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
 def test_basis_matches_eigenfunctions_on_irregular_positions(dtype):
-    if dtype == jnp.float64 and not jax.config.x64_enabled:
+    if dtype == jnp.float64 and not jax.enable_x64.value:
         pytest.skip("JAX 64-bit mode is disabled")
     time = jnp.asarray([-3.0, -1.75, -0.125, 0.0, 2.3], dtype=dtype)
     center, boundary = dtype(-0.25), dtype(3.0)
@@ -592,7 +592,7 @@ def test_hsgp_uses_at_least_float32(dtype):
 
 
 def test_hsgp_preserves_common_float64_dtype_when_enabled():
-    if not jax.config.x64_enabled:
+    if not jax.enable_x64.value:
         pytest.skip("JAX 64-bit mode is disabled")
     basis, frequencies = hsgp_basis(
         jnp.array([-1, 0, 1], dtype=jnp.float32), center=0.0, boundary=jnp.float64(2), n_basis=3

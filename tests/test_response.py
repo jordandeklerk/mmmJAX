@@ -2087,7 +2087,7 @@ def test_frequency_curves_require_reach_frequency_inputs():
 
 @pytest.mark.parametrize("scenario", ["raw_underflow", "scaled_overflow"])
 def test_frequency_curves_reject_unrepresentable_exposures(scenario):
-    precision = np.finfo(np.float64 if jax.config.jax_enable_x64 else np.float32)
+    precision = np.finfo(np.float64 if jax.enable_x64.value else np.float32)
     reach = 10 * float(precision.tiny) if scenario == "raw_underflow" else 1e-5
     frequency = 1.0 if scenario == "raw_underflow" else 1e10
     candidate = float(precision.max) / 2 if scenario == "raw_underflow" else float(precision.tiny) * 1e8
@@ -2282,7 +2282,7 @@ def test_response_curves_validate_prior_parameter_shape_labels_and_values(invali
     results = xr.DataTree.from_dict(
         {"prior": xr.Dataset({"coefficient": (("chain", "draw", "channel"), values)}, coords={"channel": labels})}
     )
-    if invalid == "precision" and jax.config.jax_enable_x64:
+    if invalid == "precision" and jax.enable_x64.value:
         curves = response_curves(model, results, quantity="expected", group="prior", multipliers=[1.0])
         assert curves["response"].dtype == np.dtype(np.float64)
         np.testing.assert_allclose(curves["reference_response"], _expected(data, values[0, 0]), rtol=1e-12)

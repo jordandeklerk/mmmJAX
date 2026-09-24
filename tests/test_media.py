@@ -182,7 +182,7 @@ def test_media_response_vectorization_retains_group_and_channel_axes():
 @pytest.mark.parametrize("adstock_first", [False, True])
 @pytest.mark.parametrize("dtype", [np.float16, np.float32, np.float64])
 def test_media_response_preserves_primitive_dtype_promotion(adstock_first, dtype):
-    if dtype == np.float64 and not jax.config.x64_enabled:
+    if dtype == np.float64 and not jax.enable_x64.value:
         pytest.skip("JAX 64-bit mode is disabled")
     result = media_response(
         np.array([3.0, 6.0], dtype=dtype),
@@ -374,7 +374,7 @@ def test_reach_frequency_vectorization_preserves_group_and_channel_axes():
 
 @pytest.mark.parametrize("dtype", [np.float16, np.float32, np.float64])
 def test_reach_frequency_preserves_common_floating_precision(dtype):
-    if dtype == np.float64 and not jax.config.x64_enabled:
+    if dtype == np.float64 and not jax.enable_x64.value:
         pytest.skip("JAX 64-bit mode is disabled")
     result = reach_frequency_response(
         np.array([2, 4], dtype=np.int32),

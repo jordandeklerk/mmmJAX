@@ -235,7 +235,7 @@ def test_bernoulli_log_tails_keep_parameter_dtype_and_empty_shape(function) -> N
     assert function(values, jnp.float16(0.3)).dtype == jnp.dtype(jnp.float32)
     assert function(values, jnp.float32(0.3)).dtype == jnp.dtype(jnp.float32)
     assert function(jnp.empty((0, 1)), jnp.array([0.2, 0.8])).shape == (0, 2)
-    if jax.config.x64_enabled:
+    if jax.enable_x64.value:
         assert function(values.astype(jnp.float64), jnp.float32(0.3)).dtype == jnp.dtype(jnp.float32)
         assert function(values, jnp.float64(0.3)).dtype == jnp.dtype(jnp.float64)
 
@@ -397,7 +397,7 @@ def test_bernoulli_logit_sums_log_masses() -> None:
     assert jnp.allclose(result, expected)
 
 
-@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+@pytest.mark.skipif(not jax.enable_x64.value, reason="JAX 64-bit mode is disabled")
 def test_bernoulli_observations_do_not_control_parameter_dtype() -> None:
     values = jnp.array([0, 1], dtype=jnp.int64)
 

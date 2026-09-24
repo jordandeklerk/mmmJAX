@@ -47,6 +47,13 @@ import matplotlib.pyplot as plt
 
 az.style.use("arviz-darkgrid")
 plt.rcParams["axes.grid"] = False
+plt.rcParams["axes.facecolor"] = "white"
+plt.rcParams["axes.edgecolor"] = ".33"
+plt.rcParams["axes.linewidth"] = 0.8
+plt.rcParams["axes.spines.top"] = False
+plt.rcParams["axes.spines.right"] = False
+plt.rcParams["xtick.major.size"] = 3.5
+plt.rcParams["ytick.major.size"] = 3.5
 plt.rcParams["figure.figsize"] = [12, 7]
 plt.rcParams["figure.dpi"] = 100
 plt.rcParams["date.converter"] = "concise"  # only with date axes
@@ -65,6 +72,7 @@ Without the front matter the cells never run. A page has one H1 and skips no hea
 ## Cells
 
 - End each cell in one expression or a `print`, rounded to what the prose quotes, as in `round(float(x), 2)` or `.to_series().round(3)`. Print ArviZ text reports such as `az.compare`, but leave `az.loo(results)` bare.
+- The setup cell keeps `arviz-darkgrid` for its colors and fonts and swaps its gray panels for white ones with left and bottom axes, which the style otherwise hides. Pages name curves by color, as in the blue curves of `priors.md`, so a palette change means rereading the prose.
 - End plot cells with `plt.show()`. ArviZ 1.3 ignores the rc figure size. It draws multi-panel plots 24 inches wide or more and single-panel plots as 12 by 4 strips, so give every ArviZ plot `figure_kwargs={"figsize": (12, 7)}`, or `(12, 9)` with `col_wrap=2` for rank plots. Hand-made figures use `plt.subplots(layout="constrained")` and `legend(frameon=False)`. Keep one idea per figure.
 - `_static/css/custom.css` styles DataTree, Dataset, and data frame outputs. Any other HTML output is unstyled, so check it in the screenshot.
 - A cell meant to fail needs `:tags: [raises-exception]` and a hidden `%xmode minimal` cell earlier on the page, as in `user_guide/functions.md`. Any other error stops the build. Stderr is dropped, so warnings and progress bars never show.

@@ -254,7 +254,7 @@ def test_gamma_logsf_deep_tail_gradients_match_scipy() -> None:
         assert jnp.allclose(gradients[2], expected_rate, rtol=1e-5, atol=0)
 
 
-@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+@pytest.mark.skipif(not jax.enable_x64.value, reason="JAX 64-bit mode is disabled")
 @pytest.mark.parametrize(
     ("function", "value", "shape", "expected", "expected_gradients"),
     [
@@ -502,7 +502,7 @@ def test_gamma_logpdf_handles_maximum_finite_concentrated_shape() -> None:
     assert jnp.all(jnp.isfinite(jnp.asarray(gradients)))
 
 
-@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+@pytest.mark.skipif(not jax.enable_x64.value, reason="JAX 64-bit mode is disabled")
 def test_gamma_logpdf_remains_accurate_at_extreme_float64_shape() -> None:
     shape = jnp.float64(1e20)
 

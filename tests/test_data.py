@@ -379,7 +379,7 @@ def test_prepared_revenue_per_outcome_retains_shape_and_precision_in_jax(grouped
     inputs = data._to_jax(dtype=np.float32)
     assert inputs["revenue_per_outcome"].shape == inputs["outcome"].shape
     assert inputs["revenue_per_outcome"].dtype == np.float32
-    assert inputs["outcome"].dtype == (np.int64 if jax.config.x64_enabled else np.int32)
+    assert inputs["outcome"].dtype == (np.int64 if jax.enable_x64.value else np.int32)
     revenue = jax.jit(lambda values: values["outcome"] * values["revenue_per_outcome"])(inputs)
     np.testing.assert_array_equal(revenue, [[6.0], [20.0]] if grouped else [6.0, 20.0])
     data.arrays["revenue_per_outcome"][...] = 0
@@ -540,7 +540,7 @@ def test_prepared_population_broadcasts_after_jax_conversion(grouped, population
     population_array = inputs["population"]
     assert population_array.shape == ((1,) if grouped else ())
     if isinstance(population, int):
-        assert population_array.dtype == (np.int64 if jax.config.x64_enabled else np.int32)
+        assert population_array.dtype == (np.int64 if jax.enable_x64.value else np.int32)
     else:
         assert population_array.dtype == np.float32
     per_capita = jax.jit(lambda values: values["outcome"] / values["population"])(inputs)
@@ -1792,7 +1792,7 @@ def test_prepared_data_to_jax_follows_precision_setting_without_changing_host_da
 
     with jax.enable_x64(x64):
         result = data._to_jax()
-        assert jax.config.x64_enabled == x64
+        assert jax.enable_x64.value == x64
 
     assert set(result) == set(data.arrays)
     assert result["media"].dtype == (np.float64 if x64 else np.float32)

@@ -246,7 +246,7 @@ def test_truncated_normal_log_probabilities_support_higher_order_tail_derivative
     assert jnp.all(jnp.isfinite(forward_over_reverse))
 
 
-@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+@pytest.mark.skipif(not jax.enable_x64.value, reason="JAX 64-bit mode is disabled")
 @pytest.mark.parametrize(
     ("function", "upper_tail"),
     [
@@ -476,7 +476,7 @@ def test_truncated_normal_rng_matches_scipy_quantiles_including_extreme_tails() 
     assert jnp.all(result[:, jnp.isfinite(uppers)] < uppers[jnp.isfinite(uppers)])
 
 
-@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+@pytest.mark.skipif(not jax.enable_x64.value, reason="JAX 64-bit mode is disabled")
 def test_inverse_normal_logcdf_matches_scipy_around_tail_approximation_boundary() -> None:
     log_probabilities = jnp.array([-31.9999, -32.0, -32.0001], dtype=jnp.float64)
     expected = special.ndtri_exp(np.asarray(log_probabilities))

@@ -739,10 +739,21 @@ def test_prior_batch_sizes_require_positive_integers_before_evaluation(scalar_mo
         sample_prior(scalar_model, forbidden_prior, draws=2, batch_size=batch_size)
 
 
-@pytest.mark.parametrize("seed", [-1, True])
+@pytest.mark.parametrize("seed", [-1, True, 2**32, np.int64(2**40), 2**63])
 def test_invalid_seeds_are_rejected(scalar_model, seed):
-    with pytest.raises(ValueError, match=r"seed.*nonnegative integer"):
+    with pytest.raises(ValueError, match=r"seed must be a nonnegative integer below 2\*\*32, got"):
         sample_prior(scalar_model, _normal_prior, seed=seed)
+
+
+@pytest.mark.parametrize("seed", [2**32 - 1, np.uint32(2**32 - 1)])
+def test_largest_32_bit_seed_is_accepted(scalar_model, seed):
+    prior_key, _, _ = jax.random.split(jax.random.key(2**32 - 1), 3)
+    expected = jax.vmap(_normal_prior)(jax.random.split(prior_key, 4))["location"]
+
+    result = sample_prior(scalar_model, _normal_prior, draws=4, seed=seed)
+
+    assert result.attrs["seed"] == 2**32 - 1
+    np.testing.assert_allclose(result["prior"]["location"].values[0], expected, rtol=2e-6, atol=0)
 
 
 def test_invalid_model_is_rejected():
