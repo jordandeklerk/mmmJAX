@@ -91,7 +91,7 @@ from mmmjax import (
     weibull_cdf_adstock,
     weibull_pdf_adstock,
 )
-from mmmjax._results import _collect_results
+from mmmjax.data._results import _collect_results
 
 # Later marks take precedence. The pinned tfp-nightly still calls deprecated JAX
 # APIs, so only those two messages and only from its own modules are ignored.

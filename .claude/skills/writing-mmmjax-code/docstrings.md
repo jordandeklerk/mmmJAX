@@ -1,6 +1,11 @@
 # mmmJAX docstrings
 
-The templates below cover a numerical primitive, a workflow or analysis function, and a class, and the last section holds the rules every docstring follows.
+## Contents
+
+- Numerical primitive, the template for a jit-safe array transform
+- Workflow or analysis function, the template for a function that takes a `Model` and its draws
+- Class, the template for a public class
+- Every docstring, the wrapping, type spellings, default forms, and section rules every docstring follows
 
 Sphinx renders numpydoc through napoleon with `autodoc_typehints = "none"`, so the docstring is the only place a reader sees types. Start from the template for the kind of object and replace each `<placeholder>`. Text outside the angle brackets, including section underlines, type spellings, and default forms, is the wording new code uses.
 

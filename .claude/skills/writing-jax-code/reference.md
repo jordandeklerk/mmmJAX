@@ -1,6 +1,6 @@
 # JAX reference for mmmJAX
 
-These sections cover changing the JAX pin, custom derivatives, devices and host transfer, debugging, and testing JAX behavior.
+These sections cover changing the JAX pin, custom derivatives, PRNG keys, devices and host transfer, debugging, and testing JAX behavior.
 
 ## Changing the JAX pin
 
@@ -30,12 +30,23 @@ Write code that also holds on 0.11. There `jnp.empty` returns uninitialized memo
 
 - Use `nondiff_argnums` or `nondiff_argnames` only for Python values such as a bool, which then come first in the rule's signature (`_log_betainc` in `distributions/_beta_cdf.py`). Integer arrays stay ordinary arguments.
 
+## PRNG keys
+
+- Workflow functions call `jax.random.key(int(seed))` and split once into one named key per consumer (`sample` in `inference/sampling.py`).
+- Where draws must match across chunking and `continue_sampling`, derive each key with `jax.random.fold_in` on the absolute draw index as `uint32` (`draw_keys` in `inference/_nuts.py`, `_generation_keys` in `inference/sampling.py`). `jax.random.split(key, (chains, draws))` makes every chain after the first depend on `draws`. A 1-D split keeps its prefix under the default `jax_threefry_partitionable`, but that rests on a config flag, so use `fold_in` wherever stability matters.
+- Never both split a key and fold indices into that same key. Under the default `jax_threefry_partitionable`, `fold_in(key, i)` equals `split(key, n)[i]`, and key-reuse checking misses the overlap, so split once and fold indices only into the child keys.
+- A typed `split` returns shape `(n,)` and accepts a shape tuple (`generate_quantities` in `inference/sampling.py`).
+- Accept seeds in `[0, 2**32)`. With x64 off, `jax.random.key` drops bits above 32, so `2**32` and `np.int64(2**40)` both give the stream of 0. `2**63` raises `OverflowError` in either mode.
+- Store a key's implementation with its data, as `str(jax.random.key_impl(key))`, and pass it as `impl=` to `wrap_key_data`. Key data alone restores under whatever `JAX_DEFAULT_PRNG_IMPL` is set, which raises for an impl with a different key shape and silently switches streams under `philox4x32`, whose key data shares threefry's `(2,)` shape.
+- Only the output distribution of `jax.random` is stable across JAX versions, so never hardcode draws, and treat a stored sampling state as reproducible within one JAX version.
+- Host simulation uses `np.random.default_rng` with `SeedSequence.spawn` (`simulate_data`).
+
 ## Devices and host transfer
 
-- Parallel chains follow the mesh setup in `_sample_nuts` (`_nuts.py`). Build the mesh with `jax.make_mesh((chains,), ("chain",), axis_types=(AxisType.Auto,), devices=jax.local_devices()[:chains])`, because `make_mesh` has defaulted to `Explicit` axes since 0.9. Enter it with `jax.set_mesh`, place inputs with `NamedSharding` and `jax.device_put`, and wrap `jax.jit(jax.shard_map(...))`. `check_vma=False` there is safe only because every `out_specs` entry is sharded on `"chain"`, and a replicated spec would fail silently. `jax.P` is the short alias for `PartitionSpec`. mypy treats both constructors and `jax.effects_barrier()` as untyped calls, so they carry `# type: ignore[no-untyped-call]` as in `_nuts.py`.
-- Check the device count before any work (`sample` in `sampling.py`). JAX fixes the CPU device count when its backend starts, so set `JAX_NUM_CPU_DEVICES` before importing JAX.
-- Stream long results to the host in bounded chunks with `jax.device_get` into preallocated NumPy buffers, and `del` the device chunk before the next one (`transfer` in `_sample_nuts`, `_evaluate_draws` in `sampling.py`). `np.asarray(x)` and `jax.device_get(x)` both return read-only arrays, so copy with `np.array(x, copy=True)` before writing into one (`optimize_budget` in `optimization.py`).
-- blackjax's progress bar runs `jax.debug.callback` inside `scan`, so `_progress` in `_nuts.py` calls `jax.effects_barrier()` in its `finally`.
+- Parallel chains follow the mesh setup in `_sample_nuts` (`inference/_nuts.py`). Build the mesh with `jax.make_mesh((chains,), ("chain",), axis_types=(AxisType.Auto,), devices=jax.local_devices()[:chains])`, because `make_mesh` has defaulted to `Explicit` axes since 0.9. Enter it with `jax.set_mesh`, place inputs with `NamedSharding` and `jax.device_put`, and wrap `jax.jit(jax.shard_map(...))`. `check_vma=False` there is safe only because every `out_specs` entry is sharded on `"chain"`, and a replicated spec would fail silently. `jax.P` is the short alias for `PartitionSpec`. mypy treats both constructors and `jax.effects_barrier()` as untyped calls, so they carry `# type: ignore[no-untyped-call]` as in `inference/_nuts.py`.
+- Check the device count before any work (`sample` in `inference/sampling.py`). JAX fixes the CPU device count when its backend starts, so set `JAX_NUM_CPU_DEVICES` before importing JAX.
+- Stream long results to the host in bounded chunks with `jax.device_get` into preallocated NumPy buffers, and `del` the device chunk before the next one (`transfer` in `_sample_nuts`, `_evaluate_draws` in `inference/sampling.py`). `np.asarray(x)` and `jax.device_get(x)` both return read-only arrays, so copy with `np.array(x, copy=True)` before writing into one (`optimize_budget` in `analysis/optimization.py`).
+- blackjax's progress bar runs `jax.debug.callback` inside `scan`, so `_progress` in `inference/_nuts.py` calls `jax.effects_barrier()` in its `finally`.
 
 ## Debugging and dependencies
 
@@ -57,4 +68,4 @@ Write code that also holds on 0.11. There `jnp.empty` returns uninitialized memo
   ```
 
 - Guard against retracing by warming a jitted function and calling it again under `with jax.no_tracing(True):`. Create every input before the context and check outputs after it, since any eager `jnp` call that has not yet run with that shape and dtype traces inside it, even `jnp.ones` or `x + 1`.
-- Scope checks to one test with `jax.debug_key_reuse(True)`, `jax.numpy_dtype_promotion("strict")`, and `jax.check_tracer_leaks()` (`test_model_density_and_gradient_do_not_retain_tracers` in `tests/test_model.py`). Under key-reuse checking, `split` consumes its key and `fold_in` does not.
+- Scope checks to one test with `jax.debug_key_reuse(True)`, `jax.numpy_dtype_promotion("strict")`, and `jax.check_tracer_leaks()` (`test_model_density_and_gradient_do_not_retain_tracers` in `tests/model/test_model.py`). Under key-reuse checking, `split` consumes its key and `fold_in` does not.

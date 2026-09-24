@@ -178,5 +178,5 @@ These User Guide pages in `docs/source/user_guide/` are executed examples.
 - `../getting_started/installation.md` for precision and parallel chains
 
 HSGP and ROI or contribution calibration have no User Guide page. The
-docstring examples in `mmmjax/hsgp.py` and `mmmjax/calibration.py` cover them,
-and `tests/test_hsgp.py` builds a full HSGP model.
+docstring examples in `mmmjax/baselines/hsgp.py` and `mmmjax/media/calibration.py` cover them,
+and `tests/baselines/test_hsgp.py` builds a full HSGP model.

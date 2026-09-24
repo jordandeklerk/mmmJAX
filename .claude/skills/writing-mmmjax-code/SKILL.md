@@ -5,7 +5,7 @@ description: Writes, changes, refactors, and reviews Python code and tests in mm
 
 # Writing mmmJAX code
 
-The Code section of `.claude/CLAUDE.md` sets the rules, and this skill adds the specifics and reasons behind them, taken from the code. `pixi run lint` and `pixi run typecheck` already enforce formatting, imports, a sorted `__all__`, annotations, exception chaining, raw docstrings with backslashes, imperative summaries, and the `print` ban, so this skill leaves those out. `mmmjax/calibration.py` and `mmmjax/seasonality.py` each show most of what follows in one file.
+The Code section of `.claude/CLAUDE.md` sets the rules, and this skill adds the specifics and reasons behind them, taken from the code. `pixi run lint` and `pixi run typecheck` already enforce formatting, imports, a sorted `__all__`, annotations, exception chaining, raw docstrings with backslashes, imperative summaries, and the `print` ban, so this skill leaves those out. `mmmjax/media/calibration.py` and `mmmjax/baselines/seasonality.py` each show most of what follows in one file.
 
 ## Before handing over
 
@@ -15,27 +15,28 @@ The Code section of `.claude/CLAUDE.md` sets the rules, and this skill adds the 
 
 ## Module layout
 
+- Modules live in the domain folders under `mmmjax/`, and a new module joins the folder whose work it does. Imports run one way, from `distributions/`, `media/`, and `baselines/` through `data/`, `model/`, and `inference/` to `analysis/`, so a module never imports from a later folder. A folder's `__init__.py` holds only a docstring, except `distributions/`, which re-exports its families, and users reach everything through the flat `mmmjax` namespace.
 - RUF022 keeps `__all__` sorted isort-style, classes first and then functions alphabetically. The public API in `__all__` order therefore means a new public name goes at its sorted position in the file.
 - Type aliases, StrEnums, and small private classes that signatures reference come right after `__all__`, because annotations evaluate at definition time and the package never adds `from __future__ import annotations`. Helpers never need to precede their callers, so they follow the public API.
-- Private modules such as `_binding.py`, `_nuts.py`, `_results.py`, and `distributions/_normal.py` define no `__all__`. The one exception is `distributions/_distribution.py`, whose `__all__` lists the re-exported `custom_distribution`.
+- Private modules such as `model/_binding.py`, `inference/_nuts.py`, `data/_results.py`, and `distributions/_normal.py` define no `__all__`. The one exception is `distributions/_distribution.py`, whose `__all__` lists the re-exported `custom_distribution`.
 - Several older modules break this order. Do not copy their layout, and reorder one only as a pure move on a separate branch, never inside a feature diff.
-- Module scope holds only `__all__`, `type` aliases, `__version__`, and the `_bind_distribution(...)` calls at the bottom of distribution modules. A missing value raises `LookupError` instead of returning a sentinel (`_lookup_input` in `_binding.py`), and a name used in several places stays a literal at each use, as `{"chain", "draw", "sample", "pred_id"}` does.
+- Module scope holds only `__all__`, `type` aliases, `__version__`, and the `_bind_distribution(...)` calls at the bottom of distribution modules. A missing value raises `LookupError` instead of returning a sentinel (`_lookup_input` in `model/_binding.py`), and a name used in several places stays a literal at each use, as `{"chain", "draw", "sample", "pred_id"}` does.
 - The ban covers `mmmjax/` only. Tests keep small data constants such as `DISTRIBUTION_EXPORTS`.
 
 ## Types and signatures
 
 - Take arrays as `ArrayLike` and dtypes as `DTypeLike` from `jax.typing`, return `jax.Array`, and type host arrays as `NDArray[np.float64]` or `NDArray[np.generic]`. jaxtyping is a declared dependency that no module imports, so do not start using it, and never write `jnp.ndarray`.
 - Accept `Mapping` and `Sequence`, return `dict` and `tuple`, and return copies from accessors, as in `return dict(self._parameterizations)` (`Model.parameters`).
-- Wrap untyped TFP and blackjax results in `cast(jax.Array, ...)` (`_normal_logpdf_kernel`). Keep `# type: ignore[code]` for untyped imports and calls, as on the `blackjax` import in `_nuts.py`.
-- Public string options are `Literal[...]` in the signature and checked at runtime with `if effects not in ("lognormal", "normal")`. A reused option set gets a private alias, as in `type _Effects = Literal["lognormal", "normal"]` in `calibration.py`. Older modules that repeat an option literal are not precedent.
-- Leading data or model arguments stay positional and every setting goes after `*`, as in `fourier_features(time, *, period, order)`. Distribution functions take their settings positionally with only `sample_shape` keyword-only. Learned parameters are positional in `adstock.py` and `saturation.py` and keyword-only in `hsgp_weights`, so follow the module when adding one.
+- Wrap untyped TFP and blackjax results in `cast(jax.Array, ...)` (`_normal_logpdf_kernel`). Keep `# type: ignore[code]` for untyped imports and calls, as on the `blackjax` import in `inference/_nuts.py`.
+- Public string options are `Literal[...]` in the signature and checked at runtime with `if effects not in ("lognormal", "normal")`. A reused option set gets a private alias, as in `type _Effects = Literal["lognormal", "normal"]` in `media/calibration.py`. Older modules that repeat an option literal are not precedent.
+- Leading data or model arguments stay positional and every setting goes after `*`, as in `fourier_features(time, *, period, order)`. Distribution functions take their settings positionally with only `sample_shape` keyword-only. Learned parameters are positional in `media/adstock.py` and `media/saturation.py` and keyword-only in `hsgp_weights`, so follow the module when adding one.
 - Analysis functions take `model` and `results` positionally and the rest after `*`. They reuse the shared keywords `quantity`, `group`, `spend_to_media`, `spend_to_rf`, `channels`, `new_data`, `spend_periods` or `periods`, `response_periods`, `by`, and `batch_size` in that relative order.
 - Workflow functions take `seed: int`, and primitives take `key: jax.Array` as the first argument.
 - Distribution arguments spell out the setting (`location`, `scale`, `probability`, `trials`, `concentration`) and map to the TFP names in the `_bind_distribution(...)` call.
 
 ## Validation and errors
 
-Validate at the top of a public function, before any computation. Workflow functions check the model first with `if not isinstance(model, Model): raise TypeError("model must be a Model")`. Analysis functions get that check and their draws from `_response_inputs` or `_prepare_response` in `response.py` instead of repeating them.
+Validate at the top of a public function, before any computation. Workflow functions check the model first with `if not isinstance(model, Model): raise TypeError("model must be a Model")`. Analysis functions get that check and their draws from `_response_inputs` or `_prepare_response` in `analysis/response.py` instead of repeating them.
 
 - Raise `TypeError` for a wrong Python type or dtype and `ValueError` for a wrong value, range, or shape. `RuntimeError` is for a failure after valid input, such as nonfinite draws or a solver failure, and sampler diagnostics use `warnings.warn(..., RuntimeWarning, stacklevel=3)`. There are no custom exception classes.
 - Some older checks fold a type error and a range error into one `ValueError`. Tests pin exception types with `pytest.raises`, so keep the existing type when editing an old check.
@@ -52,7 +53,7 @@ raise ValueError(
     "Use the number of modeling periods without counting earlier history"
 )
 
-# _as_scalar in model.py
+# _as_scalar in model/model.py
 raise ValueError(f"{name} must return a scalar, got shape {array.shape}")
 ```
 
@@ -63,10 +64,10 @@ The `writing-jax-code` skill covers JAX practice, from where `jax.jit` goes to t
 ## Classes and pytrees
 
 - Every dataclass is `frozen=True`, usually with `slots=True`, and adds `eq=False` when it holds arrays.
-- A pytree is a frozen dataclass under `@jax.tree_util.register_dataclass`. Non-array fields carry `metadata={"static": True}` and must be hashable because they key the jit cache, which is why static mappings are `_FrozenMapping` and not `dict` (`_ModelData` in `_binding.py`).
-- A public class that normalizes its inputs uses `init=False` with an `__init__` that validates, normalizes, and assigns through `object.__setattr__`, so equal specifications share jit cache keys (`Real.__init__` in `parameters.py`). A simpler class validates in `__post_init__`, as `SpendConstraint` does.
+- A pytree is a frozen dataclass under `@jax.tree_util.register_dataclass`. Non-array fields carry `metadata={"static": True}` and must be hashable because they key the jit cache, which is why static mappings are `_FrozenMapping` and not `dict` (`_ModelData` in `model/_binding.py`).
+- A public class that normalizes its inputs uses `init=False` with an `__init__` that validates, normalizes, and assigns through `object.__setattr__`, so equal specifications share jit cache keys (`Real.__init__` in `model/parameters.py`). A simpler class validates in `__post_init__`, as `SpendConstraint` does.
 - Copy inputs at construction and return copies from accessors, so a caller's later edits never reach a model and results never alias their inputs.
-- A closed set of internal names is a private StrEnum when code iterates over its members, as `_ResultGroup` in `model.py` and `_Family` in `contribution.py` do, and a private `Literal` alias otherwise, as `_Source` in `_binding.py` is. Dispatch on either with `match`. Small immutable records are NamedTuples, and the parameterization contract is a `runtime_checkable` Protocol.
+- A closed set of internal names is a private StrEnum when code iterates over its members, as `_ResultGroup` in `model/model.py` and `_Family` in `analysis/contribution.py` do, and a private `Literal` alias otherwise, as `_Source` in `model/_binding.py` is. Dispatch on either with `match`. Small immutable records are NamedTuples, and the parameterization contract is a `runtime_checkable` Protocol.
 - Library pieces are plain functions of arrays, not configurable component objects, and the user writes the model equation. A helper may size an approximation that encodes no belief, as `prepare_hsgp` sizes the HSGP domain.
 
 ## Naming
@@ -95,7 +96,7 @@ return shared
 ## Adding a public name
 
 1. Add it to the module's `__all__` and define it at its sorted position.
-2. Import it in `mmmjax/__init__.py`, which imports without `as` aliases, and add it to that `__all__`.
+2. Import it from its module in `mmmjax/__init__.py`, which imports without `as` aliases in module path order, and add it to that `__all__`.
 3. For a distribution, also add `from mmmjax.distributions._x import name as name` and the `__all__` entry in `mmmjax/distributions/__init__.py`, and the sorted `DISTRIBUTION_EXPORTS` list in `tests/distributions/test_public_api.py`.
 4. Add it to the autosummary list of the matching `docs/source/api/*.rst`, under `.. currentmodule:: mmmjax`.
 
@@ -107,35 +108,8 @@ Every public docstring starts from a template in [docstrings.md](docstrings.md),
 
 ## Comments
 
-A comment sits on its own line above the code it explains, and the only trailing comment is `# type: ignore[code]`. There are no TODO or FIXME markers. The why is usually numerical stability, gradient behavior, ownership, or a JAX constraint, as in `# Convert counts directly to floating point to avoid narrowing them to int32` (`_broadcast_saturation_inputs` in `saturation.py`). Three lines is the most a real numerical subtlety gets. The secant comment in `optimize_budget` is an example.
+A comment sits on its own line above the code it explains, and the only trailing comment is `# type: ignore[code]`. There are no TODO or FIXME markers. The why is usually numerical stability, gradient behavior, ownership, or a JAX constraint, as in `# Convert counts directly to floating point to avoid narrowing them to int32` (`_broadcast_saturation_inputs` in `media/saturation.py`). Three lines is the most a real numerical subtlety gets. The secant comment in `optimize_budget` is an example.
 
 ## Tests
 
-- `mmmjax/<module>.py` is tested in `tests/test_<module>.py` or a feature file such as `test_model_inputs.py`, and distributions in `tests/distributions/test_<name>.py`. That directory has no `__init__.py`, so a test file name must be unique across `tests/`. Fixtures live in the module that uses them and `conftest.py` holds none. Helpers stay private in the test module that uses them, as `_convolution_reference` does in `tests/test_adstock.py`, and `tests/helpers.py` holds only `importorskip`.
-- A test module opens with `"""Tests for <subject>."""`. Tests are plain module-level functions without docstrings or classes, named as behavior sentences such as `test_normal_logpdf_rejects_invalid_parameters_without_repairing_them`. Validation tests say `rejects` or `requires` rather than `raises`, and export checks are `test_<name>_is_exported`.
-- Import the API under test from the package root. Import a submodule only to assert re-export identity or to reach a private helper.
-- Lay a test out as inputs and `expected`, a blank line, `result = f(...)`, a blank line, and the asserts (`test_normal_logpdf_matches_known_values`).
-- Compute `expected` independently with SciPy, TFP, `jax.scipy.stats`, a private NumPy reference such as `_convolution_reference`, or exact literals.
-- Compare with `np.testing.assert_allclose(result, expected, rtol=..., atol=...)` and explicit tolerances, commonly `rtol=2e-6` or `3e-6` in float32 with `atol=0`. Use `assert_array_equal` for exact values and `xr.testing.assert_identical` for labeled output, and assert `shape` and `dtype` as well. Distribution tests mostly write `assert jnp.allclose(...)`, so follow the file there.
-- Check a numeric function eagerly and under `jax.jit` against the same `expected`. Where it applies, also check `jax.vmap` against a Python loop and gradients against a closed form or float64 finite differences.
-
-  ```python
-  # test_geometric_adstock_matches_numpy_convolution
-  eager = function(media, retention)
-  compiled = jax.jit(function)(media, retention)
-
-  tolerance = 2e-6 if dtype == jnp.float32 else 2e-14
-  for result in (eager, compiled):
-      assert result.shape == media.shape
-      assert result.dtype == media.dtype
-      np.testing.assert_allclose(result, expected, rtol=tolerance, atol=1e-15)
-  ```
-
-- Cover both precisions. Parametrize `dtype` over `[jnp.float32, jnp.float64]` and call `pytest.skip("JAX 64-bit mode is disabled")` for float64 when x64 is off, or mark float64-only tests with `@pytest.mark.skipif(not jax.enable_x64.value, reason="JAX 64-bit mode is disabled")`. `with jax.enable_x64(...)` switches the mode inside one test.
-- Test every validation error with `pytest.raises(ErrorType, match=...)` matched on a distinctive part of the message, often the argument name, and group several as an `"option, error, message"` table (`test_data_block_validates_declarations`).
-- Stack parametrize decorators for products, use `pytest.param(..., id=...)` for values without a readable repr, and use a fixture with `params=` for backend matrices such as the dataframe libraries (the `frame_factory` fixture in `tests/test_data.py`).
-- Keep real NUTS out of tests. The `nuts_calls` fixture in `tests/test_sampling.py` stubs `sampling._sample_nuts`, `_collect_results` builds result trees directly, and a stub that must never run raises `AssertionError`. An unavoidable real run stays at `draws=2, warmup=3, chains=1`.
-- A test that needs several devices runs a subprocess with `JAX_NUM_CPU_DEVICES` and `JAX_PLATFORMS=cpu`, because JAX fixes the device count at startup (`test_parallel_nuts_on_two_cpu_devices_preserves_targets_generation_and_labels`). CI splits tests across pytest-xdist workers, so no test may depend on another.
-- Build data inline as small polars frames or with `simulate_data(seed=...)`. There are no data files and no `tmp_path`.
-- A new distribution's tests follow `tests/distributions/test_normal.py`. They cover known values, the scalar sum, broadcasting, `nan` for invalid settings, support endpoints, `logcdf` and `logsf` as complements, extreme tails, gradients, `vmap`, and an `rng` that matches transformed `jax.random` draws from the same key.
-- A new scalar family also joins each family list in `tests/distributions/test_contracts.py`. Those lists run every scalar family through empty batches, the float32 floor, float64, `jax.jit`, `nan` draws for invalid settings, and key `vmap`. The family also gets a case in `benchmarks/cases.py` and a JAX reference in `benchmarks/references.py`, and `tests/distributions/test_references.py` checks both against the public API.
+Every test follows [tests.md](tests.md), which covers file placement, test layout, independent expected values, tolerances, both precisions, validation tests, and stubbing NUTS. Read it before writing or changing a test.
