@@ -30,7 +30,7 @@ def test_log_betainc_log_argument_derivative_avoids_reciprocal_overflow() -> Non
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
 @pytest.mark.parametrize("log_value", [False, True])
 def test_log_betainc_values_match_scipy_with_and_without_differentiation(dtype, log_value) -> None:
-    if dtype == jnp.float64 and not jax.config.x64_enabled:
+    if dtype == jnp.float64 and not jax.enable_x64.value:
         pytest.skip("JAX 64-bit mode is disabled")
     # Mixing terminating and longer fractions checks that early convergence in one entry leaves others running
     alpha = jnp.array([1.0, 2.0, 0.2, 20.0, 0.1, 10001.0], dtype=dtype)
@@ -57,7 +57,7 @@ def test_log_betainc_values_match_scipy_with_and_without_differentiation(dtype, 
 
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
 def test_betainc_preserves_jax_values_and_matches_scipy(dtype) -> None:
-    if dtype == jnp.float64 and not jax.config.x64_enabled:
+    if dtype == jnp.float64 and not jax.enable_x64.value:
         pytest.skip("JAX 64-bit mode is disabled")
     alpha = jnp.array([0.2, 1.0, 2.5, 20.0], dtype=dtype)
     beta = jnp.array([0.5, 2.0, 4.7, 30.0], dtype=dtype)
@@ -114,7 +114,7 @@ def test_log_betainc_large_shape_values_and_gradients_match_scipy(log_value) -> 
 
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
 def test_betainc_gradients_match_independent_integrals(dtype) -> None:
-    if dtype == jnp.float64 and not jax.config.x64_enabled:
+    if dtype == jnp.float64 and not jax.enable_x64.value:
         pytest.skip("JAX 64-bit mode is disabled")
     # Integer shapes exercise derivatives beyond the point where the value fraction terminates
     points = jnp.array(
@@ -169,7 +169,7 @@ def test_betainc_broadcast_jvp_and_reverse_mode_match_integrals() -> None:
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
 @pytest.mark.parametrize("point", [(1.0, 1.0, 0.4), (2.0, 3.0, 0.4), (0.2, 0.3, 0.9)])
 def test_betainc_second_derivatives_match_independent_gradient_differences(point, dtype) -> None:
-    if dtype == jnp.float64 and not jax.config.x64_enabled:
+    if dtype == jnp.float64 and not jax.enable_x64.value:
         pytest.skip("JAX 64-bit mode is disabled")
     arguments = jnp.asarray(point, dtype=dtype)
     parameters = np.asarray(arguments, dtype=np.float64)

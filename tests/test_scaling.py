@@ -126,8 +126,8 @@ def test_scaling_supports_prediction_batches_and_parameter_draws():
 def test_scaling_is_a_dynamic_pytree_and_supports_gradients():
     fitted = fit_scaling([[2.0, 10.0], [6.0, 22.0]])
     values = jnp.array([[8.0, 28.0]])
-    leaves, structure = jax.tree_util.tree_flatten(fitted)
-    restored = jax.tree_util.tree_unflatten(structure, leaves)
+    leaves, structure = jax.tree.flatten(fitted)
+    restored = jax.tree.unflatten(structure, leaves)
 
     assert len(leaves) == 2
     transformed = jax.jit(lambda scaling, x: scaling.transform(x))(restored, values)
@@ -154,14 +154,14 @@ def test_scaling_does_not_keep_a_mutable_view_of_training_values():
 @pytest.mark.parametrize("dtype", [np.bool_, np.int32, np.int64, np.float16, np.float32, np.float64])
 def test_scaling_statistics_follow_jax_precision_policy(dtype):
     fitted = fit_scaling(np.array([0, 1], dtype=dtype))
-    expected = np.float64 if jax.config.x64_enabled and dtype in (np.int64, np.float64) else np.float32
+    expected = np.float64 if jax.enable_x64.value and dtype in (np.int64, np.float64) else np.float32
 
     assert fitted.offset.dtype == fitted.scale.dtype == expected
     np.testing.assert_array_equal(fitted.transform(np.array([0, 1], dtype=dtype)), [-1.0, 1.0])
 
 
 def test_scaling_preserves_float64_statistics_when_enabled():
-    if not jax.config.x64_enabled:
+    if not jax.enable_x64.value:
         pytest.skip("JAX 64-bit mode is disabled")
     values = np.array([1.0, 1.0 + 1e-10, 1.0 + 2e-10], dtype=np.float64)
     fitted = fit_scaling(values)
@@ -430,7 +430,7 @@ def test_media_scaling_population_uses_jax_dtype_promotion(population_dtype):
     fitted = fit_media_scaling(
         np.array([[2, 4], [6, 12]], dtype=np.float32), population=np.array(1000, dtype=population_dtype)
     )
-    expected = np.float64 if population_dtype == np.float64 and jax.config.x64_enabled else np.float32
+    expected = np.float64 if population_dtype == np.float64 and jax.enable_x64.value else np.float32
 
     assert fitted.offset.dtype == fitted.scale.dtype == expected
     np.testing.assert_allclose(fitted.scale, [[4, 8]], rtol=1e-7)

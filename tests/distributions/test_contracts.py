@@ -440,7 +440,7 @@ def test_cumulative_functions_follow_jax_default_dtype_for_python_scalars() -> N
     assert uniform_logsf(0.5, 0.0, 1.0).dtype == expected_dtype
 
 
-@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+@pytest.mark.skipif(not jax.enable_x64.value, reason="JAX 64-bit mode is disabled")
 def test_distribution_functions_support_float64() -> None:
     values = jnp.array([0.0, 1.0], dtype=jnp.float64)
     key = jax.random.key(0)

@@ -256,7 +256,7 @@ def reach_frequency_response(
     if not callable(adstock):
         raise TypeError("adstock must be a function that preserves the reach and frequency shape")
 
-    reach_leaves = jax.tree_util.tree_leaves(reach)
+    reach_leaves = jax.tree.leaves(reach)
     try:
         reach_dtype = jnp.result_type(*reach_leaves)
     except (TypeError, ValueError) as error:
@@ -270,7 +270,7 @@ def reach_frequency_response(
 
     def carry_response(saturated_frequency: ArrayLike) -> ArrayLike:
         # Convert integer reach directly to floating point before multiplying
-        dtype = jnp.result_type(*reach_leaves, *jax.tree_util.tree_leaves(saturated_frequency))
+        dtype = jnp.result_type(*reach_leaves, *jax.tree.leaves(saturated_frequency))
         if not jnp.issubdtype(dtype, jnp.floating):
             dtype = jnp.float64 if jax.dtypes.itemsize_bits(dtype) == 64 else jnp.float32
         dtype = jax.dtypes.canonicalize_dtype(jnp.promote_types(dtype, jnp.float32))

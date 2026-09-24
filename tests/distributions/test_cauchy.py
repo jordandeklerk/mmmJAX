@@ -85,7 +85,7 @@ def test_cauchy_logpdf_handles_float32_finite_limits() -> None:
     assert jnp.allclose(compiled_results, expected, rtol=3e-6, atol=0)
 
 
-@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+@pytest.mark.skipif(not jax.enable_x64.value, reason="JAX 64-bit mode is disabled")
 def test_cauchy_logpdf_handles_float64_finite_limits() -> None:
     maximum = jnp.asarray(jnp.finfo(jnp.float64).max)
     minimum_normal = jnp.asarray(jnp.finfo(jnp.float64).tiny)

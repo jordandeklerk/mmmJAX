@@ -710,7 +710,7 @@ def test_explicit_float32_is_preserved(parameterization_type, bound_arguments) -
     assert adjustment.dtype == jnp.dtype(jnp.float32)
 
 
-@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+@pytest.mark.skipif(not jax.enable_x64.value, reason="JAX 64-bit mode is disabled")
 @pytest.mark.parametrize(
     ("parameterization_type", "bound_arguments"),
     [
@@ -734,7 +734,7 @@ def test_explicit_float64_is_preserved(parameterization_type, bound_arguments) -
     assert parameterization.log_density_adjustment(position).dtype == jnp.dtype(jnp.float64)
 
 
-@pytest.mark.skipif(jax.config.x64_enabled, reason="JAX 64-bit mode is enabled")
+@pytest.mark.skipif(jax.enable_x64.value, reason="JAX 64-bit mode is enabled")
 @pytest.mark.parametrize(
     ("parameterization_type", "bound_arguments"),
     [
@@ -750,7 +750,7 @@ def test_explicit_float64_requires_x64(parameterization_type, bound_arguments) -
         parameterization_type(*bound_arguments, dtype=jnp.float64)
 
 
-@pytest.mark.skipif(jax.config.x64_enabled, reason="JAX 64-bit mode is enabled")
+@pytest.mark.skipif(jax.enable_x64.value, reason="JAX 64-bit mode is enabled")
 @pytest.mark.parametrize("dtype", [jnp.float64, "float64", jnp.dtype("float64")])
 def test_explicit_float64_aliases_require_x64(dtype) -> None:
     with pytest.raises(ValueError, match="JAX_ENABLE_X64=true"):

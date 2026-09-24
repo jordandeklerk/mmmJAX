@@ -40,7 +40,7 @@ def test_selection_preserves_array_dtype(dtype):
 
 
 def test_selection_preserves_float64_when_enabled():
-    if not jax.config.x64_enabled:
+    if not jax.enable_x64.value:
         pytest.skip("JAX 64-bit mode is disabled")
     values = jnp.asarray([1.1, 2.2], dtype=jnp.float64)
 

@@ -1,7 +1,6 @@
 """Tests for Binomial distribution functions."""
 
 import math
-from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -263,8 +262,8 @@ def test_binomial_logpmf_preserves_adjacent_counts_across_mixed_dtypes() -> None
 
 
 def test_binomial_logpmf_rejects_float_count_at_signed_integer_limit() -> None:
-    dtype = jnp.float64 if jax.config.x64_enabled else jnp.float32
-    count_bits = 64 if jax.config.x64_enabled else 32
+    dtype = jnp.float64 if jax.enable_x64.value else jnp.float32
+    count_bits = 64 if jax.enable_x64.value else 32
     trials = dtype(2 ** (count_bits - 1))
     value = jnp.nextafter(trials, dtype(0))
 
@@ -272,7 +271,7 @@ def test_binomial_logpmf_rejects_float_count_at_signed_integer_limit() -> None:
     assert jnp.isnan(binomial_logit_logpmf(value, trials, 0.0))
 
 
-@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+@pytest.mark.skipif(not jax.enable_x64.value, reason="JAX 64-bit mode is disabled")
 def test_binomial_logpmf_matches_scipy_for_large_central_count_in_float64() -> None:
     value = jnp.int64(500_000)
     trials = jnp.int64(1_000_000)
@@ -386,7 +385,7 @@ def test_binomial_tails_match_independent_probability_sums(trials: int, probabil
         expected_cdf = np.log([math.fsum(masses[: k + 1]) for k in values])
         expected_sf = np.log([math.fsum(masses[k + 1 :]) for k in values])
 
-    tolerance = 2e-12 if jax.config.x64_enabled else 5e-6
+    tolerance = 2e-12 if jax.enable_x64.value else 5e-6
     np.testing.assert_allclose(
         binomial_logcdf(values, trials, probability), expected_cdf, rtol=tolerance, atol=tolerance
     )
@@ -413,8 +412,8 @@ def test_binomial_tail_probability_derivatives_match_analytic_identities(functio
     curvature = jax.jit(jax.vmap(jax.grad(jax.grad(function, argnums=2), argnums=2)))(counts, trials, probabilities)
     vectorized = jax.jit(jax.vmap(function))(counts, trials, probabilities)
 
-    gradient_tolerance = 2e-11 if jax.config.x64_enabled else 3e-5
-    curvature_tolerance = 2e-10 if jax.config.x64_enabled else 1e-4
+    gradient_tolerance = 2e-11 if jax.enable_x64.value else 3e-5
+    curvature_tolerance = 2e-10 if jax.enable_x64.value else 1e-4
     np.testing.assert_allclose(vectorized, expected_log, rtol=gradient_tolerance, atol=gradient_tolerance)
     np.testing.assert_allclose(forward, expected_gradient, rtol=gradient_tolerance, atol=gradient_tolerance)
     np.testing.assert_allclose(reverse, expected_gradient, rtol=gradient_tolerance, atol=gradient_tolerance)
@@ -446,7 +445,7 @@ def test_binomial_tail_batches_preserve_shared_parameter_derivatives(counts, fun
 
     # Shared parameters must accumulate derivatives across all thresholds
     # Scalar vmap tests don't check these reductions
-    tolerance = 2e-11 if jax.config.x64_enabled else 3e-5
+    tolerance = 2e-11 if jax.enable_x64.value else 3e-5
     np.testing.assert_allclose(jax.jit(function)(counts, 8, parameter), expected_log, rtol=tolerance, atol=tolerance)
     np.testing.assert_allclose(
         _summed_tail_derivative(function, jax.grad, counts, 8, parameter),
@@ -520,7 +519,7 @@ def test_binomial_logcdf_preserves_small_success_probabilities() -> None:
     assert jnp.all(result < 0)
     np.testing.assert_allclose(result, jnp.log1p(-betainc(2, 99, probabilities)), rtol=3e-6, atol=0)
     # The native float32 Beta normalizer limits relative accuracy for these tiny masses
-    tolerance = 2e-12 if jax.config.x64_enabled else 1e-4
+    tolerance = 2e-12 if jax.enable_x64.value else 1e-4
     np.testing.assert_allclose(result, expected, rtol=tolerance, atol=0)
 
 
@@ -555,7 +554,7 @@ def test_binomial_tails_recover_underflowed_beta_values_and_gradients(function, 
     curvature = jax.jit(jax.grad(jax.grad(function, argnums=2), argnums=2))(count, 100, p)
 
     assert jnp.isfinite(result)
-    tolerance = 2e-11 if jax.config.x64_enabled else 5e-5
+    tolerance = 2e-11 if jax.enable_x64.value else 5e-5
     np.testing.assert_allclose(result, expected, rtol=tolerance, atol=0)
     np.testing.assert_allclose(forward, expected_gradient, rtol=tolerance, atol=0)
     np.testing.assert_allclose(reverse, expected_gradient, rtol=tolerance, atol=0)
@@ -573,7 +572,7 @@ def test_binomial_tails_stay_monotonic_across_beta_underflow(function, reference
 
     result = jax.jit(function)(values, 25, p)
 
-    tolerance = 2e-12 if jax.config.x64_enabled else 1e-5
+    tolerance = 2e-12 if jax.enable_x64.value else 1e-5
     np.testing.assert_allclose(result, expected, rtol=tolerance, atol=tolerance)
     if function is binomial_logcdf:
         assert jnp.all(result[1:] >= result[:-1])
@@ -588,7 +587,7 @@ def test_binomial_tails_preserve_empty_shapes(function) -> None:
     assert result.shape == (0, 3)
 
 
-@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+@pytest.mark.skipif(not jax.enable_x64.value, reason="JAX 64-bit mode is disabled")
 @pytest.mark.parametrize("function", [binomial_logcdf, binomial_logsf, binomial_logit_logcdf, binomial_logit_logsf])
 def test_binomial_tail_counts_do_not_control_probability_dtype(function) -> None:
     counts = jnp.array([0, 1, 4], dtype=jnp.int64)
@@ -676,7 +675,7 @@ def test_binomial_logit_tails_match_independent_log_mass_sums_and_derivatives(fu
     reverse = jax.jit(jax.vmap(jax.grad(evaluate, argnums=1)))(scalar_values, scalar_logits)
     curvature = jax.jit(jax.vmap(jax.grad(jax.grad(evaluate, argnums=1), argnums=1)))(scalar_values, scalar_logits)
 
-    tolerance = 5e-11 if jax.config.x64_enabled else 5e-5
+    tolerance = 5e-11 if jax.enable_x64.value else 5e-5
     assert jnp.all(jnp.isfinite(result))
     np.testing.assert_allclose(result, expected_log, rtol=tolerance, atol=tolerance)
     np.testing.assert_allclose(forward.reshape(log_odds.shape), expected_gradient, rtol=tolerance, atol=tolerance)
@@ -695,7 +694,7 @@ def test_binomial_logit_tails_preserve_near_certain_probabilities() -> None:
 
     assert jnp.all(logcdf < 0)
     assert jnp.all(logsf < 0)
-    tolerance = 2e-12 if jax.config.x64_enabled else 1e-5
+    tolerance = 2e-12 if jax.enable_x64.value else 1e-5
     np.testing.assert_allclose(logcdf, expected, rtol=tolerance, atol=0)
     np.testing.assert_allclose(logsf, expected, rtol=tolerance, atol=0)
 
@@ -710,7 +709,7 @@ def test_binomial_logit_tails_are_monotonic_complementary_and_symmetric() -> Non
     assert jnp.all(logsf[1:] <= logsf[:-1])
     np.testing.assert_allclose(jnp.logaddexp(logcdf, logsf), 0, atol=2e-7)
     # Native float32 incomplete Beta has rounding error even at its symmetric midpoint
-    tolerance = 2e-12 if jax.config.x64_enabled else 3e-5
+    tolerance = 2e-12 if jax.enable_x64.value else 3e-5
     np.testing.assert_allclose(logcdf, binomial_logit_logsf(24 - values, 25, -logits), rtol=tolerance, atol=0)
 
 
@@ -822,7 +821,7 @@ def test_binomial_logit_sums_log_masses() -> None:
     assert jnp.allclose(result, expected)
 
 
-@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+@pytest.mark.skipif(not jax.enable_x64.value, reason="JAX 64-bit mode is disabled")
 def test_binomial_counts_do_not_control_parameter_dtype() -> None:
     values = jnp.array([0, 1], dtype=jnp.int64)
     trials = jnp.array([5, 5], dtype=jnp.int64)
@@ -971,7 +970,7 @@ def test_binomial_rngs_can_be_vectorized_over_keys(function, parameters) -> None
     assert jnp.array_equal(result, expected)
 
 
-@partial(jax.jit, static_argnames=("function", "differentiate"))
+@jax.jit(static_argnames=("function", "differentiate"))
 def _summed_tail_derivative(function, differentiate, counts, trials, parameter):
     # Reuse each compiled derivative across batches without capturing their counts as constants
     def summed(parameter):

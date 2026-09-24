@@ -176,8 +176,12 @@ class Prior:
 
     def _validate_value_event(self, value: ArrayLike) -> None:
         """Check an explicitly bound matrix dimension before evaluating a density."""
-        if self._dimension is not None and jnp.shape(value)[-2:] != self._event_shape:
-            raise ValueError(f"Prior values must end in event shape {self._event_shape}")
+        if self._dimension is None:
+            return
+        # jnp.shape deprecates lists and np.shape cannot read a list of tracers
+        value_shape = _as_real_array("value", value).shape
+        if value_shape[-2:] != self._event_shape:
+            raise ValueError(f"value must end in event shape {self._event_shape}, got shape {value_shape}")
 
     def _validate_shape(self, shape: tuple[int, ...]) -> None:
         """Check that the prior can generate the complete declared value shape."""

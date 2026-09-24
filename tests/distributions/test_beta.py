@@ -83,7 +83,7 @@ def test_beta_logpdf_value_gradient_uses_ordinary_shape_formula(
     assert jnp.allclose(result, expected, rtol=3e-6, atol=0)
 
 
-@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+@pytest.mark.skipif(not jax.enable_x64.value, reason="JAX 64-bit mode is disabled")
 def test_beta_logpdf_matches_scipy_across_float64_betaln_cutoff() -> None:
     cutoff = np.float64(8.0)
     beta_parameters = np.array(
@@ -104,7 +104,7 @@ def test_beta_logpdf_matches_scipy_across_float64_betaln_cutoff() -> None:
     np.testing.assert_allclose(result, expected, rtol=1e-12, atol=5e-13)
 
 
-@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+@pytest.mark.skipif(not jax.enable_x64.value, reason="JAX 64-bit mode is disabled")
 def test_beta_logpdf_matches_scipy_for_ordinary_float64_tail() -> None:
     expected = stats.beta.logpdf(0.001, 8.0, 2.5)
 
@@ -273,7 +273,7 @@ def test_beta_logpdf_handles_maximum_finite_concentrated_shapes() -> None:
     assert jnp.all(jnp.isfinite(jnp.asarray(gradients)))
 
 
-@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+@pytest.mark.skipif(not jax.enable_x64.value, reason="JAX 64-bit mode is disabled")
 def test_beta_logpdf_remains_accurate_at_extreme_float64_shapes() -> None:
     shape = jnp.float64(1e20)
 

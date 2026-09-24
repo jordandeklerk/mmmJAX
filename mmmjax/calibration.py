@@ -122,7 +122,21 @@ def contribution_coefficient(
 
     offsets = _deviation_matrix(deviations, values)
     if effects == "lognormal":
-        log_total = logsumexp(offsets + jnp.log(weighted), axis=0)
+        # A group that never sees a channel has a zero total, and the infinite derivative
+        # of its log times its zero weight in logsumexp would make the gradient nan.
+        exposed = weighted != 0
+        safe_weighted = jnp.where(exposed, weighted, 1.0)
+        log_weighted = jnp.where(exposed, jnp.log(safe_weighted), -jnp.inf)
+        stable = logsumexp(offsets + log_weighted, axis=0)
+        # The guarded log zeroes the partial of a zero total, so the plain sum, smooth at zero, supplies the
+        # derivative. logsumexp still sets the value and takes over where that sum underflows or overflows.
+        top = jnp.max(offsets, axis=0)
+        share = jnp.sum(weighted * jnp.exp(offsets - top), axis=0)
+        usable = (share > 0) & jnp.isfinite(share)
+        safe_share = jnp.where(usable, share, 1.0)
+        smooth = jnp.log(safe_share) + top
+        exact = jax.lax.stop_gradient(stable) + (smooth - jax.lax.stop_gradient(smooth))
+        log_total = jnp.where(usable, exact, stable)
         center = jnp.log(target) - log_total
         coefficient = jnp.exp(center + offsets)
         return coefficient

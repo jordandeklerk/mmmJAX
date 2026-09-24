@@ -19,6 +19,21 @@ block.
 
 %run prerun/first_model.py
 %xmode minimal
+
+import arviz as az
+import matplotlib.pyplot as plt
+
+az.style.use("arviz-darkgrid")
+plt.rcParams["axes.grid"] = False
+plt.rcParams["axes.facecolor"] = "white"
+plt.rcParams["axes.edgecolor"] = ".33"
+plt.rcParams["axes.linewidth"] = 0.8
+plt.rcParams["axes.spines.top"] = False
+plt.rcParams["axes.spines.right"] = False
+plt.rcParams["xtick.major.size"] = 3.5
+plt.rcParams["ytick.major.size"] = 3.5
+plt.rcParams["figure.figsize"] = [12, 7]
+plt.rcParams["figure.dpi"] = 100
 ```
 
 ## A response curve of your own
@@ -67,8 +82,41 @@ print(mj.Prior(half_cauchy, scale=1.0).sample(jax.random.key(0), sample_shape=(3
 
 The new family sums the log density the way `mj.normal` does, and a
 {class}`~mmmjax.Prior` built from it draws and scores like any other, so it
-works with {func}`~mmmjax.sample_prior` as well. The three draws already show
-the heavy tail that sets the half-Cauchy apart.
+works with {func}`~mmmjax.sample_prior` as well. Nothing checks that the two
+functions describe the same distribution. A draw function that disagrees with
+its density gives a prior that draws from one distribution and scores another,
+and the model still runs. A histogram of many draws laid over the density shows whether
+the two agree.
+
+```{code-cell} ipython3
+draws = half_cauchy_rng(jax.random.key(0), 1.0, sample_shape=(10_000,))
+edges = jnp.linspace(0.0, 10.0, 51)
+counts, _ = jnp.histogram(draws, bins=edges)
+width = edges[1] - edges[0]
+grid = jnp.linspace(0.0, 10.0, 200)
+
+fig, axis = plt.subplots(layout="constrained")
+axis.stairs(counts / (draws.size * width), edges, fill=True, alpha=0.4, label="10,000 draws")
+axis.plot(grid, jnp.exp(half_cauchy_logpdf(grid, 1.0)), color="black", label="Density")
+axis.set_title("Draws against the density")
+axis.legend(frameon=False)
+plt.show()
+```
+
+The bars follow the curve, so the draw function samples the distribution the
+density describes. Each count is divided by all 10,000 draws rather than by the
+ones below 10, which keeps the bars on the density's scale when some draws land
+past the right edge. Those draws are the heavy tail that sets the half-Cauchy
+apart.
+
+```{code-cell} ipython3
+half_normal_draws = mj.half_normal_rng(jax.random.key(0), 1.0, sample_shape=(10_000,))
+print(round(float(jnp.mean(draws > 10.0)), 3))
+print(round(float(jnp.mean(half_normal_draws > 10.0)), 3))
+```
+
+Of the half-Cauchy draws, 6.7 percent are above 10, and none of 10,000
+half-normal draws with the same scale are.
 
 ## Both in a model
 

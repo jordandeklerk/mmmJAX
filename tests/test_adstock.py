@@ -22,7 +22,7 @@ def test_geometric_adstock_is_exported() -> None:
 @pytest.mark.parametrize("normalize", [False, True])
 @pytest.mark.parametrize("alpha,max_lag", [(0.0, 4), (0.3, 0), (0.3, 3), (0.8, 12), (1.0, 3)])
 def test_geometric_adstock_matches_numpy_convolution(alpha, max_lag, normalize, dtype) -> None:
-    if dtype == jnp.float64 and not jax.config.x64_enabled:
+    if dtype == jnp.float64 and not jax.enable_x64.value:
         pytest.skip("JAX 64-bit mode is disabled")
     media = jnp.array([0.0, 2.0, 1.0, 0.5, 3.0, 0.0, 0.0], dtype=dtype)
     retention = jnp.asarray(alpha, dtype=dtype)
@@ -196,7 +196,7 @@ def test_geometric_adstock_media_jacobian_has_only_causal_lag_weights() -> None:
 @pytest.mark.parametrize("axis", [0, -1])
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
 def test_adstock_nonfinite_cotangents_do_not_cross_series(function, parameters, max_lag, axis, dtype):
-    if dtype == jnp.float64 and not jax.config.x64_enabled:
+    if dtype == jnp.float64 and not jax.enable_x64.value:
         pytest.skip("JAX 64-bit mode is disabled")
 
     media = jnp.ones((4, 2), dtype=dtype)
@@ -354,7 +354,7 @@ def test_delayed_adstock_includes_delay_in_dtype_promotion() -> None:
     "alpha,theta,max_lag", [(0.4, 0.0, 0), (0.2, 0.0, 4), (0.6, 1.3, 4), (0.3, 2.5, 12), (1.0, 4.0, 4)]
 )
 def test_delayed_adstock_matches_independent_lag_sum(alpha, theta, max_lag, normalize, dtype) -> None:
-    if dtype == jnp.float64 and not jax.config.x64_enabled:
+    if dtype == jnp.float64 and not jax.enable_x64.value:
         pytest.skip("JAX 64-bit mode is disabled")
     media = jnp.array([0.0, 2.0, -1.0, 0.5, 3.0, 0.0, 0.0], dtype=dtype)
     retention, delay = jnp.asarray(alpha, dtype=dtype), jnp.asarray(theta, dtype=dtype)
@@ -568,7 +568,7 @@ def test_weibull_cdf_adstock_is_exported() -> None:
 @pytest.mark.parametrize("shape,scale,max_lag", [(0.5, 0.3, 4), (1.0, 2.0, 3), (2.5, 4.0, 12), (5.0, 3.0, 4)])
 def test_weibull_adstock_matches_scipy_lag_sum(weibull, shape, scale, max_lag, normalize, dtype) -> None:
     adstock, reference = weibull
-    if dtype == jnp.float64 and not jax.config.x64_enabled:
+    if dtype == jnp.float64 and not jax.enable_x64.value:
         pytest.skip("JAX 64-bit mode is disabled")
     media = jnp.array([0.0, 2.0, -1.0, 0.5, 3.0, 0.0, 0.0], dtype=dtype)
     shape, scale = jnp.asarray(shape, dtype=dtype), jnp.asarray(scale, dtype=dtype)
@@ -729,17 +729,51 @@ def test_weibull_adstock_handles_single_period_and_concentrated_weights(weibull,
     np.testing.assert_array_equal(gradient, [0.0, 0.0])
 
 
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
 @pytest.mark.parametrize("normalize", [False, True])
-def test_weibull_pdf_adstock_flat_kernel_has_undefined_rescaling(normalize) -> None:
-    media = jnp.array([2.0, 0.0, 1.0, 3.0])
-    # The sampled densities round to the same value, making their min/max range zero
-    with np.errstate(invalid="ignore"):
-        expected = _weibull_pdf_reference(media, 1.0, 1e20, max_lag=4, normalize=normalize)
+@pytest.mark.parametrize("scale", [1e6, 1e9, 1e20, 1e30])
+def test_weibull_pdf_adstock_stays_accurate_when_scale_far_exceeds_max_lag(scale, normalize, dtype) -> None:
+    if dtype == jnp.float64 and not jax.enable_x64.value:
+        pytest.skip("JAX 64-bit mode is disabled")
+    media = jnp.array([2.0, 0.0, 1.0, 3.0, 0.5, 0.0, 0.0], dtype=dtype)
+    shape, scale = jnp.asarray(1.0, dtype=dtype), jnp.asarray(scale, dtype=dtype)
+    # At shape one the densities decay as exp(-lag/scale), so the rescaled weights are expm1 ratios
+    lags = np.arange(5)
+    weights = np.expm1((4 - lags) / float(scale)) / np.expm1(4 / float(scale))
+    if normalize:
+        weights /= weights.sum()
+    expected = np.convolve(np.asarray(media, dtype=np.float64), weights)[: media.shape[0]]
     function = partial(weibull_pdf_adstock, max_lag=4, normalize=normalize)
 
-    assert np.isnan(expected).all()
-    for result in (function(media, 1.0, 1e20), jax.jit(function)(media, 1.0, 1e20)):
-        np.testing.assert_array_equal(result, expected)
+    for result in (function(media, shape, scale), jax.jit(function)(media, shape, scale)):
+        assert result.shape == media.shape
+        assert result.dtype == dtype
+        np.testing.assert_allclose(result, expected, rtol=1e-5 if dtype == jnp.float32 else 5e-14, atol=0)
+
+
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
+@pytest.mark.parametrize("scale", [1e6, 1e9, 1e20, 1e30])
+def test_weibull_pdf_adstock_shape_derivative_stays_accurate_when_scale_far_exceeds_max_lag(scale, dtype) -> None:
+    if dtype == jnp.float64 and not jax.enable_x64.value:
+        pytest.skip("JAX 64-bit mode is disabled")
+    impulse = jnp.array([1.0, 0.0, 0.0, 0.0, 0.0], dtype=dtype)
+    shape, scale = jnp.asarray(1.0, dtype=dtype), jnp.asarray(scale, dtype=dtype)
+    # Relative to lag zero the log densities at shape one are -lag/scale, and their shape
+    # derivatives are log(p) - (p log(p) - lag log(scale))/scale at period p = lag + 1
+    lags = np.arange(5)
+    periods = lags + 1
+    log_densities = -lags / float(scale)
+    slopes = np.log(periods) - (periods * np.log(periods) - lags * np.log(float(scale))) / float(scale)
+    weights = np.expm1((4 - lags) / float(scale)) / np.expm1(4 / float(scale))
+    # Differentiate the rescaling with its maximum at lag zero and its minimum at the last lag
+    tail = np.exp(log_densities[-1]) * slopes[-1]
+    expected = (np.exp(log_densities) * slopes - (1 - weights) * tail) / -np.expm1(log_densities[-1])
+    function = partial(weibull_pdf_adstock, impulse, scale=scale, max_lag=4, normalize=False)
+
+    tolerance = 4e-6 if dtype == jnp.float32 else 4e-14
+    for derivative in (jax.jacfwd(function), jax.jacrev(function)):
+        # The derivative grows with the scale, and so does rounding at the lags whose derivative is zero
+        np.testing.assert_allclose(jax.jit(derivative)(shape), expected, rtol=tolerance, atol=tolerance * float(scale))
 
 
 @pytest.mark.parametrize("max_lag", [0, 4])

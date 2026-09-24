@@ -172,7 +172,7 @@ def test_negative_binomial_log_parameterization_avoids_large_count_cancellation(
 
 
 def test_negative_binomial_logpmf_avoids_float64_cancellation() -> None:
-    if not jax.config.x64_enabled:
+    if not jax.enable_x64.value:
         pytest.skip("JAX 64-bit mode is disabled")
 
     value = np.int64(1_000_000_000_000_000)
@@ -284,7 +284,7 @@ def test_negative_binomial_unsupported_values_have_zero_parameter_derivatives() 
 
 
 def test_negative_binomial_counts_do_not_control_parameter_dtype() -> None:
-    if not jax.config.x64_enabled:
+    if not jax.enable_x64.value:
         pytest.skip("JAX 64-bit mode is disabled")
 
     result = negative_binomial_logpmf(
@@ -815,7 +815,7 @@ def test_negative_binomial_rngs_reject_complex_arguments(function, arguments, na
 )
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
 def test_negative_binomial_tails_match_scipy(function, reference, dtype) -> None:
-    if dtype == jnp.float64 and not jax.config.x64_enabled:
+    if dtype == jnp.float64 and not jax.enable_x64.value:
         pytest.skip("JAX 64-bit mode is disabled")
     values = jnp.array([[-jnp.inf], [-1.0], [0.0], [0.9], [1.0], [8.7], [30.0], [jnp.inf], [jnp.nan]], dtype=dtype)
     means = jnp.array([0.2, 4.0, 25.0], dtype=dtype)
@@ -937,7 +937,7 @@ def test_negative_binomial_tails_remain_finite_after_probability_underflow(
     np.testing.assert_allclose(hessian, expected_hessian, rtol=3e-4, atol=1e-10)
 
 
-@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+@pytest.mark.skipif(not jax.enable_x64.value, reason="JAX 64-bit mode is disabled")
 @pytest.mark.parametrize("upper_tail", [False, True])
 @pytest.mark.parametrize("threshold", [0, 8])
 def test_negative_binomial_tail_hessians_match_mass_sums(upper_tail, threshold) -> None:
@@ -967,7 +967,7 @@ def test_negative_binomial_tail_hessians_match_mass_sums(upper_tail, threshold) 
 )
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
 def test_negative_binomial_tails_handle_large_counts(function, reference, log_mean, dtype) -> None:
-    if dtype == jnp.float64 and not jax.config.x64_enabled:
+    if dtype == jnp.float64 and not jax.enable_x64.value:
         pytest.skip("JAX 64-bit mode is disabled")
     means = jnp.array([100.0, 100.0, 10000.0, 10000.0, 10000.0, 10000.0, 10000.0], dtype=dtype)
     concentrations = jnp.array([0.1, 1.0, 0.1, 1.0, 2.5, 20.0, 100.0], dtype=dtype)
@@ -1010,7 +1010,7 @@ def test_negative_binomial_tails_handle_large_counts(function, reference, log_me
 @pytest.mark.parametrize("upper_tail", [False, True])
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
 def test_negative_binomial_log_tails_match_scipy(upper_tail, dtype) -> None:
-    if dtype == jnp.float64 and not jax.config.x64_enabled:
+    if dtype == jnp.float64 and not jax.enable_x64.value:
         pytest.skip("JAX 64-bit mode is disabled")
     function = negative_binomial_log_logsf if upper_tail else negative_binomial_log_logcdf
     reference = stats.nbinom.logsf if upper_tail else stats.nbinom.logcdf
@@ -1053,7 +1053,7 @@ def test_negative_binomial_log_tails_validate_inputs_and_support(function) -> No
 @pytest.mark.parametrize("upper_tail", [False, True])
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
 def test_negative_binomial_log_tail_derivatives_match_mass_sums(upper_tail, dtype) -> None:
-    if dtype == jnp.float64 and not jax.config.x64_enabled:
+    if dtype == jnp.float64 and not jax.enable_x64.value:
         pytest.skip("JAX 64-bit mode is disabled")
     function = negative_binomial_log_logsf if upper_tail else negative_binomial_log_logcdf
     thresholds = jnp.array([0, 1, 8, 8, 30])
@@ -1097,7 +1097,7 @@ def test_negative_binomial_log_tail_derivatives_match_mass_sums(upper_tail, dtyp
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
 @pytest.mark.parametrize("upper_tail, log_mean", [(False, 80.0), (False, 1000.0), (True, -80.0), (True, -1000.0)])
 def test_negative_binomial_log_tails_preserve_extreme_log_means(upper_tail, log_mean, dtype) -> None:
-    if dtype == jnp.float64 and not jax.config.x64_enabled:
+    if dtype == jnp.float64 and not jax.enable_x64.value:
         pytest.skip("JAX 64-bit mode is disabled")
     function = negative_binomial_log_logsf if upper_tail else negative_binomial_log_logcdf
     thresholds = np.array([0, 1, 8])

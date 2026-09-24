@@ -92,7 +92,7 @@ def fourier_features(time: ArrayLike, *, period: ArrayLike, order: int) -> jax.A
 
     leaves = []
     for name, value in (("time", time), ("period", period)):
-        value_leaves = jax.tree_util.tree_leaves(value)
+        value_leaves = jax.tree.leaves(value)
         try:
             argument_dtype = jnp.result_type(*value_leaves)
         except (TypeError, ValueError) as error:

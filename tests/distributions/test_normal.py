@@ -79,7 +79,7 @@ def test_normal_logpdf_remains_finite_for_extreme_valid_scales() -> None:
 
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
 def test_normal_functions_handle_finite_standardization_overflow(dtype) -> None:
-    if dtype == jnp.float64 and not jax.config.x64_enabled:
+    if dtype == jnp.float64 and not jax.enable_x64.value:
         pytest.skip("JAX 64-bit mode is disabled")
 
     maximum = jnp.asarray(jnp.finfo(dtype).max)

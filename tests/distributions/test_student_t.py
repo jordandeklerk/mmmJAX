@@ -146,7 +146,7 @@ def test_student_t_approaches_normal_for_large_degrees_of_freedom() -> None:
 
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
 def test_student_t_approaches_normal_at_maximum_degrees_of_freedom(dtype) -> None:
-    if dtype == jnp.float64 and not jax.config.x64_enabled:
+    if dtype == jnp.float64 and not jax.enable_x64.value:
         pytest.skip("JAX 64-bit mode is disabled")
     values = jnp.array([-2.0, -0.1, 0.0, 1.0, 3.0], dtype=dtype)
 
@@ -164,7 +164,7 @@ def test_student_t_logpdf_supports_smallest_normal_degrees_of_freedom() -> None:
     assert jnp.allclose(result, -44.361419555836505)
 
 
-@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+@pytest.mark.skipif(not jax.enable_x64.value, reason="JAX 64-bit mode is disabled")
 def test_student_t_normalizer_and_gradient_match_float64_reference() -> None:
     degrees = jnp.float64(16)
 

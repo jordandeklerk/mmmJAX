@@ -334,7 +334,7 @@ def test_categorical_logit_logpmf_is_stable_for_extreme_finite_logits() -> None:
         pytest.param(
             jnp.float64,
             1e15,
-            marks=pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled"),
+            marks=pytest.mark.skipif(not jax.enable_x64.value, reason="JAX 64-bit mode is disabled"),
         ),
     ],
 )
@@ -591,7 +591,7 @@ def test_categorical_logpmfs_use_float32_for_low_precision_inputs(dtype) -> None
     assert logit_result.dtype == jnp.dtype(jnp.float32)
 
 
-@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+@pytest.mark.skipif(not jax.enable_x64.value, reason="JAX 64-bit mode is disabled")
 def test_categorical_observations_do_not_control_parameter_dtype() -> None:
     probability_result = categorical_logpmf(
         jnp.int64(1),

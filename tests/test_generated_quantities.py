@@ -165,10 +165,26 @@ def test_generate_quantities_preserves_selected_sample_labels_and_transposed_axe
     )
 
 
-@pytest.mark.parametrize("seed", [-1, True, 0.5, "1"])
+@pytest.mark.parametrize("seed", [-1, True, 0.5, "1", 2**32, np.int64(2**40), 2**63])
 def test_generate_quantities_rejects_invalid_seeds(model, results, seed):
-    with pytest.raises(ValueError, match="seed must be a nonnegative integer"):
+    with pytest.raises(ValueError, match=r"seed must be a nonnegative integer below 2\*\*32, got"):
         generate_quantities(model, results, seed=seed)
+
+
+@pytest.mark.parametrize("seed", [2**32 - 1, np.uint32(2**32 - 1)])
+def test_generate_quantities_accepts_the_largest_32_bit_seed(model, results, seed):
+    new_data = {"value": np.array([2.0, 3.0], dtype=np.float32)}
+    generation_key, _ = jax.random.split(jax.random.key(2**32 - 1))
+    keys = jax.random.split(generation_key, (2, 3))
+    posterior = {"scale": jnp.asarray(results["posterior"]["scale"].values)}
+    expected = jax.vmap(jax.vmap(lambda key, values: model.generate_quantities(key, values, new_data)))(keys, posterior)
+
+    evaluated = generate_quantities(model, results, new_data=new_data, seed=seed)
+
+    assert evaluated.attrs["generation_seed"] == 2**32 - 1
+    np.testing.assert_allclose(
+        evaluated["posterior_predictive"]["prediction"], expected["predictive"]["prediction"], rtol=2e-6, atol=2e-6
+    )
 
 
 @pytest.mark.parametrize("batch_size", [0, -1, True, 1.5, "4", None])

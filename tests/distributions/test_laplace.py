@@ -444,7 +444,7 @@ def test_laplace_rng_matches_distribution_moments() -> None:
     assert jnp.allclose(jnp.var(samples), 2 * scale**2, rtol=0, atol=0.08)
 
 
-@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+@pytest.mark.skipif(not jax.enable_x64.value, reason="JAX 64-bit mode is disabled")
 def test_laplace_logpdf_handles_float64_finite_limits() -> None:
     maximum = jnp.asarray(jnp.finfo(jnp.float64).max)
     log_two = jnp.asarray(np.log(2), dtype=jnp.float64)
@@ -456,7 +456,7 @@ def test_laplace_logpdf_handles_float64_finite_limits() -> None:
     assert jnp.allclose(across_zero, -jnp.log(maximum) - log_two - 2, rtol=1e-14, atol=0)
 
 
-@pytest.mark.skipif(not jax.config.x64_enabled, reason="JAX 64-bit mode is disabled")
+@pytest.mark.skipif(not jax.enable_x64.value, reason="JAX 64-bit mode is disabled")
 def test_laplace_log_probabilities_handle_float64_values_at_finite_maximum() -> None:
     maximum = jnp.asarray(jnp.finfo(jnp.float64).max)
     values = jnp.stack((maximum, -maximum))

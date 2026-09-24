@@ -293,8 +293,13 @@ def weibull_pdf_adstock(
     below one. The min/max rescaling is applied even with ``normalize=False``;
     the weights are not raw density values. It is piecewise differentiable
     and can have kinks where the sampled minimum or maximum changes.
-    A flat sampled kernel has undefined min/max rescaling and produces
-    ``nan``. Setting ``max_lag=0`` retains only the current period.
+
+    Rescaling works from differences of log densities, so it stays accurate
+    when the scale far exceeds ``max_lag``. At shape one the rescaled weights
+    then approach a linear decline from one to zero. A scale within a small
+    factor of the largest finite float loses the density differences between
+    lags, so its weights are unreliable. Setting ``max_lag=0`` retains only
+    the current period.
 
     Media before the supplied series is assumed to be zero. When
     normalization is enabled, weights are normalized over the full lag
@@ -381,14 +386,23 @@ def weibull_pdf_adstock(
         weights = jnp.ones_like(safe_shape)
     else:
         periods = jnp.arange(max_lag + 1, dtype=media_array.dtype) + 1
-        log_ratio = jnp.log(periods) - jnp.log(safe_scale)
-        # The common density factor k/scale cancels in min/max rescaling
-        log_weights = (safe_shape - 1) * log_ratio - jnp.exp(safe_shape * log_ratio)
+        log_periods = jnp.log(periods)
+        log_ratio = log_periods - jnp.log(safe_scale)
+        # Log densities relative to lag zero leave out k/scale and log(scale). Both cancel in the
+        # rescaling, and log(scale) would otherwise round away small differences between lags
+        growth = jnp.exp(safe_shape * log_ratio) * -jnp.expm1(-safe_shape * log_periods)
+        # The floor keeps a density that underflows to zero from producing inf - inf in expm1 below
+        log_weights = jnp.maximum((safe_shape - 1) * log_periods - growth, jnp.finfo(media_array.dtype).min)
         # Max-shifting preserves relative weights when the sampled densities underflow
-        weights = jnp.exp(log_weights - jnp.max(log_weights, axis=-1, keepdims=True))
-        minimum = jnp.min(weights, axis=-1, keepdims=True)
-        width = 1 - minimum
-        weights = (weights - minimum) / width
+        shifted = log_weights - jnp.max(log_weights, axis=-1, keepdims=True)
+        lowest = jnp.min(shifted, axis=-1, keepdims=True)
+        # expm1 keeps the gaps between nearly equal densities when scale far exceeds max_lag
+        excess = jnp.exp(shifted) * -jnp.expm1(lowest - shifted)
+        width = -jnp.expm1(lowest)
+        # Dividing both terms by a detached width leaves the value unchanged. It keeps the quotient
+        # rule from squaring a tiny width, since the inverse square would overflow
+        common = jax.lax.stop_gradient(width)
+        weights = (excess / common) / (width / common)
 
     if normalize:
         weights = weights / jnp.sum(weights, axis=-1, keepdims=True)
@@ -547,7 +561,7 @@ def _prepare_adstock(
     inputs = {"media": media, **parameters}
     leaves = []
     for name, value in inputs.items():
-        value_leaves = jax.tree_util.tree_leaves(value)
+        value_leaves = jax.tree.leaves(value)
         try:
             argument_dtype = jnp.result_type(*value_leaves)
         except (TypeError, ValueError) as exc:

@@ -502,8 +502,8 @@ def test_binomial_benchmark_tails_match_scipy_and_jax(name, operation, input_set
     forward = _tail_directional_derivative(implementation, values, (trials,), (parameter,))
 
     # Native float32 Beta normalization and derivatives lose precision at these trial counts
-    tolerance = 5e-11 if jax.config.x64_enabled else 1e-4
-    jax_tolerance = 5e-11 if jax.config.x64_enabled else 5e-5
+    tolerance = 5e-11 if jax.enable_x64.value else 1e-4
+    jax_tolerance = 5e-11 if jax.enable_x64.value else 5e-5
     np.testing.assert_allclose(result, expected, rtol=tolerance, atol=0)
     np.testing.assert_allclose(result, jax_result, rtol=jax_tolerance, atol=0)
     np.testing.assert_allclose(gradient, expected_gradient, rtol=tolerance, atol=0)
@@ -684,8 +684,8 @@ def test_negative_binomial_benchmark_tails_match_scipy_and_jax(name, operation, 
     gradients = _tail_gradient(implementation, values, (), (parameter, concentration))
     forward = _tail_directional_derivative(implementation, values, (), (parameter, concentration))
 
-    tolerance = 2e-10 if jax.config.x64_enabled else 8e-5
-    gradient_tolerance = 2e-8 if jax.config.x64_enabled else 3e-4
+    tolerance = 2e-10 if jax.enable_x64.value else 8e-5
+    gradient_tolerance = 2e-8 if jax.enable_x64.value else 3e-4
     np.testing.assert_allclose(result, expected, rtol=tolerance, atol=0)
     np.testing.assert_allclose(result, jax_result, rtol=tolerance, atol=0)
     for actual, target in zip(gradients, expected_gradients, strict=True):
@@ -805,11 +805,11 @@ def test_poisson_benchmark_tails_match_scipy_and_jax(name, operation, input_set,
     forward = _tail_directional_derivative(implementation, values, (), (parameter,))
 
     # Native float32 incomplete Gamma values lose a few digits at these larger counts
-    value_tolerance = 5e-11 if jax.config.x64_enabled else 1e-5
-    absolute_tolerance = 1e-14 if jax.config.x64_enabled else 1e-7
+    value_tolerance = 5e-11 if jax.enable_x64.value else 1e-5
+    absolute_tolerance = 1e-14 if jax.enable_x64.value else 1e-7
     np.testing.assert_allclose(result, expected, rtol=value_tolerance, atol=absolute_tolerance)
     _assert_close(result, jax_result)
-    tolerance = 2e-11 if jax.config.x64_enabled else 3e-5
+    tolerance = 2e-11 if jax.enable_x64.value else 3e-5
     np.testing.assert_allclose(gradient, expected_gradient, rtol=tolerance, atol=0)
     np.testing.assert_allclose(gradient, jax_gradient, rtol=tolerance, atol=0)
     np.testing.assert_allclose(forward, expected_gradient.sum(), rtol=tolerance, atol=0)
@@ -1262,7 +1262,7 @@ def test_mmmjax_half_normal_deep_tail_gradients_match_scipy_mills_ratio(
     dtype,
     standardized_value: float,
 ) -> None:
-    if dtype == jnp.float64 and not jax.config.x64_enabled:
+    if dtype == jnp.float64 and not jax.enable_x64.value:
         pytest.skip("JAX 64-bit mode is disabled")
 
     scale = 1.0
@@ -1351,7 +1351,7 @@ def test_mmmjax_normal_deep_tail_gradients_match_scipy_mills_ratio(
     scale: float,
     operation: str,
 ) -> None:
-    if dtype == jnp.float64 and not jax.config.x64_enabled:
+    if dtype == jnp.float64 and not jax.enable_x64.value:
         pytest.skip("JAX 64-bit mode is disabled")
 
     direction = 1 if operation == "logcdf" else -1
@@ -1495,7 +1495,7 @@ def test_mmmjax_rng_matches_jax_benchmark_contract(
     assert jnp.all(jnp.isfinite(compiled_jax_result))
 
 
-@partial(jax.jit, static_argnames="function")
+@jax.jit(static_argnames="function")
 def _tail_gradient(function, values, fixed_parameters, parameters):
     # Keeping data dynamic lets ordinary and tail cases reuse the compiled derivative
     def summed(parameters):
@@ -1504,7 +1504,7 @@ def _tail_gradient(function, values, fixed_parameters, parameters):
     return jax.grad(summed)(parameters)
 
 
-@partial(jax.jit, static_argnames="function")
+@jax.jit(static_argnames="function")
 def _tail_directional_derivative(function, values, fixed_parameters, parameters):
     def summed(parameters):
         return jnp.sum(function(values, *fixed_parameters, *parameters))

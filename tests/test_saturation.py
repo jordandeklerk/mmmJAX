@@ -19,7 +19,7 @@ def test_hill_saturation_is_exported():
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
 @pytest.mark.parametrize("slope", [0.5, 1.0, 2.0, 4.5])
 def test_hill_saturation_matches_direct_equation(dtype, slope):
-    if dtype == jnp.float64 and not jax.config.x64_enabled:
+    if dtype == jnp.float64 and not jax.enable_x64.value:
         pytest.skip("JAX 64-bit mode is disabled")
     media = jnp.asarray([0.0, 0.125, 0.5, 1.0, 3.0, 12.0], dtype=dtype)
     half_saturation = jnp.asarray(2.0, dtype=dtype)
@@ -231,7 +231,7 @@ def test_logistic_saturation_is_exported():
 
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
 def test_logistic_saturation_matches_exponential_equation_and_scipy(dtype):
-    if dtype == jnp.float64 and not jax.config.x64_enabled:
+    if dtype == jnp.float64 and not jax.enable_x64.value:
         pytest.skip("JAX 64-bit mode is disabled")
     media = jnp.asarray([0.0, 0.125, 1.0, 2.0, 4.0, 20.0], dtype=dtype)
     decay = np.exp(-np.log(3) * np.asarray(media, dtype=np.float64) / 2)
@@ -410,7 +410,7 @@ def test_unbounded_saturation_is_exported(function):
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
 @pytest.mark.parametrize("exponent", [1 / 3, 0.5, 1.0])
 def test_root_saturation_matches_standard_roots_and_linear_limit(dtype, exponent):
-    if dtype == jnp.float64 and not jax.config.x64_enabled:
+    if dtype == jnp.float64 and not jax.enable_x64.value:
         pytest.skip("JAX 64-bit mode is disabled")
     media = jnp.asarray([0.0, 0.125, 1.0, 8.0, 64.0], dtype=dtype)
     reference = {1 / 3: np.cbrt, 0.5: np.sqrt, 1.0: np.asarray}[exponent]
@@ -427,7 +427,7 @@ def test_root_saturation_matches_standard_roots_and_linear_limit(dtype, exponent
 
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
 def test_log_saturation_matches_scipy_and_preserves_small_exposures(dtype):
-    if dtype == jnp.float64 and not jax.config.x64_enabled:
+    if dtype == jnp.float64 and not jax.enable_x64.value:
         pytest.skip("JAX 64-bit mode is disabled")
     media = jnp.asarray([0.0, 1e-12, 0.5, 1.0, 10.0, 1e10], dtype=dtype)
     # Box-Cox with power zero reduces to log(1 + x) without subtracting a nearby one
@@ -550,7 +550,7 @@ def test_unbounded_saturation_promotes_inputs_to_at_least_float32(dtype):
     media = jnp.asarray([0, 1], dtype=dtype)
     root = root_saturation(media, 0.5)
     logarithm = log_saturation(media)
-    expected_root_dtype = jnp.float64 if jax.config.x64_enabled and dtype in (jnp.bool_, jnp.int32) else jnp.float32
+    expected_root_dtype = jnp.float64 if jax.enable_x64.value and dtype in (jnp.bool_, jnp.int32) else jnp.float32
     assert root.dtype == expected_root_dtype
     assert logarithm.dtype == jnp.float32
     np.testing.assert_array_equal(root, [0, 1])

@@ -528,7 +528,7 @@ def test_multinomial_logpmf_preserves_float32_simplex_residual_at_large_counts()
     np.testing.assert_allclose(result, expected, rtol=1e-6, atol=5e-6)
 
 
-@pytest.mark.skipif(jax.config.x64_enabled, reason="the total fits when 64-bit counts are enabled")
+@pytest.mark.skipif(jax.enable_x64.value, reason="the total fits when 64-bit counts are enabled")
 def test_multinomial_logpmfs_reject_event_totals_beyond_int32() -> None:
     values = jnp.array([2_000_000_000, 200_000_000], dtype=jnp.int32)
     probabilities = jnp.array([0.5, 0.5])

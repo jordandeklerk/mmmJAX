@@ -535,7 +535,7 @@ def _prepare_hsgp_inputs(*arguments: tuple[str, ArrayLike]) -> list[jax.Array]:
     """Convert basis or covariance inputs to a common real floating dtype."""
     leaves = []
     for name, value in arguments:
-        value_leaves = jax.tree_util.tree_leaves(value)
+        value_leaves = jax.tree.leaves(value)
         try:
             argument_dtype = jnp.result_type(*value_leaves)
         except (TypeError, ValueError) as error:
