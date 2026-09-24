@@ -56,8 +56,11 @@ round(float(abs(replayed - fitted[143:]).max()), 3)
 With the eight weeks before it included, the quarter reproduces the fit. The
 analysis functions keep the earlier weeks in place on their own, so this
 matters for data you prepare yourself, such as a forecast or a plan that never
-ran. {func}`~mmmjax.generate_quantities` takes the same prepared data through
-`new_data` and runs the generated quantities on every draw.
+ran. To run the generated quantities on every draw for such data, pass the
+frame itself to {func}`~mmmjax.generate_quantities`, as in
+`new_data=extended`, and drop the first eight weeks of the result as above. It
+prepares the frame the way `model.prepare_data` does and does not accept that
+method's output.
 
 ## Predictions and definitions
 
