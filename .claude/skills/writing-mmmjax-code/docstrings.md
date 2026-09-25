@@ -117,7 +117,8 @@ def <name>(
     """
 ```
 
-- It has one body paragraph, no math, and no Examples when it needs a fit. The `results`, `quantity`, and `group` entries are shared word for word by the analysis functions that take `group`.
+- It has one body paragraph, no math, and no Examples when it needs a fit.
+- A plotting function takes an analysis output or results, returns `plotnine.ggplot` or `arviz_plots.PlotCollection`, and shares the `ci_prob` entry of `plot_media_metrics` word for word. An ArviZ wrapper documents `**kwargs` as further keywords for the wrapped `arviz_plots` function. A plot that could outgrow its figure takes `channels`. A bar chart shows every channel by default and sizes itself through `_bar_layout`, which widens it so notebooks scroll it sideways and tilts and shortens labels as Meridian does, and any other plot shows the largest channels up to a readable limit and names what it left out in a caption or title. The `results`, `quantity`, and `group` entries are shared word for word by the analysis functions that take `group`.
 - Field bullets use the dash form, as `media_metrics` and `fit_scaling` show. Named `name : type` Returns entries are only for a tuple, as in `hsgp_basis`.
 - A host-side preparation function such as `fit_scaling` shares this body and these bullets, opens its Returns with "<Noun> with the following fields.", and adds the primitive's Examples when it runs on small inline data.
 
@@ -153,6 +154,6 @@ class <Name>:
 - A Parameters entry says only what the argument is and what it requires, such as its meaning, units, shape, allowed values, and whether it must stay static. Leave out what other functions later do with the result, such as which ArviZ function reads a group, and describe outputs under Returns.
 - Body paragraphs read like a methods section, and details about one argument go in its Parameters entry. Keep Returns sections short, and never restore longer text from an earlier version of a docstring.
 - Names in running text use double backticks. Sphinx roles (`:func:`, `:class:`, `:meth:`) are rare and unqualified, since the API pages set `.. currentmodule:: mmmjax`.
-- The summary line never contains a comma, not even in a list, so write it as one clause, as in "Prepare a dataframe for modeling while keeping its observation labels."
+- The summary line never contains a comma, not even in a list, so write it as one clause, as in "Prepare a dataframe for modeling while keeping its observation labels." This covers module docstrings and the one-line docstrings of private helpers too.
 - Elsewhere a comma is fine wherever the sentence needs one, so never drop or reword one away for its own sake. Only a clause tacked onto the end of a sentence with ", <verb>ing", ", which", ", with", or ", then" gets split into its own sentence.
 - Private helpers in the core modules get a one-line docstring stating their intent or the constraint they keep, as in `"""Broadcast a scalar or per-channel setting to one value per channel."""`. Private functions under `distributions/` mostly have none.
