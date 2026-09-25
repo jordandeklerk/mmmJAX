@@ -11,6 +11,7 @@ from mmmjax.plotting._layers import _bar_layout, _compact
 from mmmjax.plotting._summary import (
     _ci_prob,
     _ordered,
+    _outcome_words,
     _percent,
     _pick_channels,
     _plan_spend,
@@ -32,14 +33,16 @@ def plot_budget_response(
 
     The first bar is the incremental response of the reference plan and the
     last is that of the optimized plan. Each bar between them adds one
-    channel's change, cuts first and then gains, each from largest to
-    smallest. The bars use posterior means so they add up, and the axis
-    starts near the smallest running total so the changes stay visible. The
-    subtitle gives the change in total response with its credible interval
-    and the share of draws in which the plan gains. With many channels the
-    figure widens so each bar keeps its width, and a notebook shows it at
-    full size in a box that scrolls sideways. The plan needs
-    ``include_metrics=True`` to record each channel's incremental response.
+    channel's change. Cuts come before gains, and each set runs from largest to
+    smallest.
+
+    The bars use posterior means so they add up, and the axis starts near the
+    smallest running total so the changes stay visible. The subtitle gives the
+    change in total response with its credible interval and the share of draws
+    in which the plan gains.
+
+    With many channels the figure widens so each bar keeps its width, and a
+    notebook shows it at full size in a box that scrolls sideways.
 
     Parameters
     ----------
@@ -90,7 +93,7 @@ def plot_budget_response(
         + pn.scale_y_continuous(labels=_compact)
         + pn.coord_cartesian(ylim=(low, high))
         + pn.guides(fill="none")
-        + pn.labs(x="", y="Incremental response", subtitle=_response_note(plan, probability))
+        + pn.labs(x="", y=_outcome_words("Incremental response", plan), subtitle=_response_note(plan, probability))
         + theme_mmmjax()
         + layout
     )
@@ -102,9 +105,10 @@ def plot_budget_spend(plan: xr.Dataset, *, channels: Sequence[str] | None = None
 
     Each bar is a channel's optimized spending minus its reference spending,
     labeled with the change. Cuts come first and increases after, each from
-    largest to smallest. With many channels the figure widens so each bar
-    keeps its width, and a notebook shows it at full size in a box that
-    scrolls sideways.
+    largest to smallest.
+
+    With many channels the figure widens so each bar keeps its width, and a
+    notebook shows it at full size in a box that scrolls sideways.
 
     Parameters
     ----------
@@ -199,7 +203,7 @@ def _response_note(plan: xr.Dataset, probability: float) -> str:
     gain = float((joint > 0).mean())
     estimate, lower, upper = _compact([total["estimate"], total["lower"], total["upper"]])
     note = (
-        f"Response change {estimate}, {_percent(probability)} interval {lower} to {upper}. "
+        f"{_outcome_words('Response', plan)} change {estimate}, {_percent(probability)} interval {lower} to {upper}. "
         f"The plan gains in {gain:.0%} of draws."
     )
     return note

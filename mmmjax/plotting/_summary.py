@@ -3,7 +3,7 @@
 import math
 import numbers
 import re
-from collections.abc import Hashable, Iterable, Sequence
+from collections.abc import Hashable, Iterable, Mapping, Sequence
 
 import pandas as pd
 import xarray as xr
@@ -40,15 +40,15 @@ def _ci_prob(ci_prob: float | None) -> float:
     return resolved
 
 
-def _summarize(values: xr.DataArray, probability: float) -> pd.DataFrame:
-    """Reduce chain and draw to ArviZ's point estimate and credible interval in long form."""
+def _summarize(values: xr.DataArray, probability: float, point_estimate: str | None = None) -> pd.DataFrame:
+    """Reduce chain and draw to a point estimate and credible interval in long form."""
     from arviz_base import rcParams
     from arviz_stats.summary import mean, median, mode
     from arviz_stats.visualization import eti, hdi
 
     sample_dims = ["chain", "draw"]
     # ArviZ rounds point estimates for display unless told otherwise, which would flatten plotted curves.
-    match rcParams["stats.point_estimate"]:
+    match point_estimate or rcParams["stats.point_estimate"]:
         case "median":
             estimate = median(values, dim=sample_dims, round_to="none")
         case "mode":
@@ -100,6 +100,68 @@ def _label(name: str) -> str:
     words = name.replace("_", " ").replace("roi", "ROI")
     text = words[:1].upper() + words[1:]
     return text
+
+
+def _outcome_words(text: str, dataset: xr.Dataset) -> str:
+    """Name the outcome in place of the word response when the analysis recorded its column."""
+    outcome = dataset.attrs.get("outcome")
+    if not isinstance(outcome, str) or not outcome:
+        return text
+    name = outcome.replace("_", " ")
+    capitalized = name[:1].upper() + name[1:]
+    words = [capitalized if word == "Response" else name if word == "response" else word for word in text.split(" ")]
+    renamed = " ".join(words)
+    return renamed
+
+
+def _distinct_shortened(names: Sequence[str], limit: int) -> list[str]:
+    """Shorten labels past the limit and lengthen the limit until no two shortened labels match."""
+    longest = max((len(name) for name in names), default=0)
+    shortened = [_shorten(name, limit) for name in names]
+    while len(set(shortened)) < len(set(names)) and limit < longest:
+        limit += 4
+        shortened = [_shorten(name, limit) for name in names]
+    return shortened
+
+
+def _select_panels(
+    values: xr.DataArray, coords: Mapping[str, object] | None, n_groups: int | None, measure: str
+) -> tuple[dict[str, list[object]], str]:
+    """Choose the labels the panel axes keep from coords or from the largest groups when there are too many."""
+    if coords is not None and not isinstance(coords, Mapping):
+        raise TypeError(f"coords must map axis names to labels, got {type(coords).__name__}")
+    invalid = isinstance(n_groups, bool) or not isinstance(n_groups, numbers.Integral) or n_groups < 1
+    if n_groups is not None and invalid:
+        raise ValueError(f"n_groups must be a positive integer or None, got {n_groups!r}")
+    selection = {
+        str(dim): list(labels) if isinstance(labels, (list, tuple)) else [labels]
+        for dim, labels in (coords or {}).items()
+    }
+    unknown = [dim for dim in selection if dim not in values.dims]
+    if unknown:
+        axes = [str(dim) for dim in values.dims if dim not in ("chain", "draw")]
+        raise ValueError(f"coords has no axis {', '.join(repr(dim) for dim in unknown)}. Its axes are {axes}")
+    try:
+        chosen = values.sel(selection)
+    except KeyError as error:
+        raise ValueError(f"coords asks for labels the results lack: {error}") from None
+    if "group" in selection or "group" not in chosen.dims or n_groups is None or chosen.sizes["group"] <= n_groups:
+        return selection, ""
+    # Sizes come from the point estimates over every other axis, so the busiest groups keep their panels.
+    averaged = abs(chosen.mean(("chain", "draw")))
+    sizes = averaged.sum([dim for dim in averaged.dims if dim != "group"])
+    ranked = sorted(range(sizes.size), key=lambda index: -float(sizes[index]))[:n_groups]
+    largest = {chosen["group"].values[index] for index in ranked}
+    selection["group"] = [label for label in chosen["group"].values if label in largest]
+    total = chosen.sizes["group"]
+    note = f"Showing the {n_groups} of {total} groups with the largest {measure}. Pass coords to choose others."
+    return selection, note
+
+
+def _restrict[Result: (xr.DataArray, xr.Dataset)](values: Result, selection: Mapping[str, list[object]]) -> Result:
+    """Apply a panel selection to the axes a result has and skip the rest."""
+    restricted = values.sel({dim: labels for dim, labels in selection.items() if dim in values.dims})
+    return restricted
 
 
 def _shorten(label: str, limit: int) -> str:

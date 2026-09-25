@@ -59,6 +59,16 @@ def test_plot_budget_response_reports_the_response_change_and_the_share_of_draws
     assert plot.labels.subtitle.endswith("The plan gains in 88% of draws.")
 
 
+def test_plot_budget_response_names_the_outcome_in_its_labels():
+    increments = _increments([300.0, 200.0, 100.0], [360.0, 150.0, 100.0])
+    plan = _plan(increments=increments).assign_attrs(outcome="revenue")
+
+    plot = plot_budget_response(plan)
+
+    assert plot.labels.y == "Incremental revenue"
+    assert plot.labels.subtitle.startswith("Revenue change ")
+
+
 def test_plot_budget_response_sums_response_changes_kept_by_group():
     increments = _increments([300.0, 200.0, 100.0], [360.0, 150.0, 100.0])
     plan = _plan(

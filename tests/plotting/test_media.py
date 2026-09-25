@@ -7,12 +7,12 @@ import pytest
 import xarray as xr
 
 from mmmjax import (
-    geometric_adstock,
-    plot_adstock,
     plot_frequency_curves,
     plot_media_metrics,
     plot_response_curves,
     plot_roi,
+    plot_roi_bubbles,
+    plot_spend_vs_contribution,
 )
 from mmmjax.plotting._display import _ScrollingPlot
 
@@ -79,19 +79,6 @@ def _frequency_curves():
     return curves
 
 
-def _retention(values):
-    draws = np.broadcast_to(np.asarray(values, dtype=np.float32), (2, 3, len(values)))
-    results = xr.DataTree.from_dict(
-        {
-            "posterior": xr.Dataset(
-                {"retention": (("chain", "draw", "channel"), draws)},
-                coords={"chain": [0, 1], "draw": np.arange(3), "channel": ["TV", "Search"]},
-            )
-        }
-    )
-    return results
-
-
 def _layer_data(plot, geom):
     data = next(layer.geom.data for layer in plot.layers if isinstance(layer.geom, geom))
     return data
@@ -111,6 +98,17 @@ def test_plot_media_metrics_draws_the_requested_metric_as_bars():
     assert bars.loc["Search", "value"] == f"{float(expected.sel(channel='Search')):.2f}"
     assert plot.labels.y.startswith("Marginal ROI, ")
     assert not [layer for layer in plot.layers if isinstance(layer.geom, pn.geom_hline)]
+
+
+def test_plot_media_metrics_labels_small_values_with_three_significant_digits():
+    metrics = _returns()
+    expected = metrics["effectiveness"].mean(("chain", "draw"))
+
+    plot = plot_media_metrics(metrics, metric="effectiveness")
+
+    labels = plot.data.set_index("channel")["value"]
+    assert labels.loc["TV"] == f"{float(expected.sel(channel='TV')):.3g}"
+    assert len(labels.loc["TV"].replace("0.", "").lstrip("0")) == 3
 
 
 def test_plot_media_metrics_requires_a_metric():
@@ -171,7 +169,8 @@ def test_plot_media_metrics_pools_the_channels_left_out_from_their_parts(metric,
     hidden = [f"Channel {index:02d}" for index in range(5)]
     total = metrics[numerator].sel(channel=hidden).sum("channel")
     pooled = total if denominator is None else total / metrics[denominator].sel(channel=hidden).sum("channel")
-    expected = float(pooled.mean())
+    # Cost per incremental response is drawn at its median and every other metric at its mean.
+    expected = float(pooled.median() if metric == "cost_per_incremental_response" else pooled.mean())
 
     plot = plot_media_metrics(
         metrics, metric=metric, channels=[label for label in metrics["channel"].values if label not in hidden]
@@ -180,6 +179,16 @@ def test_plot_media_metrics_pools_the_channels_left_out_from_their_parts(metric,
     bars = plot.data.set_index("channel")
     np.testing.assert_allclose(bars.loc["Other channels", "estimate"], expected, rtol=1e-12, atol=0)
     assert list(plot.data["channel"].cat.categories)[-1] == "Other channels"
+
+
+def test_plot_media_metrics_draws_cost_per_incremental_response_at_its_median():
+    metrics = _many_metrics(3)
+    expected = metrics["cost_per_incremental_response"].median(("chain", "draw"))
+
+    plot = plot_media_metrics(metrics, metric="cost_per_incremental_response")
+
+    bars = plot.data.set_index("channel")["estimate"]
+    np.testing.assert_allclose(bars.loc[list(expected["channel"].values)], expected.values, rtol=1e-12, atol=0)
 
 
 def test_plot_media_metrics_leaves_out_the_pooled_bar_for_other_metrics():
@@ -496,45 +505,235 @@ def test_plot_frequency_curves_mark_the_best_frequency():
     assert _layer_data(plot, pn.geom_point)["frequency"].tolist() == [2.0]
 
 
-def test_plot_adstock_matches_normalized_geometric_weights():
-    retention = np.array([0.5, 0.2])
-    kernel = retention[None, :] ** np.arange(4)[:, None]
-    expected = kernel / kernel.sum(axis=0)
+def _returns(*, outcome=None):
+    spend = np.array([100.0, 300.0, 50.0])
+    increments = spend * np.array([4.0, 2.0, 1.0]) * (1.0 + 0.05 * _draws(2, 40, 3, seed=13))
+    marginal = 0.01 * spend * np.array([3.0, 1.0, 0.5]) * (1.0 + 0.05 * _draws(2, 40, 3, seed=14))
+    metrics = xr.Dataset(
+        {
+            "incremental_response": (("chain", "draw", "channel"), increments),
+            "roi": (("chain", "draw", "channel"), increments / spend),
+            "marginal_response": (("chain", "draw", "channel"), marginal),
+            "marginal_roi": (("chain", "draw", "channel"), marginal / (0.01 * spend)),
+            "reference_spend": (("channel",), spend),
+            "incremental_spend": (("channel",), 0.01 * spend),
+            "exposure": (("channel",), 20.0 * spend),
+            "effectiveness": (("chain", "draw", "channel"), increments / (20.0 * spend)),
+        },
+        coords={"chain": [0, 1], "draw": np.arange(40), "channel": ["TV", "Search", "Radio"]},
+        attrs={} if outcome is None else {"outcome": outcome},
+    )
+    return metrics
 
-    plot = plot_adstock(_retention(retention), geometric_adstock, parameters={"alpha": "retention"}, max_lag=3)
 
-    weights = plot.data.pivot(index="lag", columns="channel", values="estimate")[["TV", "Search"]]
-    np.testing.assert_allclose(weights.to_numpy(), expected, rtol=3e-6, atol=0)
+def _plan_returns():
+    metrics = _returns()
+    spend = xr.DataArray(
+        [[100.0, 300.0, 50.0], [200.0, 200.0, 50.0]],
+        dims=("allocation", "channel"),
+        coords={"allocation": ["reference", "optimized"], "channel": ["TV", "Search", "Radio"]},
+    )
+    ratios = spend / spend.sel(allocation="reference")
+    plan = xr.Dataset(
+        {
+            "incremental_response": metrics["incremental_response"] * ratios,
+            "roi": metrics["roi"] * xr.ones_like(ratios),
+            "marginal_roi": metrics["marginal_roi"] / ratios,
+            "spend": spend,
+        }
+    )
+    return plan
+
+
+def _shares(plot):
+    shares = plot.data.pivot(index="channel", columns="measure", values="share")
+    return shares
+
+
+def test_plot_spend_vs_contribution_pairs_each_share_of_spending_with_its_share_of_response():
+    metrics = _returns(outcome="revenue")
+    spend = metrics["reference_spend"]
+    responses = metrics["incremental_response"].mean(("chain", "draw"))
+    expected_spend = (spend / spend.sum()).sel(channel=["Search", "TV", "Radio"]).values
+    expected_response = (responses / responses.sum()).sel(channel=["Search", "TV", "Radio"]).values
+    expected_roi = (responses / spend).sel(channel=["Search", "TV", "Radio"]).values
+
+    plot = plot_spend_vs_contribution(metrics)
+
+    shares = _shares(plot).loc[["Search", "TV", "Radio"]]
+    np.testing.assert_allclose(shares["Share of spend"], expected_spend, rtol=1e-12, atol=0)
+    np.testing.assert_allclose(shares["Share of incremental revenue"], expected_response, rtol=1e-12, atol=0)
+    assert list(plot.data["channel"].cat.categories) == ["Search", "TV", "Radio"]
+    labels = _layer_data(plot, pn.geom_text).set_index("channel")
+    assert list(labels.loc[["Search", "TV", "Radio"], "text"]) == [f"ROI {value:.2f}" for value in expected_roi]
+
+
+def test_plot_spend_vs_contribution_sums_groups_and_pools_the_channels_left_out():
+    metrics = _returns()
+    groups = xr.DataArray([0.25, 0.75], dims="group", coords={"group": ["north", "south"]})
+    grouped = metrics.assign(incremental_response=metrics["incremental_response"] * groups)
+    responses = metrics["incremental_response"].mean(("chain", "draw"))
+    spend = metrics["reference_spend"]
+    hidden = ["Search", "Radio"]
+    expected = [
+        float(spend.sel(channel=hidden).sum() / spend.sum()),
+        float(responses.sel(channel=hidden).sum() / responses.sum()),
+    ]
+
+    plot = plot_spend_vs_contribution(grouped, channels=["TV"])
+
+    shares = _shares(plot)
+    np.testing.assert_allclose(
+        shares.loc["Other channels", ["Share of spend", "Share of incremental response"]], expected, rtol=1e-6, atol=0
+    )
+    assert list(plot.data["channel"].cat.categories) == ["TV", "Other channels"]
+
+
+def test_plot_spend_vs_contribution_gives_each_allocation_a_panel():
+    plan = _plan_returns()
+    optimized = plan["spend"].sel(allocation="optimized")
+    expected = (optimized / optimized.sum()).sel(channel="TV").item()
+
+    plot = plot_spend_vs_contribution(plan)
+
+    shares = plot.data.set_index(["allocation", "channel", "measure"])["share"]
+    np.testing.assert_allclose(shares.loc[("optimized", "TV", "Share of spend")], expected, rtol=1e-12, atol=0)
+    assert list(plot.data["allocation"].cat.categories) == ["reference", "optimized"]
+    assert isinstance(plot.facet, pn.facet_wrap)
+
+
+def test_plot_roi_bubbles_places_each_channel_at_its_point_estimates():
+    metrics = _returns()
+    expected = metrics[["roi", "marginal_roi"]].mean(("chain", "draw"))
+
+    plot = plot_roi_bubbles(metrics)
+
+    frame = plot.data.set_index("channel").loc[["TV", "Search", "Radio"]]
+    np.testing.assert_allclose(frame["roi"], expected["roi"].values, rtol=1e-12, atol=0)
+    np.testing.assert_allclose(frame["marginal_roi"], expected["marginal_roi"].values, rtol=1e-12, atol=0)
+    np.testing.assert_allclose(frame["spend"], metrics["reference_spend"].values, rtol=1e-12, atol=0)
+    assert _break_even(plot) == [1.0]
+    assert (plot.labels.x, plot.labels.y) == ("ROI", "Marginal ROI")
+
+
+def test_plot_roi_bubbles_sizes_bubbles_by_area_from_zero_spending():
+    spend = np.sort(_returns()["reference_spend"].values)
+    expected = 24.0 * np.sqrt(spend / spend.max())
+
+    plot = plot_roi_bubbles(_returns())
+
+    figure = plot.draw()
+    bubbles = next(layer for layer in plot.layers if isinstance(layer.geom, pn.geom_point))
+    np.testing.assert_allclose(np.sort(bubbles.data["size"].to_numpy()), expected, rtol=1e-12, atol=0)
+    plt.close(figure)
+
+
+def _fills(plot):
+    scale = next(scale for scale in plot.scales if "fill" in scale.aesthetics)
+    colors = scale.palette(len(scale.breaks))
+    return scale.breaks, colors
+
+
+def test_plot_roi_bubbles_colors_each_channel_in_a_legend_without_sizes():
+    plot = plot_roi_bubbles(_returns())
+
+    breaks, colors = _fills(plot)
+    assert breaks == ["Search", "TV", "Radio"]
+    assert len({colors[channel] for channel in breaks}) == 3
+    assert plot.labels.fill == "Channel"
+    assert plot.guides.size == "none"
+
+
+def test_plot_roi_bubbles_keeps_the_ten_channels_with_the_most_spending():
+    labels = [f"Channel {index:02d}" for index in range(30)]
+    metrics = _many_metrics(30).assign(roi=lambda dataset: dataset["incremental_response"] / dataset["reference_spend"])
+
+    plot = plot_roi_bubbles(metrics)
+
+    assert _fills(plot)[0] == list(reversed(labels[20:]))
+    assert set(plot.data["channel"]) == set(labels[20:])
+    assert plot.labels.caption == (
+        "Showing the 10 of 30 channels with the largest spending. Pass channels to choose others."
+    )
+
+
+def test_plot_roi_bubbles_draws_effectiveness_without_a_horizontal_line():
+    metrics = _returns(outcome="revenue")
+    expected = metrics["effectiveness"].mean(("chain", "draw"))
+
+    plot = plot_roi_bubbles(metrics, metric="effectiveness", channels=["TV", "Search"])
+
+    frame = plot.data.set_index("channel")
+    np.testing.assert_allclose(
+        frame.loc[["TV", "Search"], "effectiveness"], expected.sel(channel=["TV", "Search"]), rtol=1e-12, atol=0
+    )
+    assert set(plot.data["channel"]) == {"TV", "Search"}
+    assert _break_even(plot) == []
+    assert plot.labels.y == "Effectiveness"
+
+
+def test_plot_roi_bubbles_shows_only_the_requested_channels():
+    plot = plot_roi_bubbles(_returns(), channels=["TV"])
+
+    assert set(plot.data["channel"]) == {"TV"}
+    assert plot.labels.caption == ""
 
 
 @pytest.mark.parametrize(
-    ("options", "error", "message"),
+    ("draw", "metrics", "options", "error", "message"),
     [
-        ({"results": xr.Dataset()}, TypeError, "results must be an xarray DataTree"),
-        ({"adstock": "geometric"}, TypeError, "adstock must be callable"),
-        ({"parameters": {}}, ValueError, "parameters must map at least one adstock argument"),
-        ({"max_lag": -1}, ValueError, "max_lag must be nonnegative"),
-        ({"max_lag": True}, TypeError, "max_lag must be an integer"),
-        ({"group": "both"}, ValueError, "group must be 'prior' or 'posterior'"),
-        ({"group": "prior"}, ValueError, "results has no 'prior' group"),
-        ({"parameters": {"alpha": "decay"}}, ValueError, "results has no posterior variable 'decay'"),
+        (plot_spend_vs_contribution, _metrics(), {}, ValueError, "metrics is missing 'incremental_response'"),
         (
-            {"adstock": lambda media, alpha, max_lag: media[1:]},
+            plot_spend_vs_contribution,
+            _returns().drop_vars("reference_spend"),
+            {},
             ValueError,
-            "adstock must return an array shaped like its media input",
+            "metrics must record 'reference_spend' or 'spend'",
+        ),
+        (plot_roi_bubbles, _returns().drop_vars("marginal_roi"), {}, ValueError, "missing 'marginal_roi'"),
+        (plot_roi_bubbles, _returns(), {"break_even": "1"}, TypeError, "break_even must be a number"),
+        (plot_roi_bubbles, _returns(), {"channels": ["Print"]}, ValueError, "channels has no 'Print'"),
+        (plot_roi_bubbles, _returns(), {"metric": "roi"}, ValueError, "metric must differ from 'roi'"),
+        (plot_roi_bubbles, _returns(), {"metric": 3}, TypeError, "metric must be a string"),
+        (plot_roi_bubbles, _metrics(), {"metric": "effectiveness"}, ValueError, "missing 'effectiveness'"),
+        (
+            plot_roi_bubbles,
+            _returns().drop_vars("reference_spend"),
+            {},
+            ValueError,
+            "metrics must record 'reference_spend' or 'spend'",
         ),
     ],
 )
-def test_plot_adstock_rejects_invalid_arguments(options, error, message):
-    arguments = {
-        "results": _retention([0.5, 0.2]),
-        "adstock": geometric_adstock,
-        "parameters": {"alpha": "retention"},
-        "max_lag": 3,
-    } | options
-
+def test_share_and_bubble_plots_reject_invalid_arguments(draw, metrics, options, error, message):
     with pytest.raises(error, match=message):
-        plot_adstock(arguments.pop("results"), arguments.pop("adstock"), **arguments)
+        draw(metrics, **options)
+
+
+def _grouped_increments(count):
+    labels = [f"g{index}" for index in range(count)]
+    scales = np.arange(1.0, count + 1.0)[:, None]
+    increments = scales * np.array([2.0, 1.0]) * (1.0 + 0.05 * _draws(2, 40, count, 2, seed=15))
+    metrics = xr.Dataset(
+        {"incremental_response": (("chain", "draw", "group", "channel"), increments)},
+        coords={"chain": [0, 1], "draw": np.arange(40), "group": labels, "channel": ["TV", "Search"]},
+        attrs={"outcome": "revenue"},
+    )
+    return metrics
+
+
+def test_plot_media_metrics_gives_the_largest_groups_panels():
+    metrics = _grouped_increments(5)
+
+    default = plot_media_metrics(metrics, metric="incremental_response", ci_prob=0.9)
+    chosen = plot_media_metrics(metrics, metric="incremental_response", coords={"group": ["g0", "g1"]})
+    every = plot_media_metrics(metrics, metric="incremental_response", n_groups=None)
+
+    assert set(default.data["group"]) == {"g2", "g3", "g4"}
+    assert default.labels.caption == "Showing the 3 of 5 groups with the largest values. Pass coords to choose others."
+    assert default.labels.y == "Incremental revenue, 90% interval"
+    assert set(chosen.data["group"]) == {"g0", "g1"}
+    assert set(every.data["group"]) == {f"g{index}" for index in range(5)}
 
 
 @pytest.mark.parametrize(
@@ -548,12 +747,10 @@ def test_plot_adstock_rejects_invalid_arguments(options, error, message):
         pytest.param(lambda: plot_response_curves(_curves()), id="response curves"),
         pytest.param(lambda: plot_response_curves(_curves(), plan=_plan([150.0, 25.0])), id="response curves plan"),
         pytest.param(lambda: plot_frequency_curves(_frequency_curves()), id="frequency curves"),
-        pytest.param(
-            lambda: plot_adstock(
-                _retention([0.5, 0.2]), geometric_adstock, parameters={"alpha": "retention"}, max_lag=3
-            ),
-            id="adstock",
-        ),
+        pytest.param(lambda: plot_spend_vs_contribution(_returns()), id="spend vs contribution"),
+        pytest.param(lambda: plot_roi_bubbles(_returns()), id="roi bubbles"),
+        pytest.param(lambda: plot_roi_bubbles(_returns(), metric="effectiveness"), id="roi bubbles effectiveness"),
+        pytest.param(lambda: plot_roi_bubbles(_plan_returns()), id="roi bubbles plan"),
     ],
 )
 def test_media_plots_draw(build):
@@ -585,24 +782,6 @@ def test_plot_response_curves_show_the_channels_with_the_most_spending():
     assert plot.labels.caption.startswith("Showing the 9 of 12 channels with the largest spending")
 
 
-def test_plot_adstock_shows_the_first_channels_of_many():
-    labels = [f"Channel {index:02d}" for index in range(12)]
-    draws = np.full((2, 3, 12), 0.5, dtype=np.float32)
-    results = xr.DataTree.from_dict(
-        {
-            "posterior": xr.Dataset(
-                {"retention": (("chain", "draw", "channel"), draws)},
-                coords={"chain": [0, 1], "draw": np.arange(3), "channel": labels},
-            )
-        }
-    )
-
-    plot = plot_adstock(results, geometric_adstock, parameters={"alpha": "retention"}, max_lag=2)
-
-    assert set(plot.data["channel"]) == set(labels[:10])
-    assert plot.labels.caption.startswith("Showing the first 10 of 12 channels")
-
-
 @pytest.mark.parametrize(
     "draw",
     [
@@ -611,6 +790,8 @@ def test_plot_adstock_shows_the_first_channels_of_many():
         ),
         pytest.param(lambda channels: plot_response_curves(_curves(), channels=channels), id="response curves"),
         pytest.param(lambda channels: plot_roi(_metrics(), channels=channels), id="roi"),
+        pytest.param(lambda channels: plot_spend_vs_contribution(_returns(), channels=channels), id="spend"),
+        pytest.param(lambda channels: plot_roi_bubbles(_returns(), channels=channels), id="bubbles"),
     ],
 )
 @pytest.mark.parametrize(

@@ -163,6 +163,16 @@ def _total_spend(data, spend_periods=None):
     return sum(data.arrays[role][spending].sum() for role in ("spend", "rf_spend") if role in data.arrays)
 
 
+def _total_exposure(data, channel, spend_periods=None):
+    spending = (
+        np.array([data.time_values.index(t) for t in spend_periods])
+        if spend_periods is not None
+        else np.arange(len(data.time_values))
+    )
+    media = data.arrays["media"][-len(data.time_values) :]
+    return media[spending][..., channel].sum()
+
+
 def _assert_closed_form(metrics, data, results, *, group="posterior", **options):
     by = metrics["reference_response"].dims[2:]
     for chain in range(metrics.sizes["chain"]):
@@ -178,6 +188,7 @@ def _assert_closed_form(metrics, data, results, *, group="posterior", **options)
                 boosted = _expected(
                     data, coefficient, channel=channel, multiplier=1.0 + increase / spend, by=by, **options
                 )
+                exposure = _total_exposure(data, channel, options.get("spend_periods"))
                 for name, expected in {
                     "incremental_response": reference - zero,
                     "roi": (reference - zero).sum() / spend,
@@ -185,6 +196,8 @@ def _assert_closed_form(metrics, data, results, *, group="posterior", **options)
                     "marginal_roi": (boosted - reference).sum() / increase,
                     "cost_per_incremental_response": spend / (reference - zero).sum(),
                     "spend_share": spend / _total_spend(data, options.get("spend_periods")),
+                    "exposure": exposure,
+                    "effectiveness": (reference - zero).sum() / exposure,
                 }.items():
                     actual = metrics[name].isel(channel=index)
                     if "chain" in actual.dims:
@@ -285,11 +298,13 @@ def test_media_metrics_evaluate_full_nonlinear_model_for_every_paired_draw(group
         "reference_response",
         "cost_per_incremental_response",
         "spend_share",
+        "exposure",
+        "effectiveness",
     }
-    for name in ("incremental_response", "roi", "marginal_response", "marginal_roi"):
+    for name in ("incremental_response", "roi", "marginal_response", "marginal_roi", "effectiveness"):
         assert metrics[name].dims == ("chain", "draw", "channel")
     assert metrics["reference_response"].dims == ("chain", "draw")
-    for name in ("reference_spend", "incremental_spend"):
+    for name in ("reference_spend", "incremental_spend", "exposure"):
         assert metrics[name].dims == ("channel",)
     for coord, expected in {
         "chain": [4, 8],
@@ -907,6 +922,9 @@ def test_media_metrics_rf_roi_and_marginal_roi_follow_paired_nonlinear_scenarios
     np.testing.assert_array_equal(metrics.draw, [10, 30])
     np.testing.assert_allclose(metrics["reference_spend"], [2.0, 1.0] if mixed else [2.0])
     np.testing.assert_allclose(metrics["incremental_spend"], [0.5, 0.25] if mixed else [0.5])
+    # Week one has reach 4 at frequency 2, or reach 6 at frequency 2 from the custom conversion, and search 2.
+    exposures = {"Video": 12.0 if callable(mode) else 8.0, "Search": 2.0}
+    np.testing.assert_allclose(metrics["exposure"], [exposures[label] for label in labels])
     assert metrics.attrs["spend_to_rf"] == ("custom" if callable(mode) else mode)
     for chain, draw in np.ndindex(2, 2):
         coefficient = results["posterior"]["coefficient"].values[chain, draw]
@@ -923,6 +941,7 @@ def test_media_metrics_rf_roi_and_marginal_roi_follow_paired_nonlinear_scenarios
                 "roi": (reference - zero) / spend,
                 "marginal_response": increased - reference,
                 "marginal_roi": (increased - reference) / (spend * 0.25),
+                "effectiveness": (reference - zero) / exposures[channel],
             }.items():
                 np.testing.assert_allclose(metrics[name][chain, draw, index], expected, rtol=2e-5, atol=2e-5)
     assert np.all(metrics["roi"].sel(channel="Video") > 0)

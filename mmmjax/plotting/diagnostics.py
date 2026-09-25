@@ -1,6 +1,6 @@
 """Plots that check a model's fit and its sampler's convergence."""
 
-from collections.abc import Hashable, Iterator, Sequence
+from collections.abc import Hashable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal
 
 import matplotlib as mpl
@@ -18,6 +18,8 @@ from mmmjax.plotting._summary import (
     _percent,
     _require_dataset,
     _require_draws,
+    _restrict,
+    _select_panels,
     _summarize,
     _wrap,
 )
@@ -44,23 +46,26 @@ def plot_fit(
     effects: xr.Dataset | None = None,
     group: Literal["prior", "posterior"] = "posterior",
     by: str | Sequence[str] | None = None,
+    coords: Mapping[str, object] | None = None,
     n_groups: int | None = 3,
     var_name: str = "outcome",
     ci_prob: float | None = None,
 ) -> pn.ggplot:
     """Plot observed outcomes against the model's predictions over time.
 
-    The colored line and band show the point estimate and credible interval
-    of the predictive draws, and the dark line shows the observations, both
-    in the outcome's original units. Groups are summed into one total per
-    draw unless ``by`` keeps them apart, and then the most populous groups
-    get their own panels. The subtitle, or each panel's title, gives R
+    The colored line and band show the point estimate and credible interval of
+    the predictive draws, and the dark line shows the observations, both in the
+    outcome's original units. The subtitle, or each panel's title, gives R
     squared and the weighted mean absolute percentage error of the point
-    estimate along with the share of periods whose observation falls inside
-    the interval. With ``effects``, a third line shows the point estimate of
-    the baseline, the expected outcome with media removed and treatments at
-    their baseline levels. The gap between it and the predictions is what
-    those inputs added.
+    estimate along with the share of periods whose observation falls inside the
+    interval.
+
+    Groups are summed into one total per draw unless ``by`` keeps them apart,
+    and then the most populous groups get their own panels.
+
+    With ``effects``, a third line shows the point estimate of the baseline,
+    the expected outcome with media removed and treatments at their baseline
+    levels. The gap between it and the predictions is what those inputs added.
 
     Parameters
     ----------
@@ -78,6 +83,10 @@ def plot_fit(
     by : str or sequence of str, optional
         Observation axes to keep as panels, such as ``"group"``. Omit to sum
         every axis except time.
+    coords : mapping of str to sequence, optional
+        Labels to keep on the observation axes before anything is summed, as
+        in ``{"group": ["north", "south"]}``. Groups chosen here replace the
+        ``n_groups`` choice.
     n_groups : int or None, default 3
         Number of groups to show when ``by`` keeps ``group``. None shows every
         group.
@@ -95,7 +104,7 @@ def plot_fit(
     predicted, observed = _predictive_pair(model, results, group, var_name)
     _require_count(n_groups, "n_groups")
     probability = _ci_prob(ci_prob)
-    predicted, observed, time, kept = _observation_panels(predicted, observed, results, by, n_groups)
+    predicted, observed, time, kept = _observation_panels(predicted, observed, results, by, coords, n_groups)
     band = _summarize(predicted, probability)
     points = observed.reset_coords(drop=True).to_dataframe(name="observed").reset_index()
     for dim in kept:
@@ -115,7 +124,7 @@ def plot_fit(
         matched[[time, *panels, "estimate"]].assign(series=predicted_label),
     ]
     if effects is not None:
-        baseline = _baseline(effects, predicted, group, time, kept, probability)
+        baseline = _baseline(effects, predicted, group, time, kept, coords, probability)
         # Joining on the fit's own rows gives the baseline the same periods and panel titles.
         joined = matched[[time, *kept, *panels]].merge(baseline, on=[time, *kept])
         series.append(joined[[time, *panels, "estimate"]].assign(series="Baseline"))
@@ -203,15 +212,19 @@ def plot_prior_posterior(
 
     Draws ArviZ's ``plot_prior_posterior`` from the posterior of a fit and the
     prior of ``sample_prior``, so the two runs need not be combined first. A
-    posterior that looks like its prior shows that the data said little
-    about the parameter. Parameters on a ``group`` axis show the groups with
-    the largest population, or the first groups when the data has no
-    population, and parameters on a ``time`` axis show the first periods.
-    ArviZ's ``coords`` picks other labels instead. Extreme draws are pulled in
-    so that a heavy-tailed prior cannot squash the posterior into a spike.
-    When the parameters still need more panels than ArviZ's
-    ``plot.max_subplots`` setting allows, the plot keeps the 12 elements
-    whose posterior moved furthest from the prior and says so in its title.
+    posterior that looks like its prior shows that the data said little about
+    the parameter.
+
+    Parameters on a ``group`` axis show the groups with the largest population,
+    or the first groups when the data has no population, and parameters on a
+    ``time`` axis show the first periods. ArviZ's ``coords`` picks other labels
+    instead.
+
+    Extreme draws are pulled in so that a heavy-tailed prior cannot squash the
+    posterior into a spike. When the parameters still need more panels than
+    ArviZ's ``plot.max_subplots`` setting allows, the plot keeps the 12
+    elements whose posterior moved furthest from the prior and says so in its
+    title.
 
     Parameters
     ----------
@@ -289,13 +302,14 @@ def plot_rank(
 ) -> "PlotCollection":
     """Draw rank plots that check whether the chains agree.
 
-    Draws ArviZ's ``plot_rank`` on thinned draws, which removes most
-    autocorrelation from the test, with a legend of chains. After
-    convergence every chain's line stays within its envelope, and ArviZ marks
-    stretches that leave it. When the parameters need more panels than
-    ArviZ's ``plot.max_subplots`` setting allows, the plot keeps the 12
-    elements with the highest R-hat, the ones most likely to have mixed
-    poorly, and says so in its title.
+    Draws ArviZ's ``plot_rank`` on thinned draws and adds a legend of chains.
+    Thinning removes most autocorrelation from the test. After convergence
+    every chain's line stays within its envelope, and ArviZ marks stretches
+    that leave it.
+
+    When the parameters need more panels than ArviZ's ``plot.max_subplots``
+    setting allows, the plot keeps the 12 elements with the highest R-hat, the
+    ones most likely to have mixed poorly, and says so in its title.
 
     Parameters
     ----------
@@ -332,6 +346,7 @@ def plot_residuals(
     *,
     group: Literal["prior", "posterior"] = "posterior",
     by: str | Sequence[str] | None = None,
+    coords: Mapping[str, object] | None = None,
     n_groups: int | None = 3,
     var_name: str = "outcome",
     ci_prob: float | None = None,
@@ -339,12 +354,13 @@ def plot_residuals(
     """Plot how far the observations fall from the predictive draws over time.
 
     Each draw's residual is the observation minus the prediction, in the
-    outcome's original units. The line follows the point estimate across
-    draws and the band its credible interval. A model that captures the
-    data's structure leaves a line that wanders around zero without trend or
-    seasonal pattern. Groups are summed into one total per draw unless
-    ``by`` keeps them apart, and then the most populous groups get their own
-    panels.
+    outcome's original units. The line follows the point estimate across draws
+    and the band its credible interval. A model that captures the data's
+    structure leaves a line that wanders around zero without trend or seasonal
+    pattern.
+
+    Groups are summed into one total per draw unless ``by`` keeps them apart,
+    and then the most populous groups get their own panels.
 
     Parameters
     ----------
@@ -359,6 +375,10 @@ def plot_residuals(
     by : str or sequence of str, optional
         Observation axes to keep as panels, such as ``"group"``. Omit to sum
         every axis except time.
+    coords : mapping of str to sequence, optional
+        Labels to keep on the observation axes before anything is summed, as
+        in ``{"group": ["north", "south"]}``. Groups chosen here replace the
+        ``n_groups`` choice.
     n_groups : int or None, default 3
         Number of groups to show when ``by`` keeps ``group``. None shows every
         group.
@@ -376,7 +396,7 @@ def plot_residuals(
     predicted, observed = _predictive_pair(model, results, group, var_name)
     _require_count(n_groups, "n_groups")
     probability = _ci_prob(ci_prob)
-    predicted, observed, time, kept = _observation_panels(predicted, observed, results, by, n_groups)
+    predicted, observed, time, kept = _observation_panels(predicted, observed, results, by, coords, n_groups)
     frame = _summarize(observed - predicted, probability)
     color = _colors(1)[0]
     time_label, outcome_label = _axis_labels(model, var_name)
@@ -399,10 +419,11 @@ def plot_rhat(results: xr.DataTree, *, var_names: Sequence[str] | None = None) -
 
     Computes ArviZ's rank-normalized split R-hat for every element of every
     parameter. Each parameter gets a box of its elements' values with a point
-    for each, so a model with hundreds of elements still fits one plot, and
-    a dashed line marks ArviZ's recommended limit of 1.01. Values near one
-    mean the chains agree, and the subtitle counts the values past the limit.
+    for each, so a model with hundreds of elements still fits one plot.
     Parameters without a finite R-hat, such as constants, are left out.
+
+    A dashed line marks ArviZ's recommended limit of 1.01. Values near one mean
+    the chains agree, and the subtitle counts the values past the limit.
     ``plot_rank`` shows the elements with the highest values.
 
     Parameters
@@ -469,10 +490,11 @@ def plot_trace_dist(
 
     Draws ArviZ's ``plot_trace_dist``, where each chain gets its own line
     style. Converged chains overlap in the densities and show flat, well mixed
-    traces without drift. When the parameters have more elements than half
-    of ArviZ's ``plot.max_subplots`` setting, the plot keeps the six
-    elements with the highest R-hat, each in its own row, and says so in its
-    title.
+    traces without drift.
+
+    When the parameters have more elements than half of ArviZ's
+    ``plot.max_subplots`` setting, the plot keeps the six elements with the
+    highest R-hat, each in its own row, and says so in its title.
 
     Parameters
     ----------
@@ -560,9 +582,12 @@ def _observation_panels(
     observed: xr.DataArray,
     results: xr.DataTree,
     by: str | Sequence[str] | None,
+    coords: Mapping[str, object] | None,
     n_groups: int | None,
 ) -> tuple[xr.DataArray, xr.DataArray, str, list[str]]:
-    """Sum the observation axes that by leaves out and keep the most populous groups."""
+    """Keep the requested labels and sum the axes that by leaves out before keeping the most populous groups."""
+    selection, _ = _select_panels(observed, coords, None, "")
+    predicted, observed = _restrict(predicted, selection), _restrict(observed, selection)
     time = "time" if "time" in observed.dims else str(observed.dims[0])
     if by is not None and not isinstance(by, str) and not isinstance(by, Sequence):
         raise TypeError(f"by must be an axis name or a sequence of them, got {type(by).__name__}")
@@ -574,7 +599,7 @@ def _observation_panels(
     # Summing each draw keeps the uncertainty of the total rather than adding up interval bounds.
     predicted = predicted.sum(summed) if summed else predicted
     observed = observed.sum(summed) if summed else observed
-    if "group" in kept and n_groups is not None:
+    if "group" in kept and "group" not in selection and n_groups is not None:
         largest = _largest_groups((results,), list(observed["group"].values), n_groups)
         predicted, observed = predicted.sel(group=largest), observed.sel(group=largest)
     return predicted, observed, time, kept
@@ -636,11 +661,13 @@ def _baseline(
     group: str,
     time: str,
     kept: list[str],
+    coords: Mapping[str, object] | None,
     probability: float,
 ) -> pd.DataFrame:
     """Sum each draw's baseline over the axes the fit leaves out and summarize it by period."""
     effects = _require_dataset(effects, "effects", ["baseline_response"])
-    baseline = effects["baseline_response"]
+    selection, _ = _select_panels(effects["baseline_response"], coords, None, "")
+    baseline = _restrict(effects["baseline_response"], selection)
     _require_draws(baseline, "effects['baseline_response']")
     drawn = effects.attrs.get("group", group)
     if drawn != group:

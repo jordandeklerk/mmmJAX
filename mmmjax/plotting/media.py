@@ -2,15 +2,14 @@
 
 import math
 import numbers
-from collections.abc import Callable, Hashable, Mapping, Sequence
-from typing import TYPE_CHECKING, Literal
+from collections.abc import Hashable, Mapping, Sequence
+from typing import TYPE_CHECKING
 
-import jax
-import jax.numpy as jnp
 import numpy as np
 import pandas as pd
 import plotnine as pn
 import xarray as xr
+from numpy.typing import ArrayLike, NDArray
 
 from mmmjax.plotting._layers import _bands, _bar_layout, _compact, _facet, _scales
 from mmmjax.plotting._summary import (
@@ -18,11 +17,14 @@ from mmmjax.plotting._summary import (
     _facets,
     _label,
     _ordered,
+    _outcome_words,
     _percent,
     _pick_channels,
     _plan_spend,
     _require_dataset,
     _require_draws,
+    _restrict,
+    _select_panels,
     _summarize,
     _wrap,
 )
@@ -31,105 +33,22 @@ from mmmjax.plotting.theme import _colors, theme_mmmjax
 if TYPE_CHECKING:
     from plotnine.ggplot import PlotAddable
 
-__all__ = ["plot_adstock", "plot_frequency_curves", "plot_media_metrics", "plot_response_curves", "plot_roi"]
-
-
-def plot_adstock(
-    results: xr.DataTree,
-    adstock: Callable[..., jax.Array],
-    *,
-    parameters: Mapping[str, str],
-    max_lag: int,
-    channels: Sequence[str] | None = None,
-    group: Literal["prior", "posterior"] = "posterior",
-    ci_prob: float | None = None,
-) -> pn.ggplot:
-    """Plot the share of an exposure's effect that reaches each later period.
-
-    Each parameter draw is passed to the adstock function along with one unit
-    of exposure in the first period, so the output traces the weight of every
-    lag. The line follows the point estimate across draws and the band its
-    credible interval. The last axis of the parameters, usually ``channel``,
-    sets the colors, and any other axis becomes a panel.
-
-    Parameters
-    ----------
-    results : xarray.DataTree
-        Results containing the adstock parameters in the selected group.
-    adstock : callable
-        Adstock function called as ``adstock(media, **values, max_lag=max_lag)``,
-        such as ``geometric_adstock``. Fix other settings the model used, such
-        as ``normalize=False``, with ``functools.partial``.
-    parameters : mapping of str to str
-        Result variable for each adstock argument, as in
-        ``{"alpha": "retention"}``.
-    max_lag : int
-        Longest lag the model's adstock uses. Nonnegative.
-    channels : sequence of str, optional
-        Labels of the color axis to show. Defaults to every label, or to the
-        first ten when there are more.
-    group : {"prior", "posterior"}, default "posterior"
-        Parameter draws to use.
-    ci_prob : float, optional
-        Probability of the credible interval. Defaults to ArviZ's
-        ``stats.ci_prob`` setting.
-
-    Returns
-    -------
-    plotnine.ggplot
-        Weights by lag, with one line and band per channel.
-    """
-    if not isinstance(results, xr.DataTree):
-        raise TypeError(f"results must be an xarray DataTree, got {type(results).__name__}")
-    if not callable(adstock):
-        raise TypeError(f"adstock must be callable, got {type(adstock).__name__}")
-    if not isinstance(parameters, Mapping) or not parameters:
-        raise ValueError("parameters must map at least one adstock argument to a result variable")
-    if isinstance(max_lag, bool) or not isinstance(max_lag, int):
-        raise TypeError(f"max_lag must be an integer, got {type(max_lag).__name__}")
-    if max_lag < 0:
-        raise ValueError(f"max_lag must be nonnegative, got {max_lag}")
-    if group not in ("prior", "posterior"):
-        raise ValueError(f"group must be 'prior' or 'posterior', got {group!r}")
-    if group not in results.children:
-        raise ValueError(f"results has no {group!r} group")
-    probability = _ci_prob(ci_prob)
-    draws = results[group].to_dataset()
-    missing = [name for name in parameters.values() if name not in draws.data_vars]
-    if missing:
-        raise ValueError(f"results has no {group} variable {', '.join(repr(name) for name in missing)}")
-
-    arrays = {argument: draws[name] for argument, name in parameters.items()}
-    for argument, values in arrays.items():
-        _require_draws(values, f"parameters[{argument!r}]")
-    weights = _adstock_weights(adstock, arrays, max_lag)
-    event_dims = [str(dim) for dim in weights.dims if dim not in ("chain", "draw", "lag")]
-    color = event_dims[-1] if event_dims else None
-    note = ""
-    if color is not None:
-        shown, note = _pick_channels(weights[color].values, None, channels, 10, None)
-        weights = weights.sel({color: [label for label in weights[color].values if str(label) in shown]})
-    elif channels is not None:
-        raise ValueError("channels needs parameters with a channel axis")
-    frame = _summarize(weights, probability)
-    labels = [] if color is None else list(weights[color].values)
-    point = pn.geom_point(pn.aes(color=color), size=2) if color else pn.geom_point(color=_colors(1)[0], size=2)
-
-    plot = (
-        _bands(frame, x="lag", color=color, labels=labels, probability=probability)
-        + point
-        + pn.labs(x="Lag", y="Weight", caption=note)
-        + _scales(frame, "lag")
-        + _facet(event_dims[:-1])
-        + theme_mmmjax()
-    )
-    return plot
+__all__ = [
+    "plot_frequency_curves",
+    "plot_media_metrics",
+    "plot_response_curves",
+    "plot_roi",
+    "plot_roi_bubbles",
+    "plot_spend_vs_contribution",
+]
 
 
 def plot_frequency_curves(
     curves: xr.Dataset,
     *,
     channels: Sequence[str] | None = None,
+    coords: Mapping[str, object] | None = None,
+    n_groups: int | None = 3,
     ci_prob: float | None = None,
 ) -> pn.ggplot:
     """Plot how each channel's response changes with its average frequency.
@@ -146,6 +65,11 @@ def plot_frequency_curves(
     channels : sequence of str, optional
         Channels to show. Defaults to every channel, or to the ten with the
         most spending when there are more.
+    coords : mapping of str to sequence, optional
+        Labels to keep on other axes, as in ``{"group": ["north", "south"]}``.
+    n_groups : int or None, default 3
+        Number of groups to give panels when the results keep a group axis,
+        chosen by the size of their values. None shows every group.
     ci_prob : float, optional
         Probability of the credible interval. Defaults to ArviZ's
         ``stats.ci_prob`` setting.
@@ -162,7 +86,8 @@ def plot_frequency_curves(
     labels = curves["channel"].values
     sizes = [float(value) for value in curves["reference_spend"].values] if "reference_spend" in curves else None
     shown, note = _pick_channels(labels, sizes, channels, 10, "spending")
-    changes = changes.sel(channel=shown)
+    selection, group_note = _select_panels(changes, coords, n_groups, "responses")
+    changes = _restrict(changes.sel(channel=shown), selection)
     frame = _ordered(_summarize(changes, probability), "channel", shown)
     best = curves["best_frequency"].sel(channel=shown).to_dataframe().reset_index()[["channel", "best_frequency"]]
     marked = frame.merge(best, on="channel")
@@ -172,7 +97,11 @@ def plot_frequency_curves(
         _bands(frame, x="frequency", color="channel", labels=shown, probability=probability)
         + pn.geom_hline(yintercept=0, linetype="dashed", color="#8c8c8c", size=0.6)
         + pn.geom_point(pn.aes(color="channel"), data=marked, size=3)
-        + pn.labs(x="Average frequency", y="Response change", caption=note)
+        + pn.labs(
+            x="Average frequency",
+            y=_outcome_words("Response change", curves),
+            caption=" ".join(text for text in (note, group_note) if text),
+        )
         + _scales(frame, "frequency")
         + _facet(_facets(changes.dims, ("channel", "frequency")))
         + theme_mmmjax()
@@ -185,23 +114,31 @@ def plot_media_metrics(
     *,
     metric: str,
     channels: Sequence[str] | None = None,
+    coords: Mapping[str, object] | None = None,
+    n_groups: int | None = 3,
     ci_prob: float | None = None,
 ) -> pn.ggplot:
     """Plot one channel metric with its credible interval.
 
     Draws the bars of ``plot_roi`` for another metric with draws, such as
     marginal ROI, cost per incremental response, or incremental response.
+    Channels run from the most spending to the least.
+
     Each bar is a channel's point estimate, labeled with its value, and the
-    error bar is its credible interval. Channels run from the most spending
-    to the least. Pass several results in a mapping to compare them, as in
-    ``{"Prior": prior_metrics, "Posterior": metrics}``, and each label gets
-    its own color. Other axes, such as ``allocation`` in the output of
-    ``optimize_budget``, become panels on one scale. With many channels the
-    figure widens so each bar keeps its width, and a notebook shows it at
-    full size in a box that scrolls sideways. When ``channels`` leaves some
-    out and the results record what the metric is built from, as
-    ``media_metrics`` does for its responses and ratios, one more bar pools
-    them.
+    error bar is its credible interval. Cost per incremental response is drawn
+    at its posterior median, because a ratio's mean is unstable when increments
+    come near zero.
+
+    Pass several results in a mapping to compare them, as in
+    ``{"Prior": prior_metrics, "Posterior": metrics}``, and each label gets its
+    own color. Other axes, such as ``allocation`` in the output of
+    ``optimize_budget``, become panels on one scale.
+
+    With many channels the figure widens so each bar keeps its width, and a
+    notebook shows it at full size in a box that scrolls sideways. When
+    ``channels`` leaves some out and the results record what the metric is
+    built from, as ``media_metrics`` does for its responses and ratios, one
+    more bar pools them.
 
     Parameters
     ----------
@@ -213,6 +150,11 @@ def plot_media_metrics(
         ``"cost_per_incremental_response"``, or ``"incremental_response"``.
     channels : sequence of str, optional
         Channels to show. Defaults to every channel.
+    coords : mapping of str to sequence, optional
+        Labels to keep on other axes, as in ``{"group": ["north", "south"]}``.
+    n_groups : int or None, default 3
+        Number of groups to give panels when the results keep a group axis,
+        chosen by the size of their values. None shows every group.
     ci_prob : float, optional
         Probability of the credible intervals. Defaults to ArviZ's
         ``stats.ci_prob`` setting.
@@ -224,7 +166,7 @@ def plot_media_metrics(
     """
     if not isinstance(metric, str):
         raise TypeError(f"metric must be a string, got {type(metric).__name__}")
-    plot = _metric_bars(metrics, metric, channels, ci_prob, None)
+    plot = _metric_bars(metrics, metric, channels, coords, n_groups, ci_prob, None)
     return plot
 
 
@@ -233,6 +175,8 @@ def plot_response_curves(
     *,
     plan: xr.Dataset | None = None,
     channels: Sequence[str] | None = None,
+    coords: Mapping[str, object] | None = None,
+    n_groups: int | None = 3,
     ci_prob: float | None = None,
 ) -> pn.ggplot:
     """Plot each channel's incremental response against its spending.
@@ -260,6 +204,11 @@ def plot_response_curves(
     channels : sequence of str, optional
         Channels to show. Defaults to every channel, or to the nine with the
         most spending when there are more.
+    coords : mapping of str to sequence, optional
+        Labels to keep on other axes, as in ``{"group": ["north", "south"]}``.
+    n_groups : int or None, default 3
+        Number of groups to give panels when the results keep a group axis,
+        chosen by the size of their values. None shows every group.
     ci_prob : float, optional
         Probability of the credible interval. Defaults to ArviZ's
         ``stats.ci_prob`` setting.
@@ -276,7 +225,8 @@ def plot_response_curves(
     marks, limits = _spend_marks(curves, plan)
     reference = marks[marks["level"] == "Reference spend"]
     shown, note = _pick_channels(reference["channel"], reference["spend"], channels, 9, "spending")
-    increments = increments.sel(channel=shown)
+    selection, group_note = _select_panels(increments, coords, n_groups, "responses")
+    increments = _restrict(increments.sel(channel=shown), selection)
     spend = curves["spend"].sel(channel=shown).to_dataframe().reset_index()[["channel", "multiplier", "spend"]]
     frame = _summarize(increments, probability).merge(spend.astype({"channel": str}), on=["channel", "multiplier"])
     frame = _ordered(frame, "channel", shown)
@@ -288,7 +238,8 @@ def plot_response_curves(
     points = _ordered(_curve_points(frame, marks[marks["channel"].isin(shown)], labelled), "panel", titles.values())
     styles = ["Up to reference spend", "Above reference spend"] if plan is None else ["Within bounds", "Outside bounds"]
     segments = _ordered(_segments(frame, limits, labelled, styles), "panel", titles.values())
-    caption = " ".join(text for text in (note, _unmarked_note(marks[marks["channel"].isin(shown)], points)) if text)
+    unmarked = _unmarked_note(marks[marks["channel"].isin(shown)], points)
+    caption = " ".join(text for text in (note, group_note, unmarked) if text)
     colors = dict(zip(shown, _colors(len(shown)), strict=True))
     title = f"Channel, {_percent(probability)} interval"
     # Without a plan the line styles already say where the reference spending sits. With one, every channel
@@ -310,7 +261,7 @@ def plot_response_curves(
         + pn.scale_shape_manual(values={"Reference spend": "o", "Optimized spend": "^"})
         + pn.labs(
             x="Spend",
-            y="Incremental response",
+            y=_outcome_words("Incremental response", curves),
             color=title,
             fill=title,
             linetype="",
@@ -328,22 +279,26 @@ def plot_roi(
     metrics: xr.Dataset | Mapping[str, xr.Dataset],
     *,
     channels: Sequence[str] | None = None,
+    coords: Mapping[str, object] | None = None,
+    n_groups: int | None = 3,
     break_even: float | None = 1.0,
     ci_prob: float | None = None,
 ) -> pn.ggplot:
     """Plot each channel's return on investment with its credible interval.
 
-    Each bar is a channel's point estimate of ROI, labeled with its value,
-    and the error bar is its credible interval. Channels run from the most
-    spending to the least, and a dashed line marks ``break_even``. Pass
-    several results in a mapping to compare them, as in
-    ``{"Prior": prior_metrics, "Posterior": metrics}``, and each label gets
-    its own color. Other axes, such as ``allocation`` in the output of
-    ``optimize_budget``, become panels. With many channels the figure widens
-    so each bar keeps its width, and a notebook shows it at full size in a
-    box that scrolls sideways. When ``channels`` leaves some out and the
-    results record spending and incremental response, one more bar gives
-    their spend-weighted ROI.
+    Each bar is a channel's point estimate of ROI, labeled with its value, and
+    the error bar is its credible interval. Channels run from the most spending
+    to the least, and a dashed line marks ``break_even``.
+
+    Pass several results in a mapping to compare them, as in
+    ``{"Prior": prior_metrics, "Posterior": metrics}``, and each label gets its
+    own color. Other axes, such as ``allocation`` in the output of
+    ``optimize_budget``, become panels.
+
+    With many channels the figure widens so each bar keeps its width, and a
+    notebook shows it at full size in a box that scrolls sideways. When
+    ``channels`` leaves some out and the results record spending and
+    incremental response, one more bar gives their spend-weighted ROI.
 
     Parameters
     ----------
@@ -352,6 +307,11 @@ def plot_roi(
         ``include_metrics=True``. A mapping labels each result.
     channels : sequence of str, optional
         Channels to show. Defaults to every channel.
+    coords : mapping of str to sequence, optional
+        Labels to keep on other axes, as in ``{"group": ["north", "south"]}``.
+    n_groups : int or None, default 3
+        Number of groups to give panels when the results keep a group axis,
+        chosen by the size of their values. None shows every group.
     break_even : float or None, default 1.0
         ROI at which a channel returns what it costs. The default suits a
         revenue outcome, and None leaves the line out.
@@ -364,52 +324,198 @@ def plot_roi(
     plotnine.ggplot
         ROI bars with credible intervals by channel.
     """
-    if break_even is not None and (isinstance(break_even, bool) or not isinstance(break_even, numbers.Real)):
-        raise TypeError(f"break_even must be a number or None, got {type(break_even).__name__}")
-    if break_even is not None and not math.isfinite(break_even):
-        raise ValueError(f"break_even must be finite, got {break_even!r}")
-    plot = _metric_bars(metrics, "roi", channels, ci_prob, break_even)
+    _validate_break_even(break_even)
+    plot = _metric_bars(metrics, "roi", channels, coords, n_groups, ci_prob, break_even)
     return plot
 
 
-def _adstock_weights(adstock: Callable[..., jax.Array], arrays: dict[str, xr.DataArray], max_lag: int) -> xr.DataArray:
-    """Pass a unit impulse through the adstock function once per draw to read its lag weights."""
-    aligned = dict(zip(arrays, xr.broadcast(*arrays.values()), strict=True))
-    first = next(iter(aligned.values()))
-    event_dims = [dim for dim in first.dims if dim not in ("chain", "draw")]
-    ordered = {argument: values.transpose("chain", "draw", *event_dims) for argument, values in aligned.items()}
-    chains, draws = first.sizes["chain"], first.sizes["draw"]
-    event_shape = tuple(first.sizes[dim] for dim in event_dims)
-    flattened = {
-        argument: jnp.asarray(values.values.reshape((chains * draws, *event_shape)))
-        for argument, values in ordered.items()
-    }
-    dtype = jnp.result_type(float, *flattened.values())
-    impulse = jnp.zeros((max_lag + 1, *event_shape), dtype=dtype).at[0].set(1)
+def plot_roi_bubbles(
+    metrics: xr.Dataset,
+    *,
+    metric: str = "marginal_roi",
+    channels: Sequence[str] | None = None,
+    break_even: float | None = 1.0,
+) -> pn.ggplot:
+    """Plot a channel metric against ROI with bubbles sized by spending.
 
-    def respond(values: dict[str, jax.Array]) -> jax.Array:
-        return adstock(impulse, **values, max_lag=max_lag)
+    Each bubble places a channel at the point estimates of its ROI and of
+    ``metric``, and its area is proportional to the channel's spending. Every
+    channel gets its own color, named in the legend.
 
-    carried = np.asarray(jax.vmap(respond)(flattened))
-    if carried.shape[1:] != impulse.shape:
-        raise ValueError(
-            f"adstock must return an array shaped like its media input, got shape {carried.shape[1:]} "
-            f"for media of shape {impulse.shape}"
-        )
-    coords: dict[Hashable, object] = {dim: first[dim].values for dim in event_dims if dim in first.coords}
-    coords["lag"] = np.arange(max_lag + 1)
-    weights = xr.DataArray(
-        carried.reshape((chains, draws, max_lag + 1, *event_shape)),
-        dims=("chain", "draw", "lag", *event_dims),
-        coords=coords,
+    Dashed lines at ``break_even`` mark where a channel returns what it costs.
+    With marginal ROI, a channel right of the vertical line has returned more
+    than it cost, and a channel above the horizontal line would still return
+    more than the next unit of spending costs. With effectiveness, the
+    incremental response per unit of exposure, a low ROI beside a high
+    effectiveness points to costly media rather than weak media.
+
+    The ten channels with the most spending are shown by default, and the
+    caption says how many were left out. Other axes, such as ``allocation`` in
+    the output of ``optimize_budget``, become panels.
+
+    Parameters
+    ----------
+    metrics : xarray.Dataset
+        Output of ``media_metrics``, or of ``optimize_budget`` with
+        ``include_metrics=True``.
+    metric : str, default "marginal_roi"
+        Variable for the vertical axis, such as ``"marginal_roi"`` or
+        ``"effectiveness"``.
+    channels : sequence of str, optional
+        Channels to show. Defaults to the ten with the most spending.
+    break_even : float or None, default 1.0
+        ROI at which a channel returns what it costs. The default suits a
+        revenue outcome, and None leaves the lines out.
+
+    Returns
+    -------
+    plotnine.ggplot
+        The metric against ROI by channel, sized by spending.
+    """
+    _validate_break_even(break_even)
+    if not isinstance(metric, str):
+        raise TypeError(f"metric must be a string, got {type(metric).__name__}")
+    if metric == "roi":
+        raise ValueError("metric must differ from 'roi', which the horizontal axis shows")
+    dataset = _require_dataset(metrics, "metrics", ["roi", metric])
+    for name in ("roi", metric):
+        _require_draws(dataset[name], f"metrics[{name!r}]")
+        if "channel" not in dataset[name].dims:
+            raise ValueError(f"metrics[{name!r}] must have a channel axis, got dims {dataset[name].dims}")
+    spend = _spend_variable(dataset)
+    labels = [str(label) for label in dataset["channel"].values]
+    spending = _spending(dataset, labels)
+    # Ten colors are all the palette tells apart, so the legend stops at ten channels.
+    shown, note = _pick_channels(labels, spending, channels, 10, "spending")
+    ordered = shown if spending is None else sorted(shown, key=lambda label: -spending[labels.index(label)])
+    frame = _bubbles(dataset, spend, ordered, metric)
+    panels = [dim for dim in frame.columns if dim not in ("channel", "roi", metric, "spend")]
+    colors = dict(zip(ordered, _colors(len(ordered)), strict=True))
+    lines: list[PlotAddable] = []
+    if break_even is not None:
+        lines += [
+            pn.geom_vline(xintercept=break_even, linetype="dashed", color="#8c8c8c"),
+            pn.expand_limits(x=break_even),
+        ]
+    # Marginal ROI shares the break-even value with ROI, which no other metric does.
+    if break_even is not None and metric == "marginal_roi":
+        lines += [
+            pn.geom_hline(yintercept=break_even, linetype="dashed", color="#8c8c8c"),
+            pn.expand_limits(y=break_even),
+        ]
+
+    plot: pn.ggplot = (
+        pn.ggplot(frame, pn.aes("roi", metric))
+        + lines
+        + pn.geom_point(pn.aes(size="spend", fill="channel"), color="#262626", stroke=0.3, alpha=0.75)
+        # plotnine 0.15 rescales sizes from the smallest spending, which would shrink that bubble to nothing.
+        + pn.scale_size_area(max_size=24, rescaler=_from_zero)
+        + pn.scale_fill_manual(values=colors, breaks=ordered, labels=[_wrap(label, 28) for label in ordered])
+        # Wider margins keep the largest bubbles inside the panel.
+        + pn.scale_x_continuous(expand=(0.1, 0))
+        + pn.scale_y_continuous(expand=(0.1, 0))
+        + pn.guides(size="none", fill=pn.guide_legend(override_aes={"size": 6}))
+        + pn.labs(x="ROI", y=_outcome_words(_label(metric), dataset), fill="Channel", caption=note)
+        + (pn.facet_wrap(panels, nrow=1) if panels else pn.facet_null())
+        + theme_mmmjax()
     )
-    return weights
+    return plot
+
+
+def plot_spend_vs_contribution(
+    metrics: xr.Dataset,
+    *,
+    channels: Sequence[str] | None = None,
+) -> pn.ggplot:
+    """Compare each channel's share of spending with its share of the response.
+
+    Each channel gets one bar for its share of the spending in the results and
+    one for its share of their incremental response, and the number above the
+    pair is its ROI. A channel whose share of the response tops its share of
+    spending has an ROI above that of all the channels together.
+
+    Responses are posterior means, so each set of shares adds up to one, and
+    time and group axes are summed first. Channels run from the most spending
+    to the least, and ``allocation`` in the output of ``optimize_budget`` gives
+    each allocation a panel.
+
+    With many channels the figure widens so each pair keeps its width, and a
+    notebook shows it at full size in a box that scrolls sideways. When
+    ``channels`` leaves some out, one more pair pools them.
+
+    Parameters
+    ----------
+    metrics : xarray.Dataset
+        Output of ``media_metrics``, or of ``optimize_budget`` with
+        ``include_metrics=True``.
+    channels : sequence of str, optional
+        Channels to show. Defaults to every channel.
+
+    Returns
+    -------
+    plotnine.ggplot
+        Paired share bars by channel labeled with ROI.
+    """
+    dataset = _require_dataset(metrics, "metrics", ["incremental_response"])
+    increments = dataset["incremental_response"].reset_coords(drop=True)
+    _require_draws(increments, "metrics['incremental_response']")
+    if "channel" not in increments.dims:
+        raise ValueError(f"metrics['incremental_response'] must have a channel axis, got dims {increments.dims}")
+    spend = _spend_variable(dataset)
+    panels = [str(dim) for dim in spend.dims if dim != "channel"]
+    summed = [dim for dim in increments.dims if dim not in ("chain", "draw", "channel", *panels)]
+    # Means add up across channels, so the response shares of every channel sum to one.
+    responses = increments.sum(summed).mean(("chain", "draw"))
+    labels = [str(label) for label in dataset["channel"].values]
+    spending = _spending(dataset, labels)
+    shown, _ = _pick_channels(labels, spending, channels, len(labels), "spending")
+    ordered = shown if spending is None else sorted(shown, key=lambda label: -spending[labels.index(label)])
+    hidden = [label for label in labels if label not in shown]
+    shares = _share_pairs(responses, spend, ordered, hidden)
+    bars = [*ordered, *(["Other channels"] if hidden else [])]
+    spend_label = "Share of spend"
+    response_label = _outcome_words("Share of incremental response", dataset)
+    long = pd.concat(
+        [
+            shares.assign(measure=spend_label, share=shares["spend_share"]),
+            shares.assign(measure=response_label, share=shares["response_share"]),
+        ],
+        ignore_index=True,
+    )
+    long = _ordered(_ordered(long, "channel", bars), "measure", [spend_label, response_label])
+    # The ROI sits just above the taller bar of each pair.
+    offset = 0.015 * (max(float(long["share"].max()), 0.0) - min(float(long["share"].min()), 0.0))
+    tops = shares[["spend_share", "response_share"]].max(axis=1).clip(lower=0) + offset
+    texts = [
+        "" if np.isnan(roi) else f"ROI {roi:.2f}" if abs(roi) < 1000 else f"ROI {_compact([roi])[0]}"
+        for roi in shares["roi"]
+    ]
+    marks = _ordered(shares.assign(position=tops, text=texts), "channel", bars)
+    colors = {spend_label: _colors(2)[1], response_label: _colors(1)[0]}
+    dodge = pn.position_dodge(width=0.75)
+    figure, labels_shown, layout = _bar_layout(bars, 0.9)
+
+    plot: pn.ggplot = (
+        figure(long, pn.aes("channel", "share", fill="measure"))
+        + pn.geom_col(position=dodge, width=0.75, alpha=0.85)
+        + pn.geom_text(pn.aes("channel", "position", label="text"), data=marks, inherit_aes=False, va="bottom", size=9)
+        + pn.scale_fill_manual(values=colors, breaks=[spend_label, response_label])
+        + pn.scale_x_discrete(labels=dict(zip(bars, labels_shown, strict=True)))
+        + pn.scale_y_continuous(labels=lambda values: [f"{value:.0%}" for value in values])
+        + pn.labs(x="", y="Share of all channels", fill="")
+        + (pn.facet_wrap(panels) if panels else pn.facet_null())
+        + theme_mmmjax()
+        + layout
+    )
+    return plot
 
 
 def _metric_bars(
     metrics: object,
     metric: str,
     channels: Sequence[str] | None,
+    coords: Mapping[str, object] | None,
+    n_groups: int | None,
     ci_prob: float | None,
     reference: float | None,
 ) -> pn.ggplot:
@@ -422,16 +528,20 @@ def _metric_bars(
     shown, _ = _pick_channels(labels, spending, channels, len(labels), "spending")
     ordered = shown if spending is None else sorted(shown, key=lambda label: -spending[labels.index(label)])
     hidden = [label for label in labels if label not in shown]
+    selection, note = _select_panels(first[metric], coords, n_groups, "values")
+    # A ratio's mean is unstable when increments come near zero, so Meridian reads its median instead.
+    point = "median" if metric == "cost_per_incremental_response" else None
     frames = []
     facets: list[str] = []
-    for label, dataset in datasets.items():
+    for label, result in datasets.items():
+        dataset = _restrict(result, selection)
         values = dataset[metric].reset_coords(drop=True)
         kept = values.sel(channel=[channel for channel in values["channel"].values if str(channel) in shown])
         pooled = _pooled_metric(dataset, metric, hidden)
         parts = [kept] if pooled is None else [kept, pooled.expand_dims(channel=["Other channels"])]
         stacked = xr.concat(parts, dim="channel")
         facets.extend(dim for dim in _facets(stacked.dims, ("channel",)) if dim not in facets)
-        frames.append(_summarize(stacked, probability).assign(result=label))
+        frames.append(_summarize(stacked, probability, point).assign(result=label))
     joined = pd.concat(frames, ignore_index=True)
     bars = [*ordered, *(["Other channels"] if (joined["channel"] == "Other channels").any() else [])]
     frame = _ordered(_ordered(joined, "channel", bars), "result", list(datasets))
@@ -439,7 +549,7 @@ def _metric_bars(
     # Values sit just above each interval so they never collide with the error bars.
     offset = 0.015 * (max(frame["upper"].max(), 0.0) - min(frame["lower"].min(), 0.0))
     frame = frame.assign(
-        value=[f"{value:.2f}" if abs(value) < 1000 else _compact([value])[0] for value in frame["estimate"]],
+        value=[_bar_value(value) for value in frame["estimate"]],
         value_position=frame["upper"] + offset,
         kind=np.where(frame["channel"] == "Other channels", "Other channels", "Channel"),
     )
@@ -467,7 +577,9 @@ def _metric_bars(
         + pn.scale_fill_manual(values=colors, breaks=list(datasets) if compared else None)
         + pn.scale_x_discrete(labels=dict(zip(bars, texts, strict=True)))
         + (pn.guides() if compared else pn.guides(fill="none"))
-        + pn.labs(x="", y=f"{_label(metric)}, {_percent(probability)} interval", fill="")
+        + pn.labs(
+            x="", y=f"{_outcome_words(_label(metric), first)}, {_percent(probability)} interval", fill="", caption=note
+        )
         + _scales(frame)
         # Panels share one axis so allocations and groups compare at a glance.
         + (pn.facet_wrap(facets) if facets else pn.facet_null())
@@ -550,6 +662,18 @@ def _channel_total(dataset: xr.Dataset, name: str, labels: list[str], dims: tupl
     extra = [dim for dim in values.dims if dim not in dims]
     total = values.sum(["channel", *extra])
     return total
+
+
+def _bar_value(value: float) -> str:
+    """Write a bar's value with two decimals or three significant digits when it is small or large."""
+    # Two decimals would round small rates such as effectiveness to the same text.
+    if abs(value) >= 1000:
+        text = _compact([value])[0]
+    elif abs(value) < 1:
+        text = f"{value:.3g}"
+    else:
+        text = f"{value:.2f}"
+    return text
 
 
 def _spend_marks(curves: xr.Dataset, plan: xr.Dataset | None) -> tuple[pd.DataFrame, dict[str, tuple[float, float]]]:
@@ -652,3 +776,79 @@ def _unmarked_note(marks: pd.DataFrame, points: pd.DataFrame) -> str:
         else ""
     )
     return note
+
+
+def _validate_break_even(break_even: object) -> None:
+    """Check that the break-even ROI is a finite number or None."""
+    if break_even is None:
+        return
+    if isinstance(break_even, bool) or not isinstance(break_even, numbers.Real):
+        raise TypeError(f"break_even must be a number or None, got {type(break_even).__name__}")
+    if not math.isfinite(break_even):
+        raise ValueError(f"break_even must be finite, got {break_even!r}")
+
+
+def _spend_variable(metrics: xr.Dataset) -> xr.DataArray:
+    """Read the spending that the returns in the metrics divide by."""
+    for name in ("reference_spend", "spend"):
+        if name in metrics.data_vars:
+            spend = metrics[name].reset_coords(drop=True)
+            return spend
+    raise ValueError("metrics must record 'reference_spend' or 'spend'")
+
+
+def _bubbles(dataset: xr.Dataset, spend: xr.DataArray, shown: list[str], metric: str) -> pd.DataFrame:
+    """Summarize ROI and the metric for the shown channels beside their spending."""
+    columns = []
+    for name in ("roi", metric):
+        values = dataset[name].reset_coords(drop=True).sel(channel=shown)
+        # A ratio's mean is unstable when increments come near zero, so this one uses its median.
+        point = "median" if name == "cost_per_incremental_response" else None
+        # Only the point estimate is drawn, so the interval probability does not matter.
+        summary = _summarize(values, 0.5, point)
+        columns.append(summary.drop(columns=["lower", "upper"]).rename(columns={"estimate": name}))
+    spending = spend.sel(channel=shown).rename("spend").to_dataframe().reset_index()
+    keys = [column for column in columns[0].columns if column != "roi"]
+    joined = columns[0].astype({"channel": str}).merge(columns[1].astype({"channel": str}), on=keys)
+    merged = joined.merge(spending.astype({"channel": str}), on=[key for key in keys if key in spending.columns])
+    bubbles = _ordered(merged, "channel", shown)
+    # Merging drops the category order, so allocation panels would otherwise sort by name.
+    for dim in keys:
+        if dim != "channel":
+            bubbles = _ordered(bubbles, dim, dataset[dim].values)
+    return bubbles
+
+
+def _from_zero(
+    x: ArrayLike, to: tuple[float, float] = (0, 1), _from: tuple[float, float] | None = None
+) -> NDArray[np.floating]:
+    """Divide sizes by the largest so each bubble's area stays proportional to its spending."""
+    # The argument names copy mizani's rescalers, which plotnine calls in their place.
+    array = np.asarray(x, dtype=float)
+    largest = float(np.max(np.abs(array))) if _from is None else max(abs(_from[0]), abs(_from[1]))
+    scaled = array / largest * to[1]
+    return scaled
+
+
+def _share_pairs(responses: xr.DataArray, spend: xr.DataArray, shown: list[str], hidden: list[str]) -> pd.DataFrame:
+    """Give each shown channel and the pooled rest their shares of all spending and response with their ROI."""
+    totals = {}
+    for name, values in (("response", responses), ("spend", spend)):
+        pieces = [values.sel(channel=shown)]
+        if hidden:
+            pieces.append(values.sel(channel=hidden).sum("channel").expand_dims(channel=["Other channels"]))
+        totals[name] = xr.concat(pieces, "channel")
+    # A channel without spending has no ROI, so its label stays empty.
+    paid = totals["spend"].where(totals["spend"] > 0)
+    shares = xr.Dataset(
+        {
+            "spend_share": totals["spend"] / spend.sum("channel"),
+            "response_share": totals["response"] / responses.sum("channel"),
+            "roi": totals["response"] / paid,
+        }
+    )
+    frame = shares.to_dataframe().reset_index()
+    for dim in spend.dims:
+        if dim != "channel":
+            frame = _ordered(frame, str(dim), spend[dim].values)
+    return frame

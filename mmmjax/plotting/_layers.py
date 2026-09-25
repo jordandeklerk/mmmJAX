@@ -8,7 +8,7 @@ import plotnine as pn
 from plotnine.options import get_option
 
 from mmmjax.plotting._display import _ScrollingPlot
-from mmmjax.plotting._summary import _label, _percent, _shorten, _wrap
+from mmmjax.plotting._summary import _distinct_shortened, _label, _percent, _wrap
 from mmmjax.plotting.theme import _colors
 
 if TYPE_CHECKING:
@@ -66,57 +66,54 @@ def _scales(frame: pd.DataFrame, x: str | None = None, *, y: bool = True) -> lis
 
 
 def _bar_layout(labels: Sequence[str], slot: float) -> tuple[type[pn.ggplot], list[str], list["PlotAddable"]]:
-    """Size a bar chart so each bar keeps its slot and label the bars the way Meridian's charts do."""
+    """Size a bar chart so each bar keeps its slot and tilt and shorten its labels."""
     # The y axis, its labels, and its title take about an inch and a half beside the bars.
     width = max(12.0, 1.5 + len(labels) * slot)
     texts, axis = _channel_axis(labels)
     layout: list[PlotAddable] = [axis]
     if width > 12:
-        layout.extend([_wide_margins(width), pn.theme(figure_size=(width, 7))])
+        layout.append(_figure_margins(width, 7))
     figure = _ScrollingPlot if width > 12 else pn.ggplot
     return figure, texts, layout
 
 
 def _channel_axis(labels: Sequence[str]) -> tuple[list[str], pn.theme]:
     """Tilt category labels at 45 degrees and shorten long ones so every label takes the same room."""
-    names = [str(label) for label in labels]
     # Meridian's charts stop labels at 180 pixels, about 27 characters of axis text.
-    limit = 27
-    longest = max((len(name) for name in names), default=0)
-    shortened = [_shorten(name, limit) for name in names]
-    # Shortening must keep the labels distinct, so the limit grows until no two collide.
-    while len(set(shortened)) < len(set(names)) and limit < longest:
-        limit += 4
-        shortened = [_shorten(name, limit) for name in names]
+    shortened = _distinct_shortened([str(label) for label in labels], 27)
     tilted = pn.theme(axis_text_x=pn.element_text(rotation=45, ha="right"))
     return shortened, tilted
 
 
-def _wide_margins(width: float) -> pn.theme:
-    """Keep the default figure's horizontal spacing in inches on a wider figure."""
-    # plotnine sizes horizontal spacing as fractions of the figure width, so each fraction shrinks to keep its inches.
-    shrink = 12 / width
+def _figure_margins(width: float, height: float) -> pn.theme:
+    """Keep the default figure's spacing in inches on a larger figure."""
+    # plotnine sizes spacing as fractions of the figure's width or height, so each fraction shrinks to keep its inches.
+    across, down = 12 / width, 7 / height
     base = float(get_option("base_margin"))
-    # Vertical fractions follow the height, so only the left and right margins shrink.
     legend_text: dict[_Side, Any] = {
-        "t": base / 1.5,
-        "b": base / 1.5,
-        "l": base / 1.5 * shrink,
-        "r": base / 1.5 * shrink,
+        "t": base / 1.5 * down,
+        "b": base / 1.5 * down,
+        "l": base / 1.5 * across,
+        "r": base / 1.5 * across,
         "unit": "fig",
     }
     legend_title: dict[_Side, Any] = {
-        "t": base,
-        "b": base / 2,
-        "l": 2 * base * shrink,
-        "r": 2 * base * shrink,
+        "t": base * down,
+        "b": base / 2 * down,
+        "l": 2 * base * across,
+        "r": 2 * base * across,
         "unit": "fig",
     }
     margins = pn.theme(
-        plot_margin=base * shrink,
-        panel_spacing_x=base * shrink,
-        axis_title_y=pn.element_text(margin={"r": base * shrink, "unit": "fig"}),
-        legend_box_spacing=3 * base * shrink,
+        figure_size=(width, height),
+        plot_margin=base * across,
+        panel_spacing_x=base * across,
+        panel_spacing_y=base * down,
+        axis_title_x=pn.element_text(margin={"t": base * down, "unit": "fig"}),
+        axis_title_y=pn.element_text(margin={"r": base * across, "unit": "fig"}),
+        plot_subtitle=pn.element_text(margin={"b": base * down, "unit": "fig"}),
+        plot_caption=pn.element_text(margin={"t": base * down, "unit": "fig"}),
+        legend_box_spacing=3 * base * across,
         legend_text=pn.element_text(margin=legend_text),
         legend_title=pn.element_text(margin=legend_title),
     )

@@ -147,6 +147,7 @@ from mmmjax.model.parameters import (
     UpperBound,
 )
 from mmmjax.plotting.budget import plot_budget_response, plot_budget_spend
+from mmmjax.plotting.contributions import plot_contributions
 from mmmjax.plotting.diagnostics import (
     plot_fit,
     plot_ppc_dist,
@@ -157,13 +158,15 @@ from mmmjax.plotting.diagnostics import (
     plot_trace_dist,
 )
 from mmmjax.plotting.media import (
-    plot_adstock,
     plot_frequency_curves,
     plot_media_metrics,
     plot_response_curves,
     plot_roi,
+    plot_roi_bubbles,
+    plot_spend_vs_contribution,
 )
 from mmmjax.plotting.theme import theme_mmmjax
+from mmmjax.plotting.transforms import plot_adstock, plot_saturation
 
 __version__ = "0.0.1"
 
@@ -306,6 +309,7 @@ __all__ = [
     "plot_adstock",
     "plot_budget_response",
     "plot_budget_spend",
+    "plot_contributions",
     "plot_fit",
     "plot_frequency_curves",
     "plot_media_metrics",
@@ -316,6 +320,9 @@ __all__ = [
     "plot_response_curves",
     "plot_rhat",
     "plot_roi",
+    "plot_roi_bubbles",
+    "plot_saturation",
+    "plot_spend_vs_contribution",
     "plot_trace_dist",
     "poisson",
     "poisson_log",

@@ -25,6 +25,15 @@ Model fit and convergence
    plot_rank
    plot_trace_dist
 
+Contributions
+-------------
+
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+
+   plot_contributions
+
 Media effects
 -------------
 
@@ -34,9 +43,20 @@ Media effects
 
    plot_roi
    plot_media_metrics
+   plot_spend_vs_contribution
+   plot_roi_bubbles
    plot_response_curves
    plot_frequency_curves
+
+Media transformations
+---------------------
+
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+
    plot_adstock
+   plot_saturation
 
 Budget allocation
 -----------------

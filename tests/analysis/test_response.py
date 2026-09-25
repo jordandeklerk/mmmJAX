@@ -174,6 +174,7 @@ def test_response_curves_default_to_proportional_media():
     )
 
     xr.testing.assert_identical(curves, explicit)
+    assert curves.attrs["outcome"] == _data().columns["outcome"][0]
     for by in (None, (), []):
         xr.testing.assert_identical(
             curves, response_curves(model, results, quantity="expected", multipliers=[0.0, 1.0, 2.0], by=by)

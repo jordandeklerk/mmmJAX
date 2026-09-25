@@ -89,8 +89,10 @@ def <name>(
 ) -> xr.Dataset:
     """<Verb> <what the function returns> <by channel or scenario>.
 
-    <One paragraph saying what is rerun or discarded, which inputs stay
-    fixed, and how uncertainty carries through the draws.>
+    <A brief paragraph saying what is rerun or discarded and which inputs
+    stay fixed.>
+
+    <A brief paragraph on how uncertainty carries through the draws.>
 
     Parameters
     ----------
@@ -117,8 +119,8 @@ def <name>(
     """
 ```
 
-- It has one body paragraph, no math, and no Examples when it needs a fit.
-- A plotting function takes an analysis output or results, returns `plotnine.ggplot` or `arviz_plots.PlotCollection`, and shares the `ci_prob` entry of `plot_media_metrics` word for word. An ArviZ wrapper documents `**kwargs` as further keywords for the wrapped `arviz_plots` function. A plot that could outgrow its figure takes `channels`. A bar chart shows every channel by default and sizes itself through `_bar_layout`, which widens it so notebooks scroll it sideways and tilts and shortens labels as Meridian does, and any other plot shows the largest channels up to a readable limit and names what it left out in a caption or title. The `results`, `quantity`, and `group` entries are shared word for word by the analysis functions that take `group`.
+- Its body has no math and no Examples when it needs a fit.
+- A plotting function takes an analysis output or results, returns `plotnine.ggplot` or `arviz_plots.PlotCollection`, and shares the `ci_prob` entry of `plot_media_metrics` word for word. An ArviZ wrapper documents `**kwargs` as further keywords for the wrapped `arviz_plots` function. A plot that could outgrow its figure takes `channels`. A bar chart shows every channel by default and sizes itself through `_bar_layout`, which widens it so notebooks scroll it sideways and tilts and shortens its labels, and any other plot shows the largest channels up to a readable limit and names what it left out in a caption or title. A plot that gives groups panels takes `coords` and `n_groups=3` after `channels` and names the groups it leaves out in its caption, and a plot of parameter draws takes the output of `sample_prior` as `prior` and draws it beside the posterior. The `results`, `quantity`, and `group` entries are shared word for word by the analysis functions that take `group`.
 - Field bullets use the dash form, as `media_metrics` and `fit_scaling` show. Named `name : type` Returns entries are only for a tuple, as in `hsgp_basis`.
 - A host-side preparation function such as `fit_scaling` shares this body and these bullets, opens its Returns with "<Noun> with the following fields.", and adds the primitive's Examples when it runs on small inline data.
 
@@ -152,7 +154,9 @@ class <Name>:
 - The sections in use are Parameters, Returns, Examples, and Attributes. The errors a function raises go in its body, as in `optimize_budget`, and no docstring uses Notes, Raises, See Also, or References.
 - Examples show what the summary, Parameters, and Returns cannot, such as realistic inputs and their layout, the visible effect of a transform, or how the object works with the rest of the API. Leave them out when they would repeat a sibling's or a factory's example, as the methods of `HSGPApproximation` and `Scaling` would, or when the call needs a fit.
 - A Parameters entry says only what the argument is and what it requires, such as its meaning, units, shape, allowed values, and whether it must stay static. Leave out what other functions later do with the result, such as which ArviZ function reads a group, and describe outputs under Returns.
-- Body paragraphs read like a methods section, and details about one argument go in its Parameters entry. Keep Returns sections short, and never restore longer text from an earlier version of a docstring.
+- A docstring describes what the code does on its own terms and never cites or compares with another package, as in "like Meridian's chart" or "as PyMC-Marketing does". Naming a library the code uses, accepts, or returns is part of that description, such as a polars or pandas frame, `jax.vmap` for more draws, ArviZ's `stats.ci_prob` setting, or a returned `xarray.Dataset`.
+- Body text reads like the prose of the docs pages, in brief narrative paragraphs that flow from one to the next, even where its tone is closer to a methods section. Each paragraph holds one idea in two to four sentences, such as what the code computes, which inputs it holds fixed, how uncertainty carries through the draws, or what a plot shows. A body that covers several ideas gives each its own paragraph instead of running them together in one block, as `contributions`, `contribution_coefficient`, and `plot_media_metrics` do.
+- Details about one argument go in its Parameters entry. Keep Returns sections short, and never restore longer text from an earlier version of a docstring.
 - Names in running text use double backticks. Sphinx roles (`:func:`, `:class:`, `:meth:`) are rare and unqualified, since the API pages set `.. currentmodule:: mmmjax`.
 - The summary line never contains a comma, not even in a list, so write it as one clause, as in "Prepare a dataframe for modeling while keeping its observation labels." This covers module docstrings and the one-line docstrings of private helpers too.
 - Elsewhere a comma is fine wherever the sentence needs one, so never drop or reword one away for its own sake. Only a clause tacked onto the end of a sentence with ", <verb>ing", ", which", ", with", or ", then" gets split into its own sentence.
