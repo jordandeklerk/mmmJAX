@@ -13,6 +13,7 @@ The Prose section of `.claude/CLAUDE.md` and the rules below govern every page, 
 - Every number in the prose must match an executed output. Escape dollar amounts as `\$`, lead with runnable code, and use no Markdown tables.
 - Print `az.summary` tables in full, and check convergence with `az.plot_rank(..., thin=True)` next to trace plots.
 - A model's first page shows its generative model in full, covering the data transformations, the model equation, the media transformation, and the priors. Variants show only what changes.
+- Each plot function's API page shows the example in `api/examples/<name>.py`, which `_ext/api_examples.py` runs with `mj`, `model`, `priors`, and `results` from the brand fit on every build. The file's last line is the plot, a new plot function adds a file, and a changed guide call changes its file too.
 
 ## Place the page
 
@@ -77,12 +78,12 @@ Without the front matter the cells never run. A page has one H1 and skips no hea
 - End other plot cells with `plt.show()`, including mmmJAX's ArviZ wrappers such as `mj.plot_rank`, which already size their figures at 12 by 7. ArviZ 1.3 ignores the rc figure size. It draws multi-panel plots 24 inches wide or more and single-panel plots as 12 by 4 strips, so give every direct ArviZ plot `figure_kwargs={"figsize": (12, 7)}`, or `(12, 9)` with `col_wrap=2` for rank plots. Hand-made figures use `plt.subplots(layout="constrained")` and `legend(frameon=False)`. Keep one idea per figure.
 - Model code defines its parameters in a `parameters = {...}` block and passes that name to `mj.Model`, never an inline dict in the call.
 - Setup code a reader may want but need not read goes in one cell tagged `hide-input`, which folds it behind a Show code line styled in `custom.css`. The prompts are set in `conf.py`, so don't tag cells `hide-output`, whose toggle would read the same.
-- `_static/css/custom.css` styles DataTree, Dataset, and data frame outputs. Any other HTML output is unstyled, so check it in the screenshot.
+- `_static/css/custom.css` styles DataTree, Dataset, and data frame outputs, and `:tags: [wide-table]` keeps a wide frame's rows on one line so it scrolls sideways. Any other HTML output is unstyled, so check it in the screenshot.
 - A cell meant to fail needs `:tags: [raises-exception]` and a hidden `%xmode minimal` cell earlier on the page, as in `user_guide/functions.md`. Any other error stops the build. Stderr is dropped, so warnings and progress bars never show.
 - Code cells are not linted. Write them in ruff style by hand, with two blank lines after a top-level `def`, and keep them plain. The code box shows about 110 characters before it scrolls sideways, so wrap lines well before ruff's 120.
 - A new import needs its package in both pixi's `[feature.docs.dependencies]` (or `pypi-dependencies`) and the `doc` extra in `pyproject.toml`, which Read the Docs installs.
 
-Use callout boxes sparingly, as `:::{admonition} Title` with `:class:` set to `note`, `warning`, or `important`. Put model logic in `$$` displays rather than long inline math. No User Guide model passes `media_history`.
+Use callout boxes sparingly, as `:::{admonition} Title` with `:class:` set to `note`, `warning`, or `important`. On `plotting.md` each plot gets its introduction as its own paragraph before the cell, and the prose after it reads the plot and says what it shows about the brand. Its few tip boxes, with `:class: tip`, cover only behavior a reader would not guess, such as ArviZ's interval settings or how parameters reach the transform plots. Put model logic in `$$` displays rather than long inline math. No User Guide model passes `media_history`.
 
 ## Draft numbers before building
 

@@ -12,11 +12,15 @@ import xarray as xr
 from mmmjax import (
     Data,
     Model,
+    Prior,
     Real,
     fit_data_scaling,
+    normal,
     plot_fit,
     plot_ppc_dist,
+    plot_ppc_tstat,
     plot_prior_posterior,
+    plot_psense,
     plot_rank,
     plot_residuals,
     plot_rhat,
@@ -24,6 +28,7 @@ from mmmjax import (
     prepare_data,
 )
 from mmmjax.data._results import _collect_results
+from mmmjax.plotting import diagnostics
 
 
 def _fitted():
@@ -352,55 +357,80 @@ def _effects(baseline, *, labels=None, drawn="posterior"):
     return effects
 
 
-def test_plot_fit_draws_the_baseline_from_contributions():
+def _stub_contributions(monkeypatch, effects):
+    calls = []
+
+    def contributions(model, results, **options):
+        calls.append(options)
+        return effects
+
+    monkeypatch.setattr(diagnostics, "contributions", contributions)
+    return calls
+
+
+def test_plot_fit_draws_the_baseline_from_contributions(monkeypatch):
     model, results, _ = _fitted()
     expected = np.array([90.0, 95.0, 92.0, 97.0])
+    calls = _stub_contributions(monkeypatch, _effects(expected))
 
-    plot = plot_fit(model, results, effects=_effects(expected), ci_prob=0.9)
+    plot = plot_fit(model, results, show_baseline=True, quantity="mu", ci_prob=0.9)
 
     baseline = plot.data[plot.data["series"] == "Baseline"]
     np.testing.assert_allclose(baseline["estimate"], expected, rtol=1e-12, atol=0)
     assert list(plot.data["series"].cat.categories) == ["Observed", "Predicted, 90% interval", "Baseline"]
+    assert calls == [{"quantity": "mu", "group": "posterior", "by": ["time"]}]
 
 
-def test_plot_fit_sums_the_baseline_like_the_fit():
+def test_plot_fit_sums_the_baseline_like_the_fit(monkeypatch):
     model, results = _grouped_fit()
     effects = _effects([[1.0, 10.0], [2.0, 20.0], [3.0, 30.0], [4.0, 40.0]], labels=["north", "south"])
+    calls = _stub_contributions(monkeypatch, effects)
 
-    total = plot_fit(model, results, effects=effects)
-    panel = plot_fit(model, results, effects=effects, by="group", n_groups=1)
+    total = plot_fit(model, results, show_baseline=True, quantity="mu")
+    panel = plot_fit(model, results, show_baseline=True, quantity="mu", by="group", n_groups=1)
+    chosen = plot_fit(model, results, show_baseline=True, quantity="mu", coords={"group": ["north"]})
 
     summed = total.data[total.data["series"] == "Baseline"]["estimate"]
     kept = panel.data[panel.data["series"] == "Baseline"]
+    north = chosen.data[chosen.data["series"] == "Baseline"]["estimate"]
     np.testing.assert_allclose(summed, [11.0, 22.0, 33.0, 44.0], rtol=1e-12, atol=0)
     np.testing.assert_allclose(kept["estimate"], [10.0, 20.0, 30.0, 40.0], rtol=1e-12, atol=0)
+    np.testing.assert_allclose(north, [1.0, 2.0, 3.0, 4.0], rtol=1e-12, atol=0)
     assert kept["panel"].astype(str).str.startswith("south").all()
+    # Every observation axis reaches contributions, so coords can pick groups before the baseline is summed.
+    assert [call["by"] for call in calls] == [["time", "group"]] * 3
 
 
 @pytest.mark.parametrize(
-    ("effects", "by", "error", "message"),
+    ("options", "error", "message"),
     [
-        (xr.DataTree(), None, TypeError, "effects must be an xarray Dataset"),
-        (xr.Dataset(), None, ValueError, "effects is missing 'baseline_response'"),
-        (_effects(np.zeros(4)).isel(time=0, drop=True), None, ValueError, "effects must keep the 'time' axis"),
-        (_effects(np.zeros(4)), "group", ValueError, "effects must keep the 'group' axis"),
-        (_effects(np.zeros((4, 2)), labels=["north", "south"], drawn="prior"), None, ValueError, "posterior draws"),
+        ({"show_baseline": True}, ValueError, "quantity must name the expected outcome"),
+        ({"quantity": "mu"}, ValueError, "quantity is only used with show_baseline=True"),
+        ({"show_baseline": 1, "quantity": "mu"}, TypeError, "show_baseline must be a bool"),
+        ({"show_baseline": True, "quantity": 3}, TypeError, "quantity must be a string"),
     ],
 )
-def test_plot_fit_rejects_effects_that_do_not_match_the_fit(effects, by, error, message):
-    model, results = _grouped_fit()
+def test_plot_fit_requires_a_quantity_for_the_baseline(options, error, message):
+    model, results, _ = _fitted()
 
     with pytest.raises(error, match=message):
-        plot_fit(model, results, effects=effects, by=by)
+        plot_fit(model, results, **options)
+
+
+def test_plot_fit_draws_with_the_baseline(monkeypatch):
+    model, results, _ = _fitted()
+    _stub_contributions(monkeypatch, _effects(np.full(4, 90.0)))
+
+    figure = plot_fit(model, results, show_baseline=True, quantity="mu").draw()
+
+    assert figure.axes
+    plt.close(figure)
 
 
 @pytest.mark.parametrize(
     "draw",
     [
         pytest.param(lambda model, results: plot_fit(model, results), id="fit"),
-        pytest.param(
-            lambda model, results: plot_fit(model, results, effects=_effects(np.full(4, 90.0))), id="fit baseline"
-        ),
         pytest.param(lambda model, results: plot_residuals(model, results), id="residuals"),
     ],
 )
@@ -512,14 +542,21 @@ def test_convergence_plots_leave_explicit_coords_alone():
     plt.close("all")
 
 
-def test_plot_prior_posterior_keeps_the_largest_shifts_of_large_models():
+def test_plot_prior_posterior_keeps_the_parameters_the_data_narrowed_least_in_large_models():
     results = _large(drifting=())
-    shifted = results["posterior"].to_dataset()["coefficient"].values.copy()
-    shifted[..., 3] += 10.0
+    draws = results["posterior"].to_dataset()["coefficient"].values.copy()
+    # Most posteriors are a tenth as wide as the prior, and a shifted narrow one must not count as unchanged.
+    narrowed = 0.1 * draws
+    narrowed[..., 20] += 2.0
+    wide = [3, 11, 17, 29, 30, 33, 41, 44, 48, 52, 57, 59]
+    # Exponentiating keeps each draw's place among the prior draws, so the measure must still see no change.
+    narrowed[..., wide[0]] = np.exp(draws[..., wide[0]])
+    narrowed[..., wide[1:]] = draws[..., wide[1:]]
     results = xr.DataTree.from_dict(
-        {"posterior": results["posterior"].to_dataset().assign(coefficient=(("chain", "draw", "channel"), shifted))}
+        {"posterior": results["posterior"].to_dataset().assign(coefficient=(("chain", "draw", "channel"), narrowed))}
     )
     unchanged = np.random.default_rng(5).normal(size=(4, 100, 60))
+    unchanged[..., wide[0]] = np.exp(unchanged[..., wide[0]])
     prior = xr.DataTree.from_dict(
         {
             "prior": xr.Dataset(
@@ -528,12 +565,29 @@ def test_plot_prior_posterior_keeps_the_largest_shifts_of_large_models():
             )
         }
     )
+    expected = {f"coefficient[Channel {index:02d}]" for index in wide}
 
     collection = plot_prior_posterior(results, prior)
 
-    names = [str(name) for name in collection.data.data_vars]
-    assert len(names) == 12
-    assert "coefficient[Channel 03]" in names
+    names = {str(name) for name in collection.data.data_vars}
+    assert names == expected
+    assert collection.viz["figure"].item().get_suptitle() == "The 12 of 60 parameters the data narrowed least"
+    plt.close("all")
+
+
+def test_plot_trace_dist_keeps_the_divergence_marks_of_large_models():
+    results = _large()
+    diverging = np.zeros((4, 100), dtype=bool)
+    diverging[1, 10:20] = True
+    stats = xr.Dataset(
+        {"diverging": (("chain", "draw"), diverging)}, coords={"chain": [0, 1, 2, 3], "draw": np.arange(100)}
+    )
+    results = xr.DataTree.from_dict({"posterior": results["posterior"].to_dataset(), "sample_stats": stats})
+
+    collection = plot_trace_dist(results)
+
+    assert len(collection.data.data_vars) == 6
+    assert {"divergence_trace", "divergence_dist"} <= set(collection.viz.children)
     plt.close("all")
 
 
@@ -623,3 +677,281 @@ def test_arviz_diagnostics_wrap_long_names_in_panel_titles():
     titles = [axes.get_title() for axes in figure.axes if axes.get_title()]
     assert "coefficient\nsocial_media_meta_dynamic_\nbrand_world_cup" in titles
     plt.close("all")
+
+
+def _series_fit():
+    model, _, _ = _fitted()
+    rng = np.random.default_rng(6)
+    periods = pd.date_range("2024-01-01", periods=30, freq="W-MON")
+    observed = np.cumsum(rng.normal(size=30)) + 50.0
+    predictive = observed + rng.normal(size=(2, 40, 30))
+    results = xr.DataTree.from_dict(
+        {
+            "posterior_predictive": xr.Dataset(
+                {"outcome": (("chain", "draw", "time"), predictive)},
+                coords={"chain": [0, 1], "draw": np.arange(40), "time": periods},
+            ),
+            "observed_data": xr.Dataset({"outcome": (("time",), observed)}, coords={"time": periods}),
+        }
+    )
+    results.attrs["data_scale"] = "original"
+    return model, results, observed, predictive
+
+
+def _lag_one(values):
+    centered = values - values.mean()
+    # The full correlation holds lag zero at the series length minus one and lag one right after it.
+    return np.correlate(centered, centered, "full")[values.size] / np.dot(centered, centered)
+
+
+def _lag_one_rows(values):
+    return np.array([[_lag_one(row) for row in chain] for chain in values])
+
+
+def _titles(collection):
+    return [axis.get_title() for axis in collection.viz["figure"].item().axes if axis.get_title()]
+
+
+def test_plot_ppc_tstat_compares_each_statistic_of_the_draws_with_the_observations():
+    model, results, observed, predictive = _series_fit()
+    persistence = np.array([[_lag_one(draw) for draw in chain] for chain in predictive])
+    spread = predictive.std(axis=-1)
+    largest = predictive.max(axis=-1)
+    expected = [
+        f"Autocorrelation, p = {np.mean(persistence >= _lag_one(observed)):.2f}",
+        f"Standard deviation, p = {np.mean(spread >= observed.std()):.2f}",
+        f"Maximum, p = {np.mean(largest >= observed.max()):.2f}",
+    ]
+
+    collection = plot_ppc_tstat(model, results)
+
+    # ArviZ stacks chain and draw into one sample axis in that order.
+    np.testing.assert_allclose(collection.data["Autocorrelation"].values, persistence.ravel(), rtol=1e-10, atol=1e-12)
+    np.testing.assert_allclose(collection.data["Maximum"].values, largest.ravel(), rtol=1e-12, atol=0)
+    assert _titles(collection) == expected
+    plt.close("all")
+
+
+def test_plot_ppc_tstat_compares_residuals_of_each_draw_with_its_own_expected_outcome(monkeypatch):
+    model, results, observed, predictive = _series_fit()
+    rng = np.random.default_rng(8)
+    expected_outcome = observed + rng.normal(scale=0.5, size=(2, 40, 30))
+    periods = results["observed_data"].to_dataset()["time"].values
+    effects = xr.Dataset(
+        {"reference_response": (("chain", "draw", "time"), expected_outcome)},
+        coords={"chain": [0, 1], "draw": np.arange(40), "time": periods},
+    )
+    calls = _stub_contributions(monkeypatch, effects)
+    replicated = _lag_one_rows(predictive - expected_outcome)
+    actual = _lag_one_rows(observed - expected_outcome)
+    expected = f"Residual autocorrelation, p = {np.mean(replicated >= actual):.2f}"
+
+    collection = plot_ppc_tstat(model, results, quantity="mu")
+
+    axis = collection.viz["plot"].to_dataset()["Residual autocorrelation"].item()
+    np.testing.assert_allclose(
+        collection.data["Residual autocorrelation"].values, replicated.ravel(), rtol=1e-10, atol=1e-12
+    )
+    assert _titles(collection)[0] == expected
+    # The observed values vary by draw, so a second curve takes the place of the dot.
+    assert len(axis.lines) == 2
+    assert not axis.collections
+    assert calls == [{"quantity": "mu", "group": "posterior", "by": ["time"]}]
+    plt.close("all")
+
+
+def test_plot_ppc_tstat_names_quantiles_and_functions():
+    model, results, observed, predictive = _series_fit()
+
+    def holiday_share(series):
+        return series[-4:].sum() / series.sum()
+
+    shares = predictive[..., -4:].sum(axis=-1) / predictive.sum(axis=-1)
+    expected = [
+        f"90th percentile, p = {np.mean(np.quantile(predictive, 0.9, axis=-1) >= np.quantile(observed, 0.9)):.2f}",
+        f"2.5th percentile, p = {np.mean(np.quantile(predictive, 0.025, axis=-1) >= np.quantile(observed, 0.025)):.2f}",
+        f"Holiday share, p = {np.mean(shares >= holiday_share(observed)):.2f}",
+    ]
+
+    collection = plot_ppc_tstat(model, results, statistics=[0.9, 0.025, holiday_share])
+
+    assert _titles(collection) == expected
+    np.testing.assert_allclose(collection.data["Holiday share"].values, shares.ravel(), rtol=1e-12, atol=0)
+    plt.close("all")
+
+
+def test_plot_ppc_tstat_gives_each_group_a_row_of_panels():
+    model, results = _grouped_fit()
+
+    summed = plot_ppc_tstat(model, results, statistics=["mean", "min"])
+    grouped = plot_ppc_tstat(model, results, statistics=["mean", "min"], by="group", n_groups=None)
+    largest = plot_ppc_tstat(model, results, statistics=["mean"], by="group", n_groups=1)
+    south = results["posterior_predictive"].to_dataset()["outcome"].sel(group="south").mean("time")
+
+    np.testing.assert_allclose(grouped.data["south   Mean"].values, south.values.ravel(), rtol=1e-12, atol=0)
+    assert largest.viz["figure"].item().get_suptitle() == "Showing 1 of 2 groups. Pass coords to choose others."
+    assert _titles(summed) == ["Mean, p = 1.00", "Minimum, p = 1.00"]
+    assert _titles(grouped) == [
+        "north   Mean, p = 1.00",
+        "north   Minimum, p = 1.00",
+        "south   Mean, p = 1.00",
+        "south   Minimum, p = 1.00",
+    ]
+    assert summed.viz["figure"].item().get_size_inches()[1] == pytest.approx(4.5)
+    assert grouped.viz["figure"].item().get_size_inches()[1] == pytest.approx(7.0)
+    plt.close("all")
+
+
+@pytest.mark.parametrize(
+    ("statistics", "error", "message"),
+    [
+        ("mean", TypeError, "statistics must be a sequence"),
+        ([], ValueError, "statistics must hold at least one statistic"),
+        (["skew"], ValueError, "statistics must name 'mean'"),
+        ([1.5], ValueError, "statistics quantiles must lie between 0 and 1"),
+        ([object()], TypeError, "statistics must hold names, quantiles, or functions"),
+        (["mean", "mean"], ValueError, "statistics must be distinct"),
+        ([np.cumsum], ValueError, "statistics functions must return one number per series, got shape"),
+        (["residual_autocorrelation"], ValueError, "quantity must name the expected outcome"),
+    ],
+)
+def test_plot_ppc_tstat_rejects_invalid_statistics(statistics, error, message):
+    model, results, _, _ = _series_fit()
+
+    with pytest.raises(error, match=message):
+        plot_ppc_tstat(model, results, statistics=statistics)
+
+
+@pytest.mark.parametrize(
+    ("options", "error", "message"),
+    [
+        ({"quantity": 3}, TypeError, "quantity must be a string, got int"),
+        ({"quantity": "mu", "statistics": ["mean"]}, ValueError, "quantity is only used with residual autocorrelation"),
+    ],
+)
+def test_plot_ppc_tstat_rejects_a_quantity_it_cannot_use(options, error, message):
+    model, results, _, _ = _series_fit()
+
+    with pytest.raises(error, match=message):
+        plot_ppc_tstat(model, results, **options)
+
+
+def test_plot_ppc_tstat_numbers_unnamed_functions_and_takes_numpy_quantiles():
+    model, results, _, _ = _series_fit()
+    statistics = [lambda series: series[0], np.float32(0.5), lambda series: series[-1]]
+
+    collection = plot_ppc_tstat(model, results, statistics=statistics)
+
+    assert [title.split(",")[0] for title in _titles(collection)] == ["Statistic 1", "50th percentile", "Statistic 3"]
+    plt.close("all")
+
+
+def _sensitive(count=30, *, log_prior=False):
+    rng = np.random.default_rng(7)
+    labels = [f"Channel {index:02d}" for index in range(count)]
+    coefficient = rng.normal(size=(2, 200, count))
+    sigma = rng.gamma(4.0, 0.25, size=(2, 200))
+    sample = {"chain": [0, 1], "draw": np.arange(200)}
+    groups = {
+        "posterior": xr.Dataset(
+            {"coefficient": (("chain", "draw", "channel"), coefficient), "sigma": (("chain", "draw"), sigma)},
+            coords=sample | {"channel": labels},
+        ),
+        "log_likelihood": xr.Dataset(
+            {"outcome": (("chain", "draw", "time"), rng.normal(size=(2, 200, 5)))}, coords=sample | {"time": range(5)}
+        ),
+    }
+    # Two channels get a tight prior, so scaling the prior moves them and hardly moves the rest.
+    scale = np.full(count, 10.0)
+    scale[[index for index in (4, 9) if index < count]] = 0.3
+    priors = {
+        "coefficient": Prior(normal, location=0.0, scale=scale),
+        "sigma": Prior(normal, location=0.0, scale=10.0),
+    }
+    if log_prior:
+        terms = {
+            "coefficient": (("chain", "draw"), (-0.5 * (coefficient / scale) ** 2 - np.log(scale)).sum(axis=-1)),
+            "sigma": (("chain", "draw"), -0.5 * (sigma / 10.0) ** 2),
+        }
+        groups["log_prior"] = xr.Dataset(terms, coords=sample)
+    return xr.DataTree.from_dict(groups), priors
+
+
+def test_plot_psense_keeps_the_parameters_most_sensitive_to_the_priors():
+    results, priors = _sensitive()
+
+    collection = plot_psense(results, priors=priors)
+
+    names = [str(name) for name in collection.data.data_vars]
+    assert len(names) == 6
+    assert {"coefficient[Channel 04]", "coefficient[Channel 09]"} <= set(names[:2])
+    assert collection.viz["figure"].item().get_suptitle() == "The 6 of 31 parameters most sensitive to the priors"
+    assert collection.viz["figure"].item().get_size_inches()[1] == pytest.approx(1.8 * 6)
+    plt.close("all")
+
+
+def test_plot_psense_counts_one_quantity_given_as_a_string_as_one_column():
+    results, priors = _sensitive(count=15)
+
+    named = plot_psense(results, priors=priors, kind="quantities", quantities="mean")
+    listed = plot_psense(results, priors=priors, kind="quantities", quantities=["mean"])
+
+    assert list(named.data.data_vars) == list(listed.data.data_vars) == ["coefficient", "sigma"]
+    plt.close("all")
+
+
+def test_plot_psense_limits_the_panels_of_a_single_chosen_label():
+    results, priors = _sensitive(count=3)
+    values = results["posterior"].to_dataset()["coefficient"].sel(channel="Channel 01").values
+    low, high = np.quantile(values, [0.01, 0.99])
+    expected = (max(low - 0.2 * (high - low), values.min()), min(high + 0.2 * (high - low), values.max()))
+
+    collection = plot_psense(results, priors=priors, var_names=["coefficient"], coords={"channel": "Channel 01"})
+
+    for axis in np.ravel(collection.viz["plot"].to_dataset()["coefficient"].values):
+        np.testing.assert_allclose(axis.get_xlim(), expected, rtol=1e-6, atol=0)
+    plt.close("all")
+
+
+def test_plot_psense_reads_the_log_prior_of_results_without_priors():
+    results, _ = _sensitive(log_prior=True)
+
+    collection = plot_psense(results, var_names=["sigma"], kind="quantities")
+
+    assert "sigma" in collection.data.data_vars
+    plt.close("all")
+
+
+def test_plot_psense_cuts_long_tails_from_view():
+    results, priors = _sensitive(count=3)
+    heavy = np.exp(2.0 * results["posterior"].to_dataset()["sigma"].values)
+    results = xr.DataTree.from_dict(
+        {
+            "posterior": results["posterior"].to_dataset().assign(sigma=(("chain", "draw"), heavy)),
+            "log_likelihood": results["log_likelihood"].to_dataset(),
+        }
+    )
+    low, high = np.quantile(heavy, [0.01, 0.99])
+    expected = (max(low - 0.2 * (high - low), heavy.min()), min(high + 0.2 * (high - low), heavy.max()))
+
+    collection = plot_psense(results, priors=priors, var_names=["sigma"])
+
+    for axis in np.ravel(collection.viz["plot"].to_dataset()["sigma"].values):
+        np.testing.assert_allclose(axis.get_xlim(), expected, rtol=1e-6, atol=0)
+    assert expected[1] < heavy.max()
+    plt.close("all")
+
+
+@pytest.mark.parametrize(
+    ("options", "error", "message"),
+    [
+        ({"kind": "bars"}, ValueError, "kind must be 'dist' or 'quantities'"),
+        ({"priors": None}, ValueError, "results has no log_prior group"),
+        ({"var_names": ["slope"]}, ValueError, "var_names has no posterior variable 'slope'"),
+    ],
+)
+def test_plot_psense_rejects_invalid_arguments(options, error, message):
+    results, priors = _sensitive(count=3)
+
+    with pytest.raises(error, match=message):
+        plot_psense(results, **({"priors": priors} | options))

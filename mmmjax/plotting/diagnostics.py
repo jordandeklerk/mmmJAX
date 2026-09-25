@@ -1,23 +1,29 @@
 """Plots that check a model's fit and its sampler's convergence."""
 
-from collections.abc import Hashable, Iterator, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, Literal
+import numbers
+import warnings
+from collections.abc import Callable, Hashable, Iterator, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import matplotlib as mpl
 import numpy as np
 import pandas as pd
 import plotnine as pn
 import xarray as xr
+from matplotlib.ticker import FuncFormatter
+from numpy.typing import NDArray
 
+from mmmjax.analysis.contribution import contributions
+from mmmjax.inference.priors import Prior
+from mmmjax.inference.sensitivity import _sensitivity_tree
 from mmmjax.model.model import Model
-from mmmjax.plotting._layers import _facet, _scales
+from mmmjax.plotting._layers import _compact, _facet, _scales
 from mmmjax.plotting._summary import (
     _ci_prob,
     _distinct_shortened,
     _label,
     _ordered,
     _percent,
-    _require_dataset,
     _require_draws,
     _restrict,
     _select_panels,
@@ -32,19 +38,24 @@ if TYPE_CHECKING:
 __all__ = [
     "plot_fit",
     "plot_ppc_dist",
+    "plot_ppc_tstat",
     "plot_prior_posterior",
+    "plot_psense",
     "plot_rank",
     "plot_residuals",
     "plot_rhat",
     "plot_trace_dist",
 ]
 
+type _Statistic = Literal["mean", "median", "std", "min", "max", "autocorrelation", "residual_autocorrelation"]
+
 
 def plot_fit(
     model: Model,
     results: xr.DataTree,
     *,
-    effects: xr.Dataset | None = None,
+    show_baseline: bool = False,
+    quantity: str | None = None,
     group: Literal["prior", "posterior"] = "posterior",
     by: str | Sequence[str] | None = None,
     coords: Mapping[str, object] | None = None,
@@ -64,9 +75,10 @@ def plot_fit(
     Groups are summed into one total per draw unless ``by`` keeps them apart,
     and then the most populous groups get their own panels.
 
-    With ``effects``, a third line shows the point estimate of the baseline,
-    the expected outcome with media removed and treatments at their baseline
-    levels. The gap between it and the predictions is what those inputs added.
+    With ``show_baseline``, a third line shows the point estimate of the
+    baseline, the expected outcome with media removed and treatments at their
+    baseline levels, from ``contributions`` on the same draws. The gap between
+    it and the predictions is what those inputs added.
 
     Parameters
     ----------
@@ -75,9 +87,11 @@ def plot_fit(
     results : xarray.DataTree
         Output of ``sample``, ``sample_prior``, or ``generate_quantities``
         with predictive draws and ``observed_data``.
-    effects : xarray.Dataset, optional
-        Output of ``contributions`` for the same draws that keeps time and
-        every axis in ``by``. Omit to leave out the baseline.
+    show_baseline : bool, default False
+        Add the baseline. Requires ``quantity``.
+    quantity : str, optional
+        Key returned by ``transformed_parameters`` holding the expected
+        outcome, such as ``"mu"``. Required with ``show_baseline``.
     group : {"prior", "posterior"}, default "posterior"
         Predictive draws to plot, from ``prior_predictive`` or
         ``posterior_predictive``.
@@ -104,7 +118,9 @@ def plot_fit(
     """
     predicted, observed = _predictive_pair(model, results, group, var_name)
     _require_count(n_groups, "n_groups")
+    _require_baseline_quantity(show_baseline, quantity)
     probability = _ci_prob(ci_prob)
+    axes = [str(dim) for dim in observed.dims]
     predicted, observed, time, kept = _observation_panels(predicted, observed, results, by, coords, n_groups)
     band = _summarize(predicted, probability)
     points = observed.reset_coords(drop=True).to_dataframe(name="observed").reset_index()
@@ -124,10 +140,13 @@ def plot_fit(
         matched[[time, *panels, "observed"]].rename(columns={"observed": "estimate"}).assign(series="Observed"),
         matched[[time, *panels, "estimate"]].assign(series=predicted_label),
     ]
-    if effects is not None:
-        baseline = _baseline(effects, predicted, group, time, kept, coords, probability)
+    if show_baseline:
+        # Every observation axis stays in the baseline so that coords picks its labels before it is summed.
+        effects = contributions(model, results, quantity=str(quantity), group=group, by=axes)
+        baseline = _align_with_fit(effects["baseline_response"], predicted, time, kept, coords)
+        summary = _summarize(baseline, probability)[[time, *kept, "estimate"]]
         # Joining on the fit's own rows gives the baseline the same periods and panel titles.
-        joined = matched[[time, *kept, *panels]].merge(baseline, on=[time, *kept])
+        joined = matched[[time, *kept, *panels]].merge(summary, on=[time, *kept])
         series.append(joined[[time, *panels, "estimate"]].assign(series="Baseline"))
     lines = pd.concat(series, ignore_index=True)
     lines = _ordered(lines, "series", ["Observed", predicted_label, "Baseline"][: len(series)])
@@ -199,6 +218,148 @@ def plot_ppc_dist(
     return collection
 
 
+def plot_ppc_tstat(
+    model: Model,
+    results: xr.DataTree,
+    *,
+    statistics: Sequence[_Statistic | float | Callable[[NDArray[np.float64]], float]] | None = None,
+    quantity: str | None = None,
+    group: Literal["prior", "posterior"] = "posterior",
+    by: str | Sequence[str] | None = None,
+    coords: Mapping[str, object] | None = None,
+    n_groups: int | None = 3,
+    var_name: str = "outcome",
+    **kwargs: Any,
+) -> "PlotCollection":
+    """Compare statistics of the observed series with the same statistics of predictive draws.
+
+    Each panel shows the distribution of one statistic across the predictive
+    draws in the outcome's original units, and a dot marks its value for the
+    observations. The p in the title is the share of draws whose statistic is
+    at least the observed one. A share near zero or one means the model
+    rarely reproduces that feature of the data.
+
+    Residual autocorrelation measures how strongly each period's residual
+    follows the one before. It takes the residuals from each draw's own
+    expected outcome, which ``contributions`` computes from ``quantity``, so
+    the observed value changes from draw to draw and appears as a black curve
+    in place of the dot. A model that misses seasonality, a trend, or a driver
+    of demand leaves residuals that run in streaks, and this check catches
+    them when checks that pool the periods do not.
+
+    Groups are summed into one series per draw unless ``by`` keeps them apart,
+    and then the most populous groups get a row of panels each. The title
+    names how many groups were left out.
+
+    Parameters
+    ----------
+    model : Model
+        Model that produced ``results``.
+    results : xarray.DataTree
+        Output of ``sample``, ``sample_prior``, or ``generate_quantities``
+        with predictive draws and ``observed_data``.
+    statistics : sequence, optional
+        Statistics to compare, each a name from ``"mean"``, ``"median"``,
+        ``"std"``, ``"min"``, ``"max"``, ``"autocorrelation"``, and
+        ``"residual_autocorrelation"``, a quantile such as ``0.9``, or a
+        function that takes one series in time order and returns a number.
+        Defaults to ``("residual_autocorrelation", "std", "max")`` with
+        ``quantity`` and to ``("autocorrelation", "std", "max")`` without it.
+    quantity : str, optional
+        Key returned by ``transformed_parameters`` holding the expected
+        outcome, such as ``"mu"``. Required for residual autocorrelation.
+    group : {"prior", "posterior"}, default "posterior"
+        Predictive draws to compare with, from ``prior_predictive`` or
+        ``posterior_predictive``.
+    by : str or sequence of str, optional
+        Observation axes to keep as rows of panels, such as ``"group"``. Omit
+        to sum every axis except time.
+    coords : mapping of str to sequence, optional
+        Labels to keep on the observation axes before anything is summed, as
+        in ``{"group": ["north", "south"]}``. Groups chosen here replace the
+        ``n_groups`` choice.
+    n_groups : int or None, default 3
+        Number of groups to show when ``by`` keeps ``group``. None shows every
+        group.
+    var_name : str, default "outcome"
+        Variable in both the predictive group and ``observed_data``.
+    **kwargs
+        Further keywords for ``arviz_plots.plot_ppc_tstat``, such as
+        ``visuals`` or ``figure_kwargs``.
+
+    Returns
+    -------
+    arviz_plots.PlotCollection
+        ArviZ's plot, which methods such as ``add_title`` extend.
+    """
+    predicted, observed = _predictive_pair(model, results, group, var_name)
+    _require_count(n_groups, "n_groups")
+    if quantity is not None and not isinstance(quantity, str):
+        raise TypeError(f"quantity must be a string, got {type(quantity).__name__}")
+    chosen = _statistics(statistics, quantity)
+    axes = [str(dim) for dim in observed.dims]
+    available = observed.sizes.get("group", 0)
+    predicted, observed, time, kept = _observation_panels(predicted, observed, results, by, coords, n_groups)
+    series = predicted.transpose("chain", "draw", *kept, time).values.astype(np.float64)
+    actual = observed.transpose(*kept, time).values.astype(np.float64)
+    expected = None
+    if quantity is not None:
+        # Every observation axis stays in the expected outcome so that coords picks its labels before it is summed.
+        effects = contributions(model, results, quantity=quantity, group=group, by=axes)
+        aligned = _align_with_fit(effects["reference_response"], predicted, time, kept, coords)
+        expected = aligned.transpose("chain", "draw", *kept, time).values.astype(np.float64)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        computed = [
+            (
+                label,
+                _apply_statistic(statistic, series, expected, label),
+                _apply_statistic(statistic, actual, expected, label),
+            )
+            for label, statistic in chosen
+        ]
+    replicated = {}
+    observations = {}
+    realized = {}
+    titles = {}
+    # Each group's statistics fill one row, so the panels run group by group.
+    for position in np.ndindex(*[observed.sizes[dim] for dim in kept]):
+        keys = tuple(str(observed[dim].values[index]) for dim, index in zip(kept, position, strict=True))
+        for label, drawn, seen in computed:
+            name = _panel_title(keys, label) if keys else label
+            values = drawn[(slice(None), slice(None), *position)]
+            # A statistic of residuals has one observed value per draw, and each draw is compared with its own.
+            per_draw = seen.ndim == drawn.ndim
+            actual_values = seen[(slice(None), slice(None), *position)] if per_draw else seen[position]
+            share = float(np.mean(values >= actual_values))
+            replicated[name] = (("chain", "draw"), values)
+            observations[name] = ((), float(np.median(actual_values)))
+            if per_draw:
+                realized[name] = np.ravel(actual_values)
+            titles[name] = f"{name}, p = {share:.2f}"
+    tree = xr.DataTree.from_dict(
+        {
+            "posterior_predictive": xr.Dataset(replicated),
+            "observed_data": xr.Dataset(observations),
+        }
+    )
+    from arviz_plots import plot_ppc_tstat as arviz_plot_ppc_tstat
+
+    options = {"col_wrap": len(chosen), **kwargs}
+    rows = -(-len(titles) // int(options["col_wrap"]))
+    # A row of density panels reads best at about three and a half inches, and one row keeps a little more.
+    height = max(4.5, 3.5 * rows)
+    shown = observed.sizes.get("group", 0)
+    with mpl.rc_context(_matplotlib_style()), warnings.catch_warnings():
+        # ArviZ reads an observed statistic of zero or one as a binary outcome, which these never are.
+        warnings.filterwarnings("ignore", message=".*look binary", category=UserWarning)
+        # The statistics are already one number per draw, so the mean ArviZ applies leaves them unchanged.
+        collection: PlotCollection = arviz_plot_ppc_tstat(tree, t_stat="mean", **_arviz_options(options, height=height))
+        _title_panels(collection, titles, realized)
+        if "group" in kept and shown < available:
+            collection.add_title(f"Showing {shown} of {available} groups. Pass coords to choose others.")
+    return collection
+
+
 def plot_prior_posterior(
     results: xr.DataTree,
     prior: xr.DataTree,
@@ -222,11 +383,14 @@ def plot_prior_posterior(
     instead.
 
     Extreme draws are pulled in so that a heavy-tailed prior cannot squash the
-    posterior into a spike. When the parameters still need more panels than
-    ArviZ's ``plot.max_subplots`` setting allows, the plot keeps the 12
-    elements whose posterior moved furthest from the prior and says so in its
-    title. The figure grows taller with its rows of panels unless
-    ``figure_kwargs`` sets its size.
+    posterior into a spike. The figure grows taller with its rows of panels
+    unless ``figure_kwargs`` sets its size.
+
+    When the parameters still need more panels than ArviZ's
+    ``plot.max_subplots`` setting allows, the plot keeps the 12 elements the
+    data narrowed least and says so in its title. Narrowing is measured by
+    where the posterior draws fall among the prior draws, so it reads the same
+    on a log or logit scale as on the parameter's own.
 
     Parameters
     ----------
@@ -271,16 +435,16 @@ def plot_prior_posterior(
         posterior, draws = posterior.sel(group=largest), draws.sel(group=largest)
     if n_periods is not None and "time" in posterior.dims and "time" not in coords:
         posterior, draws = posterior.isel(time=slice(0, n_periods)), draws.isel(time=slice(0, n_periods))
-    if clip_tails:
-        posterior, draws = _clip_tails(posterior, draws)
     title = ""
     limit = _subplot_limit()
     count = _panel_count(posterior)
     if not coords and count > limit:
-        chosen = _largest_shifts(posterior, draws, 12)
+        chosen = _least_narrowed(posterior, draws, 12)
         posterior, draws = _flatten(posterior, chosen), _flatten(draws, chosen)
         names = [str(name) for name in posterior.data_vars]
-        title = f"The {len(chosen)} of {count} parameters whose posterior moved furthest from the prior"
+        title = f"The {len(chosen)} of {count} parameters the data narrowed least"
+    if clip_tails:
+        posterior, draws = _clip_tails(posterior, draws)
     # ArviZ stacks the prior and posterior along an axis named group, which our own group axis would collide with.
     if "group" in posterior.dims:
         posterior, draws = posterior.rename(group="series"), draws.rename(group="series")
@@ -294,6 +458,101 @@ def plot_prior_posterior(
         collection: PlotCollection = arviz_plot_prior_posterior(
             combined, var_names=names, **_arviz_options(options, height=height)
         )
+        if title:
+            collection.add_title(title)
+    return collection
+
+
+def plot_psense(
+    results: xr.DataTree,
+    *,
+    priors: Mapping[str, Prior] | None = None,
+    metrics: xr.Dataset | None = None,
+    var_names: Sequence[str] | None = None,
+    kind: Literal["dist", "quantities"] = "dist",
+    **kwargs: Any,
+) -> "PlotCollection":
+    """Show how each posterior quantity moves when the priors or the likelihood are scaled.
+
+    Raises the priors or the likelihood to a power of 0.8 and 1.25 and
+    reweights the posterior draws without refitting, as ``psense_summary``
+    does. A quantity that moves when the prior is scaled depends on the prior,
+    and one that moves the opposite way under the likelihood points to a
+    prior that disagrees with the data.
+
+    With ``kind="dist"``, each row shows an element's distribution under
+    each power beside a point estimate and credible interval, for the priors
+    on the left and the likelihood on the right. Long tails are cut from view
+    so the curves keep their shape, while the intervals use every draw. With
+    ``kind="quantities"``, each panel follows one summary, such as the mean,
+    across the powers, and dashed lines mark two Monte Carlo standard errors
+    around its unscaled value.
+
+    When the elements need more panels than ArviZ's ``plot.max_subplots``
+    setting allows, the plot keeps the six most sensitive to the priors and
+    says so in its title. The figure grows taller with its rows unless
+    ``figure_kwargs`` sets its size.
+
+    Parameters
+    ----------
+    results : xarray.DataTree
+        Output of ``sample`` with ``posterior`` and ``log_likelihood`` groups.
+    priors : mapping of str to Prior, optional
+        The ``Prior`` objects that ``log_density`` uses, keyed by parameter
+        name. Every posterior parameter needs one. Omit to read the
+        ``log_prior`` group of ``results``.
+    metrics : xarray.Dataset, optional
+        Output of ``media_metrics`` or another dataset of values for the
+        posterior draws of ``results``. Omit to plot the parameters.
+    var_names : sequence of str, optional
+        Parameters, or variables of ``metrics``, to plot. Defaults to every
+        one with chain and draw axes.
+    kind : {"dist", "quantities"}, default "dist"
+        Draw distributions or summaries against the power.
+    **kwargs
+        Further keywords for ``arviz_plots.plot_psense_dist`` or
+        ``arviz_plots.plot_psense_quantities``, such as ``coords``,
+        ``quantities``, or ``figure_kwargs``.
+
+    Returns
+    -------
+    arviz_plots.PlotCollection
+        ArviZ's plot, which methods such as ``add_title`` extend.
+    """
+    if kind not in ("dist", "quantities"):
+        raise ValueError(f"kind must be 'dist' or 'quantities', got {kind!r}")
+    tree, names = _sensitivity_tree(results, priors, metrics, var_names)
+    everything = tree["posterior"].to_dataset()
+    draws = everything[names]
+    quantities = kwargs.get("quantities") or ("mean", "sd")
+    columns = 2 if kind == "dist" else 1 if isinstance(quantities, str) else len(quantities)
+    count = _panel_count(draws)
+    title = ""
+    if "coords" not in kwargs and count * columns > _subplot_limit():
+        chosen = _most_sensitive(tree, names, 6)
+        draws = everything = _flatten(draws, chosen)
+        names = [str(name) for name in draws.data_vars]
+        noun = "parameters" if metrics is None else "metrics"
+        title = f"The {len(chosen)} of {count} {noun} most sensitive to the priors"
+    # ArviZ turns a posterior of one variable into an array it cannot plot, so a hidden copy keeps it a dataset.
+    if len(everything.data_vars) == 1:
+        everything = everything.assign({f"{names[0]} copy": everything[names[0]]})
+    data = xr.DataTree.from_dict(
+        {
+            "posterior": everything,
+            "log_prior": tree["log_prior"].to_dataset(),
+            "log_likelihood": tree["log_likelihood"].to_dataset(),
+        }
+    )
+    from arviz_plots import plot_psense_dist, plot_psense_quantities
+
+    # A row needs about 1.8 inches for its panels, tick labels, and a title of up to three lines.
+    height = 7.0 if "coords" in kwargs else max(7.0, 1.8 * _panel_count(draws))
+    draw = plot_psense_dist if kind == "dist" else plot_psense_quantities
+    with mpl.rc_context(_matplotlib_style()):
+        collection: PlotCollection = draw(data, var_names=names, **_arviz_options(kwargs, height=height))
+        if kind == "dist":
+            _limit_tails(collection, draws, kwargs.get("coords") or {})
         if title:
             collection.add_title(title)
     return collection
@@ -481,8 +740,8 @@ def plot_rhat(results: xr.DataTree, *, var_names: Sequence[str] | None = None) -
         pn.ggplot(frame, pn.aes("parameter", "rhat"))
         # The first parameter sits at the top once the axes turn.
         + pn.scale_x_discrete(limits=names[::-1], labels=dict(zip(names, texts, strict=True)))
-        + pn.geom_hline(yintercept=1.01, linetype="dotted", color=orange, size=0.8)
-        + pn.annotate("text", x=len(names) + 0.45, y=1.01, label=" 1.01", ha="left", va="center", color=orange)
+        + pn.geom_hline(yintercept=1.01, linetype="dotted", color="#8c8c8c", size=0.8)
+        + pn.annotate("text", x=len(names) + 0.45, y=1.01, label=" 1.01", ha="left", va="center", color="#262626")
         + pn.geom_boxplot(outlier_shape="", width=0.55, color="#545454", fill="#e9eafc", size=0.5)
         # A fixed seed keeps the jittered points in place from one drawing to the next.
         + pn.geom_point(
@@ -608,6 +867,18 @@ def _require_count(value: object, name: str) -> None:
         raise ValueError(f"{name} must be at least 1, got {value}")
 
 
+def _require_baseline_quantity(show_baseline: object, quantity: object) -> None:
+    """Check that the baseline has the expected outcome it is computed from."""
+    if not isinstance(show_baseline, bool):
+        raise TypeError(f"show_baseline must be a bool, got {type(show_baseline).__name__}")
+    if quantity is not None and not isinstance(quantity, str):
+        raise TypeError(f"quantity must be a string, got {type(quantity).__name__}")
+    if show_baseline and quantity is None:
+        raise ValueError("quantity must name the expected outcome, such as 'mu', to show the baseline")
+    if not show_baseline and quantity is not None:
+        raise ValueError("quantity is only used with show_baseline=True")
+
+
 def _observation_panels(
     predicted: xr.DataArray,
     observed: xr.DataArray,
@@ -686,33 +957,21 @@ def _fit_text(frame: pd.DataFrame, probability: float) -> str:
     return text
 
 
-def _baseline(
-    effects: object,
+def _align_with_fit(
+    values: xr.DataArray,
     predicted: xr.DataArray,
-    group: str,
     time: str,
     kept: list[str],
     coords: Mapping[str, object] | None,
-    probability: float,
-) -> pd.DataFrame:
-    """Sum each draw's baseline over the axes the fit leaves out and summarize it by period."""
-    effects = _require_dataset(effects, "effects", ["baseline_response"])
-    selection, _ = _select_panels(effects["baseline_response"], coords, None, "")
-    baseline = _restrict(effects["baseline_response"], selection)
-    _require_draws(baseline, "effects['baseline_response']")
-    drawn = effects.attrs.get("group", group)
-    if drawn != group:
-        raise ValueError(f"effects must use the {group} draws that group selects, got {drawn!r}")
-    missing = [dim for dim in (time, *kept) if dim not in baseline.dims]
-    if missing:
-        axes = repr((time, *kept)) if kept else repr(time)
-        raise ValueError(f"effects must keep the {missing[0]!r} axis. Pass by={axes} to contributions")
-    summed = [dim for dim in baseline.dims if dim not in ("chain", "draw", time, *kept)]
-    baseline = baseline.sum(summed) if summed else baseline
+) -> xr.DataArray:
+    """Keep the labels coords picks and sum each draw over the axes the fit leaves out."""
+    selection, _ = _select_panels(values, coords, None, "")
+    restricted = _restrict(values, selection)
+    summed = [dim for dim in restricted.dims if dim not in ("chain", "draw", time, *kept)]
+    aligned = restricted.sum(summed) if summed else restricted
     if "group" in kept:
-        baseline = baseline.sel(group=predicted["group"].values)
-    frame = _summarize(baseline, probability)[[time, *kept, "estimate"]]
-    return frame
+        aligned = aligned.sel(group=predicted["group"].values)
+    return aligned
 
 
 def _axis_labels(model: Model, var_name: str) -> tuple[str, str]:
@@ -758,6 +1017,140 @@ def _element_label(name: str) -> str:
     return label
 
 
+def _statistics(
+    statistics: object,
+    quantity: str | None,
+) -> list[tuple[str, str | float | Callable[[NDArray[np.float64]], float]]]:
+    """Name each requested statistic and check that it can be computed."""
+    first = "autocorrelation" if quantity is None else "residual_autocorrelation"
+    requested = (first, "std", "max") if statistics is None else statistics
+    if isinstance(requested, str) or not isinstance(requested, Sequence):
+        raise TypeError(
+            f"statistics must be a sequence of names, quantiles, or functions, got {type(requested).__name__}"
+        )
+    if not requested:
+        raise ValueError("statistics must hold at least one statistic")
+    words = {
+        "mean": "Mean",
+        "median": "Median",
+        "std": "Standard deviation",
+        "min": "Minimum",
+        "max": "Maximum",
+        "autocorrelation": "Autocorrelation",
+        "residual_autocorrelation": "Residual autocorrelation",
+    }
+    chosen: list[tuple[str, str | float | Callable[[NDArray[np.float64]], float]]] = []
+    for position, statistic in enumerate(requested, start=1):
+        if isinstance(statistic, str):
+            if statistic not in words:
+                raise ValueError(
+                    "statistics must name 'mean', 'median', 'std', 'min', 'max', 'autocorrelation', "
+                    f"or 'residual_autocorrelation', got {statistic!r}"
+                )
+            label = words[statistic]
+            setting: str | float | Callable[[NDArray[np.float64]], float] = statistic
+        elif isinstance(statistic, numbers.Real) and not isinstance(statistic, (bool, np.bool_)):
+            if not 0.0 < float(statistic) < 1.0:
+                raise ValueError(f"statistics quantiles must lie between 0 and 1, got {statistic!r}")
+            label = f"{_ordinal(100.0 * float(statistic))} percentile"
+            setting = float(statistic)
+        elif callable(statistic):
+            name = str(getattr(statistic, "__name__", ""))
+            # An anonymous function has no name to show, so its place in the list stands in for one.
+            label = f"Statistic {position}" if not name or name == "<lambda>" else _label(name)
+            setting = statistic
+        else:
+            raise TypeError(f"statistics must hold names, quantiles, or functions, got {type(statistic).__name__}")
+        if label in [named for named, _ in chosen]:
+            raise ValueError(f"statistics must be distinct, got {label!r} twice")
+        chosen.append((label, setting))
+    if quantity is None and any(setting == "residual_autocorrelation" for _, setting in chosen):
+        raise ValueError("quantity must name the expected outcome, such as 'mu', for residual autocorrelation")
+    if quantity is not None and all(setting != "residual_autocorrelation" for _, setting in chosen):
+        raise ValueError("quantity is only used with residual autocorrelation")
+    return chosen
+
+
+def _ordinal(percent: float) -> str:
+    """Write a percentile as an ordinal such as 90th or 2.5th."""
+    number = f"{percent:.4g}"
+    whole = float(number).is_integer()
+    last = int(float(number)) % 10 if whole and int(float(number)) % 100 not in (11, 12, 13) else 0
+    suffix = {1: "st", 2: "nd", 3: "rd"}.get(last, "th")
+    text = f"{number}{suffix}"
+    return text
+
+
+def _apply_statistic(
+    statistic: str | float | Callable[[NDArray[np.float64]], float],
+    series: NDArray[np.float64],
+    expected: NDArray[np.float64] | None,
+    label: str,
+) -> NDArray[np.float64]:
+    """Compute one statistic of every series along the last axis."""
+    match statistic:
+        case "mean":
+            values = series.mean(axis=-1)
+        case "median":
+            values = np.median(series, axis=-1)
+        case "std":
+            values = series.std(axis=-1)
+        case "min":
+            values = series.min(axis=-1)
+        case "max":
+            values = series.max(axis=-1)
+        case "autocorrelation":
+            values = _lag_one(series)
+        case "residual_autocorrelation":
+            # Each draw's residuals come from its own expected outcome, so the observed series gets one per draw.
+            values = _lag_one(series - cast(NDArray[np.float64], expected))
+        case float():
+            values = np.quantile(series, statistic, axis=-1)
+        case _:
+            function = cast(Callable[[NDArray[np.float64]], float], statistic)
+            values = np.apply_along_axis(function, -1, series)
+            if np.shape(values) != series.shape[:-1]:
+                raise ValueError(
+                    f"statistics functions must return one number per series, got shape {np.shape(values)} "
+                    f"from {label!r}"
+                )
+    computed = np.asarray(values, dtype=np.float64)
+    return computed
+
+
+def _lag_one(series: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Measure how strongly each value follows the one before it."""
+    centered = series - series.mean(axis=-1, keepdims=True)
+    covariance = np.sum(centered[..., 1:] * centered[..., :-1], axis=-1)
+    variance = np.sum(centered**2, axis=-1)
+    correlation: NDArray[np.float64] = covariance / variance
+    return correlation
+
+
+def _title_panels(
+    collection: "PlotCollection", titles: Mapping[str, str], realized: Mapping[str, NDArray[np.float64]]
+) -> None:
+    """Title each panel with its share of draws and draw observed values that vary by draw as a curve."""
+    from arviz_stats.base.array import array_stats
+
+    plots = collection.viz["plot"].to_dataset()
+    dots = collection.viz["observed_tstat"].to_dataset()
+    lines = collection.viz["dist"].to_dataset()
+    formatter = FuncFormatter(lambda value, _: _compact([value])[0])
+    for name in plots.data_vars:
+        axis = plots[name].item()
+        axis.set_title(titles[str(name)])
+        axis.xaxis.set_major_formatter(formatter)
+        if str(name) not in realized:
+            continue
+        dot = dots[name].item()
+        grid, density, _ = array_stats.kde(realized[str(name)])
+        axis.plot(grid, density, color=dot.get_facecolor()[0], linewidth=lines[name].item().get_linewidth())
+        dot.remove()
+        axis.relim()
+        axis.autoscale_view()
+
+
 def _variables(available: list[str], requested: Sequence[str] | None, group: str) -> list[str]:
     """Resolve the variables a diagnostic draws and reject unknown names."""
     if requested is None:
@@ -769,6 +1162,59 @@ def _variables(available: list[str], requested: Sequence[str] | None, group: str
         raise ValueError(f"var_names has no {group} variable {', '.join(repr(name) for name in missing)}")
     names = list(requested)
     return names
+
+
+def _subplot_limit() -> int:
+    """Read the most panels ArviZ will draw in one figure."""
+    from arviz_base import rcParams
+
+    limit = int(rcParams["plot.max_subplots"])
+    return limit
+
+
+def _panel_count(dataset: xr.Dataset) -> int:
+    """Count the elements outside chain and draw that each need a panel."""
+    count = sum(
+        int(np.prod([dataset[name].sizes[dim] for dim in dataset[name].dims if dim not in ("chain", "draw")]))
+        for name in dataset.data_vars
+    )
+    return count
+
+
+def _least_narrowed(posterior: xr.Dataset, prior: xr.Dataset, count: int) -> list[tuple[str, dict[str, int]]]:
+    """Rank elements by how little the data narrowed them on the prior's quantile scale."""
+    scored = []
+    for name, index in _elements(posterior):
+        after = np.ravel(posterior[name].isel(index).values)
+        before = np.sort(np.ravel(prior[name].isel(index).values))
+        # A draw's place among the prior draws is the same on any increasing scale, such as log or logit.
+        places = (np.searchsorted(before, after, side="left") + np.searchsorted(before, after, side="right")) / (
+            2 * before.size
+        )
+        # Places spread like the prior's own have variance 1/12, so an unchanged posterior scores zero.
+        narrowing = 1.0 - 12.0 * float(np.var(places))
+        scored.append((narrowing, name, index))
+    ranked = [(name, index) for _, name, index in sorted(scored, key=lambda item: item[0])[:count]]
+    return ranked
+
+
+def _elements(dataset: xr.Dataset) -> Iterator[tuple[str, dict[str, int]]]:
+    """List every element of every variable by its position along each axis."""
+    for name in dataset.data_vars:
+        dims = [str(dim) for dim in dataset[name].dims if dim not in ("chain", "draw")]
+        for position in np.ndindex(*[dataset[name].sizes[dim] for dim in dims]):
+            yield str(name), dict(zip(dims, position, strict=True))
+
+
+def _flatten(dataset: xr.Dataset, chosen: list[tuple[str, dict[str, int]]]) -> xr.Dataset:
+    """Turn chosen elements into scalar variables named after their labels so each gets one panel."""
+    variables = {}
+    for name, index in chosen:
+        element = dataset[name].isel(index)
+        labels = ", ".join(str(element[dim].values) for dim in index)
+        variables[f"{name}[{labels}]" if labels else name] = element.reset_coords(drop=True)
+    flattened = xr.Dataset(variables)
+    return flattened
 
 
 def _clip_tails(posterior: xr.Dataset, prior: xr.Dataset) -> tuple[xr.Dataset, xr.Dataset]:
@@ -792,55 +1238,6 @@ def _clip_tails(posterior: xr.Dataset, prior: xr.Dataset) -> tuple[xr.Dataset, x
     return clipped_posterior, clipped_prior
 
 
-def _subplot_limit() -> int:
-    """Read the most panels ArviZ will draw in one figure."""
-    from arviz_base import rcParams
-
-    limit = int(rcParams["plot.max_subplots"])
-    return limit
-
-
-def _panel_count(dataset: xr.Dataset) -> int:
-    """Count the elements outside chain and draw that each need a panel."""
-    count = sum(
-        int(np.prod([dataset[name].sizes[dim] for dim in dataset[name].dims if dim not in ("chain", "draw")]))
-        for name in dataset.data_vars
-    )
-    return count
-
-
-def _largest_shifts(posterior: xr.Dataset, prior: xr.Dataset, count: int) -> list[tuple[str, dict[str, int]]]:
-    """Rank elements by how far the posterior mean moved from the prior mean in prior standard deviations."""
-    scored = []
-    for name, index in _elements(posterior):
-        after = posterior[name].isel(index)
-        before = prior[name].isel(index)
-        spread = float(before.std())
-        shift = abs(float(after.mean()) - float(before.mean())) / spread if spread > 0 else float("inf")
-        scored.append((shift, name, index))
-    ranked = [(name, index) for _, name, index in sorted(scored, key=lambda item: -item[0])[:count]]
-    return ranked
-
-
-def _elements(dataset: xr.Dataset) -> Iterator[tuple[str, dict[str, int]]]:
-    """List every element of every variable by its position along each axis."""
-    for name in dataset.data_vars:
-        dims = [str(dim) for dim in dataset[name].dims if dim not in ("chain", "draw")]
-        for position in np.ndindex(*[dataset[name].sizes[dim] for dim in dims]):
-            yield str(name), dict(zip(dims, position, strict=True))
-
-
-def _flatten(dataset: xr.Dataset, chosen: list[tuple[str, dict[str, int]]]) -> xr.Dataset:
-    """Turn chosen elements into scalar variables named after their labels so each gets one panel."""
-    variables = {}
-    for name, index in chosen:
-        element = dataset[name].isel(index)
-        labels = ", ".join(str(element[dim].values) for dim in index)
-        variables[f"{name}[{labels}]" if labels else name] = element.reset_coords(drop=True)
-    flattened = xr.Dataset(variables)
-    return flattened
-
-
 def _grid_height(panels: int, options: dict[str, Any]) -> float:
     """Give each row of an ArviZ grid three inches so its titles and tick labels keep their room."""
     # Chosen coordinates change the panel count in ways only ArviZ resolves, so they keep the default height.
@@ -850,6 +1247,40 @@ def _grid_height(panels: int, options: dict[str, Any]) -> float:
     rows = -(-panels // columns)
     height = max(7.0, 3.0 * rows)
     return height
+
+
+def _most_sensitive(tree: xr.DataTree, names: list[str], count: int) -> list[tuple[str, dict[str, int]]]:
+    """Rank elements by how far scaling every prior moves their distribution."""
+    from arviz_stats.psense import psense
+
+    sensitivity = psense(tree, var_names=names, group="prior")
+    scored = [(float(sensitivity[name].isel(index)), name, index) for name, index in _elements(sensitivity[names])]
+    # Missing values sort last, since they flag nothing.
+    ranked = sorted(scored, key=lambda item: -item[0] if np.isfinite(item[0]) else np.inf)
+    chosen = [(name, index) for _, name, index in ranked[:count]]
+    return chosen
+
+
+def _limit_tails(collection: "PlotCollection", draws: xr.Dataset, coords: Mapping[str, object]) -> None:
+    """Cut each density panel's view to the bulk of its draws so a long tail cannot squash the curves."""
+    plots = collection.viz["plot"].to_dataset()
+    for name in plots.data_vars:
+        # The same labels ArviZ drew, where a single label drops its axis as it does in the panels.
+        values = draws[str(name)].sel({dim: labels for dim, labels in coords.items() if dim in draws[str(name)].dims})
+        low = values.quantile(0.01, dim=("chain", "draw")).drop_vars("quantile")
+        high = values.quantile(0.99, dim=("chain", "draw")).drop_vars("quantile")
+        margin = 0.2 * (high - low)
+        # A limit never reaches past the draws, so only a long tail leaves the view.
+        lowest = values.min(("chain", "draw"))
+        highest = values.max(("chain", "draw"))
+        lower = (low - margin).where(low - margin > lowest, lowest)
+        upper = (high + margin).where(high + margin < highest, highest)
+        axes = plots[name]
+        shown = {dim: axes[dim].values for dim in lower.dims if dim in axes.dims}
+        left = lower.sel(shown).broadcast_like(axes).transpose(*axes.dims)
+        right = upper.sel(shown).broadcast_like(axes).transpose(*axes.dims)
+        for axis, start, stop in zip(np.ravel(axes.values), np.ravel(left.values), np.ravel(right.values), strict=True):
+            axis.set_xlim(float(start), float(stop))
 
 
 def _names(results: xr.DataTree, group: str) -> list[str]:
@@ -880,7 +1311,11 @@ def _convergence_panels(
     ranked = sorted(scored, key=lambda item: -item[0] if np.isfinite(item[0]) else np.inf)
     chosen = [(name, index) for _, name, index in ranked[:keep]]
     flattened = _flatten(posterior, chosen)
-    data = xr.DataTree.from_dict({"posterior": flattened})
+    groups = {"posterior": flattened}
+    # ArviZ marks divergent draws from sample_stats, which the trimmed tree would otherwise lose.
+    if "sample_stats" in results.children:
+        groups["sample_stats"] = results["sample_stats"].to_dataset()
+    data = xr.DataTree.from_dict(groups)
     title = f"The {len(chosen)} of {count} parameters with the highest R-hat"
     return data, [str(name) for name in flattened.data_vars], title
 

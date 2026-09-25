@@ -41,6 +41,6 @@ def brand_results(model: mj.Model) -> xr.DataTree:
     results = stored(
         "brand",
         lambda: mj.sample(model, draws=1000, warmup=1000, chains=4, seed=7),
-        groups=["posterior", "posterior_predictive", "observed_data"],
+        groups=["posterior", "posterior_predictive", "log_likelihood", "observed_data"],
     )
     return results

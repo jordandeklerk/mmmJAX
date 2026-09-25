@@ -62,9 +62,7 @@ Facets, coordinates, and themes change how a plot is laid out without touching
 what it draws.
 
 ```{code-cell} ipython3
-import numpy as np
-
-curves = mj.response_curves(model, results, quantity="mu", multipliers=np.linspace(0.0, 2.0, 21))
+curves = mj.response_curves(model, results, quantity="mu")
 panels = mj.plot_response_curves(curves)
 shared = pn.scale_x_continuous(breaks=[0, 500_000, 1_000_000], labels=["0", "500K", "1M"])
 panels + pn.facet_wrap("channel", ncol=5, scales="free_y") + shared

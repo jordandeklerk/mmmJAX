@@ -323,6 +323,11 @@ theme so the frames read in both schemes.
   vertical-align: middle;
 }
 
+/* A cell tagged wide-table keeps each row on one line and scrolls sideways, for frames with many text columns. */
+.md-typeset div.cell.tag_wide-table table.dataframe td {
+  white-space: nowrap;
+}
+
 .md-typeset .cell_output table.dataframe tbody tr:nth-child(even) {
   background-color: var(--md-code-bg-color);
 }

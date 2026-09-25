@@ -617,6 +617,18 @@ def test_plot_spend_vs_contribution_hatches_the_spending_bars():
     plt.close(figure)
 
 
+def test_plot_spend_vs_contribution_puts_each_pair_of_bars_side_by_side():
+    figure = plot_spend_vs_contribution(_returns()).draw()
+
+    spans = [
+        sorted((path.vertices[:, 0].min(), path.vertices[:, 0].max()) for path in collection.get_paths())
+        for collection in figure.axes[0].collections
+    ]
+    for spend, response in zip(*spans, strict=True):
+        assert spend[1] <= response[0] + 1e-9 or response[1] <= spend[0] + 1e-9
+    plt.close(figure)
+
+
 def test_plot_spend_vs_contribution_sums_groups_and_pools_the_channels_left_out():
     metrics = _returns()
     groups = xr.DataArray([0.25, 0.75], dims="group", coords={"group": ["north", "south"]})

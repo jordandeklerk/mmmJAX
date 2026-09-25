@@ -7,8 +7,9 @@ kernelspec:
 
 # Overview
 
-mmmJAX is a library for writing Bayesian marketing mix models in Python. You
-write the model yourself as a short program in the shape of a
+mmmJAX is an open-source library for writing Bayesian marketing mix models in
+Python, built for developers and practitioners with experience in marketing mix
+models. You write the model yourself as a short program in the shape of a
 [Stan](https://mc-stan.org/) program, a few named blocks that state the data,
 the parameters, how they combine, the log density, and what to compute from
 each posterior draw. The library supplies everything else a marketing model

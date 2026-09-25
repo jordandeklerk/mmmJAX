@@ -36,16 +36,16 @@ def _increments(reference, optimized):
     return values
 
 
-def test_plot_budget_response_steps_from_the_reference_to_the_optimized_response():
+def test_plot_budget_response_steps_from_the_historical_to_the_optimized_response():
     increments = _increments([300.0, 200.0, 100.0], [360.0, 150.0, 100.0])
 
     plot = plot_budget_response(_plan(increments=increments))
 
     bars = plot.data.set_index("name")
-    assert list(bars.index) == ["Reference", "Search", "TV", "Radio", "Optimized"]
+    assert list(bars.index) == ["Historical", "Search", "TV", "Radio", "Optimized"]
     np.testing.assert_allclose(bars["bottom"], [0.0, 550.0, 550.0, 610.0, 0.0], rtol=1e-12, atol=1e-9)
     np.testing.assert_allclose(bars["top"], [600.0, 600.0, 610.0, 610.0, 610.0], rtol=1e-12, atol=1e-9)
-    assert list(bars["kind"]) == ["Total", "Decrease", "Increase", "Increase", "Total"]
+    assert list(bars["kind"]) == ["Historical", "Decrease", "Increase", "Increase", "Optimized"]
     assert list(bars["label"]) == ["600", "-50", "+60", "+0", "610"]
 
 
@@ -101,6 +101,21 @@ def test_plot_budget_response_sums_the_channels_left_out_into_the_last_step():
     assert set(names[1:-2]) == set(labels[5:])
     np.testing.assert_allclose(other["top"] - other["bottom"], 1.5, rtol=1e-9, atol=0)
     assert other["kind"] == "Increase"
+
+
+def test_budget_plots_hatch_only_the_cuts():
+    increments = _increments([300.0, 200.0, 100.0], [360.0, 150.0, 100.0])
+    spend = [[100.0, 50.0, 30.0], [140.0, 20.0, 30.0]]
+
+    decrease = np.array([0xD1, 0x45, 0x3B]) / 255
+
+    for plot in (plot_budget_response(_plan(increments=increments)), plot_budget_spend(_plan(spend=spend))):
+        figure = plot.draw()
+        hatched = [collection for collection in figure.axes[0].collections if collection.get_hatch() == "///"]
+        assert len(hatched) == 1
+        # The hatch sits on the cut, whose bars take the decrease color.
+        np.testing.assert_allclose(hatched[0].get_edgecolor()[0][:3], decrease, rtol=0, atol=1 / 255)
+        plt.close(figure)
 
 
 def test_plot_budget_response_requires_incremental_responses():

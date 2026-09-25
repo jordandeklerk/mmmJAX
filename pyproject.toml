@@ -121,6 +121,8 @@ ignore = [
 "mmmjax/**/__init__.py" = ["I", "F401", "E402", "F403"]
 "tests/**/*" = ["D", "E402"]
 "docs/**/*.py" = ["D"]
+# Each example runs with the brand model and its fit already defined
+"docs/source/api/examples/*.py" = ["F821"]
 
 [tool.ruff.lint.isort]
 known-third-party = ["jax", "jaxtyping", "numpy", "scipy"]

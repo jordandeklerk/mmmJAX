@@ -10609,7 +10609,7 @@ packages:
 - pypi: ./
   name: mmmjax
   version: 0.0.1
-  sha256: ae7d1c79d28eb7ef47bf34e0acd15409f623a51452d65a03056133edf86670a6
+  sha256: 582991411609fbec655014dc391169666e8431657bc984e2cad34d9df7b39ece
   requires_dist:
   - arviz>=1.3
   - blackjax[progress]>=1.6.2,<1.7

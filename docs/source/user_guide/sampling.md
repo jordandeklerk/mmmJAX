@@ -229,25 +229,18 @@ is independent from week to week, that persistence has to come from the media,
 their carryover, and price. The lag-one autocorrelation measures it.
 
 ```{code-cell} ipython3
-import numpy as np
-
-
-def lag_one_autocorrelation(series):
-    centered = series - series.mean()
-    correlation = np.sum(centered[1:] * centered[:-1]) / np.sum(centered**2)
-    return correlation
-
-
-az.plot_ppc_tstat(results, t_stat=lag_one_autocorrelation, figure_kwargs={"figsize": (12, 7)})
+mj.plot_ppc_tstat(model, results, statistics=["autocorrelation"])
 plt.show()
 ```
 
-ArviZ applies the function to every predictive draw and to the observed
-revenue. The curve shows the draws' autocorrelations, which peak near 0.70,
-and the black dot marks the observed 0.72, with about one draw in seven above
-it, so the model reproduces how closely each week's revenue follows the last.
-Any function from one series to a number works the same way, such as the
-largest week or the share of weeks above a target.
+{func}`~mmmjax.plot_ppc_tstat` computes the statistic for every predictive
+draw and for the observed revenue, in dollars because it undoes the outcome
+scaling first. The curve shows the draws' autocorrelations, which peak near
+0.70, and the black dot marks the observed 0.72. The title's p of 0.15 is the
+share of draws at or above it, about one in seven, so the model reproduces how
+closely each week's revenue follows the last. `statistics` takes any function
+from one series to a number the same way, such as the largest week or the
+share of weeks above a target.
 
 The pointwise log likelihood supports a sharper check. Leave-one-out
 cross-validation asks how well the model predicts each week when that week is
@@ -279,6 +272,11 @@ within about 0.05 of zero, and the test in the corner gives p = 0.46, so the
 wiggles are no larger than uniform values would show by chance. ArviZ took the
 log likelihood, the predictive draws, and the observed data for this check
 from the same `results`.
+
+LOO-PIT pools the weeks, so a model that misses a season or a driver of demand
+can still pass it. The residual autocorrelation that
+{func}`~mmmjax.plot_ppc_tstat` draws with `quantity` keeps the weeks in order
+and catches what this check lets through, as [Plotting](plotting) shows.
 
 Every check so far compares the model with the data. A model can pass them all
 while crediting revenue to the wrong cause, and [Recovering the

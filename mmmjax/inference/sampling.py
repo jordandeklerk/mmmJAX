@@ -93,8 +93,7 @@ def sample(
         Complete constrained parameter values used to start every chain.
         Otherwise, each chain starts from a random unconstrained position.
     generate : bool, default True
-        Evaluate mapped log-prior terms and outputs from the
-        ``generated_quantities`` callback.
+        Evaluate outputs from the ``generated_quantities`` callback.
     save_unconstrained : bool, default True
         Also store the retained draws in the sampler's unconstrained space as
         an ``unconstrained_posterior`` group.
@@ -864,16 +863,15 @@ def generate_quantities(
 ) -> xr.DataTree:
     """Evaluate generated quantities from existing posterior draws without refitting.
 
-    Evaluate mapped log-prior terms and any ``generated_quantities``
-    callback for every draw. The ``log_density``
-    callback and sampling are not rerun. Scenario calculations remain
-    defined by the model.
+    Evaluate the ``generated_quantities`` callback for every draw. The
+    ``log_density`` callback and sampling are not rerun. Scenario
+    calculations remain defined by the model.
 
     Parameters
     ----------
     model : Model
-        Model with mapped priors or a ``generated_quantities`` callback and
-        the fitted parameter declarations.
+        Model with a ``generated_quantities`` callback and the fitted
+        parameter declarations.
     results : xarray.DataTree
         Results containing constrained posterior draws with the model's parameter
         names, shapes, and axis labels. Draws may be sliced or thinned.
@@ -914,7 +912,7 @@ def generate_quantities(
         raise TypeError("model must be a Model")
     _validate_batch_size(batch_size)
     if not model._has_generated_quantities:
-        raise ValueError("The model must define a generated_quantities callback or map priors")
+        raise ValueError("The model must define a generated_quantities callback")
     _validate_seed(seed)
 
     dimensions, coordinates = _parameter_metadata(model)

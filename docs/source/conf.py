@@ -1,6 +1,11 @@
 """Sphinx configuration for the mmmJAX documentation."""
 
 import re
+import sys
+from pathlib import Path
+
+# The extension that draws each plot function's example on its API page
+sys.path.insert(0, str(Path(__file__).parent / "_ext"))
 
 project = "mmmJAX"
 copyright = "2026, Jordan DeKlerk"
@@ -18,6 +23,7 @@ extensions = [
     "IPython.sphinxext.ipython_directive",
     "IPython.sphinxext.ipython_console_highlighting",
     "sphinx_immaterial",
+    "api_examples",
 ]
 
 exclude_patterns = []

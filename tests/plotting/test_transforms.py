@@ -85,9 +85,9 @@ def test_plot_adstock_keeps_each_channel_color_for_a_subset():
     assert scale.palette(len(scale.breaks))["Search"] == "#fa7c17"
 
 
-def test_plot_adstock_shows_the_first_channels_of_many():
-    labels = [f"Channel {index:02d}" for index in range(12)]
-    draws = np.full((2, 3, 12), 0.5, dtype=np.float32)
+def _many_retentions(count=12):
+    labels = [f"Channel {index:02d}" for index in range(count)]
+    draws = np.full((2, 3, count), 0.5, dtype=np.float32)
     results = xr.DataTree.from_dict(
         {
             "posterior": xr.Dataset(
@@ -96,11 +96,45 @@ def test_plot_adstock_shows_the_first_channels_of_many():
             )
         }
     )
+    return results, labels
+
+
+def test_plot_adstock_shows_the_first_channels_of_many():
+    results, labels = _many_retentions()
 
     plot = plot_adstock(results, geometric_adstock, parameters={"alpha": "retention"}, max_lag=2)
 
     assert set(plot.data["channel"]) == set(labels[:10])
     assert plot.labels.caption.startswith("Showing the first 10 of 12 channels")
+
+
+def _draw_transform(kind, results, **options):
+    if kind == "adstock":
+        return plot_adstock(results, geometric_adstock, parameters={"alpha": "retention"}, max_lag=2, **options)
+    hill = functools.partial(hill_saturation, slope=1.0)
+    return plot_saturation(results, hill, parameters={"half_saturation": "retention"}, max_input=2.0, **options)
+
+
+@pytest.mark.parametrize("kind", ["adstock", "saturation"])
+def test_transform_plots_give_each_channel_a_panel_on_shared_axes(kind):
+    plot = _draw_transform(kind, _retention([0.5, 0.2]))
+
+    assert isinstance(plot.facet, pn.facet_wrap)
+    assert list(plot.facet.vars) == ["panel"]
+    assert plot.facet.free == {"x": False, "y": False}
+    assert list(plot.data["panel"].cat.categories) == ["TV", "Search"]
+    assert plot.guides.color == "none"
+
+
+@pytest.mark.parametrize("kind", ["adstock", "saturation"])
+def test_transform_plots_combine_up_to_five_channels_in_one_panel(kind):
+    results, labels = _many_retentions()
+
+    plot = _draw_transform(kind, results, combine=True)
+
+    assert isinstance(plot.facet, pn.facet_null)
+    assert set(plot.data["channel"]) == set(labels[:5])
+    assert plot.labels.caption.startswith("Showing the first 5 of 12 channels")
 
 
 @pytest.mark.parametrize(
@@ -141,6 +175,12 @@ def test_plot_adstock_shows_the_first_channels_of_many():
         ),
         ({"n_groups": 0}, ValueError, "n_groups must be at least 1"),
         ({"coords": {"group": ["g0"]}}, ValueError, "coords has no axis 'group'"),
+        ({"combine": 1}, TypeError, "combine must be a bool, got int"),
+        (
+            {"combine": True, "prior": _retention([0.8, 0.8], group="prior")},
+            ValueError,
+            "combine needs a plot without prior",
+        ),
     ],
 )
 def test_plot_adstock_rejects_invalid_arguments(options, error, message):
@@ -271,6 +311,16 @@ def test_plot_saturation_rejects_invalid_arguments(options, error, message):
                 max_input=4.0,
             ),
             id="saturation",
+        ),
+        pytest.param(
+            lambda: plot_saturation(
+                _half_saturation([1.0, 2.0]),
+                functools.partial(hill_saturation, slope=1.0),
+                parameters={"half_saturation": "half_saturation"},
+                max_input=4.0,
+                combine=True,
+            ),
+            id="saturation combined",
         ),
     ],
 )

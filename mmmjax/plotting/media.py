@@ -391,11 +391,11 @@ def plot_spend_vs_contribution(
 ) -> pn.ggplot:
     """Compare each channel's share of spending with its share of the response.
 
-    Each channel gets a wide hatched bar for its share of the spending in the
-    results and a narrow solid bar in front of it for its share of their
-    incremental response, and the number above is its ROI. A channel whose
-    solid bar rises above its hatched frame has an ROI above that of all the
-    channels together.
+    Each channel gets two bars side by side, a hatched one for its share of
+    the spending in the results and a solid one for its share of their
+    incremental response, and the number above them is its ROI. A channel
+    whose solid bar stands taller than its hatched one has an ROI above that
+    of all the channels together.
 
     Responses are posterior means, so each set of shares adds up to one, and
     time and group axes are summed first. Channels run from the most spending
@@ -460,10 +460,8 @@ def plot_spend_vs_contribution(
 
     plot: pn.ggplot = (
         figure(long, pn.aes("channel", "share", fill="measure", color="measure", alpha="measure"))
-        # The spending frames the response it bought, so a solid bar that rises above its frame beats its share.
-        + _HatchedCol(data=long[long["measure"] == spend_label], width=0.8, size=0.6, hatched=colors[spend_label])
-        # The frame's layer already draws both legend keys, the hatched one and the solid one.
-        + pn.geom_col(data=long[long["measure"] == response_label], width=0.4, size=0.6, show_legend=False)
+        # Spending stands beside the response it bought, hatched so the pair reads without color.
+        + _HatchedCol(position=pn.position_dodge(width=0.8), width=0.8, size=0.6, hatched=colors[spend_label])
         + pn.geom_text(pn.aes("channel", "position", label="text"), data=marks, inherit_aes=False, va="bottom", size=9)
         + pn.scale_fill_manual(values=colors, breaks=measures)
         + pn.scale_color_manual(values=colors, breaks=measures)

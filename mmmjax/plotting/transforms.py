@@ -5,7 +5,7 @@ import inspect
 import math
 import numbers
 from collections.abc import Callable, Mapping, Sequence
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import jax
 import jax.numpy as jnp
@@ -29,6 +29,9 @@ from mmmjax.plotting._summary import (
 from mmmjax.plotting.diagnostics import _largest_groups, _require_count
 from mmmjax.plotting.theme import _colors, theme_mmmjax
 
+if TYPE_CHECKING:
+    from plotnine.ggplot import PlotAddable
+
 __all__ = ["plot_adstock", "plot_saturation"]
 
 
@@ -39,6 +42,7 @@ def plot_adstock(
     max_lag: int,
     parameters: Mapping[str, str | float] | None = None,
     prior: xr.DataTree | None = None,
+    combine: bool = False,
     channels: Sequence[str] | None = None,
     coords: Mapping[str, object] | None = None,
     n_groups: int | None = 3,
@@ -57,11 +61,12 @@ def plot_adstock(
     with the same name unless ``parameters`` maps it to another variable or
     fixes it at a number, and ``max_lag`` reaches a function that asks for it.
 
-    The last axis of the parameters, usually ``channel``, sets the colors, and
-    any other axis becomes a panel. With ``prior``, each channel gets its own
-    panel where the prior weights sit beside the posterior ones. A posterior
-    that looks like its prior shows that the data said little about the
-    carryover.
+    Each label of the last axis of the parameters, usually ``channel``, gets
+    its own panel on shared axes, and any other axis adds panels. With
+    ``combine=True``, the channels share one panel in their own colors
+    instead. With ``prior``, each panel gets its own vertical axis and shows
+    the prior weights beside the posterior ones. A posterior that looks like
+    its prior shows that the data said little about the carryover.
 
     Parameters
     ----------
@@ -78,9 +83,13 @@ def plot_adstock(
         with a result variable or has a default.
     prior : xarray.DataTree, optional
         Output of ``sample_prior`` to draw beside the posterior.
+    combine : bool, default False
+        Draw the channels in one panel instead of one panel each. Not
+        available with ``prior``.
     channels : sequence of str, optional
-        Labels of the color axis to show. Defaults to every label, or to the
-        first ten when there are more.
+        Labels of the last axis to show. Defaults to every label, or to the
+        first ten when there are more and the first five when ``combine`` is
+        set.
     coords : mapping of str to sequence, optional
         Labels to keep on other axes, as in ``{"group": ["north", "south"]}``.
     n_groups : int or None, default 3
@@ -105,8 +114,9 @@ def plot_adstock(
     if max_lag < 0:
         raise ValueError(f"max_lag must be nonnegative, got {max_lag}")
     probability = _ci_prob(ci_prob)
+    _require_combine(combine, prior)
     variables, fixed = _bind_arguments(adstock, parameters, results, group, {"max_lag": max_lag}, "adstock")
-    sources, note, order = _parameter_panels(results, prior, variables, group, channels, coords, n_groups)
+    sources, note, order = _parameter_panels(results, prior, variables, group, channels, coords, n_groups, combine)
     impulse = np.zeros(max_lag + 1)
     impulse[0] = 1.0
     respond = functools.partial(adstock, **fixed)
@@ -114,7 +124,7 @@ def plot_adstock(
     curves = {
         label: _transform_draws(respond, arrays, impulse, "lag", lags, "adstock") for label, arrays in sources.items()
     }
-    frame, color, levels, facets = _curve_frame(curves, "lag", probability)
+    frame, color, levels, facets = _curve_frame(curves, "lag", probability, combine)
     # Prior and posterior take the first two colors, and channels keep the colors of their places among all.
     ordering = None if color == "distribution" else order
     point = pn.geom_point(pn.aes(color=color), size=2) if color else pn.geom_point(color=_colors(1)[0], size=2)
@@ -123,8 +133,8 @@ def plot_adstock(
         _bands(frame, x="lag", color=color, labels=levels, probability=probability, order=ordering)
         + point
         + pn.labs(x="Lag", y="Weight", caption=note)
-        + _scales(frame, "lag")
-        + _facet(facets)
+        + _scales(frame, "lag", thin="panel" in facets)
+        + _curve_layout(facets, color)
         + theme_mmmjax()
     )
     return plot
@@ -137,6 +147,7 @@ def plot_saturation(
     max_input: float,
     parameters: Mapping[str, str | float] | None = None,
     prior: xr.DataTree | None = None,
+    combine: bool = False,
     channels: Sequence[str] | None = None,
     coords: Mapping[str, object] | None = None,
     n_groups: int | None = 3,
@@ -155,9 +166,11 @@ def plot_saturation(
     with the same name unless ``parameters`` maps it to another variable or
     fixes it at a number, as a model with a known ``slope`` would.
 
-    The last axis of the parameters, usually ``channel``, sets the colors, and
-    any other axis becomes a panel. With ``prior``, each channel gets its own
-    panel where the prior curve sits beside the posterior one.
+    Each label of the last axis of the parameters, usually ``channel``, gets
+    its own panel on shared axes, and any other axis adds panels. With
+    ``combine=True``, the channels share one panel in their own colors
+    instead. With ``prior``, each panel gets its own vertical axis and shows
+    the prior curve beside the posterior one.
 
     Parameters
     ----------
@@ -175,9 +188,13 @@ def plot_saturation(
         result variable or has a default.
     prior : xarray.DataTree, optional
         Output of ``sample_prior`` to draw beside the posterior.
+    combine : bool, default False
+        Draw the channels in one panel instead of one panel each. Not
+        available with ``prior``.
     channels : sequence of str, optional
-        Labels of the color axis to show. Defaults to every label, or to the
-        first ten when there are more.
+        Labels of the last axis to show. Defaults to every label, or to the
+        first ten when there are more and the first five when ``combine`` is
+        set.
     coords : mapping of str to sequence, optional
         Labels to keep on other axes, as in ``{"group": ["north", "south"]}``.
     n_groups : int or None, default 3
@@ -203,26 +220,35 @@ def plot_saturation(
     if not math.isfinite(max_input) or max_input <= 0:
         raise ValueError(f"max_input must be positive and finite, got {max_input!r}")
     probability = _ci_prob(ci_prob)
+    _require_combine(combine, prior)
     variables, fixed = _bind_arguments(saturation, parameters, results, group, {}, "saturation")
-    sources, note, order = _parameter_panels(results, prior, variables, group, channels, coords, n_groups)
+    sources, note, order = _parameter_panels(results, prior, variables, group, channels, coords, n_groups, combine)
     inputs = np.linspace(0.0, float(max_input), 101)
     respond = functools.partial(saturation, **fixed)
     curves = {
         label: _transform_draws(respond, arrays, inputs, "media", inputs, "saturation")
         for label, arrays in sources.items()
     }
-    frame, color, levels, facets = _curve_frame(curves, "media", probability)
+    frame, color, levels, facets = _curve_frame(curves, "media", probability, combine)
     # Prior and posterior take the first two colors, and channels keep the colors of their places among all.
     ordering = None if color == "distribution" else order
 
     plot = (
         _bands(frame, x="media", color=color, labels=levels, probability=probability, order=ordering)
         + pn.labs(x="Media", y="Saturated media", caption=note)
-        + _scales(frame, "media")
-        + _facet(facets)
+        + _scales(frame, "media", thin="panel" in facets)
+        + _curve_layout(facets, color)
         + theme_mmmjax()
     )
     return plot
+
+
+def _require_combine(combine: object, prior: object) -> None:
+    """Check that channels share a panel only when no prior needs a panel beside each posterior."""
+    if not isinstance(combine, bool):
+        raise TypeError(f"combine must be a bool, got {type(combine).__name__}")
+    if combine and prior is not None:
+        raise ValueError("combine needs a plot without prior, which gives each channel a panel")
 
 
 def _bind_arguments(
@@ -301,6 +327,7 @@ def _parameter_panels(
     channels: Sequence[str] | None,
     coords: Mapping[str, object] | None,
     n_groups: int | None,
+    combine: bool,
 ) -> tuple[dict[str, dict[str, xr.DataArray]], str, list[str]]:
     """Read the parameter draws of each distribution and keep the channels and groups the plot shows."""
     _require_count(n_groups, "n_groups")
@@ -314,7 +341,8 @@ def _parameter_panels(
     order = [] if color is None else [str(label) for label in first[color].values]
     notes = []
     if color is not None:
-        shown, channel_note = _pick_channels(chosen[color].values, None, channels, 10, None)
+        # Five bands are about as many as one panel keeps apart.
+        shown, channel_note = _pick_channels(chosen[color].values, None, channels, 5 if combine else 10, None)
         selection[color] = [label for label in chosen[color].values if str(label) in shown]
         notes.append(channel_note)
     elif channels is not None:
@@ -400,7 +428,7 @@ def _transform_draws(
 
 
 def _curve_frame(
-    curves: dict[str, xr.DataArray], dim: str, probability: float
+    curves: dict[str, xr.DataArray], dim: str, probability: float, combine: bool
 ) -> tuple[pd.DataFrame, str | None, list[str], list[str]]:
     """Summarize each distribution's curves and choose the columns that color them and give them panels."""
     first = next(iter(curves.values()))
@@ -408,15 +436,23 @@ def _curve_frame(
     color = event_dims[-1] if event_dims else None
     frames = [_summarize(values, probability).assign(distribution=label) for label, values in curves.items()]
     frame = _ordered(pd.concat(frames, ignore_index=True), "distribution", list(curves))
-    if len(curves) == 1:
-        levels = [] if color is None else [str(label) for label in first[color].values]
-        facets = event_dims[:-1]
-        return frame, color, levels, facets
-    distributions = list(curves)
-    if color is None:
-        return frame, "distribution", distributions, []
+    single = len(curves) == 1
+    levels = [] if color is None else [str(label) for label in first[color].values]
+    colored = color if single else "distribution"
+    shown = levels if single else list(curves)
+    others = event_dims[:-1]
+    if color is None or (single and combine):
+        return frame, colored, shown, others
     # Panel titles wrap long channel names, since plotnine's strips never break a line on their own.
-    titles = {str(label): _wrap(str(label), 28) for label in first[color].values}
+    titles = {label: _wrap(label, 28) for label in levels}
     panels = _ordered(frame.assign(panel=frame[color].astype(str).map(titles)), "panel", list(titles.values()))
-    facets = ["panel", *event_dims[:-1]]
-    return panels, "distribution", distributions, facets
+    facets = ["panel", *others]
+    return panels, colored, shown, facets
+
+
+def _curve_layout(facets: list[str], color: str | None) -> list["PlotAddable"]:
+    """Give each channel a panel on shared axes whose strips replace the legend."""
+    if "panel" not in facets or color == "distribution":
+        return [_facet(facets)]
+    layout: list[PlotAddable] = [pn.facet_wrap(facets), pn.guides(color="none", fill="none")]
+    return layout

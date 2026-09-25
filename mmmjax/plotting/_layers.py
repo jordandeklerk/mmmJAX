@@ -19,8 +19,8 @@ if TYPE_CHECKING:
 type _Side = Literal["t", "b", "l", "r", "unit"]
 
 
-class _HatchedCol(pn.geom_col):
-    """Columns that cross the bars of one fill color with diagonal lines in their outline color."""
+class _HatchedRect(pn.geom_rect):
+    """Rectangles that cross those of one fill color with diagonal lines in their outline color."""
 
     def __init__(self, *args: Any, hatched: str, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -29,26 +29,30 @@ class _HatchedCol(pn.geom_col):
 
     @staticmethod
     def draw_group(data: pd.DataFrame, panel_params: Any, coord: Any, ax: Any, params: dict[str, Any]) -> None:
-        """Draw the columns in two collections so only the hatched fill carries the lines."""
-        # plotnine draws every column of a panel as one collection, and a hatch applies to a whole collection.
+        """Draw the rectangles in two collections so only the hatched fill carries the lines."""
+        # plotnine draws every rectangle of a panel as one collection, and a hatch applies to a whole collection.
         hatched = data["fill"] == params["hatched"]
         plain = data[~hatched]
         crossed = data[hatched]
         if not plain.empty:
-            pn.geom_col.draw_group(plain.reset_index(drop=True), panel_params, coord, ax, params)
+            pn.geom_rect.draw_group(plain.reset_index(drop=True), panel_params, coord, ax, params)
         if not crossed.empty:
-            pn.geom_col.draw_group(crossed.reset_index(drop=True), panel_params, coord, ax, params)
+            pn.geom_rect.draw_group(crossed.reset_index(drop=True), panel_params, coord, ax, params)
             ax.collections[-1].set_hatch("///")
 
     @staticmethod
     def draw_legend(data: Any, da: Any, lyr: Any) -> Any:
         """Draw a legend key that carries the same lines when it has the hatched fill."""
-        drawn = pn.geom_col.draw_legend(data, da, lyr)
+        drawn = pn.geom_rect.draw_legend(data, da, lyr)
         if data["fill"] == lyr.geom.params["hatched"]:
             for child in drawn.get_children():
                 if isinstance(child, Patch):
                     child.set_hatch("///")
         return drawn
+
+
+class _HatchedCol(_HatchedRect, pn.geom_col):
+    """Columns that cross the bars of one fill color with diagonal lines in their outline color."""
 
 
 def _bands(

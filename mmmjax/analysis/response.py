@@ -29,7 +29,7 @@ def response_curves(
     results: xr.DataTree,
     *,
     quantity: str,
-    multipliers: Sequence[float] | ArrayLike,
+    multipliers: Sequence[float] | ArrayLike | None = None,
     group: Literal["prior", "posterior"] = "posterior",
     spend_to_media: Literal["proportional"] | Callable[[jax.Array], ArrayLike] = "proportional",
     spend_to_rf: _ReachFrequencyConversion = "reach",
@@ -63,9 +63,10 @@ def response_curves(
         summed, so results are in the units of the outcome column. Any
         normalization by exposures or spending inside the blocks should read
         the training arrays from ``reference`` so that a scenario cannot zero it.
-    multipliers : array_like
+    multipliers : array_like, optional
         Distinct nonnegative spending multipliers. One retains reference
         spending and zero removes the channel's spending during ``spend_periods``.
+        Defaults to 21 evenly spaced multipliers from 0 to 2.
     group : {"prior", "posterior"}, default "posterior"
         Parameter draws to use. Choose ``"prior"`` with results from
         ``sample_prior`` to inspect responses implied by the priors.
@@ -127,7 +128,8 @@ def response_curves(
         increments nonadditive, and zero spending can retain earlier carryover.
         These interventions provide no additional causal evidence.
     """
-    grid = np.asarray(multipliers)
+    # Steps of a tenth from no spending to twice the reference trace each curve past its current level.
+    grid = np.linspace(0.0, 2.0, 21) if multipliers is None else np.asarray(multipliers)
     if grid.ndim != 1 or grid.size == 0 or grid.dtype.kind not in "fiu":
         raise ValueError("multipliers must be a nonempty one-dimensional sequence of real numbers")
     if not np.isfinite(grid).all() or np.any(grid < 0) or len(np.unique(grid)) != len(grid):

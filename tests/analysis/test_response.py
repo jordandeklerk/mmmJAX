@@ -181,6 +181,17 @@ def test_response_curves_default_to_proportional_media():
         )
 
 
+def test_response_curves_default_to_twenty_one_multipliers_from_zero_to_two():
+    data = _data()
+    model = _model(data)
+    results = _results(model, data)
+    expected = response_curves(model, results, quantity="expected", multipliers=[index / 10 for index in range(21)])
+
+    curves = response_curves(model, results, quantity="expected")
+
+    xr.testing.assert_allclose(curves, expected, rtol=1e-12, atol=0)
+
+
 @pytest.mark.parametrize("new_data", [False, True])
 def test_response_curves_retain_fixed_inputs_during_budget_changes(new_data):
     data = _data()

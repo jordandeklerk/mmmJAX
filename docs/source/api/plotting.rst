@@ -20,7 +20,9 @@ Model fit and convergence
    plot_fit
    plot_residuals
    plot_ppc_dist
+   plot_ppc_tstat
    plot_prior_posterior
+   plot_psense
    plot_rhat
    plot_rank
    plot_trace_dist
