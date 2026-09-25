@@ -83,7 +83,8 @@ print(float((change > 0).mean()))
 `response_change` compares the two splits draw by draw. The median gain is
 about \$31,000 over the three years, the 90 percent interval runs from a loss
 of \$14,000 to a gain of \$75,000, and 87 percent of the draws favor the new
-split.
+split. [Plotting](plotting) shows how to draw a plan as a waterfall from the
+current revenue to the new one.
 
 ## Limits on each channel
 

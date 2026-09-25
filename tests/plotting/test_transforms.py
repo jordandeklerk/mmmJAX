@@ -76,6 +76,15 @@ def test_plot_adstock_draws_the_prior_beside_the_posterior_in_each_channel_panel
     assert list(plot.data["panel"].cat.categories) == ["TV", "Search"]
 
 
+def test_plot_adstock_keeps_each_channel_color_for_a_subset():
+    plot = plot_adstock(
+        _retention([0.5, 0.2]), geometric_adstock, parameters={"alpha": "retention"}, max_lag=3, channels=["Search"]
+    )
+
+    scale = next(scale for scale in plot.scales if "color" in scale.aesthetics)
+    assert scale.palette(len(scale.breaks))["Search"] == "#fa7c17"
+
+
 def test_plot_adstock_shows_the_first_channels_of_many():
     labels = [f"Channel {index:02d}" for index in range(12)]
     draws = np.full((2, 3, 12), 0.5, dtype=np.float32)
@@ -99,7 +108,16 @@ def test_plot_adstock_shows_the_first_channels_of_many():
     [
         ({"results": xr.Dataset()}, TypeError, "results must be an xarray DataTree"),
         ({"adstock": "geometric"}, TypeError, "adstock must be callable"),
-        ({"parameters": {}}, ValueError, "parameters must map at least one adstock argument"),
+        ({"parameters": {}}, ValueError, "adstock argument 'alpha' matches no posterior variable"),
+        ({"parameters": ["alpha"]}, TypeError, "parameters must be a mapping, got list"),
+        (
+            {"parameters": {"alpha": ["retention"]}},
+            TypeError,
+            r"parameters\['alpha'\] must name a result variable or be a number, got list",
+        ),
+        ({"parameters": {"alpha": "retention", "decay": 0.5}}, ValueError, "parameters sets 'decay'"),
+        ({"parameters": {"alpha": "retention", "max_lag": 3}}, ValueError, "parameters cannot set 'max_lag'"),
+        ({"parameters": {"alpha": 0.5}}, ValueError, "adstock must take at least one argument from the posterior"),
         ({"max_lag": -1}, ValueError, "max_lag must be nonnegative"),
         ({"max_lag": True}, TypeError, "max_lag must be an integer"),
         ({"group": "both"}, ValueError, "group must be 'prior' or 'posterior'"),
@@ -154,6 +172,29 @@ def test_plot_saturation_matches_hill_curves_from_zero_to_the_largest_input():
     assert (plot.labels.x, plot.labels.y) == ("Media", "Saturated media")
 
 
+def test_plot_saturation_takes_draws_by_name_and_fixed_values_from_parameters():
+    inputs = np.linspace(0.0, 4.0, 101)
+    expected = np.stack([_hill(1.0, inputs), _hill(2.0, inputs)], axis=1)
+
+    plot = plot_saturation(_half_saturation([1.0, 2.0]), hill_saturation, max_input=4.0, parameters={"slope": 1.0})
+
+    curves = plot.data.pivot(index="media", columns="channel", values="estimate")[["TV", "Search"]]
+    np.testing.assert_allclose(curves.to_numpy(), expected, rtol=3e-6, atol=1e-7)
+
+
+def test_plot_adstock_passes_max_lag_only_to_functions_that_take_it():
+    retention = np.array([0.5, 0.2])
+    kernel = retention[None, :] ** np.arange(4)[:, None]
+    expected = kernel / kernel.sum(axis=0)
+
+    plot = plot_adstock(
+        _retention(retention), lambda media, retention: geometric_adstock(media, retention, max_lag=3), max_lag=3
+    )
+
+    weights = plot.data.pivot(index="lag", columns="channel", values="estimate")[["TV", "Search"]]
+    np.testing.assert_allclose(weights.to_numpy(), expected, rtol=3e-6, atol=0)
+
+
 def test_transform_plots_give_the_most_populous_groups_panels():
     results = _half_saturation([[1.0, 2.0]] * 5, population=[10, 50, 20, 40, 30])
     hill = functools.partial(hill_saturation, slope=1.0)
@@ -178,7 +219,11 @@ def test_transform_plots_give_the_most_populous_groups_panels():
         ({"max_input": True}, TypeError, "max_input must be a number, got bool"),
         ({"max_input": 0.0}, ValueError, "max_input must be positive and finite"),
         ({"max_input": float("inf")}, ValueError, "max_input must be positive and finite"),
-        ({"parameters": {}}, ValueError, "parameters must map at least one saturation argument"),
+        (
+            {"saturation": hill_saturation, "parameters": {}},
+            ValueError,
+            "saturation argument 'slope' matches no posterior variable",
+        ),
         (
             {"saturation": lambda media, half_saturation: media[1:]},
             ValueError,

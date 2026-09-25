@@ -5,17 +5,50 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import pandas as pd
 import plotnine as pn
+from matplotlib.patches import Patch
 from plotnine.options import get_option
 
 from mmmjax.plotting._display import _ScrollingPlot
 from mmmjax.plotting._summary import _distinct_shortened, _label, _percent, _wrap
-from mmmjax.plotting.theme import _colors
+from mmmjax.plotting.theme import _channel_colors, _colors
 
 if TYPE_CHECKING:
     from plotnine.ggplot import PlotAddable
 
 
 type _Side = Literal["t", "b", "l", "r", "unit"]
+
+
+class _HatchedCol(pn.geom_col):
+    """Columns that cross the bars of one fill color with diagonal lines in their outline color."""
+
+    def __init__(self, *args: Any, hatched: str, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        # plotnine hands a geom's params to draw_group, so the hatched fill travels with them.
+        self.params["hatched"] = hatched
+
+    @staticmethod
+    def draw_group(data: pd.DataFrame, panel_params: Any, coord: Any, ax: Any, params: dict[str, Any]) -> None:
+        """Draw the columns in two collections so only the hatched fill carries the lines."""
+        # plotnine draws every column of a panel as one collection, and a hatch applies to a whole collection.
+        hatched = data["fill"] == params["hatched"]
+        plain = data[~hatched]
+        crossed = data[hatched]
+        if not plain.empty:
+            pn.geom_col.draw_group(plain.reset_index(drop=True), panel_params, coord, ax, params)
+        if not crossed.empty:
+            pn.geom_col.draw_group(crossed.reset_index(drop=True), panel_params, coord, ax, params)
+            ax.collections[-1].set_hatch("///")
+
+    @staticmethod
+    def draw_legend(data: Any, da: Any, lyr: Any) -> Any:
+        """Draw a legend key that carries the same lines when it has the hatched fill."""
+        drawn = pn.geom_col.draw_legend(data, da, lyr)
+        if data["fill"] == lyr.geom.params["hatched"]:
+            for child in drawn.get_children():
+                if isinstance(child, Patch):
+                    child.set_hatch("///")
+        return drawn
 
 
 def _bands(
@@ -25,6 +58,7 @@ def _bands(
     color: str | None,
     labels: Iterable[Hashable],
     probability: float,
+    order: Iterable[Hashable] | None = None,
 ) -> pn.ggplot:
     """Draw point estimates as lines over their credible bands with one color per level."""
     if color is None:
@@ -36,7 +70,7 @@ def _bands(
         )
         return plot
     levels = list(dict.fromkeys(str(label) for label in labels))
-    colors = dict(zip(levels, _colors(len(levels)), strict=True))
+    colors = _channel_colors(levels if order is None else order, levels)
     title = f"{_label(color)}, {_percent(probability)} interval"
     plot = (
         pn.ggplot(frame, pn.aes(x, "estimate"))
@@ -55,13 +89,14 @@ def _facet(dims: Sequence[str], *, stacked: bool = False) -> pn.facet_wrap | pn.
     return facet
 
 
-def _scales(frame: pd.DataFrame, x: str | None = None, *, y: bool = True) -> list["PlotAddable"]:
+def _scales(frame: pd.DataFrame, x: str | None = None, *, y: bool = True, thin: bool = False) -> list["PlotAddable"]:
     """Label dates by month and large numbers compactly so crowded axes stay readable."""
     scales: list[PlotAddable] = [pn.scale_y_continuous(labels=_compact)] if y else []
     if x is not None and pd.api.types.is_datetime64_any_dtype(frame[x]):
         scales.append(pn.scale_x_datetime(date_labels="%b %Y"))
     elif x is not None and pd.api.types.is_numeric_dtype(frame[x]):
-        scales.append(pn.scale_x_continuous(labels=_compact))
+        breaks = _thinned_breaks if thin else True
+        scales.append(pn.scale_x_continuous(labels=_compact, breaks=breaks))
     return scales
 
 
@@ -136,3 +171,11 @@ def _compact(breaks: Sequence[float] | Sequence[str]) -> list[str]:
             text = f"{value:.3g}"
         labels.append(text)
     return labels
+
+
+def _thinned_breaks(limits: tuple[float, float]) -> list[float]:
+    """Keep every other default break when more than four would crowd a narrow panel."""
+    low, high = limits
+    breaks = [float(value) for value in pn.scale_x_continuous(limits=limits).get_breaks() if low <= value <= high]
+    thinned = breaks[::2] if len(breaks) > 4 else breaks
+    return thinned

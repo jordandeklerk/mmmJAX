@@ -210,6 +210,79 @@ the search bar and repository widget in place.
 }
 
 /*
+plotnine reports each plot's size in pixels, and the fixed height would stretch
+the image once the column narrows its width.
+*/
+.md-typeset .cell_output img {
+  height: auto !important;
+}
+
+/*
+MyST-NB folds a hide-input cell into an admonition, which the theme boxes in
+with an icon and a tinted title. These rules turn it into a small pill in the
+accent color that opens onto the code, like marimo's show code toggle, and
+keep the theme's chevron to show which way it turns.
+*/
+.md-typeset div.cell details.hide.above-input {
+  margin: 0.5em 0 1em;
+  padding: 0;
+  border: none;
+  background: none;
+  box-shadow: none;
+}
+
+.md-typeset div.cell details.hide.above-input > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
+  width: fit-content;
+  margin: 0;
+  padding: 0.25em 0.9em 0.25em 0.6em;
+  border: 0.05rem solid var(--md-accent-fg-color);
+  border-radius: 1em;
+  background-color: var(--md-accent-fg-color--transparent);
+  color: var(--md-accent-fg-color);
+  transition: background-color 0.2s;
+}
+
+.md-typeset div.cell details.hide.above-input > summary:hover {
+  background-color: color-mix(in srgb, var(--md-accent-fg-color) 22%, transparent);
+}
+
+.md-typeset div.cell details.hide.above-input > summary::before,
+.md-typeset div.cell details.hide.above-input > summary > p.admonition-title::before {
+  display: none;
+}
+
+.md-typeset div.cell details.hide.above-input > summary::after {
+  position: static;
+  order: -1;
+  width: 0.9rem;
+  height: 0.9rem;
+}
+
+.md-typeset div.cell details.hide.above-input > summary > p.admonition-title {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font-size: 0.7rem;
+  font-weight: 600;
+  list-style: none;
+}
+
+/* MyST-NB frames only code that sits directly in its cell, so the folded code takes the same frame here. */
+.md-typeset div.cell details.hide.above-input > .cell_input {
+  margin-top: 0.4em;
+  border: var(--mystnb-source-border-width) var(--mystnb-source-border-color) solid;
+  border-left-color: var(--mystnb-source-margin-color);
+  border-left-width: medium;
+  border-radius: var(--mystnb-source-border-radius);
+  background-color: var(--mystnb-source-bg-color);
+}
+
+/*
 pandas and polars frames render the way JupyterLab draws them, with a rule
 under the header, striped rows, and no cell borders. The colors come from the
 theme so the frames read in both schemes.

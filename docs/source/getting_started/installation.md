@@ -25,8 +25,9 @@ uv add "git+https://github.com/jordandeklerk/mmmJAX.git"
 
 The install brings in JAX, BlackJAX for sampling, the JAX backend of
 TensorFlow Probability for the distributions, and xarray for labeled results.
-Plots and convergence diagnostics are left to [ArviZ](https://python.arviz.org/),
-which reads the results directly and is installed separately.
+It also brings in [ArviZ](https://python.arviz.org/) for convergence
+diagnostics and [plotnine](https://plotnine.org/) for the plots, both of which
+read the results directly.
 
 ## Running on a GPU
 

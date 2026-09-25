@@ -34,3 +34,13 @@ def first_model_results(model: mj.Model) -> xr.DataTree:
         lambda: mj.sample(model, draws=1000, warmup=1000, chains=4, seed=7),
     )
     return results
+
+
+def brand_results(model: mj.Model) -> xr.DataTree:
+    """Load the stored fit of the ten-channel brand model from Plotting."""
+    results = stored(
+        "brand",
+        lambda: mj.sample(model, draws=1000, warmup=1000, chains=4, seed=7),
+        groups=["posterior", "posterior_predictive", "observed_data"],
+    )
+    return results

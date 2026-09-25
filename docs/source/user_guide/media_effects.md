@@ -112,7 +112,8 @@ Doubling TV spending from about \$366,500 to \$733,000 would add another
 \$733,000 in revenue, about two dollars for each extra dollar, well below the
 \$3.60 it earns on average. Spending converts to exposure at the observed cost
 per impression. [Budget optimization](budgets) uses the same curves to split a
-budget between the channels.
+budget between the channels, and [Plotting](plotting) shows how to draw
+curves, contributions, and returns like these.
 
 Every number on this page is what the model implies under its assumptions.
 The functions run the model's own equations on changed data, so their answers

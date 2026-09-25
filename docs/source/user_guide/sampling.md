@@ -91,8 +91,8 @@ of its own, any other output lands in `generated_quantities`, and
 
 [ArviZ](https://python.arviz.org/) reads the results directly, and each of
 its functions on this page takes `results` as it is and finds the groups it
-needs by name. ArviZ is not installed with mmmJAX, so add it with
-`pip install arviz`.
+needs by name. mmmJAX's diagnostic plots draw ArviZ's with settings that suit
+these models.
 
 ```{code-cell} ipython3
 import arviz as az
@@ -101,19 +101,27 @@ print(az.summary(results))
 ```
 
 Each row gives a parameter's mean, standard deviation, and 89 percent
-interval, then the diagnostics. `r_hat` compares the spread between chains
+interval before the diagnostics. `r_hat` compares the spread between chains
 with the spread within them, and 1.00 means the four chains agree. `ess_bulk`
 and `ess_tail` estimate how many independent draws the 4,000 correlated ones
 are worth in the middle and the tails, and a few hundred is usually enough.
 The `mcse` columns give the Monte Carlo error in the mean and the standard
-deviation. A trace plot shows the chains draw by draw.
+deviation. {func}`~mmmjax.plot_rhat` draws every `r_hat` at once.
 
 ```{code-cell} ipython3
-pc = az.plot_trace_dist(
+mj.plot_rhat(results)
+```
+
+Each parameter gets a box of its elements' values with a point for each, and
+the subtitle counts the values past ArviZ's limit of 1.01, none here. A model
+with hundreds of channels still fits one such plot. A trace plot shows the
+chains draw by draw.
+
+```{code-cell} ipython3
+pc = mj.plot_trace_dist(
     results,
     var_names=["coefficient", "retention", "half_saturation"],
     aes={"color": ["channel"]},
-    figure_kwargs={"figsize": (12, 7)},
 )
 pc.add_legend("channel")
 plt.show()
@@ -128,22 +136,20 @@ Search runs every week, so its retention and half-saturation point are much
 less certain. A rank plot checks the chains more strictly.
 
 ```{code-cell} ipython3
-pc = az.plot_rank(
+mj.plot_rank(
     results,
     var_names=["coefficient", "half_saturation"],
-    thin=True,
     col_wrap=2,
     figure_kwargs={"figsize": (12, 9)},
 )
-pc.add_legend("chain")
 plt.show()
 ```
 
 Each line follows one chain's fractional ranks, the share of all draws below
 each of its draws, as the gap between their cumulative distribution and a
 uniform one. Chains exploring the same distribution stay near zero, and
-`thin=True` spaces the draws out first so that autocorrelation alone can't
-fail the test. TV's coefficient and half-saturation both fail it at the 1
+{func}`~mmmjax.plot_rank` spaces the draws out first so that autocorrelation
+alone can't fail the test. TV's coefficient and half-saturation both fail it at the 1
 percent level, and the black dots mark the stretches behind it. Chain 1 holds
 too many low draws of both, even though `r_hat` reads 1.00. The draws also
 show whether the model can tell the two channels apart.
@@ -199,23 +205,19 @@ round(float(inside.mean()), 2)
 
 About 92 percent of the weeks fall inside, close to the 90 percent a
 well-calibrated model would give. Far fewer would mean the model misses
-patterns in revenue that its noise term cannot absorb. ArviZ draws the same
-intervals week by week.
+patterns in revenue that its noise term cannot absorb.
+{func}`~mmmjax.plot_fit` draws the same interval week by week.
 
 ```{code-cell} ipython3
-az.plot_ppc_interval(
-    results,
-    ci_probs=(0.5, 0.9),
-    visuals={"xlabel": {"text": "week"}},
-    figure_kwargs={"figsize": (12, 7)},
-)
-plt.show()
+mj.plot_fit(model, results, ci_prob=0.9)
 ```
 
-The bars show each week's 50 and 90 percent predictive intervals in
-standardized revenue, the blue dots their means, and the black dots the
-observed weeks. The twelve weeks outside the 90 percent bars split evenly, six
-above and six below. A run of weeks on one side would point to a pattern the
+The band shows each week's 90 percent predictive interval, the blue line its
+mean, and the black line the observed revenue, all in dollars because the plot
+undoes the outcome scaling first. The subtitle repeats the 92 percent coverage
+next to an $R^2$ of 0.86 and a weighted mean absolute percentage error of 1.6
+percent. The twelve weeks outside the band split evenly, six above and six
+below. A run of weeks on one side would point to a pattern the
 model misses, and the first seven weeks form one, each above its predicted
 mean. The simulation's media began before the data, and this model misses the
 carryover from those weeks, as the media history note on [A first
@@ -378,14 +380,12 @@ dense = stored(
 ```
 
 ```{code-cell} ipython3
-pc = az.plot_rank(
+mj.plot_rank(
     dense,
     var_names=["coefficient", "half_saturation"],
-    thin=True,
     col_wrap=2,
     figure_kwargs={"figsize": (12, 9)},
 )
-pc.add_legend("chain")
 plt.show()
 ```
 

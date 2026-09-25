@@ -161,7 +161,6 @@ from mmmjax.plotting.media import (
     plot_frequency_curves,
     plot_media_metrics,
     plot_response_curves,
-    plot_roi,
     plot_roi_bubbles,
     plot_spend_vs_contribution,
 )
@@ -319,7 +318,6 @@ __all__ = [
     "plot_residuals",
     "plot_response_curves",
     "plot_rhat",
-    "plot_roi",
     "plot_roi_bubbles",
     "plot_saturation",
     "plot_spend_vs_contribution",

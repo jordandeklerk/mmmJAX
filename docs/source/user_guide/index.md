@@ -7,7 +7,9 @@ guide uses, [Data and scaling](data.md) prepares, checks, and scales it,
 likelihood is written with, and [A first model](first_model) fits the model
 from start to finish. Most pages after those four start from that model and
 either examine one piece closely or change it, and [Recovering the
-truth](recovery) checks its answers against the simulation.
+truth](recovery) checks its answers against the simulation. [Plotting](plotting)
+and [Customizing plots](custom_plots) use a brand with ten channels instead,
+since plots change as channels are added.
 
 ```{toctree}
 :maxdepth: 1
@@ -23,6 +25,8 @@ media_effects
 recovery
 budgets
 scenarios
+plotting
+custom_plots
 changing
 functions
 ```

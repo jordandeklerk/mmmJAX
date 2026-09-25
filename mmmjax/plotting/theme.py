@@ -1,5 +1,6 @@
 """House style shared by the mmmjax plots."""
 
+from collections.abc import Hashable, Iterable
 from typing import Any
 
 import plotnine as pn
@@ -55,6 +56,17 @@ def _colors(count: int) -> list[str]:
         "#b16b57",
     ]
     colors = [palette[index % len(palette)] for index in range(count)]
+    return colors
+
+
+def _channel_colors(order: Iterable[Hashable], shown: Iterable[Hashable]) -> dict[str, str]:
+    """Color each shown level by its place in ``order`` so a level keeps its color in every plot."""
+    labels = list(dict.fromkeys(str(label) for label in order))
+    palette = dict(zip(labels, _colors(len(labels)), strict=True))
+    colors = {str(label): palette[str(label)] for label in shown}
+    # The palette repeats after ten colors, so a plot that would show one color twice colors by its own order.
+    if len(set(colors.values())) < len(colors):
+        colors = dict(zip(colors, _colors(len(colors)), strict=True))
     return colors
 
 

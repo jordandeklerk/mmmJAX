@@ -25,7 +25,7 @@ from mmmjax.plotting._summary import (
     _summarize,
     _wrap,
 )
-from mmmjax.plotting.theme import _colors, theme_mmmjax
+from mmmjax.plotting.theme import _channel_colors, _colors, theme_mmmjax
 
 if TYPE_CHECKING:
     from plotnine.ggplot import PlotAddable
@@ -38,7 +38,7 @@ def plot_contributions(
     *,
     channels: Sequence[str] | None = None,
     by: str | Sequence[str] | None = None,
-    include_baseline: bool | None = None,
+    include_baseline: bool = True,
     coords: Mapping[str, object] | None = None,
     n_groups: int | None = 3,
 ) -> pn.ggplot:
@@ -55,12 +55,12 @@ def plot_contributions(
     it reaches half a percent. Without the baseline, the bars split the joint
     increment of every channel instead.
 
-    With ``by="time"``, each channel's contribution stacks by period under a
-    line that traces the joint increment of removing every channel at once. The
-    nine channels with the largest total increments stack separately and the
-    rest share one area. With the baseline, the channels stack on it, the line
-    traces the whole response, and the axis starts near the lowest baseline
-    unless groups give panels.
+    With ``by="time"``, each channel's contribution stacks by period on the
+    baseline under a line that traces the whole response, and the axis starts
+    near the lowest baseline unless groups give panels. Without the baseline,
+    the channels stack under a line that traces the joint increment of removing
+    every channel at once. The ten channels with the largest total increments
+    stack separately and the rest share one area.
 
     Axes that ``by`` leaves out are summed within each draw, and ``by="group"``
     gives each group a panel. Many channels make the waterfall taller, and a
@@ -72,14 +72,13 @@ def plot_contributions(
         Output of ``contributions``.
     channels : sequence of str, optional
         Channels to show separately. Defaults to every channel in the
-        waterfall and to the nine with the largest total increments by time.
+        waterfall and to the ten with the largest total increments by time.
         The rest are summed into one bar or area.
     by : str or sequence of str, optional
         Axes of ``effects`` to keep, ``"time"``, ``"group"``, or both. Omit
         to sum them.
-    include_baseline : bool, optional
-        Draw the baseline. Defaults to True for the waterfall and False by
-        time.
+    include_baseline : bool, default True
+        Draw the baseline. False shows only what the channels add.
     coords : mapping of str to sequence, optional
         Labels to keep before anything is summed, as in
         ``{"group": ["north", "south"]}``. Groups chosen here replace the
@@ -94,19 +93,18 @@ def plot_contributions(
         Waterfall of shares, or contributions stacked by period.
     """
     effects = _require_contributions(effects)
-    if include_baseline is not None and not isinstance(include_baseline, bool):
-        raise TypeError(f"include_baseline must be a bool or None, got {type(include_baseline).__name__}")
+    if not isinstance(include_baseline, bool):
+        raise TypeError(f"include_baseline must be a bool, got {type(include_baseline).__name__}")
     kept = _kept_axes(effects, by)
     selection, _ = _select_panels(effects["reference_response"], coords, None, "")
     totals = _sum_axes(_restrict(effects, selection), kept)
     chosen = {dim: labels for dim, labels in selection.items() if dim in totals.dims}
     panels, note = _select_panels(totals["reference_response"], chosen, n_groups, "responses")
     totals = _restrict(totals, panels)
-    baseline = "time" not in kept if include_baseline is None else include_baseline
     if "time" not in kept:
-        plot = _waterfall_plot(totals, channels, baseline, note)
+        plot = _waterfall_plot(totals, channels, include_baseline, note)
     else:
-        plot = _stacked_plot(totals, channels, baseline, note)
+        plot = _stacked_plot(totals, channels, include_baseline, note)
     return plot
 
 
@@ -307,7 +305,7 @@ def _stacked_plot(totals: xr.Dataset, channels: Sequence[str] | None, include_ba
     labels = [str(label) for label in increments["channel"].values]
     averaged = abs(increments.mean(("chain", "draw")))
     sizes = averaged.sum([dim for dim in averaged.dims if dim != "channel"]).values
-    shown, channel_note = _pick_channels(labels, sizes, channels, 9, "total increments")
+    shown, channel_note = _pick_channels(labels, sizes, channels, 10, "total increments")
     facets = _facets(increments.dims, ("time", "channel"))
     frame, components = _stacked_areas(totals, shown, facets, include_baseline)
     series = "Total response" if include_baseline else "Joint incremental response"
@@ -315,7 +313,7 @@ def _stacked_plot(totals: xr.Dataset, channels: Sequence[str] | None, include_ba
         totals["reference_response"] if include_baseline else totals["reference_response"] - totals["baseline_response"]
     )
     total = _summarize(line, 0.5).assign(series=_outcome_words(series, totals))
-    colors = dict(zip(shown, _colors(len(shown)), strict=True)) | {"Other channels": "#a6a6a6", "Baseline": "#d9d9d9"}
+    colors = _channel_colors(labels, shown) | {"Other channels": "#a6a6a6", "Baseline": "#d9d9d9"}
     zoom: list[PlotAddable] = []
     if include_baseline and not facets:
         # Starting the axis near the lowest baseline keeps the channels visible above a much larger baseline.

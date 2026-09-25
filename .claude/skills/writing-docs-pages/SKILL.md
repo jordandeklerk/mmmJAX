@@ -9,7 +9,7 @@ The Prose section of `.claude/CLAUDE.md` and the rules below govern every page, 
 
 ## Rules
 
-- User Guide pages are MyST-NB pages executed during the build, and no page samples. A sampling cell is tagged `skip-execution` and its fit loads from a stored file, as Stored fits describes. After changing `prerun/first_model.py` or a stored fit, delete `docs/_build/.jupyter_cache`.
+- User Guide pages are MyST-NB pages executed during the build, and no page samples. A sampling cell is tagged `skip-execution` and its fit loads from a stored file, as Stored fits describes. After changing a `prerun/*.py` model or a stored fit, delete `docs/_build/.jupyter_cache`.
 - Every number in the prose must match an executed output. Escape dollar amounts as `\$`, lead with runnable code, and use no Markdown tables.
 - Print `az.summary` tables in full, and check convergence with `az.plot_rank(..., thin=True)` next to trace plots.
 - A model's first page shows its generative model in full, covering the data transformations, the model equation, the media transformation, and the priors. Variants show only what changes.
@@ -60,7 +60,7 @@ plt.rcParams["date.converter"] = "concise"  # only with date axes
 ```
 ````
 
-Without the front matter the cells never run. A page has one H1 and skips no heading level (`myst.header`). MyST-NB runs each page from its own folder, so `prerun` loads only from `user_guide/`, and for a page elsewhere ask the user where its setup should live. `example_data.md` and `data.md` come before the model and never load it or a fit, and the frame they simulate must come from the same `simulate_data` call as `prerun/first_model.py`. `first_model.md` shows its setup instead of hiding it, and its cells before the sampling cell must equal `prerun/first_model.py`, so change the two together.
+Without the front matter the cells never run. A page has one H1 and skips no heading level (`myst.header`). MyST-NB runs each page from its own folder, so `prerun` loads only from `user_guide/`, and for a page elsewhere ask the user where its setup should live. `example_data.md` and `data.md` come before the model and never load it or a fit, and the frame they simulate must come from the same `simulate_data` call as `prerun/first_model.py`. `first_model.md` shows its setup instead of hiding it, and its cells before the sampling cell must equal `prerun/first_model.py`, so change the two together. The ten-channel brand of `plotting.md` and `custom_plots.md` lives in `prerun/brand_model.py`. `plotting.md` gives its math and runs the whole file in one `hide-input` cell that must equal it, and `custom_plots.md` loads it with `%run prerun/brand_model.py` and `brand_results(model)`.
 
 ## Stored fits
 
@@ -73,7 +73,10 @@ Without the front matter the cells never run. A page has one H1 and skips no hea
 
 - End each cell in one expression or a `print`, rounded to what the prose quotes, as in `round(float(x), 2)` or `.to_series().round(3)`. Print ArviZ text reports such as `az.compare`, but leave `az.loo(results)` bare.
 - The setup cell keeps `arviz-darkgrid` for its colors and fonts and swaps its gray panels for white ones with left and bottom axes, which the style otherwise hides. Pages name curves by color, as in the blue curves of `priors.md`, so a palette change means rereading the prose.
-- End plot cells with `plt.show()`. ArviZ 1.3 ignores the rc figure size. It draws multi-panel plots 24 inches wide or more and single-panel plots as 12 by 4 strips, so give every ArviZ plot `figure_kwargs={"figsize": (12, 7)}`, or `(12, 9)` with `col_wrap=2` for rank plots. Hand-made figures use `plt.subplots(layout="constrained")` and `legend(frameon=False)`. Keep one idea per figure.
+- Prefer mmmJAX's plotting functions wherever one draws what the page needs, and see `user_guide/plotting.md`. A plotnine plot such as `mj.plot_fit(...)` ends its cell as the last expression, since a `ggplot` displays itself at 12 by 7 inches.
+- End other plot cells with `plt.show()`, including mmmJAX's ArviZ wrappers such as `mj.plot_rank`, which already size their figures at 12 by 7. ArviZ 1.3 ignores the rc figure size. It draws multi-panel plots 24 inches wide or more and single-panel plots as 12 by 4 strips, so give every direct ArviZ plot `figure_kwargs={"figsize": (12, 7)}`, or `(12, 9)` with `col_wrap=2` for rank plots. Hand-made figures use `plt.subplots(layout="constrained")` and `legend(frameon=False)`. Keep one idea per figure.
+- Model code defines its parameters in a `parameters = {...}` block and passes that name to `mj.Model`, never an inline dict in the call.
+- Setup code a reader may want but need not read goes in one cell tagged `hide-input`, which folds it behind a Show code line styled in `custom.css`. The prompts are set in `conf.py`, so don't tag cells `hide-output`, whose toggle would read the same.
 - `_static/css/custom.css` styles DataTree, Dataset, and data frame outputs. Any other HTML output is unstyled, so check it in the screenshot.
 - A cell meant to fail needs `:tags: [raises-exception]` and a hidden `%xmode minimal` cell earlier on the page, as in `user_guide/functions.md`. Any other error stops the build. Stderr is dropped, so warnings and progress bars never show.
 - Code cells are not linted. Write them in ruff style by hand, with two blank lines after a top-level `def`, and keep them plain. The code box shows about 110 characters before it scrolls sideways, so wrap lines well before ruff's 120.

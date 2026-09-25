@@ -165,7 +165,7 @@ def test_plot_contributions_by_time_stacks_channels_under_the_joint_increment():
     expected = effects["incremental_response"].mean(("chain", "draw")).transpose("time", "channel")
     joint = (effects["reference_response"] - effects["baseline_response"]).mean(("chain", "draw"))
 
-    plot = plot_contributions(effects, by="time")
+    plot = plot_contributions(effects, by="time", include_baseline=False)
 
     stacked = plot.data.pivot(index="time", columns="channel", values="estimate")[["TV", "Search", "Radio"]]
     np.testing.assert_allclose(stacked.to_numpy(), expected.values, rtol=1e-12, atol=0)
@@ -177,11 +177,11 @@ def test_plot_contributions_by_time_stacks_channels_under_the_joint_increment():
     assert plot.coordinates.limits.y is None
 
 
-def test_plot_contributions_by_time_stacks_on_the_baseline_when_asked():
+def test_plot_contributions_by_time_stacks_on_the_baseline_by_default():
     effects = _effects(periods=4, outcome="revenue")
     total = effects["reference_response"].mean(("chain", "draw"))
 
-    plot = plot_contributions(effects, by="time", include_baseline=True)
+    plot = plot_contributions(effects, by="time")
 
     assert list(plot.data["channel"].cat.categories) == ["TV", "Search", "Radio", "Baseline"]
     line = _layer_data(plot, pn.geom_line)
@@ -192,9 +192,9 @@ def test_plot_contributions_by_time_stacks_on_the_baseline_when_asked():
     np.testing.assert_allclose(plot.coordinates.limits.y[0], low, rtol=1e-12, atol=0)
 
 
-def test_plot_contributions_by_time_sums_channels_past_the_ninth():
+def test_plot_contributions_by_time_sums_channels_past_the_tenth():
     effects = _effects([f"Channel {index:02d}" for index in range(12)], periods=3)
-    hidden = [f"Channel {index:02d}" for index in range(9, 12)]
+    hidden = [f"Channel {index:02d}" for index in range(10, 12)]
     expected = effects["incremental_response"].sel(channel=hidden).sum("channel").mean(("chain", "draw"))
 
     plot = plot_contributions(effects, by="time")
@@ -202,8 +202,15 @@ def test_plot_contributions_by_time_sums_channels_past_the_ninth():
     frame = plot.data.set_index(["channel", "time"])["estimate"]
     np.testing.assert_allclose(frame.loc["Other channels"].to_numpy(), expected.values, rtol=1e-12, atol=0)
     assert plot.labels.caption == (
-        "Showing the 9 of 12 channels with the largest total increments. Pass channels to choose others."
+        "Showing the 10 of 12 channels with the largest total increments. Pass channels to choose others."
     )
+
+
+def test_plot_contributions_by_time_keeps_each_channel_color_for_a_subset():
+    plot = plot_contributions(_effects(periods=4), by="time", channels=["Radio"])
+
+    scale = next(scale for scale in plot.scales if "fill" in scale.aesthetics)
+    assert scale.palette(len(scale.breaks))["Radio"] == "#328c06"
 
 
 def test_plot_contributions_by_time_and_group_stacks_group_panels():
@@ -230,7 +237,7 @@ def test_plot_contributions_by_time_and_group_stacks_group_panels():
         (_effects(), {"by": 3}, TypeError, "by must be an axis name or a sequence of them"),
         (_effects(), {"by": "region"}, ValueError, "by must name 'time' or 'group', got 'region'"),
         (_effects(), {"by": "time"}, ValueError, "by must name axes that effects keep, got 'time'"),
-        (_effects(periods=2), {"include_baseline": 1}, TypeError, "include_baseline must be a bool or None"),
+        (_effects(periods=2), {"include_baseline": 1}, TypeError, "include_baseline must be a bool, got int"),
         (_grouped(2), {"coords": {"region": ["g0"]}}, ValueError, "coords has no axis 'region'"),
         (_grouped(2), {"coords": {"group": ["g9"]}}, ValueError, "coords asks for labels"),
         (_grouped(2), {"n_groups": 0}, ValueError, "n_groups must be a positive integer"),

@@ -1,6 +1,7 @@
 """Plots of the adstock and saturation curves that parameter draws imply."""
 
 import functools
+import inspect
 import math
 import numbers
 from collections.abc import Callable, Mapping, Sequence
@@ -35,8 +36,8 @@ def plot_adstock(
     results: xr.DataTree,
     adstock: Callable[..., jax.Array],
     *,
-    parameters: Mapping[str, str],
     max_lag: int,
+    parameters: Mapping[str, str | float] | None = None,
     prior: xr.DataTree | None = None,
     channels: Sequence[str] | None = None,
     coords: Mapping[str, object] | None = None,
@@ -51,6 +52,11 @@ def plot_adstock(
     lag. The line follows the point estimate across draws and the band its
     credible interval.
 
+    The function takes the media first and its other arguments by name, as the
+    model's blocks do. An argument receives the draws of the result variable
+    with the same name unless ``parameters`` maps it to another variable or
+    fixes it at a number, and ``max_lag`` reaches a function that asks for it.
+
     The last axis of the parameters, usually ``channel``, sets the colors, and
     any other axis becomes a panel. With ``prior``, each channel gets its own
     panel where the prior weights sit beside the posterior ones. A posterior
@@ -62,14 +68,14 @@ def plot_adstock(
     results : xarray.DataTree
         Results containing the adstock parameters in the selected group.
     adstock : callable
-        Adstock function called as ``adstock(media, **values, max_lag=max_lag)``,
-        such as ``geometric_adstock``. Fix other settings the model used, such
-        as ``normalize=False``, with ``functools.partial``.
-    parameters : mapping of str to str
-        Result variable for each adstock argument, as in
-        ``{"alpha": "retention"}``.
+        Adstock function that takes the media first, such as
+        ``geometric_adstock``.
     max_lag : int
         Longest lag the model's adstock uses. Nonnegative.
+    parameters : mapping of str to str or float, optional
+        Result variable or fixed value for adstock arguments, as in
+        ``{"alpha": "retention"}``. Omit when every argument shares its name
+        with a result variable or has a default.
     prior : xarray.DataTree, optional
         Output of ``sample_prior`` to draw beside the posterior.
     channels : sequence of str, optional
@@ -99,19 +105,22 @@ def plot_adstock(
     if max_lag < 0:
         raise ValueError(f"max_lag must be nonnegative, got {max_lag}")
     probability = _ci_prob(ci_prob)
-    sources, note = _parameter_panels(results, prior, parameters, group, channels, coords, n_groups, "adstock")
+    variables, fixed = _bind_arguments(adstock, parameters, results, group, {"max_lag": max_lag}, "adstock")
+    sources, note, order = _parameter_panels(results, prior, variables, group, channels, coords, n_groups)
     impulse = np.zeros(max_lag + 1)
     impulse[0] = 1.0
-    respond = functools.partial(adstock, max_lag=max_lag)
+    respond = functools.partial(adstock, **fixed)
     lags = np.arange(max_lag + 1)
     curves = {
         label: _transform_draws(respond, arrays, impulse, "lag", lags, "adstock") for label, arrays in sources.items()
     }
     frame, color, levels, facets = _curve_frame(curves, "lag", probability)
+    # Prior and posterior take the first two colors, and channels keep the colors of their places among all.
+    ordering = None if color == "distribution" else order
     point = pn.geom_point(pn.aes(color=color), size=2) if color else pn.geom_point(color=_colors(1)[0], size=2)
 
     plot = (
-        _bands(frame, x="lag", color=color, labels=levels, probability=probability)
+        _bands(frame, x="lag", color=color, labels=levels, probability=probability, order=ordering)
         + point
         + pn.labs(x="Lag", y="Weight", caption=note)
         + _scales(frame, "lag")
@@ -125,8 +134,8 @@ def plot_saturation(
     results: xr.DataTree,
     saturation: Callable[..., jax.Array],
     *,
-    parameters: Mapping[str, str],
     max_input: float,
+    parameters: Mapping[str, str | float] | None = None,
     prior: xr.DataTree | None = None,
     channels: Sequence[str] | None = None,
     coords: Mapping[str, object] | None = None,
@@ -141,6 +150,11 @@ def plot_saturation(
     how quickly each channel's effect levels off. The line follows the point
     estimate across draws and the band its credible interval.
 
+    The function takes the media first and its other arguments by name, as the
+    model's blocks do. An argument receives the draws of the result variable
+    with the same name unless ``parameters`` maps it to another variable or
+    fixes it at a number, as a model with a known ``slope`` would.
+
     The last axis of the parameters, usually ``channel``, sets the colors, and
     any other axis becomes a panel. With ``prior``, each channel gets its own
     panel where the prior curve sits beside the posterior one.
@@ -150,15 +164,15 @@ def plot_saturation(
     results : xarray.DataTree
         Results containing the saturation parameters in the selected group.
     saturation : callable
-        Saturation function called as ``saturation(media, **values)``, such as
-        ``hill_saturation``. Fix other arguments the model used, such as a
-        known ``slope``, with ``functools.partial``.
-    parameters : mapping of str to str
-        Result variable for each saturation argument, as in
-        ``{"half_saturation": "half_saturation", "slope": "slope"}``.
+        Saturation function that takes the media first, such as
+        ``hill_saturation``.
     max_input : float
         Largest media input to evaluate, in the units the saturation function
         receives. Positive.
+    parameters : mapping of str to str or float, optional
+        Result variable or fixed value for saturation arguments, as in
+        ``{"slope": 1.0}``. Omit when every argument shares its name with a
+        result variable or has a default.
     prior : xarray.DataTree, optional
         Output of ``sample_prior`` to draw beside the posterior.
     channels : sequence of str, optional
@@ -189,16 +203,20 @@ def plot_saturation(
     if not math.isfinite(max_input) or max_input <= 0:
         raise ValueError(f"max_input must be positive and finite, got {max_input!r}")
     probability = _ci_prob(ci_prob)
-    sources, note = _parameter_panels(results, prior, parameters, group, channels, coords, n_groups, "saturation")
+    variables, fixed = _bind_arguments(saturation, parameters, results, group, {}, "saturation")
+    sources, note, order = _parameter_panels(results, prior, variables, group, channels, coords, n_groups)
     inputs = np.linspace(0.0, float(max_input), 101)
+    respond = functools.partial(saturation, **fixed)
     curves = {
-        label: _transform_draws(saturation, arrays, inputs, "media", inputs, "saturation")
+        label: _transform_draws(respond, arrays, inputs, "media", inputs, "saturation")
         for label, arrays in sources.items()
     }
     frame, color, levels, facets = _curve_frame(curves, "media", probability)
+    # Prior and posterior take the first two colors, and channels keep the colors of their places among all.
+    ordering = None if color == "distribution" else order
 
     plot = (
-        _bands(frame, x="media", color=color, labels=levels, probability=probability)
+        _bands(frame, x="media", color=color, labels=levels, probability=probability, order=ordering)
         + pn.labs(x="Media", y="Saturated media", caption=note)
         + _scales(frame, "media")
         + _facet(facets)
@@ -207,24 +225,93 @@ def plot_saturation(
     return plot
 
 
-def _parameter_panels(
-    results: object,
-    prior: object,
+def _bind_arguments(
+    transform: Callable[..., jax.Array],
     parameters: object,
+    results: object,
+    group: str,
+    supplied: dict[str, object],
+    name: str,
+) -> tuple[dict[str, str], dict[str, object]]:
+    """Give each argument after the media a result variable, a fixed value, or its own default."""
+    if not isinstance(results, xr.DataTree):
+        raise TypeError(f"results must be an xarray DataTree, got {type(results).__name__}")
+    if group not in ("prior", "posterior"):
+        raise ValueError(f"group must be 'prior' or 'posterior', got {group!r}")
+    if group not in results.children:
+        raise ValueError(f"results has no {group!r} group")
+    given = _given_values(parameters, supplied)
+    variables = {argument: value for argument, value in given.items() if isinstance(value, str)}
+    fixed: dict[str, object] = {argument: value for argument, value in given.items() if not isinstance(value, str)}
+    try:
+        arguments = list(inspect.signature(transform).parameters.values())[1:]
+    except (TypeError, ValueError):
+        # Without a signature the plot passes its own settings and only the arguments parameters names.
+        arguments = None
+    if arguments is None:
+        fixed = supplied | fixed
+    else:
+        named = [
+            argument for argument in arguments if argument.kind not in (argument.VAR_POSITIONAL, argument.VAR_KEYWORD)
+        ]
+        takes_any = any(argument.kind is argument.VAR_KEYWORD for argument in arguments)
+        unknown = [argument for argument in given if argument not in {parameter.name for parameter in named}]
+        if unknown and not takes_any:
+            raise ValueError(f"parameters sets {unknown[0]!r}, which {name} does not take")
+        available = set(results[group].to_dataset().data_vars)
+        for argument in named:
+            if argument.name in given:
+                continue
+            if argument.name in supplied:
+                fixed[argument.name] = supplied[argument.name]
+            elif argument.name in available:
+                variables[argument.name] = argument.name
+            elif argument.default is argument.empty:
+                raise ValueError(
+                    f"{name} argument {argument.name!r} matches no {group} variable. "
+                    f"Map it in parameters, as in {{{argument.name!r}: 'variable'}} or {{{argument.name!r}: 1.0}}"
+                )
+    if not variables:
+        raise ValueError(f"{name} must take at least one argument from the {group} draws")
+    return variables, fixed
+
+
+def _given_values(parameters: object, supplied: dict[str, object]) -> dict[str, str | float]:
+    """Check the result variables and fixed values that parameters assigns to arguments."""
+    if parameters is None:
+        return {}
+    if not isinstance(parameters, Mapping):
+        raise TypeError(f"parameters must be a mapping, got {type(parameters).__name__}")
+    for argument, value in parameters.items():
+        if isinstance(value, bool) or not isinstance(value, (str, numbers.Real)):
+            raise TypeError(
+                f"parameters[{argument!r}] must name a result variable or be a number, got {type(value).__name__}"
+            )
+        if argument in supplied:
+            raise ValueError(f"parameters cannot set {argument!r}. Pass {argument} to the plot instead")
+    given = dict(parameters)
+    return given
+
+
+def _parameter_panels(
+    results: xr.DataTree,
+    prior: object,
+    variables: dict[str, str],
     group: str,
     channels: Sequence[str] | None,
     coords: Mapping[str, object] | None,
     n_groups: int | None,
-    name: str,
-) -> tuple[dict[str, dict[str, xr.DataArray]], str]:
+) -> tuple[dict[str, dict[str, xr.DataArray]], str, list[str]]:
     """Read the parameter draws of each distribution and keep the channels and groups the plot shows."""
     _require_count(n_groups, "n_groups")
-    sources = _parameter_draws(results, prior, parameters, group, name)
+    sources = _parameter_draws(results, prior, variables, group)
     first = next(iter(next(iter(sources.values())).values()))
     selection, _ = _select_panels(first, coords, None, "")
     chosen = _restrict(first, selection)
     event_dims = [str(dim) for dim in chosen.dims if dim not in ("chain", "draw")]
     color = event_dims[-1] if event_dims else None
+    # Every label of the colored axis fixes the colors, so a channel keeps its color whichever channels are shown.
+    order = [] if color is None else [str(label) for label in first[color].values]
     notes = []
     if color is not None:
         shown, channel_note = _pick_channels(chosen[color].values, None, channels, 10, None)
@@ -242,19 +329,13 @@ def _parameter_panels(
         for label, arrays in sources.items()
     }
     note = " ".join(text for text in notes if text)
-    return kept, note
+    return kept, note, order
 
 
 def _parameter_draws(
-    results: object, prior: object, parameters: object, group: str, name: str
+    results: xr.DataTree, prior: object, variables: dict[str, str], group: str
 ) -> dict[str, dict[str, xr.DataArray]]:
     """Read each parameter's draws from every distribution the plot compares and align their axes."""
-    if not isinstance(results, xr.DataTree):
-        raise TypeError(f"results must be an xarray DataTree, got {type(results).__name__}")
-    if not isinstance(parameters, Mapping) or not parameters:
-        raise ValueError(f"parameters must map at least one {name} argument to a result variable")
-    if group not in ("prior", "posterior"):
-        raise ValueError(f"group must be 'prior' or 'posterior', got {group!r}")
     trees = {group.title(): (results, group, "results")}
     if prior is not None:
         if not isinstance(prior, xr.DataTree):
@@ -267,10 +348,10 @@ def _parameter_draws(
         if node not in tree.children:
             raise ValueError(f"{argument} has no {node!r} group")
         draws = tree[node].to_dataset()
-        missing = [variable for variable in parameters.values() if variable not in draws.data_vars]
+        missing = [variable for variable in variables.values() if variable not in draws.data_vars]
         if missing:
             raise ValueError(f"{argument} has no {node} variable {', '.join(repr(variable) for variable in missing)}")
-        arrays = {key: draws[variable] for key, variable in parameters.items()}
+        arrays = {key: draws[variable] for key, variable in variables.items()}
         for key, values in arrays.items():
             _require_draws(values, f"parameters[{key!r}]")
         sources[label] = dict(zip(arrays, xr.broadcast(*arrays.values()), strict=True))

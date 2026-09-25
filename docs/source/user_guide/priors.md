@@ -108,30 +108,13 @@ print(np.quantile(prior_revenue, [0.05, 0.5, 0.95]).round(-3))
 negative revenue, and the middle 90 percent falls between about \$182,000 and
 \$247,000, around the observed weeks, which run from \$175,000 to \$224,000.
 
-[ArviZ](https://python.arviz.org/), installed separately with
-`pip install arviz`, draws the same comparison as whole distributions. It
-finds its inputs by group name, so the dollar values only need to go into a
-DataTree under the names `prior_predictive` and `observed_data`. On a prior
-check ArviZ leaves the observed curve out unless `visuals` asks for it.
+{func}`~mmmjax.plot_ppc_dist` draws the same comparison as whole
+distributions with [ArviZ](https://python.arviz.org/), and it returns the
+simulated revenue to dollars first. On a prior check it leaves the observed
+curve out unless `visuals` asks for it.
 
 ```{code-cell} ipython3
-import arviz as az
-import xarray as xr
-
-predicted = prior_results["prior_predictive"]["outcome"].copy(data=np.asarray(prior_revenue))
-observed = prior_results["observed_data"]["outcome"].copy(data=data.arrays["outcome"])
-in_dollars = xr.DataTree.from_dict(
-    {
-        "prior_predictive": xr.Dataset({"outcome": predicted}),
-        "observed_data": xr.Dataset({"outcome": observed}),
-    }
-)
-az.plot_ppc_dist(
-    in_dollars,
-    group="prior_predictive",
-    visuals={"observed_dist": {}},
-    figure_kwargs={"figsize": (12, 7)},
-)
+mj.plot_ppc_dist(model, prior_results, group="prior", visuals={"observed_dist": {}})
 plt.show()
 ```
 
@@ -197,9 +180,8 @@ covers.
 
 Once the model is fitted, comparing each prior with its posterior shows how
 much the data taught the model. `results` below is the fit from [A first
-model](first_model). ArviZ reads both sets of draws from one tree, and
-`assign` returns a copy of the results with the prior draws added as a
-`prior` group.
+model](first_model), and {func}`~mmmjax.plot_prior_posterior` reads its
+posterior next to the prior draws of `sample_prior`.
 
 ```{code-cell} ipython3
 :tags: [remove-cell]
@@ -210,12 +192,11 @@ results = first_model_results(model)
 ```
 
 ```{code-cell} ipython3
-fitted = results.assign(prior=prior_results["prior"])
-az.plot_prior_posterior(
-    fitted,
+mj.plot_prior_posterior(
+    results,
+    prior_results,
     var_names=["coefficient", "retention", "half_saturation"],
     col_wrap=2,
-    figure_kwargs={"figsize": (12, 7)},
 )
 plt.show()
 ```

@@ -41,7 +41,6 @@ Media effects
    :toctree: generated
    :nosignatures:
 
-   plot_roi
    plot_media_metrics
    plot_spend_vs_contribution
    plot_roi_bubbles

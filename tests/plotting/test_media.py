@@ -10,7 +10,6 @@ from mmmjax import (
     plot_frequency_curves,
     plot_media_metrics,
     plot_response_curves,
-    plot_roi,
     plot_roi_bubbles,
     plot_spend_vs_contribution,
 )
@@ -84,6 +83,16 @@ def _layer_data(plot, geom):
     return data
 
 
+def _break_even(plot):
+    positions = [
+        float(value)
+        for layer in plot.layers
+        if isinstance(layer.geom, pn.geom_hline)
+        for value in layer.geom.data["yintercept"]
+    ]
+    return positions
+
+
 def test_plot_media_metrics_draws_the_requested_metric_as_bars():
     metrics = _metrics()
     expected = metrics["marginal_roi"].mean(("chain", "draw"))
@@ -97,7 +106,7 @@ def test_plot_media_metrics_draws_the_requested_metric_as_bars():
     assert list(plot.data["channel"].cat.categories) == ["TV", "Search"]
     assert bars.loc["Search", "value"] == f"{float(expected.sel(channel='Search')):.2f}"
     assert plot.labels.y.startswith("Marginal ROI, ")
-    assert not [layer for layer in plot.layers if isinstance(layer.geom, pn.geom_hline)]
+    assert _break_even(plot) == [1.0]
 
 
 def test_plot_media_metrics_labels_small_values_with_three_significant_digits():
@@ -109,11 +118,8 @@ def test_plot_media_metrics_labels_small_values_with_three_significant_digits():
     labels = plot.data.set_index("channel")["value"]
     assert labels.loc["TV"] == f"{float(expected.sel(channel='TV')):.3g}"
     assert len(labels.loc["TV"].replace("0.", "").lstrip("0")) == 3
-
-
-def test_plot_media_metrics_requires_a_metric():
-    with pytest.raises(TypeError, match="metric"):
-        plot_media_metrics(_metrics())
+    # Only returns have a break-even point.
+    assert _break_even(plot) == []
 
 
 def test_plot_media_metrics_compares_labeled_results_in_order():
@@ -227,21 +233,11 @@ def _bars(plot):
     return frame
 
 
-def _break_even(plot):
-    positions = [
-        float(value)
-        for layer in plot.layers
-        if isinstance(layer.geom, pn.geom_hline)
-        for value in layer.geom.data["yintercept"]
-    ]
-    return positions
-
-
-def test_plot_roi_draws_each_channel_estimate_from_the_most_spending_down():
+def test_plot_media_metrics_draws_roi_by_default_from_the_most_spending_down():
     metrics = _metrics()
     expected = metrics["roi"].mean(("chain", "draw"))
 
-    plot = plot_roi(metrics)
+    plot = plot_media_metrics(metrics)
 
     bars = _bars(plot).loc[""]
     np.testing.assert_allclose(
@@ -254,20 +250,31 @@ def test_plot_roi_draws_each_channel_estimate_from_the_most_spending_down():
     assert _break_even(plot) == [1.0]
 
 
-def test_plot_roi_moves_or_leaves_out_the_break_even_line():
-    moved = plot_roi(_metrics(), break_even=2.5)
-    left_out = plot_roi(_metrics(), break_even=None)
+def test_plot_media_metrics_draws_pale_bars_inside_solid_outlines():
+    figure = plot_media_metrics(_metrics()).draw()
+
+    bars = next(collection for collection in figure.axes[0].collections if len(collection.get_paths()) == 2)
+    # plotnine stores colors in eight bits, so the fill's opacity comes back to within one step of 255.
+    np.testing.assert_allclose(bars.get_facecolor()[:, 3], [0.22, 0.22], rtol=0, atol=1 / 255)
+    np.testing.assert_allclose(bars.get_edgecolor()[:, 3], [1.0, 1.0], rtol=1e-12, atol=0)
+    np.testing.assert_allclose(bars.get_facecolor()[:, :3], bars.get_edgecolor()[:, :3], rtol=1e-12, atol=0)
+    plt.close(figure)
+
+
+def test_plot_media_metrics_moves_or_leaves_out_the_break_even_line():
+    moved = plot_media_metrics(_metrics(), break_even=2.5)
+    left_out = plot_media_metrics(_metrics(), break_even=None)
 
     assert _break_even(moved) == [2.5]
     assert _break_even(left_out) == []
 
 
-def test_plot_roi_compares_labeled_results_side_by_side():
+def test_plot_media_metrics_compares_labeled_roi_side_by_side():
     prior = _metrics(1).isel(chain=[0], draw=slice(0, 25))
     posterior = _metrics(2)
     expected = [float(prior["roi"].sel(channel="TV").mean()), float(posterior["roi"].sel(channel="TV").mean())]
 
-    plot = plot_roi({"Prior": prior, "Posterior": posterior})
+    plot = plot_media_metrics({"Prior": prior, "Posterior": posterior})
 
     bars = _bars(plot)
     np.testing.assert_allclose(
@@ -276,7 +283,7 @@ def test_plot_roi_compares_labeled_results_side_by_side():
     assert list(plot.data["result"].cat.categories) == ["Prior", "Posterior"]
 
 
-def test_plot_roi_gives_other_axes_panels_on_one_scale():
+def test_plot_media_metrics_gives_other_axes_panels_on_one_scale():
     returns = np.broadcast_to(np.array([[3.0, 1.0], [2.0, 2.0]]), (2, 4, 2, 2))
     plan = xr.Dataset(
         {
@@ -291,7 +298,7 @@ def test_plot_roi_gives_other_axes_panels_on_one_scale():
         },
     )
 
-    plot = plot_roi(plan)
+    plot = plot_media_metrics(plan)
 
     estimates = plot.data.set_index(["allocation", "channel"])["estimate"]
     assert estimates.loc[("optimized", "Search")] == 2.0
@@ -311,9 +318,9 @@ def _many_returns(count, *, increments=True):
     return metrics
 
 
-def test_plot_roi_shows_every_channel_and_widens_past_the_default_figure():
-    wide = plot_roi(_many_returns(30))
-    narrow = plot_roi(_metrics())
+def test_plot_media_metrics_shows_every_channel_and_widens_past_the_default_figure():
+    wide = plot_media_metrics(_many_returns(30))
+    narrow = plot_media_metrics(_metrics())
 
     figure = wide.draw()
     assert set(wide.data["channel"]) == {f"Channel {index:02d}" for index in range(30)}
@@ -335,8 +342,8 @@ def _ticks(plot):
     return figure, labels
 
 
-def test_plot_roi_tilts_and_shortens_long_names_like_meridian():
-    figure, labels = _ticks(plot_roi(_long_returns(4)))
+def test_plot_media_metrics_tilts_and_shortens_long_names_like_meridian():
+    figure, labels = _ticks(plot_media_metrics(_long_returns(4)))
 
     assert labels[0] == ("social_media_\u2026world_cup_003", 45.0)
     assert len({text for text, _ in labels}) == 4
@@ -345,18 +352,18 @@ def test_plot_roi_tilts_and_shortens_long_names_like_meridian():
     plt.close(figure)
 
 
-def test_plot_roi_keeps_the_default_height_for_many_long_names():
-    figure, _ = _ticks(plot_roi(_long_returns(40)))
+def test_plot_media_metrics_keeps_the_default_height_for_many_long_names():
+    figure, _ = _ticks(plot_media_metrics(_long_returns(40)))
 
     np.testing.assert_allclose(figure.get_size_inches(), [1.5 + 40 * 0.8, 7.0], rtol=1e-12, atol=0)
     plt.close(figure)
 
 
-def test_plot_roi_lengthens_shortened_names_until_they_differ():
+def test_plot_media_metrics_lengthens_shortened_names_until_they_differ():
     names = ["social_media_meta_dynamic_brand_a_world_cup_2026", "social_media_meta_dynamic_brand_b_world_cup_2026"]
     metrics = _metrics().assign_coords(channel=names)
 
-    figure, labels = _ticks(plot_roi(metrics))
+    figure, labels = _ticks(plot_media_metrics(metrics))
 
     texts = [text for text, _ in labels]
     assert len(set(texts)) == 2
@@ -369,7 +376,7 @@ def test_plot_response_curves_wrap_long_names_in_panel_titles_and_legends():
     plan = _plan([150.0, 25.0], channels=("tv_linear_national_prime_time_sports", "search_google_non_brand"))
 
     paneled = plot_response_curves(curves, plan=plan)
-    legended = plot_response_curves(curves)
+    legended = plot_response_curves(curves, combine=True)
 
     assert list(paneled.data["panel"].cat.categories) == [
         "tv_linear_national_prime_\ntime_sports",
@@ -379,7 +386,7 @@ def test_plot_response_curves_wrap_long_names_in_panel_titles_and_legends():
     assert colors.labels == ["tv_linear_national_prime_\ntime_sports", "search_google_non_brand"]
 
 
-def test_plot_roi_pools_the_channels_left_out_into_a_spend_weighted_bar():
+def test_plot_media_metrics_pools_left_out_roi_into_a_spend_weighted_bar():
     metrics = _many_returns(30)
     hidden = [f"Channel {index:02d}" for index in range(5)]
     pooled = metrics["incremental_response"].sel(channel=hidden).sum("channel") / metrics["reference_spend"].sel(
@@ -387,7 +394,7 @@ def test_plot_roi_pools_the_channels_left_out_into_a_spend_weighted_bar():
     ).sum("channel")
     expected = float(pooled.mean())
 
-    plot = plot_roi(metrics, channels=[label for label in metrics["channel"].values if label not in hidden])
+    plot = plot_media_metrics(metrics, channels=[label for label in metrics["channel"].values if label not in hidden])
 
     bars = _bars(plot).loc[""]
     assert list(plot.data["channel"].cat.categories)[:3] == ["Channel 29", "Channel 28", "Channel 27"]
@@ -395,8 +402,8 @@ def test_plot_roi_pools_the_channels_left_out_into_a_spend_weighted_bar():
     np.testing.assert_allclose(bars.loc["Other channels", "estimate"], expected, rtol=1e-12, atol=0)
 
 
-def test_plot_roi_leaves_out_the_pooled_bar_without_incremental_responses():
-    plot = plot_roi(_many_returns(30, increments=False), channels=["Channel 29", "Channel 28"])
+def test_plot_media_metrics_leaves_out_pooled_roi_without_incremental_responses():
+    plot = plot_media_metrics(_many_returns(30, increments=False), channels=["Channel 29", "Channel 28"])
 
     assert set(plot.data["channel"]) == {"Channel 29", "Channel 28"}
 
@@ -412,9 +419,9 @@ def test_plot_roi_leaves_out_the_pooled_bar_without_incremental_responses():
         (_metrics(), {"break_even": float("inf")}, ValueError, "break_even must be finite"),
     ],
 )
-def test_plot_roi_rejects_invalid_arguments(metrics, options, error, message):
+def test_plot_media_metrics_rejects_invalid_roi_arguments(metrics, options, error, message):
     with pytest.raises(error, match=message):
-        plot_roi(metrics, **options)
+        plot_media_metrics(metrics, **options)
 
 
 def test_plot_response_curves_mark_reference_spending_and_dash_beyond_it():
@@ -474,6 +481,39 @@ def test_plot_response_curves_name_plan_spending_beyond_the_curves():
     points = _layer_data(plot, pn.geom_point)
     assert len(points) == 3
     assert "Spending beyond the curves is not marked for TV." in plot.labels.caption
+
+
+def test_plot_response_curves_keep_every_other_spending_break_on_panels():
+    combined = plot_response_curves(_curves(), combine=True)
+    planned = plot_response_curves(_curves(), plan=_plan([150.0, 25.0]))
+
+    shared = next(scale for scale in combined.scales if "x" in scale.aesthetics)
+    panels = next(scale for scale in planned.scales if "x" in scale.aesthetics)
+    assert shared.breaks is True
+    assert panels.breaks((0.0, 800.0)) == [0.0, 400.0, 800.0]
+    assert panels.breaks((0.0, 300.0)) == [0.0, 100.0, 200.0, 300.0]
+
+
+def test_plot_response_curves_give_each_channel_a_panel_unless_combined():
+    paneled = plot_response_curves(_curves())
+    combined = plot_response_curves(_curves(), combine=True)
+
+    assert list(paneled.facet.vars) == ["panel"]
+    assert paneled.facet.free == {"x": True, "y": True}
+    assert (paneled.guides.color, paneled.guides.fill) == ("none", "none")
+    assert isinstance(combined.facet, pn.facet_null)
+    assert combined.guides.color is None
+
+
+def test_plot_response_curves_reject_a_combine_that_is_not_a_bool():
+    with pytest.raises(TypeError, match="combine must be a bool, got str"):
+        plot_response_curves(_curves(), combine="yes")
+
+
+def test_plot_response_curves_keep_each_channel_color_for_a_subset():
+    plot = plot_response_curves(_curves(), channels=["Search"])
+
+    assert _fills(plot)[1]["Search"] == "#fa7c17"
 
 
 def test_plot_response_curves_show_only_the_channels_the_plan_holds():
@@ -568,6 +608,15 @@ def test_plot_spend_vs_contribution_pairs_each_share_of_spending_with_its_share_
     assert list(labels.loc[["Search", "TV", "Radio"], "text"]) == [f"ROI {value:.2f}" for value in expected_roi]
 
 
+def test_plot_spend_vs_contribution_hatches_the_spending_bars():
+    figure = plot_spend_vs_contribution(_returns()).draw()
+
+    hatches = [collection.get_hatch() for collection in figure.axes[0].collections]
+    assert hatches.count("///") == 1
+    assert None in hatches
+    plt.close(figure)
+
+
 def test_plot_spend_vs_contribution_sums_groups_and_pools_the_channels_left_out():
     metrics = _returns()
     groups = xr.DataArray([0.25, 0.75], dims="group", coords={"group": ["north", "south"]})
@@ -639,7 +688,8 @@ def test_plot_roi_bubbles_colors_each_channel_in_a_legend_without_sizes():
 
     breaks, colors = _fills(plot)
     assert breaks == ["Search", "TV", "Radio"]
-    assert len({colors[channel] for channel in breaks}) == 3
+    # Colors follow the results' channel order so a channel keeps its color across plots.
+    assert [colors[channel] for channel in ["TV", "Search", "Radio"]] == ["#2a2eec", "#fa7c17", "#328c06"]
     assert plot.labels.fill == "Channel"
     assert plot.guides.size == "none"
 
@@ -677,6 +727,12 @@ def test_plot_roi_bubbles_shows_only_the_requested_channels():
 
     assert set(plot.data["channel"]) == {"TV"}
     assert plot.labels.caption == ""
+
+
+def test_plot_roi_bubbles_keeps_each_channel_color_for_a_subset():
+    plot = plot_roi_bubbles(_returns(), channels=["Radio"])
+
+    assert _fills(plot)[1]["Radio"] == "#328c06"
 
 
 @pytest.mark.parametrize(
@@ -743,7 +799,7 @@ def test_plot_media_metrics_gives_the_largest_groups_panels():
             lambda: plot_media_metrics({"Prior": _metrics(1), "Posterior": _metrics(2)}, metric="marginal_roi"),
             id="metrics",
         ),
-        pytest.param(lambda: plot_roi(_metrics()), id="roi"),
+        pytest.param(lambda: plot_media_metrics(_metrics()), id="roi"),
         pytest.param(lambda: plot_response_curves(_curves()), id="response curves"),
         pytest.param(lambda: plot_response_curves(_curves(), plan=_plan([150.0, 25.0])), id="response curves plan"),
         pytest.param(lambda: plot_frequency_curves(_frequency_curves()), id="frequency curves"),
@@ -776,10 +832,13 @@ def test_plot_response_curves_show_the_channels_with_the_most_spending():
         coords={"chain": [0, 1], "draw": np.arange(40), "channel": labels, "multiplier": multipliers},
     )
 
-    plot = plot_response_curves(curves)
+    paneled = plot_response_curves(curves)
+    combined = plot_response_curves(curves, combine=True)
 
-    assert set(plot.data["channel"]) == set(labels[3:])
-    assert plot.labels.caption.startswith("Showing the 9 of 12 channels with the largest spending")
+    assert set(paneled.data["channel"]) == set(labels[2:])
+    assert paneled.labels.caption.startswith("Showing the 10 of 12 channels with the largest spending")
+    assert set(combined.data["channel"]) == set(labels[7:])
+    assert combined.labels.caption.startswith("Showing the 5 of 12 channels with the largest spending")
 
 
 @pytest.mark.parametrize(
@@ -789,7 +848,7 @@ def test_plot_response_curves_show_the_channels_with_the_most_spending():
             lambda channels: plot_media_metrics(_metrics(), metric="marginal_roi", channels=channels), id="metrics"
         ),
         pytest.param(lambda channels: plot_response_curves(_curves(), channels=channels), id="response curves"),
-        pytest.param(lambda channels: plot_roi(_metrics(), channels=channels), id="roi"),
+        pytest.param(lambda channels: plot_media_metrics(_metrics(), channels=channels), id="roi"),
         pytest.param(lambda channels: plot_spend_vs_contribution(_returns(), channels=channels), id="spend"),
         pytest.param(lambda channels: plot_roi_bubbles(_returns(), channels=channels), id="bubbles"),
     ],

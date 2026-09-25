@@ -464,6 +464,47 @@ def test_plot_trace_dist_keeps_six_rows_for_large_models():
     plt.close("all")
 
 
+def test_plot_trace_dist_grows_taller_with_its_rows_unless_sized():
+    grown = plot_trace_dist(_large()).viz["figure"].item()
+    sized = plot_trace_dist(_large(), figure_kwargs={"figsize": (12, 5)}).viz["figure"].item()
+
+    # Six rows of 1.8 inches each.
+    np.testing.assert_allclose(grown.get_size_inches(), [12.0, 10.8], rtol=1e-12, atol=0)
+    np.testing.assert_allclose(sized.get_size_inches(), [12.0, 5.0], rtol=1e-12, atol=0)
+    plt.close("all")
+
+
+def test_plot_trace_dist_names_each_row_once_under_its_density():
+    collection = plot_trace_dist(_large())
+
+    plots = collection.viz["plot"].to_dataset()
+    traces = [plots[name].sel(column="trace").item() for name in plots.data_vars]
+    densities = [plots[name].sel(column="dist").item() for name in plots.data_vars]
+    assert {axis.get_ylabel() for axis in traces} == {""}
+    assert "coefficient\n[Channel 00]" in {axis.get_xlabel() for axis in densities}
+    plt.close("all")
+
+
+def test_grid_diagnostics_grow_taller_with_their_rows_of_panels():
+    rank = plot_rank(_large()).viz["figure"].item()
+    wrapped = plot_rank(_large(), col_wrap=2).viz["figure"].item()
+    chosen = plot_rank(_large(), coords={"channel": ["Channel 01", "Channel 02"]}).viz["figure"].item()
+
+    # Twelve panels make three rows of four, or six rows of two, at three inches a row.
+    np.testing.assert_allclose(rank.get_size_inches(), [12.0, 9.0], rtol=1e-12, atol=0)
+    np.testing.assert_allclose(wrapped.get_size_inches(), [12.0, 18.0], rtol=1e-12, atol=0)
+    np.testing.assert_allclose(chosen.get_size_inches(), [12.0, 7.0], rtol=1e-12, atol=0)
+    plt.close("all")
+
+
+def test_convergence_plots_put_long_element_labels_on_their_own_line():
+    figure = plot_rank(_large()).viz["figure"].item()
+
+    titles = {axis.get_title() for axis in figure.axes}
+    assert "coefficient\n[Channel 00]" in titles
+    plt.close("all")
+
+
 def test_convergence_plots_leave_explicit_coords_alone():
     collection = plot_rank(_large(), coords={"channel": ["Channel 01", "Channel 02"]})
 
@@ -514,6 +555,16 @@ def test_plot_rhat_shows_every_element_by_parameter():
     assert list(plot.data["parameter"].cat.categories) == ["coefficient", "sigma"]
     assert above >= 1
     assert plot.labels.subtitle == f"{above} of 13 R-hat values are above 1.01"
+
+
+def test_plot_rhat_flags_values_past_the_limit_with_parameters_down_the_side():
+    plot = plot_rhat(_large(12, drifting=(0,)))
+
+    past = plot.data["rhat"] > 1.01
+    assert past.any()
+    assert set(plot.data.loc[past, "status"]) == {"Above 1.01"}
+    assert set(plot.data.loc[~past, "status"]) == {"At or below 1.01"}
+    assert isinstance(plot.coordinates, pn.coord_flip)
 
 
 def test_plot_rhat_reports_when_every_value_is_below_the_limit():

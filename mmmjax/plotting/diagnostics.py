@@ -10,9 +10,10 @@ import plotnine as pn
 import xarray as xr
 
 from mmmjax.model.model import Model
-from mmmjax.plotting._layers import _channel_axis, _facet, _scales
+from mmmjax.plotting._layers import _facet, _scales
 from mmmjax.plotting._summary import (
     _ci_prob,
+    _distinct_shortened,
     _label,
     _ordered,
     _percent,
@@ -224,7 +225,8 @@ def plot_prior_posterior(
     posterior into a spike. When the parameters still need more panels than
     ArviZ's ``plot.max_subplots`` setting allows, the plot keeps the 12
     elements whose posterior moved furthest from the prior and says so in its
-    title.
+    title. The figure grows taller with its rows of panels unless
+    ``figure_kwargs`` sets its size.
 
     Parameters
     ----------
@@ -287,8 +289,11 @@ def plot_prior_posterior(
     from arviz_plots import plot_prior_posterior as arviz_plot_prior_posterior
 
     options = {**kwargs, "coords": coords} if coords else kwargs
+    height = _grid_height(_panel_count(posterior), options)
     with mpl.rc_context(_matplotlib_style()):
-        collection: PlotCollection = arviz_plot_prior_posterior(combined, var_names=names, **_arviz_options(options))
+        collection: PlotCollection = arviz_plot_prior_posterior(
+            combined, var_names=names, **_arviz_options(options, height=height)
+        )
         if title:
             collection.add_title(title)
     return collection
@@ -309,7 +314,9 @@ def plot_rank(
 
     When the parameters need more panels than ArviZ's ``plot.max_subplots``
     setting allows, the plot keeps the 12 elements with the highest R-hat, the
-    ones most likely to have mixed poorly, and says so in its title.
+    ones most likely to have mixed poorly, and says so in its title. The figure
+    grows taller with its rows of panels unless ``figure_kwargs`` sets its
+    size.
 
     Parameters
     ----------
@@ -330,8 +337,9 @@ def plot_rank(
     from arviz_plots import plot_rank as arviz_plot_rank
 
     options = {"thin": True, **kwargs}
+    height = _grid_height(_panel_count(data["posterior"].to_dataset()[names]), options)
     with mpl.rc_context(_matplotlib_style()):
-        collection: PlotCollection = arviz_plot_rank(data, var_names=names, **_arviz_options(options))
+        collection: PlotCollection = arviz_plot_rank(data, var_names=names, **_arviz_options(options, height=height))
         # ArviZ colors chains only when the results label them, as sample's results do.
         if ("chain",) in collection.aes_dims.values():
             collection.add_legend("chain")
@@ -422,9 +430,10 @@ def plot_rhat(results: xr.DataTree, *, var_names: Sequence[str] | None = None) -
     for each, so a model with hundreds of elements still fits one plot.
     Parameters without a finite R-hat, such as constants, are left out.
 
-    A dashed line marks ArviZ's recommended limit of 1.01. Values near one mean
-    the chains agree, and the subtitle counts the values past the limit.
-    ``plot_rank`` shows the elements with the highest values.
+    Parameters run down the side, and a dotted line marks ArviZ's recommended
+    limit of 1.01. Values near one mean the chains agree. Values past the limit
+    turn orange, and the subtitle counts them. ``plot_rank`` shows the elements
+    with the highest values.
 
     Parameters
     ----------
@@ -456,26 +465,41 @@ def plot_rhat(results: xr.DataTree, *, var_names: Sequence[str] | None = None) -
     if finite.empty:
         raise ValueError("results has no parameter with a finite R-hat. R-hat needs draws that vary")
     frame = _ordered(finite, "parameter", list(dict.fromkeys(finite["parameter"])))
-    above = int((frame["rhat"] > 1.01).sum())
+    flagged = frame["rhat"] > 1.01
+    above = int(flagged.sum())
     subtitle = (
         f"{above} of {len(frame)} R-hat values are above 1.01"
         if above
         else f"All {len(frame)} R-hat values are at or below 1.01"
     )
-    color = _colors(1)[0]
+    frame = frame.assign(status=np.where(flagged, "Above 1.01", "At or below 1.01"))
+    blue, orange = _colors(2)
     names = list(frame["parameter"].cat.categories)
-    texts, axis = _channel_axis(names)
+    texts = _distinct_shortened(names, 27)
 
     plot: pn.ggplot = (
         pn.ggplot(frame, pn.aes("parameter", "rhat"))
-        + pn.geom_hline(yintercept=1.01, linetype="dashed", color="#8c8c8c", size=0.6)
-        + pn.geom_boxplot(outlier_shape="", width=0.5, color="#545454", fill="white")
+        # The first parameter sits at the top once the axes turn.
+        + pn.scale_x_discrete(limits=names[::-1], labels=dict(zip(names, texts, strict=True)))
+        + pn.geom_hline(yintercept=1.01, linetype="dotted", color=orange, size=0.8)
+        + pn.annotate("text", x=len(names) + 0.45, y=1.01, label=" 1.01", ha="left", va="center", color=orange)
+        + pn.geom_boxplot(outlier_shape="", width=0.55, color="#545454", fill="#e9eafc", size=0.5)
         # A fixed seed keeps the jittered points in place from one drawing to the next.
-        + pn.geom_point(position=pn.position_jitter(width=0.15, height=0, random_state=0), color=color, alpha=0.6)
-        + pn.scale_x_discrete(labels=dict(zip(names, texts, strict=True)))
+        + pn.geom_point(
+            pn.aes(fill="status"),
+            position=pn.position_jitter(width=0.18, height=0, random_state=0),
+            color="white",
+            stroke=0.4,
+            size=2.6,
+            alpha=0.9,
+        )
+        + pn.scale_fill_manual(values={"At or below 1.01": blue, "Above 1.01": orange})
+        + pn.guides(fill="none")
+        # The limit stays in view when every value sits well below it.
+        + pn.expand_limits(y=1.012)
+        + pn.coord_flip()
         + pn.labs(x="", y="R-hat", subtitle=subtitle)
         + theme_mmmjax()
-        + axis
     )
     return plot
 
@@ -494,7 +518,9 @@ def plot_trace_dist(
 
     When the parameters have more elements than half of ArviZ's
     ``plot.max_subplots`` setting, the plot keeps the six elements with the
-    highest R-hat, each in its own row, and says so in its title.
+    highest R-hat, each in its own row, and says so in its title. Each row's
+    name sits under its density, and the figure grows taller with its rows
+    unless ``figure_kwargs`` sets its size.
 
     Parameters
     ----------
@@ -515,8 +541,13 @@ def plot_trace_dist(
     data, names, title = _convergence_panels(results, var_names, kwargs, _subplot_limit() // 2, 6)
     from arviz_plots import plot_trace_dist as arviz_plot_trace_dist
 
+    # A row needs about 1.8 inches for its density, tick labels, and a name of two lines.
+    height = max(7.0, 1.8 * len(names))
     with mpl.rc_context(_matplotlib_style()):
-        collection: PlotCollection = arviz_plot_trace_dist(data, var_names=names, **_arviz_options(kwargs))
+        collection: PlotCollection = arviz_plot_trace_dist(
+            data, var_names=names, **_arviz_options(kwargs, height=height)
+        )
+        _drop_trace_titles(collection)
         if title:
             collection.add_title(title)
     return collection
@@ -695,9 +726,9 @@ def _axis_labels(model: Model, var_name: str) -> tuple[str, str]:
     return time_label, outcome_label
 
 
-def _arviz_options(options: dict[str, Any]) -> dict[str, Any]:
+def _arviz_options(options: dict[str, Any], *, height: float = 7.0) -> dict[str, Any]:
     """Give ArviZ the figure size of the plotnine plots and wrapped panel titles unless the caller sets them."""
-    figure = {"figsize": (12, 7), **options.get("figure_kwargs", {})}
+    figure = {"figsize": (12, height), **options.get("figure_kwargs", {})}
     sized = {"labeller": _wrapping_labeller(), **options, "figure_kwargs": figure}
     return sized
 
@@ -713,11 +744,18 @@ def _wrapping_labeller() -> Any:
             return text
 
         def var_name_to_str(self, var_name: str | None) -> str | None:
-            text = var_name if var_name is None else _wrap(str(var_name), 28)
+            text = var_name if var_name is None else _element_label(str(var_name))
             return text
 
     labeller = _WrappingLabeller()
     return labeller
+
+
+def _element_label(name: str) -> str:
+    """Put a long element's labels on a line of their own so rotated axis titles fit their row."""
+    head, bracket, labels = name.partition("[")
+    label = f"{_wrap(head, 28)}\n{_wrap(bracket + labels, 28)}" if bracket and len(name) > 16 else _wrap(name, 28)
+    return label
 
 
 def _variables(available: list[str], requested: Sequence[str] | None, group: str) -> list[str]:
@@ -803,6 +841,17 @@ def _flatten(dataset: xr.Dataset, chosen: list[tuple[str, dict[str, int]]]) -> x
     return flattened
 
 
+def _grid_height(panels: int, options: dict[str, Any]) -> float:
+    """Give each row of an ArviZ grid three inches so its titles and tick labels keep their room."""
+    # Chosen coordinates change the panel count in ways only ArviZ resolves, so they keep the default height.
+    if "coords" in options:
+        return 7.0
+    columns = int(options.get("col_wrap", 4))
+    rows = -(-panels // columns)
+    height = max(7.0, 3.0 * rows)
+    return height
+
+
 def _names(results: xr.DataTree, group: str) -> list[str]:
     """List the variables of one result group."""
     names = [str(name) for name in results[group].to_dataset().data_vars]
@@ -834,3 +883,11 @@ def _convergence_panels(
     data = xr.DataTree.from_dict({"posterior": flattened})
     title = f"The {len(chosen)} of {count} parameters with the highest R-hat"
     return data, [str(name) for name in flattened.data_vars], title
+
+
+def _drop_trace_titles(collection: "PlotCollection") -> None:
+    """Clear the axis title beside each trace, which repeats the name under its density."""
+    plots = collection.viz["plot"].to_dataset()
+    for name in plots.data_vars:
+        for axis in np.ravel(plots[name].sel(column="trace").values):
+            axis.set_ylabel("")
