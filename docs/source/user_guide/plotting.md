@@ -14,7 +14,7 @@ no plot refits the model. Plots change as channels are added, so this
 page fits a brand with ten of them.
 
 The functions are there for convenience, and a plot can start anywhere else.
-Results are ordinary xarray trees and every analysis output is an ordinary
+Results are ordinary xarray DataTree objects and every analysis output is an ordinary
 xarray Dataset, so ArviZ, plotnine, matplotlib, or any other plotting library
 can draw from them directly. [Customizing plots](custom_plots) changes what
 these functions draw and builds new plots from the same outputs.
