@@ -77,8 +77,6 @@ model = mj.Model(
 )
 ```
 
-Only `parameters` and `log_density` are required. Data-only work runs once, the density runs on every evaluation, and generated quantities run once per retained draw. Parameters are declared with their constraints and named axes, and each declaration owns the transform to the unconstrained scale and its Jacobian adjustment, so every block sees parameters on their natural scale and the log density contains only the terms you wrote.
-
 ## Distributions
 
 Every prior and likelihood term comes from a Stan-style distribution library built on TensorFlow Probability. They are plain JAX functions, so they broadcast, differentiate, and compile like any other.
