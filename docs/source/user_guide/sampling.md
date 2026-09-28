@@ -445,7 +445,25 @@ revenue_model = mj.Model(
     generated_quantities=revenue_generated_quantities,
     generated_dims={"expected_revenue": "time"},
 )
+```
+
+```{code-cell} ipython3
+:tags: [skip-execution]
+
 revenue = mj.generate_quantities(revenue_model, results)
+```
+
+```{code-cell} ipython3
+:tags: [remove-cell]
+
+revenue = stored(
+    "first_model_revenue",
+    lambda: mj.generate_quantities(revenue_model, results),
+    groups=["generated_quantities"],
+)
+```
+
+```{code-cell} ipython3
 expected = revenue["generated_quantities"]["expected_revenue"].sum("time").mean()
 round(float(expected)), round(float(data.arrays["outcome"].sum()))
 ```

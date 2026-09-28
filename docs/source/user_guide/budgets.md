@@ -19,7 +19,7 @@ promotions keep their observed values in every split the optimizer tries.
 :tags: [remove-cell]
 
 %run -m prerun.first_model
-from prerun import first_model_results
+from prerun import first_model_limited_plan, first_model_results, stored
 
 results = first_model_results(model)
 ```
@@ -63,7 +63,18 @@ also records each channel's returns under both splits for the plots below to
 read. {func}`~mmmjax.plot_budget_spend` shows where the plan moves the money.
 
 ```{code-cell} ipython3
+:tags: [skip-execution]
+
 plan = mj.optimize_budget(model, results, quantity="mu", include_metrics=True)
+```
+
+```{code-cell} ipython3
+:tags: [remove-cell]
+
+plan = stored("first_model_plan", lambda: mj.optimize_budget(model, results, quantity="mu", include_metrics=True))
+```
+
+```{code-cell} ipython3
 mj.plot_budget_spend(plan)
 ```
 
@@ -132,6 +143,8 @@ You rarely get to move money freely. `spend_constraint_lower` and
 spending, here 30 percent either way.
 
 ```{code-cell} ipython3
+:tags: [skip-execution]
+
 limited = mj.optimize_budget(
     model,
     results,
@@ -140,6 +153,15 @@ limited = mj.optimize_budget(
     spend_constraint_upper=0.3,
     include_metrics=True,
 )
+```
+
+```{code-cell} ipython3
+:tags: [remove-cell]
+
+limited = first_model_limited_plan(model, results)
+```
+
+```{code-cell} ipython3
 mj.plot_budget_response(limited)
 ```
 
@@ -163,7 +185,10 @@ import jax.numpy as jnp
 
 def cautious(revenue):
     return jnp.mean(revenue) - jnp.std(revenue)
+```
 
+```{code-cell} ipython3
+:tags: [skip-execution]
 
 careful = mj.optimize_budget(
     model,
@@ -172,6 +197,18 @@ careful = mj.optimize_budget(
     utility_function=cautious,
     include_metrics=True,
 )
+```
+
+```{code-cell} ipython3
+:tags: [remove-cell]
+
+careful = stored(
+    "first_model_cautious_plan",
+    lambda: mj.optimize_budget(model, results, quantity="mu", utility_function=cautious, include_metrics=True),
+)
+```
+
+```{code-cell} ipython3
 mj.plot_budget_response(careful)
 ```
 
@@ -194,13 +231,34 @@ marginal returns, and their common value is what one more dollar of budget
 would bring.
 
 ```{code-cell} ipython3
+:tags: [skip-execution]
+
+sized = {
+    budget: mj.optimize_budget(model, results, quantity="mu", budget=budget, include_metrics=True)
+    for budget in [2_000_000, 3_000_000, 4_000_000, 5_000_000]
+}
+```
+
+```{code-cell} ipython3
+:tags: [remove-cell]
+
+sized = {
+    budget: stored(
+        f"first_model_plan_{budget}",
+        lambda: mj.optimize_budget(model, results, quantity="mu", budget=budget, include_metrics=True),
+        variables=["marginal_roi"],
+    )
+    for budget in [2_000_000, 3_000_000, 4_000_000, 5_000_000]
+}
+```
+
+```{code-cell} ipython3
 import pandas as pd
 
-marginal = {}
-for budget in [2_000_000, 3_000_000, 4_000_000, 5_000_000]:
-    sized = mj.optimize_budget(model, results, quantity="mu", budget=budget, include_metrics=True)
-    optimized = sized["marginal_roi"].sel(allocation="optimized")
-    marginal[budget] = optimized.mean(("chain", "draw")).to_series()
+marginal = {
+    budget: plan["marginal_roi"].sel(allocation="optimized").mean(("chain", "draw")).to_series()
+    for budget, plan in sized.items()
+}
 pd.DataFrame(marginal).round(2)
 ```
 
@@ -236,6 +294,10 @@ year would miss what the last weeks of 2023 carry into 2024.
 weeks = pd.to_datetime(brand.frame["week"])
 spend_weeks = weeks[weeks.dt.year == 2023]
 response_weeks = weeks[weeks.between("2023-01-01", "2024-02-19")]
+```
+
+```{code-cell} ipython3
+:tags: [skip-execution]
 
 yearly = mj.optimize_budget(
     model,
@@ -244,6 +306,24 @@ yearly = mj.optimize_budget(
     spend_periods=spend_weeks,
     response_periods=response_weeks,
 )
+```
+
+```{code-cell} ipython3
+:tags: [remove-cell]
+
+yearly = stored(
+    "first_model_yearly_plan",
+    lambda: mj.optimize_budget(
+        model,
+        results,
+        quantity="mu",
+        spend_periods=spend_weeks,
+        response_periods=response_weeks,
+    ),
+)
+```
+
+```{code-cell} ipython3
 mj.plot_budget_spend(yearly)
 ```
 
