@@ -18,9 +18,11 @@
 
 ## What is mmmJAX?
 
-mmmJAX is an open-source Python library for Bayesian marketing mix modeling in [JAX](https://docs.jax.dev/), built for experienced developers and practitioners. We believe packaged MMM APIs give users a great first model but often fall short as business demands grow. In mmmJAX you write the model yourself as a [Stan](https://mc-stan.org/)-style program of plain Python blocks, and the library makes none of the modeling decisions for you. If you're new to marketing mix models or to Bayesian modeling, a packaged tool with sensible defaults is a more forgiving place to start.
+mmmJAX is an open-source Python library for Bayesian marketing mix modeling in [JAX](https://docs.jax.dev/), built for experienced developers and practitioners. We believe packaged MMM APIs give users a great first model but often fall short as business demands grow. In mmmJAX you write the model yourself as a [Stan](https://mc-stan.org/)-style program of plain Python blocks, and the library makes none of the modeling decisions for you.
 
 Everything around the model comes packaged as convenient shortcuts, from data preparation and media transformations to sampling, budget optimization, and plots, so that your time goes into building the model. The blocks are ordinary JAX code, so the model can be differentiated, compiled, and vectorized.
+
+If you're new to marketing mix models or to Bayesian modeling, a packaged tool with sensible defaults is a more forgiving place to start.
 
 ## Installation
 
