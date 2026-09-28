@@ -30,7 +30,7 @@ def test_scrolling_plots_shrink_to_a_readable_width_before_they_scroll():
 
     assert set(data) == {"text/html", "image/svg+xml"}
     assert data["text/html"].startswith('<div style="overflow-x: auto; max-width: 100%;">')
-    assert f'width="{full_width}" height="700"' in data["text/html"]
+    assert f'width="{full_width}" height="500"' in data["text/html"]
     assert f"max-width: {full_width}px; min-width: {smallest_width}px; height: auto;" in data["text/html"]
     assert data["image/svg+xml"].lstrip().startswith("<?xml")
     assert metadata == {}
