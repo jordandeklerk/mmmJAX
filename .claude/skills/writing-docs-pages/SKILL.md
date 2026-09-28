@@ -10,11 +10,11 @@ The Prose section of `.claude/CLAUDE.md` and the rules below govern every page, 
 ## Rules
 
 - User Guide pages are MyST-NB pages executed during the build, and no page samples. A sampling cell is tagged `skip-execution` and its fit loads from a stored file, as Stored fits describes. After changing a `prerun/*.py` model or a stored fit, delete `docs/_build/.jupyter_cache`.
-- Every number in the prose must match an executed output. Escape dollar amounts as `\$`, lead with runnable code, and use no Markdown tables except a symbol map, a reference list of names such as the supplied names in `data.md`, or an index page's table of pages.
+- Every number in the prose must match an executed output. Escape dollar amounts as `\$`, lead with runnable code, and use no Markdown tables except a symbol map, a reference list of names such as the supplied names in `data.md`, or an index page's table of pages. A table that would run past about eight rows splits by group into a `tab-set`, one table per tab, as From math to code and Supplied names do, and `custom.css` keeps table rows compact.
 - Print `az.summary` tables in full, and check convergence with `az.plot_rank(..., thin=True)` next to trace plots.
 - A model's first page shows its generative model in full, covering the data transformations, the model equation, the media transformation, and the priors. Variants show only what changes.
 - Every model goes math, then symbol map, then code. The symbol map is a table of each symbol, its name in the code, and where the name comes from, and each $\sim$ goes in `log_density`, as From math to code in `user_guide/first_model.md` does, and a variant maps only its new symbols and names any that leave.
-- Each plot function's API page shows the example in `api/examples/<name>.py`, which `_ext/api_examples.py` runs with `mj`, `model`, `priors`, and `results` from the first model's fit on every build. The file's last line is the plot, a new plot function adds a file, and a changed guide call changes its file too.
+- `_ext/last_updated.py` puts the date of each page's last commit at its foot, so a new page shows no date until it's committed. Each plot function's API page shows the example in `api/examples/<name>.py`, which `_ext/api_examples.py` runs with `mj`, `model`, `priors`, and `results` from the first model's fit on every build. The file's last line is the plot, a new plot function adds a file, and a changed guide call changes its file too.
 
 ## Place the page
 

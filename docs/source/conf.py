@@ -28,6 +28,7 @@ extensions = [
     "IPython.sphinxext.ipython_console_highlighting",
     "sphinx_immaterial",
     "api_examples",
+    "last_updated",
 ]
 
 exclude_patterns = []
@@ -37,7 +38,7 @@ mathjax_path = "https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-mml-chtml.js"
 html_theme = "sphinx_immaterial"
 html_static_path = ["_static"]
 html_css_files = ["css/custom.css", "css/landing.css"]
-html_js_files = [("js/copybutton-shim.js", {"priority": 200}), "js/header-title-link.js", "js/landing.js"]
+html_js_files = [("js/copybutton-shim.js", {"priority": 200}), "js/header-title-link.js"]
 html_title = "mmmJAX"
 html_logo = "_static/mmmjax-logo.svg"
 html_favicon = "_static/favicon.ico"

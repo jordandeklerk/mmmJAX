@@ -64,6 +64,12 @@ header.md-header,
   font-size: 0.75rem;
 }
 
+/* The theme pads each table cell by nearly a line above and below, so a lookup table of a dozen rows runs a screen long. */
+.md-typeset table.data:not(.plain) th,
+.md-typeset table.data:not(.plain) td {
+  padding: 0.5em 1em;
+}
+
 .md-nav {
   font-size: 0.7rem;
 }

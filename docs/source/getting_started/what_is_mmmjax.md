@@ -51,8 +51,10 @@ The code comes from sorting these symbols into four groups.
   under your name `mu`. $h_{tc}$ is a step toward it that never leaves the
   block.
 
-Each $\sim$ becomes one term of `target` in `log_density`. The one for $y_t$
-is the likelihood and the other six are priors. The support a prior implies,
+Each statement written with $\sim$, read as "is distributed as," becomes one
+term of `target` in `log_density`, so $y_t \sim \operatorname{Normal}(\mu_t,
+\sigma)$ becomes `mj.normal(outcome, mu, sigma)`. The one for $y_t$ is the
+likelihood and the other six are priors. The support a prior implies,
 such as $\rho_c$ between zero and one, is what you declare in `parameters`.
 
 ```python

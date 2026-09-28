@@ -242,9 +242,8 @@ sections below write each part of this specification as code.
 
 You write the code by sorting these symbols into the four groups of
 [Write the math first](../getting_started/what_is_mmmjax.md#write-the-math-first),
-and each $\sim$ in the priors and the likelihood becomes one term of `target`
-in `log_density`. The tables below give each symbol's name in the code, one
-table for each place a name comes from.
+and each prior and the likelihood, the statements written with $\sim$,
+becomes one term of `target` in `log_density`.
 
 :::{admonition} The code follows the math
 :class: important
@@ -254,7 +253,12 @@ carries a symbol above. A name you can't place usually means a symbol you
 skipped, so find it in the math before you read on.
 :::
 
-### Supplied by mmmJAX
+The tables below sort the symbols by where each name comes from, one tab for
+each place.
+
+::::{tab-set}
+
+:::{tab-item} Supplied by mmmJAX
 
 The data arrive under names mmmJAX supplies, with the media, controls,
 treatments, and revenue already scaled.
@@ -273,7 +277,9 @@ treatments, and revenue already scaled.
 | $R_t$ | `outcome_scaling.inverse_transform(reference.outcome)` |
 | $s_R$ | `outcome_scaling.scale` |
 
-### Declared in `parameters`
+:::
+
+:::{tab-item} Declared in parameters
 
 Each unknown is one of your names, and its subscript becomes the axis named in
 its `dims`.
@@ -294,7 +300,9 @@ its `dims`.
 | $\theta_i$ | `treatment_coefficient` | `"treatment"` |
 | $\sigma$ | `sigma` | none |
 
-### Computed in the blocks
+:::
+
+:::{tab-item} Computed in the blocks
 
 The quantities built from the data and the unknowns take names of your own
 too. `mu` is the only one `transformed_parameters` returns, since no other
@@ -312,7 +320,9 @@ totals $S_c$ from `reference.spend` itself.
 | $\lambda_o$ | `organic_coefficient` | Local to `transformed_parameters` |
 | $\sum_t R_t$ | `total_revenue` | Local to `transformed_parameters` |
 
-### Symbols without a name
+:::
+
+::::
 
 A few symbols never get a name in the code.
 

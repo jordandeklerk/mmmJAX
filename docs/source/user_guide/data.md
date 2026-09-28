@@ -77,9 +77,15 @@ data.model_inputs["media"]
 ```
 
 `model_inputs` maps each supplied name to its kind, its axes, and where it
-comes from, as the entry for `media` shows. The table lists every name this
-data offers and what it holds. Constants and extra inputs you pass to
+comes from, as the entry for `media` shows. The tabs below list every name this
+data offers and what it holds, grouped by where each comes from. Constants and extra inputs you pass to
 {class}`~mmmjax.Data` go under names of your own.
+
+::::{tab-set}
+
+:::{tab-item} Data roles
+
+The columns `prepare_data` selects, one array for each role.
 
 | Supplied name | What it holds | Axes |
 | --- | --- | --- |
@@ -89,13 +95,35 @@ data offers and what it holds. Constants and extra inputs you pass to
 | `spend` | The paid channels' spend in dollars | `time`, `channel` |
 | `controls` | Demand and the holiday flag | `time`, `control` |
 | `treatments` | Price and promotion | `time`, `treatment` |
+
+:::
+
+:::{tab-item} Calendar
+
+Positions in time that mmmJAX works out from the dates.
+
+| Supplied name | What it holds | Axes |
+| --- | --- | --- |
 | `time` | Days since the first training week, which new data counts from too | `time` |
 | `media_time` | The same count for the media's weeks | `media_time` |
 | `day_of_year` | Each week's day in the calendar year | `time` |
 | `media_day_of_year` | The same for the media's weeks | `media_time` |
+
+:::
+
+:::{tab-item} Model inputs
+
+What mmmJAX adds from the prepared data and its scaling.
+
+| Supplied name | What it holds | Axes |
+| --- | --- | --- |
 | `n_periods` | The number of modeled weeks, as a Python integer | none |
 | `outcome_scaling` | The outcome's fitted transform, with `scale` and `inverse_transform` | none |
 | `reference` | The training arrays under these same names | none |
+
+:::
+
+::::
 
 The media's weeks match the modeled weeks unless `media_history` adds earlier
 ones, as a note in [A first model](first_model) explains. `reference` holds
