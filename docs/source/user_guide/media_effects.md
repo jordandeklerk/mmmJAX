@@ -19,7 +19,7 @@ its price and promotions as treatments.
 :tags: [remove-cell]
 
 %run -m prerun.first_model
-from prerun import first_model_results
+from prerun import first_model_curves, first_model_results
 
 results = first_model_results(model)
 ```
@@ -205,7 +205,18 @@ to twice the current spending in 21 steps. You can pass
 each one. Spending converts to exposure at the observed cost per impression.
 
 ```{code-cell} ipython3
+:tags: [skip-execution]
+
 curves = mj.response_curves(model, results, quantity="mu")
+```
+
+```{code-cell} ipython3
+:tags: [remove-cell]
+
+curves = first_model_curves(model, results)
+```
+
+```{code-cell} ipython3
 mj.plot_response_curves(curves)
 ```
 

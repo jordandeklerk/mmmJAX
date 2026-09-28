@@ -244,7 +244,7 @@ mj.plot_fit(model, results)
 ```
 
 ```{code-cell} ipython3
-:tags: [remove-output]
+:tags: [skip-execution]
 
 # The analyses compare the mean that transformed_parameters returns as mu.
 curves = mj.response_curves(model, results, quantity="mu")

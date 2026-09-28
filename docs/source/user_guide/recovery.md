@@ -21,7 +21,7 @@ data can separate and what it leaves to the model's assumptions.
 :tags: [remove-cell]
 
 %run -m prerun.first_model
-from prerun import first_model_results
+from prerun import first_model_curves, first_model_results
 
 results = first_model_results(model)
 
@@ -350,6 +350,18 @@ It returns the revenue each channel adds over the modeled weeks, and a dotted
 line draws Linear TV's true curve over the model's.
 
 ```{code-cell} ipython3
+:tags: [skip-execution]
+
+curves = mj.response_curves(model, results, quantity="mu")
+```
+
+```{code-cell} ipython3
+:tags: [remove-cell]
+
+curves = first_model_curves(model, results)
+```
+
+```{code-cell} ipython3
 :tags: [hide-input]
 
 import plotnine as pn
@@ -366,7 +378,6 @@ def true_response(multiplier):
     return revenue
 
 
-curves = mj.response_curves(model, results, quantity="mu")
 tv = curves["spend"].sel(channel="Linear TV").to_dataframe()
 tv["truth"] = [true_response(multiplier).sel(channel="Linear TV").item() for multiplier in tv.index]
 true_line = pn.geom_line(pn.aes("spend", "truth"), data=tv, linetype="dotted", size=1, inherit_aes=False)

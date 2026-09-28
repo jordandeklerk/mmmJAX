@@ -25,7 +25,7 @@ draw and how to build new plots from the same outputs.
 :tags: [remove-cell]
 
 %run -m prerun.first_model
-from prerun import first_model_prior_results, first_model_results
+from prerun import first_model_curves, first_model_limited_plan, first_model_prior_results, first_model_results
 
 results = first_model_results(model)
 
@@ -452,7 +452,18 @@ transformations.
 {func}`~mmmjax.plot_response_curves` shows what the curves mean in dollars.
 
 ```{code-cell} ipython3
+:tags: [skip-execution]
+
 curves = mj.response_curves(model, results, quantity="mu")
+```
+
+```{code-cell} ipython3
+:tags: [remove-cell]
+
+curves = first_model_curves(model, results)
+```
+
+```{code-cell} ipython3
 mj.plot_response_curves(curves, combine=True, channels=["Meta", "Streaming", "Generic search"])
 ```
 
@@ -476,6 +487,8 @@ under both splits, and {func}`~mmmjax.plot_budget_response` walks from
 the historical revenue to the optimized one.
 
 ```{code-cell} ipython3
+:tags: [skip-execution]
+
 plan = mj.optimize_budget(
     model,
     results,
@@ -484,6 +497,15 @@ plan = mj.optimize_budget(
     spend_constraint_upper=0.3,
     include_metrics=True,
 )
+```
+
+```{code-cell} ipython3
+:tags: [remove-cell]
+
+plan = first_model_limited_plan(model, results)
+```
+
+```{code-cell} ipython3
 mj.plot_budget_response(plan)
 ```
 

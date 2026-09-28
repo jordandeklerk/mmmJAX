@@ -361,7 +361,22 @@ diagnostics](sampling), and {func}`~mmmjax.plot_fit` draws the predictions
 against observed revenue.
 
 ```{code-cell} ipython3
+:tags: [skip-execution]
+
 generated = mj.generate_quantities(model, blackjax_results)
+```
+
+```{code-cell} ipython3
+:tags: [remove-cell]
+
+generated = stored(
+    "blackjax_generated",
+    lambda: mj.generate_quantities(model, blackjax_results),
+    groups=["posterior_predictive", "observed_data"],
+)
+```
+
+```{code-cell} ipython3
 mj.plot_fit(model, generated)
 ```
 
