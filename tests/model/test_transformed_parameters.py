@@ -646,6 +646,23 @@ def test_unknown_transformed_inputs_are_checked_only_at_evaluation():
         model.generate_quantities(jax.random.key(0), {}, model.data)
 
 
+def test_unknown_transformed_inputs_name_the_outputs_that_would_have_worked():
+    model = Model(
+        parameters={},
+        log_density=lambda typo: typo,
+        data=_data(),
+        transformed_parameters=lambda: {"actual": jnp.array(0.0)},
+    )
+
+    with pytest.raises(ValueError, match="log_density requests unknown input 'typo'") as error:
+        model.log_density({}, model.data)
+
+    message = str(error.value)
+    assert "which transformed_parameters does not return" in message
+    assert "Available inputs are" in message
+    assert "actual" in message.split("Available inputs are")[1]
+
+
 def test_returned_transformed_outputs_follow_changed_parameters_and_scenario_shapes_under_jit_vmap():
     model = _regression(generate=lambda key, signal: {"signal": signal})
     positions = {"beta": jnp.array([[0.3, -0.2], [0.5, 0.1]]), "scale": jnp.ones(2), "intercept": jnp.zeros(2)}

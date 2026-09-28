@@ -22,5 +22,5 @@ mmmJAX is a JAX library for Bayesian marketing mix models written as Stan-style 
 Prose means docs pages, the README, docstrings, and code comments.
 
 - IMPORTANT: apply the [avoid-ai-writing](https://github.com/conorbronsdon/avoid-ai-writing) skill to every piece of prose you write or edit. Treat its detector's findings as signals, since "features" as a noun and low vocabulary diversity on long technical pages are known false positives.
-- Write brief narrative paragraphs. No bulleted or numbered lists, no colons that introduce a clause, no em dashes, and no summaries ending in ", <verb>ing". Returns sections may use `- **name** — description` bullets.
+- Write brief narrative paragraphs, with no colons that introduce a clause, no em dashes, and no summaries ending in ", <verb>ing". Docstrings and comments use no bulleted or numbered lists, though Returns sections may use `- **name** — description` bullets. Docs pages and the README may use a list where the content really is one, such as steps or parallel options, and callout boxes (`important`, `warning`, `tip`, `note`) for what a reader must not miss or could get wrong, without overdoing either.
 - Comments explain why in one or two lines.

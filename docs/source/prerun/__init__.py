@@ -1,6 +1,6 @@
-"""Fitted results for the User Guide."""
+"""Fitted results that the executed docs pages load instead of sampling."""
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 import xarray as xr
@@ -28,7 +28,7 @@ def stored(name: str, fit: Callable[[], xr.DataTree], groups: Sequence[str] | No
 
 
 def first_model_results(model: mj.Model) -> xr.DataTree:
-    """Load the stored fit of the model from A first model."""
+    """Load the stored fit of the model from A first model with every group."""
     results = stored(
         "first_model",
         lambda: mj.sample(model, draws=1000, warmup=1000, chains=4, seed=7),
@@ -36,11 +36,11 @@ def first_model_results(model: mj.Model) -> xr.DataTree:
     return results
 
 
-def brand_results(model: mj.Model) -> xr.DataTree:
-    """Load the stored fit of the ten-channel brand model from Plotting."""
+def first_model_prior_results(model: mj.Model, priors: Mapping[str, mj.Prior]) -> xr.DataTree:
+    """Load the stored prior draws of the model from A first model."""
     results = stored(
-        "brand",
-        lambda: mj.sample(model, draws=1000, warmup=1000, chains=4, seed=7),
-        groups=["posterior", "posterior_predictive", "log_likelihood", "observed_data"],
+        "first_model_prior",
+        lambda: mj.sample_prior(model, priors, draws=500, seed=0),
+        groups=["prior", "prior_predictive", "observed_data"],
     )
     return results

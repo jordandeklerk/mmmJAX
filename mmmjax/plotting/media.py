@@ -11,7 +11,16 @@ import plotnine as pn
 import xarray as xr
 from numpy.typing import ArrayLike, NDArray
 
-from mmmjax.plotting._layers import _bands, _bar_layout, _compact, _facet, _HatchedCol, _scales
+from mmmjax.plotting._layers import (
+    _bands,
+    _bar_layout,
+    _compact,
+    _facet,
+    _facet_count,
+    _HatchedCol,
+    _panel_size,
+    _scales,
+)
 from mmmjax.plotting._summary import (
     _ci_prob,
     _facets,
@@ -91,6 +100,7 @@ def plot_frequency_curves(
     best = curves["best_frequency"].sel(channel=shown).to_dataframe().reset_index()[["channel", "best_frequency"]]
     marked = frame.merge(best, on="channel")
     marked = marked[np.isclose(marked["frequency"], marked["best_frequency"])]
+    facets = _facets(changes.dims, ("channel", "frequency"))
 
     plot = (
         _bands(frame, x="frequency", color="channel", labels=shown, probability=probability, order=labels)
@@ -102,8 +112,9 @@ def plot_frequency_curves(
             caption=" ".join(text for text in (note, group_note) if text),
         )
         + _scales(frame, "frequency")
-        + _facet(_facets(changes.dims, ("channel", "frequency")))
+        + _facet(facets)
         + theme_mmmjax()
+        + _panel_size(frame, facets)
     )
     return plot
 
@@ -286,6 +297,7 @@ def plot_response_curves(
         + _scales(frame, "spend", thin=not combine)
         + layout
         + theme_mmmjax()
+        + _panel_size(frame, facets if combine else ["panel", *facets])
     )
     return plot
 
@@ -380,6 +392,7 @@ def plot_roi_bubbles(
         + pn.labs(x="ROI", y=_outcome_words(_label(metric), dataset), fill="Channel", caption=note)
         + (pn.facet_wrap(panels, nrow=1) if panels else pn.facet_null())
         + theme_mmmjax()
+        + _panel_size(frame, panels)
     )
     return plot
 
@@ -456,7 +469,7 @@ def plot_spend_vs_contribution(
     marks = _ordered(shares.assign(position=tops, text=texts), "channel", bars)
     colors = {spend_label: _colors(2)[1], response_label: _colors(1)[0]}
     measures = [spend_label, response_label]
-    figure, labels_shown, layout = _bar_layout(bars, 0.9)
+    figure, labels_shown, layout = _bar_layout(bars, 0.9, _facet_count(long, panels))
 
     plot: pn.ggplot = (
         figure(long, pn.aes("channel", "share", fill="measure", color="measure", alpha="measure"))
@@ -495,7 +508,7 @@ def _metric_bars(
     ordered = shown if spending is None else sorted(shown, key=lambda label: -spending[labels.index(label)])
     hidden = [label for label in labels if label not in shown]
     selection, note = _select_panels(first[metric], coords, n_groups, "values")
-    # A ratio's mean is unstable when increments come near zero, so Meridian reads its median instead.
+    # A ratio's mean is unstable when increments come near zero, so the bar shows its median instead.
     point = "median" if metric == "cost_per_incremental_response" else None
     frames = []
     facets: list[str] = []
@@ -529,8 +542,8 @@ def _metric_bars(
     lines: list[PlotAddable] = []
     if reference is not None:
         lines.append(pn.geom_hline(yintercept=reference, linetype="dashed", color="#8c8c8c"))
-    # Each channel gets the 80 pixels Meridian gives it, and compared results widen the slot they share.
-    figure, texts, layout = _bar_layout(bars, 0.4 + 0.4 * len(datasets))
+    # Each channel gets 80 pixels so its bar and tilted label stay legible, and compared results widen the slot.
+    figure, texts, layout = _bar_layout(bars, 0.4 + 0.4 * len(datasets), _facet_count(frame, facets))
 
     plot: pn.ggplot = (
         figure(frame, pn.aes("channel", "estimate", fill=fill))

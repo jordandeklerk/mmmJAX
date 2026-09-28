@@ -1,32 +1,26 @@
 # User Guide
 
-The User Guide builds one marketing mix model and then works through each
-part of it. [The example data](example_data) describes the simulated data the
-guide uses, [Data and scaling](data.md) prepares, checks, and scales it,
-[Distributions](distributions) covers the functions every prior and
-likelihood is written with, and [A first model](first_model) fits the model
-from start to finish. Most pages after those four start from that model and
-either examine one piece closely or change it, and [Recovering the
-truth](recovery) checks its answers against the simulation. [Plotting](plotting)
-and [Customizing plots](custom_plots) use a brand with ten channels instead,
-since plots change as channels are added.
+The User Guide builds one marketing mix model and then works through each part
+of it. The model is for a brand with ten paid channels, an email newsletter,
+two controls, a price and promotions, a trend, and a yearly season. The
+sections run in order, and every page after [A first model](first_model)
+starts from its fit.
+
+| Section | Description |
+| --- | --- |
+| [Fundamentals](fundamentals) | The example data, how mmmJAX prepares it, and the distributions models are written with |
+| [Introductory model](introductory_model) | The guide's first model and the plots that show its results |
+| [Priors and inference](priors_and_inference) | Checking priors, sampling, reading diagnostics, and other ways to fit |
+| [Analysis](analysis) | Contributions, returns, budgets, and scenarios from the fitted model |
+| [Extending the model](extending) | New model parts, regional models, and functions of your own |
 
 ```{toctree}
-:maxdepth: 1
+:hidden:
+:maxdepth: 2
 
-example_data
-data
-distributions
-first_model
-priors
-sampling
-inference
-media_effects
-recovery
-budgets
-scenarios
-plotting
-custom_plots
-changing
-functions
+fundamentals
+introductory_model
+priors_and_inference
+analysis
+extending
 ```

@@ -11,7 +11,7 @@ import plotnine as pn
 import xarray as xr
 
 from mmmjax.plotting._display import _ScrollingPlot
-from mmmjax.plotting._layers import _compact, _facet, _figure_margins, _scales
+from mmmjax.plotting._layers import _compact, _facet, _figure_height, _figure_margins, _panel_size, _scales
 from mmmjax.plotting._summary import (
     _distinct_shortened,
     _facets,
@@ -157,11 +157,10 @@ def _waterfall_plot(totals: xr.Dataset, channels: Sequence[str] | None, include_
     frame = frame.assign(label=frame["name"].map(names))
     panel_count = max(1, int(np.prod([totals.sizes[dim] for dim in panels])))
     # Each row keeps a third of an inch, and panels past the third widen the figure by their own width.
-    height = max(7.0, 1.4 + 0.32 * len(rows))
+    height = max(_figure_height(panel_count), 1.4 + 0.32 * len(rows))
     width = max(12.0, 2.0 + 3.3 * panel_count)
-    tall = height > 7 or width > 12
-    figure = _ScrollingPlot if tall else pn.ggplot
-    sizing: list[PlotAddable] = [_figure_margins(width, height)] if tall else []
+    figure = _ScrollingPlot if height > 7 or width > 12 else pn.ggplot
+    sizing: list[PlotAddable] = [_figure_margins(width, height)] if height > 5 or width > 12 else []
     colors = {"Baseline": "#8c8c8c", "Increase": _colors(1)[0], "Decrease": _colors(2)[1], "Other": "#c9c9c9"}
     frame, limits = _place_labels(frame, width, panel_count, max(len(name) for name in names.values()))
     breaks = _share_breaks(frame, limits)
@@ -345,6 +344,7 @@ def _stacked_plot(totals: xr.Dataset, channels: Sequence[str] | None, include_ba
         + _facet(facets, stacked=True)
         + zoom
         + theme_mmmjax()
+        + _panel_size(frame, facets)
     )
     return plot
 

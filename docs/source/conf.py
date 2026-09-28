@@ -1,11 +1,15 @@
 """Sphinx configuration for the mmmJAX documentation."""
 
+import os
 import re
 import sys
 from pathlib import Path
 
 # The extension that draws each plot function's example on its API page
 sys.path.insert(0, str(Path(__file__).parent / "_ext"))
+
+# Executed pages in every section load the stored fits in prerun, and the notebook kernels inherit this path.
+os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, [str(Path(__file__).parent), os.environ.get("PYTHONPATH")]))
 
 project = "mmmJAX"
 copyright = "2026, Jordan DeKlerk"
@@ -58,6 +62,8 @@ html_theme_options = {
         "toc.follow",
     ],
     "toc_title": "On this page",
+    # List every page in the sidebar, so a section shows its arrow before it's opened.
+    "globaltoc_collapse": False,
     "palette": [
         {
             "media": "(prefers-color-scheme)",

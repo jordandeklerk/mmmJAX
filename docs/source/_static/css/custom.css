@@ -133,6 +133,11 @@ button.copybtn.success {
   color: var(--md-default-fg-color--light);
 }
 
+/* Wide printed tables scroll inside the code element, so room at its end keeps the last column clear of the copy button. */
+.md-typeset .cell_output div.highlight pre > code {
+  padding-right: 2.5rem;
+}
+
 :root {
   --sd-fontsize-tabs-label: 0.64rem;
 }
@@ -324,6 +329,7 @@ theme so the frames read in both schemes.
 }
 
 /* A cell tagged wide-table keeps each row on one line and scrolls sideways, for frames with many text columns. */
+.md-typeset div.cell.tag_wide-table table.dataframe th,
 .md-typeset div.cell.tag_wide-table table.dataframe td {
   white-space: nowrap;
 }

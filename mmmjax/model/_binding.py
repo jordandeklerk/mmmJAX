@@ -394,8 +394,7 @@ def _callback_inputs(
         try:
             arguments[argument] = _lookup_input(origin, data, effects, parameters)
         except LookupError:
-            declared = data.variable_sources is not None
-            raise ValueError(_missing_input_message(name, argument, origin, declared=declared)) from None
+            raise ValueError(_missing_input_message(name, argument, origin, data, effects, parameters)) from None
     return arguments
 
 
@@ -433,21 +432,39 @@ def _lookup_input(
     raise ValueError(f"Unknown input source {kind!r} for {source_name!r}")
 
 
-def _missing_input_message(name: str, argument: str, origin: _Origin, *, declared: bool) -> str:
+def _missing_input_message(
+    name: str,
+    argument: str,
+    origin: _Origin,
+    data: _ModelData,
+    effects: Mapping[str, jax.Array],
+    parameters: Mapping[str, object],
+) -> str:
     """Explain an input the prepared data or transformed_parameters did not supply."""
     if origin.kind != "transformed":
         return f"{name} requires input {argument!r}. Include it when preparing data for this evaluation"
-    if declared:
-        return (
-            f"{name} requires input {argument!r}. "
-            "Return it from transformed_parameters or declare its source in Data variables"
-        )
-    if argument in ("data", "effects"):
+    declared = data.variable_sources is not None
+    if not declared and argument in ("data", "effects"):
         return (
             f"{name} requires transformed quantity {argument!r}. "
             "Prepared callbacks receive individual inputs by name, not data or effects bundles"
         )
-    return f"{name} requires transformed quantity {argument!r}. Return it from transformed_parameters"
+    guidance = (
+        "Return it from transformed_parameters or declare its source in Data variables"
+        if declared
+        else "Return it from transformed_parameters or use a selected data role, declared constant, or parameter"
+    )
+    sources = (
+        {"variable": set(data.variable_sources or ()), "constant": set(data.constants)}
+        if declared
+        else _data_sources(data)
+    )
+    # The returned names are known only now, so listing them turns a typo into an obvious fix.
+    available = sorted(set().union(*sources.values()) | data.fixed_names | set(parameters) | set(effects))
+    return (
+        f"{name} requests unknown input {argument!r}, which transformed_parameters does not return. "
+        f"{guidance}. Available inputs are {', '.join(available)}"
+    )
 
 
 def _validate_log_density_signature(

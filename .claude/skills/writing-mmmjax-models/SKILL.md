@@ -7,10 +7,12 @@ description: Writes, extends, and debugs mmmJAX marketing mix models built from 
 
 A model is a dict of parameter declarations plus plain functions (blocks) that
 mmmJAX fills by argument name. Start every new model from
-`docs/source/user_guide/prerun/first_model.py`, the model the docs build runs.
-It prepares `data` and `scaling`, declares `parameters`, defines
-`transformed_parameters`, `log_density`, and `generated_quantities`, and builds
-`model`. Signatures and parameter descriptions are in the numpydoc docstrings
+`docs/source/prerun/first_model.py`, the model the docs build runs.
+It prepares `data` and `scaling` for a ten-channel brand, declares `parameters`
+and a `priors` dict of `mj.Prior`, defines `transformed_data` (Fourier features
+and a trend), `transformed_parameters` (HillAdstock with coefficients from ROI
+through `mj.roi_coefficient`), `log_density`, and `generated_quantities`, and
+builds `model`. Signatures and parameter descriptions are in the numpydoc docstrings
 in `mmmjax/`, and `mmmjax/__init__.py` lists the public API.
 
 ## Checks
@@ -66,12 +68,20 @@ or positional-only ones.
   `log_likelihood`, and `log_prior` fill those result groups. Any other key
   becomes a generated quantity, which needs
   `Model(generated_dims={"name": "time"})` for axis labels.
-- Parameter `dims` come from the data axes (`time`, `media_time`, `group`,
+- Parameter `dims` can name the data axes (`time`, `media_time`, `group`,
   `channel`, `control`, `organic_channel`, `rf_channel`, `organic_rf_channel`,
-  `treatment`). Any other axis needs `Model(coords={"axis": labels})`.
+  `treatment`), which keep mmmJAX's spelling. An axis of your own can have any
+  name given its length, as in `Real(4, dims="harmonic")`, or its labels
+  through `Model(coords={"harmonic": labels})`, and fails with neither.
 - `Data(variables={"argument": "source"})` renames inputs. Once it is given,
   blocks see only the declared names plus constants and `transformed_data`
   outputs, so built-ins must be declared too, as in `"training": "reference"`.
+
+List each block's arguments as supplied names, then names returned by earlier
+blocks, then declared parameters, then constants, as
+`docs/source/prerun/first_model.py` does, with the random key first in
+`generated_quantities`. Signatures carry no comments on where each argument
+comes from; the docs give that in each model's symbol tables.
 
 ## Rules
 
@@ -90,9 +100,13 @@ or positional-only ones.
    median, standardized controls and treatments, and the outcome only when
    `scale_outcome` is set. Multiply by
    `scaling.transformations["outcome"].scale` to read one in outcome units.
-   When the user runs `sample_prior`, write `log_density` with the same
-   `Prior` objects (`priors["sigma"](sigma)`), since `sample_prior` never calls
-   `log_density`.
+   Write each prior in `log_density` as a direct distribution term, as in
+   `target += mj.half_normal(sigma, 1.0)`, the way a Stan model block reads.
+   When the user runs `sample_prior`, `psense_summary`, or `plot_psense`, state
+   the same priors again in a `priors` mapping of `Prior` objects, since none
+   of them calls `log_density`, and check that `model.log_prob` equals the
+   mapping's terms plus the likelihood, as `docs/source/user_guide/priors.md`
+   does.
 4. The analysis functions rerun the blocks on scenario data. A definition,
    such as a trend normalized by the training window, a centering, or an ROI
    or contribution calibration, reads training arrays from `reference`
@@ -124,7 +138,9 @@ or positional-only ones.
    after time, giving outcome `(time, group)` and media
    `(media_time, group, channel)`. A `(group, channel)` coefficient needs
    `(saturated * coefficient).sum(-1)` in place of `@`, while
-   `controls @ control_coefficient` works in both layouts.
+   `controls @ control_coefficient` works in both layouts. Under
+   `scale_outcome="population"`, `outcome_scaling.scale` inside a block holds
+   one value per group, so pass it to `roi_coefficient` as it is.
 10. For float64, call `jax.config.update("jax_enable_x64", True)` before
     `fit_data_scaling`, `mj.Prior`, or `mj.Model`, which keep the precision in
     effect when they are built.
@@ -168,7 +184,9 @@ These User Guide pages in `docs/source/user_guide/` are executed examples.
 - `distributions.md` for function forms, shapes, and support
 - `priors.md` for `Prior`, `sample_prior`, and `check_prior`
 - `changing.md` for variants, a free Hill slope, a Student-t likelihood, and
-  Fourier seasonality with `coords`
+  an HSGP trend
+- `geo.md` for grouped data, population scaling, and a noncentered regional
+  ROI hierarchy through `roi_coefficient(..., deviations=...)`
 - `functions.md` for custom functions, `custom_distribution`, and tracing
 - `scenarios.md` for new data, `reference`, and `Data` variables and constants
 - `sampling.md` for diagnostics, `continue_sampling`, `generate_quantities`,
@@ -177,6 +195,6 @@ These User Guide pages in `docs/source/user_guide/` are executed examples.
 - `media_effects.md` and `budgets.md` for the analysis functions
 - `../getting_started/installation.md` for precision and parallel chains
 
-HSGP and ROI or contribution calibration have no User Guide page. The
-docstring examples in `mmmjax/baselines/hsgp.py` and `mmmjax/media/calibration.py` cover them,
-and `tests/baselines/test_hsgp.py` builds a full HSGP model.
+`first_model.md` covers ROI calibration through `mj.roi_coefficient`, and the trend
+section of `changing.md` builds an HSGP trend. Contribution calibration has no
+User Guide page, and the docstring examples in `mmmjax/media/calibration.py` cover it.

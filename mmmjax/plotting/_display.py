@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 
 class _ScrollingPlot(pn.ggplot):
-    """Show a plot wider than a notebook cell at full size in a box that scrolls sideways."""
+    """Fit a wide plot to its notebook cell, and scroll it once shrinking would make it hard to read."""
 
     def save(
         self,
@@ -33,17 +33,22 @@ class _ScrollingPlot(pn.ggplot):
         super().save(filename, format, path, width, height, units, dpi, guarded, verbose, **kwargs)
 
     def _repr_mimebundle_(self, include: Any = None, exclude: Any = None) -> "MimeBundle":
-        """Draw the plot at full size in a box that scrolls instead of shrinking it to fit the cell."""
+        """Shrink the plot to fit the cell down to a readable width, and scroll it past that."""
         buffer = BytesIO()
         self.save(buffer, "svg", verbose=False)
         width, height = self.theme.getp("figure_size")
         dpi = self.theme.getp("dpi")
+        full_width = round(width * dpi)
+        full_height = round(height * dpi)
+        # Below about 60 percent of full size the axis labels get too small, so the box scrolls from there.
+        smallest_width = round(0.6 * full_width)
         # A vector image stays sharp at any width, where a bitmap of hundreds of bars would be enormous.
         encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
         markup = (
             '<div style="overflow-x: auto; max-width: 100%;">'
-            f'<img src="data:image/svg+xml;base64,{encoded}" width="{round(width * dpi)}" '
-            f'height="{round(height * dpi)}" style="max-width: none;" alt="Plot">'
+            f'<img src="data:image/svg+xml;base64,{encoded}" width="{full_width}" height="{full_height}" '
+            f'style="width: 100%; max-width: {full_width}px; min-width: {smallest_width}px; height: auto;" '
+            'alt="Plot">'
             "</div>"
         )
         bundle: MimeBundle = ({"text/html": markup, "image/svg+xml": buffer.getvalue().decode("utf-8")}, {})

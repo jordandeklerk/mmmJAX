@@ -14,7 +14,8 @@ def theme_mmmjax() -> pn.theme:
 
     White panels carry left and bottom axis lines with outward ticks and no
     grid. Text follows the sizes of the documentation figures, and the figure
-    measures 12 by 7 inches at 100 dots per inch. Every plotnine plot in
+    measures 12 by 5 inches at 100 dots per inch, which the plots with more than
+    one panel raise to 12 by 7. Every plotnine plot in
     mmmjax already ends with this theme. Add it to your own plots to match
     them, and add ``plotnine.theme`` settings after it to change any element.
 
@@ -25,7 +26,7 @@ def theme_mmmjax() -> pn.theme:
     """
     base = pn.theme_classic(base_size=14)
     styled = base + pn.theme(
-        figure_size=(12, 7),
+        figure_size=(12, 5),
         dpi=100,
         text=pn.element_text(color="#262626"),
         axis_title=pn.element_text(size=15),

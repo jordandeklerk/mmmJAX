@@ -149,19 +149,19 @@ def test_fit_plots_require_predictive_draws_and_observations(draw, options, erro
 
 
 @pytest.mark.parametrize(
-    "draw",
+    ("draw", "height"),
     [
-        pytest.param(lambda: plot_rank(_posterior()), id="rank"),
-        pytest.param(lambda: plot_trace_dist(_posterior()), id="trace"),
-        pytest.param(lambda: plot_prior_posterior(_posterior(), _prior()), id="prior and posterior"),
-        pytest.param(lambda: plot_ppc_dist(*_fitted()[:2]), id="predictive check"),
+        pytest.param(lambda: plot_rank(_posterior()), 7.0, id="rank"),
+        pytest.param(lambda: plot_trace_dist(_posterior()), 7.0, id="trace"),
+        pytest.param(lambda: plot_prior_posterior(_posterior(), _prior()), 7.0, id="prior and posterior"),
+        pytest.param(lambda: plot_ppc_dist(*_fitted()[:2]), 5.0, id="predictive check"),
     ],
 )
-def test_arviz_diagnostics_default_to_the_plotnine_figure_size(draw):
+def test_arviz_diagnostics_default_to_the_plotnine_size_for_their_panels(draw, height):
     collection = draw()
 
     figure = collection.viz["figure"].item()
-    np.testing.assert_array_equal(figure.get_size_inches(), [12.0, 7.0])
+    np.testing.assert_array_equal(figure.get_size_inches(), [12.0, height])
     plt.close("all")
 
 
@@ -797,7 +797,7 @@ def test_plot_ppc_tstat_gives_each_group_a_row_of_panels():
         "south   Mean, p = 1.00",
         "south   Minimum, p = 1.00",
     ]
-    assert summed.viz["figure"].item().get_size_inches()[1] == pytest.approx(4.5)
+    assert summed.viz["figure"].item().get_size_inches()[1] == pytest.approx(5.0)
     assert grouped.viz["figure"].item().get_size_inches()[1] == pytest.approx(7.0)
     plt.close("all")
 

@@ -1,7 +1,7 @@
 """Add an example with its figure to the API page of each plot function.
 
 Each file in ``api/examples`` holds one plot function's example. The build runs it against the stored
-fit of the ten-channel brand from the Plotting guide and adds its code and figure to the function's
+fit of the ten-channel brand from A first model and adds its code and figure to the function's
 Examples section, so the figures on the API pages match the guide and are redrawn on every build.
 """
 
@@ -40,7 +40,7 @@ def _add_example(app, what, name, obj, options, lines):
             "",
             "Examples",
             "--------",
-            "The code continues the ten-channel brand from :doc:`Plotting </user_guide/plotting>`.",
+            "The code continues the ten-channel brand from :doc:`A first model </user_guide/first_model>`.",
             "",
             ".. code-block:: python",
             "",
@@ -81,11 +81,10 @@ def _draw(code, path, srcdir):
 @functools.cache
 def _brand(srcdir):
     """Build the brand model and load its stored fit once per build."""
-    guide = Path(srcdir, "user_guide")
-    sys.path.insert(0, str(guide))
-    from prerun import brand_results
+    sys.path.insert(0, str(srcdir))
+    from prerun import first_model_results
 
-    brand = runpy.run_path(str(guide / "prerun" / "brand_model.py"))
-    results = brand_results(brand["model"])
+    brand = runpy.run_path(str(Path(srcdir, "prerun", "first_model.py")))
+    results = first_model_results(brand["model"])
     namespace = {"mj": brand["mj"], "model": brand["model"], "priors": brand["priors"], "results": results}
     return namespace

@@ -17,7 +17,7 @@ from mmmjax.analysis.contribution import contributions
 from mmmjax.inference.priors import Prior
 from mmmjax.inference.sensitivity import _sensitivity_tree
 from mmmjax.model.model import Model
-from mmmjax.plotting._layers import _compact, _facet, _scales
+from mmmjax.plotting._layers import _compact, _facet, _panel_size, _scales
 from mmmjax.plotting._summary import (
     _ci_prob,
     _distinct_shortened,
@@ -164,6 +164,7 @@ def plot_fit(
         + _scales(lines, time)
         + _facet(panels, stacked=True)
         + theme_mmmjax()
+        + _panel_size(lines, panels)
     )
     return plot
 
@@ -347,7 +348,7 @@ def plot_ppc_tstat(
     options = {"col_wrap": len(chosen), **kwargs}
     rows = -(-len(titles) // int(options["col_wrap"]))
     # A row of density panels reads best at about three and a half inches, and one row keeps a little more.
-    height = max(4.5, 3.5 * rows)
+    height = max(5.0, 3.5 * rows)
     shown = observed.sizes.get("group", 0)
     with mpl.rc_context(_matplotlib_style()), warnings.catch_warnings():
         # ArviZ reads an observed statistic of zero or one as a binary outcome, which these never are.
@@ -677,6 +678,7 @@ def plot_residuals(
         + _scales(frame, time)
         + _facet(kept, stacked=True)
         + theme_mmmjax()
+        + _panel_size(frame, kept)
     )
     return plot
 
@@ -985,7 +987,7 @@ def _axis_labels(model: Model, var_name: str) -> tuple[str, str]:
     return time_label, outcome_label
 
 
-def _arviz_options(options: dict[str, Any], *, height: float = 7.0) -> dict[str, Any]:
+def _arviz_options(options: dict[str, Any], *, height: float = 5.0) -> dict[str, Any]:
     """Give ArviZ the figure size of the plotnine plots and wrapped panel titles unless the caller sets them."""
     figure = {"figsize": (12, height), **options.get("figure_kwargs", {})}
     sized = {"labeller": _wrapping_labeller(), **options, "figure_kwargs": figure}
@@ -1245,7 +1247,7 @@ def _grid_height(panels: int, options: dict[str, Any]) -> float:
         return 7.0
     columns = int(options.get("col_wrap", 4))
     rows = -(-panels // columns)
-    height = max(7.0, 3.0 * rows)
+    height = 5.0 if panels <= 1 else max(7.0, 3.0 * rows)
     return height
 
 

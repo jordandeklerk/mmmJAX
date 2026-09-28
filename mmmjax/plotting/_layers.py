@@ -104,30 +104,53 @@ def _scales(frame: pd.DataFrame, x: str | None = None, *, y: bool = True, thin: 
     return scales
 
 
-def _bar_layout(labels: Sequence[str], slot: float) -> tuple[type[pn.ggplot], list[str], list["PlotAddable"]]:
+def _bar_layout(
+    labels: Sequence[str], slot: float, panels: int = 1
+) -> tuple[type[pn.ggplot], list[str], list["PlotAddable"]]:
     """Size a bar chart so each bar keeps its slot and tilt and shorten its labels."""
     # The y axis, its labels, and its title take about an inch and a half beside the bars.
     width = max(12.0, 1.5 + len(labels) * slot)
+    height = _figure_height(panels)
     texts, axis = _channel_axis(labels)
     layout: list[PlotAddable] = [axis]
-    if width > 12:
-        layout.append(_figure_margins(width, 7))
+    if width > 12 or height > 5:
+        layout.append(_figure_margins(width, height))
     figure = _ScrollingPlot if width > 12 else pn.ggplot
     return figure, texts, layout
 
 
 def _channel_axis(labels: Sequence[str]) -> tuple[list[str], pn.theme]:
     """Tilt category labels at 45 degrees and shorten long ones so every label takes the same room."""
-    # Meridian's charts stop labels at 180 pixels, about 27 characters of axis text.
+    # Labels stop at 27 characters, about 180 pixels of tilted text, so a long name can't crowd out the panel.
     shortened = _distinct_shortened([str(label) for label in labels], 27)
     tilted = pn.theme(axis_text_x=pn.element_text(rotation=45, ha="right"))
     return shortened, tilted
 
 
+def _figure_height(panels: int) -> float:
+    """Give one panel the 12 by 5 default and several panels the taller 12 by 7."""
+    # Small multiples need the extra height to keep each panel's axes readable.
+    height = 5.0 if panels <= 1 else 7.0
+    return height
+
+
+def _facet_count(frame: pd.DataFrame, facets: Sequence[str]) -> int:
+    """Count the panels a facet over these columns draws."""
+    panels = len(frame[list(facets)].drop_duplicates()) if facets else 1
+    return panels
+
+
+def _panel_size(frame: pd.DataFrame, facets: Sequence[str]) -> list["PlotAddable"]:
+    """Raise a plot of several panels to the taller figure and keep its spacing."""
+    height = _figure_height(_facet_count(frame, facets))
+    sizing: list[PlotAddable] = [_figure_margins(12, height)] if height > 5 else []
+    return sizing
+
+
 def _figure_margins(width: float, height: float) -> pn.theme:
     """Keep the default figure's spacing in inches on a larger figure."""
     # plotnine sizes spacing as fractions of the figure's width or height, so each fraction shrinks to keep its inches.
-    across, down = 12 / width, 7 / height
+    across, down = 12 / width, 5 / height
     base = float(get_option("base_margin"))
     legend_text: dict[_Side, Any] = {
         "t": base / 1.5 * down,

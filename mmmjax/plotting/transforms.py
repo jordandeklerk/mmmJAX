@@ -15,7 +15,7 @@ import plotnine as pn
 import xarray as xr
 from numpy.typing import NDArray
 
-from mmmjax.plotting._layers import _bands, _facet, _scales
+from mmmjax.plotting._layers import _bands, _facet, _panel_size, _scales
 from mmmjax.plotting._summary import (
     _ci_prob,
     _ordered,
@@ -136,6 +136,7 @@ def plot_adstock(
         + _scales(frame, "lag", thin="panel" in facets)
         + _curve_layout(facets, color)
         + theme_mmmjax()
+        + _panel_size(frame, facets)
     )
     return plot
 
@@ -239,6 +240,7 @@ def plot_saturation(
         + _scales(frame, "media", thin="panel" in facets)
         + _curve_layout(facets, color)
         + theme_mmmjax()
+        + _panel_size(frame, facets)
     )
     return plot
 

@@ -1871,6 +1871,7 @@ source = { editable = "." }
 dependencies = [
     { name = "arviz" },
     { name = "blackjax", extra = ["progress"] },
+    { name = "docutils" },
     { name = "jax" },
     { name = "jaxtyping" },
     { name = "matplotlib" },
@@ -1929,6 +1930,7 @@ requires-dist = [
     { name = "asv", marker = "extra == 'benchmark'", specifier = ">=0.6.6,<0.7" },
     { name = "asv-runner", marker = "extra == 'benchmark'", specifier = "==0.3.1" },
     { name = "blackjax", extras = ["progress"], specifier = ">=1.6.2,<1.7" },
+    { name = "docutils", specifier = ">=0.21.2" },
     { name = "h5netcdf", extras = ["h5py"], marker = "extra == 'doc'", specifier = ">=1.8" },
     { name = "ipython", marker = "extra == 'doc'" },
     { name = "jax", specifier = ">=0.10.0,<0.11" },

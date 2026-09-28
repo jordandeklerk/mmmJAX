@@ -325,7 +325,7 @@ def test_plot_media_metrics_shows_every_channel_and_widens_past_the_default_figu
     figure = wide.draw()
     assert set(wide.data["channel"]) == {f"Channel {index:02d}" for index in range(30)}
     assert isinstance(wide, _ScrollingPlot)
-    np.testing.assert_allclose(figure.get_size_inches(), [1.5 + 30 * 0.8, 7.0], rtol=1e-12, atol=0)
+    np.testing.assert_allclose(figure.get_size_inches(), [1.5 + 30 * 0.8, 5.0], rtol=1e-12, atol=0)
     assert type(narrow) is pn.ggplot
     plt.close(figure)
 
@@ -348,14 +348,14 @@ def test_plot_media_metrics_tilts_and_shortens_long_names_like_meridian():
     assert labels[0] == ("social_media_\u2026world_cup_003", 45.0)
     assert len({text for text, _ in labels}) == 4
     assert all(len(text) == 27 and rotation == 45.0 for text, rotation in labels)
-    np.testing.assert_allclose(figure.get_size_inches(), [12.0, 7.0], rtol=1e-12, atol=0)
+    np.testing.assert_allclose(figure.get_size_inches(), [12.0, 5.0], rtol=1e-12, atol=0)
     plt.close(figure)
 
 
 def test_plot_media_metrics_keeps_the_default_height_for_many_long_names():
     figure, _ = _ticks(plot_media_metrics(_long_returns(40)))
 
-    np.testing.assert_allclose(figure.get_size_inches(), [1.5 + 40 * 0.8, 7.0], rtol=1e-12, atol=0)
+    np.testing.assert_allclose(figure.get_size_inches(), [1.5 + 40 * 0.8, 5.0], rtol=1e-12, atol=0)
     plt.close(figure)
 
 
@@ -503,6 +503,15 @@ def test_plot_response_curves_give_each_channel_a_panel_unless_combined():
     assert (paneled.guides.color, paneled.guides.fill) == ("none", "none")
     assert isinstance(combined.facet, pn.facet_null)
     assert combined.guides.color is None
+
+
+def test_plot_response_curves_draw_several_panels_taller_than_one():
+    paneled = plot_response_curves(_curves()).draw()
+    combined = plot_response_curves(_curves(), combine=True).draw()
+
+    np.testing.assert_array_equal(paneled.get_size_inches(), [12.0, 7.0])
+    np.testing.assert_array_equal(combined.get_size_inches(), [12.0, 5.0])
+    plt.close("all")
 
 
 def test_plot_response_curves_reject_a_combine_that_is_not_a_bool():

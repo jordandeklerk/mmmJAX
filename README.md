@@ -30,7 +30,7 @@ mmmJAX is in alpha and requires Python 3.12 or later. It is not yet on PyPI, so 
 pip install "git+https://github.com/jordandeklerk/mmmJAX.git"
 ```
 
-JAX runs on the CPU by default. For GPU sampling, install the JAX wheel for your accelerator first by following the [JAX installation guide](https://docs.jax.dev/en/latest/installation.html).
+JAX runs on the CPU by default. On an NVIDIA GPU with CUDA 12, the `gpu` extra installs the CUDA build of JAX with mmmJAX, and the [installation guide](https://mmmjax.readthedocs.io/en/latest/getting_started/installation.html) covers other accelerators and 64-bit precision.
 
 ## Program blocks
 
@@ -39,7 +39,7 @@ A model is built from up to six blocks, given to `Model` in the order they run. 
 ```python
 import mmmjax as mj
 
-data = mj.prepare_data(frame, time="week", outcome="sales", media=channels)
+data = mj.prepare_data(frame, time="week", outcome="sales", media=channels, controls=controls)
 
 
 def transformed_data(media, controls):
