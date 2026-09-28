@@ -29,7 +29,7 @@ def response_curves(
     results: xr.DataTree,
     *,
     quantity: str,
-    multipliers: Sequence[float] | ArrayLike,
+    multipliers: Sequence[float] | ArrayLike | None = None,
     group: Literal["prior", "posterior"] = "posterior",
     spend_to_media: Literal["proportional"] | Callable[[jax.Array], ArrayLike] = "proportional",
     spend_to_rf: _ReachFrequencyConversion = "reach",
@@ -63,9 +63,10 @@ def response_curves(
         summed, so results are in the units of the outcome column. Any
         normalization by exposures or spending inside the blocks should read
         the training arrays from ``reference`` so that a scenario cannot zero it.
-    multipliers : array_like
+    multipliers : array_like, optional
         Distinct nonnegative spending multipliers. One retains reference
         spending and zero removes the channel's spending during ``spend_periods``.
+        Defaults to 21 evenly spaced multipliers from 0 to 2.
     group : {"prior", "posterior"}, default "posterior"
         Parameter draws to use. Choose ``"prior"`` with results from
         ``sample_prior`` to inspect responses implied by the priors.
@@ -127,7 +128,8 @@ def response_curves(
         increments nonadditive, and zero spending can retain earlier carryover.
         These interventions provide no additional causal evidence.
     """
-    grid = np.asarray(multipliers)
+    # Steps of a tenth from no spending to twice the reference trace each curve past its current level.
+    grid = np.linspace(0.0, 2.0, 21) if multipliers is None else np.asarray(multipliers)
     if grid.ndim != 1 or grid.size == 0 or grid.dtype.kind not in "fiu":
         raise ValueError("multipliers must be a nonempty one-dimensional sequence of real numbers")
     if not np.isfinite(grid).all() or np.any(grid < 0) or len(np.unique(grid)) != len(grid):
@@ -416,6 +418,7 @@ def frequency_curves(
             "history": "fixed",
             "selection": f"highest {group} mean response among supplied frequencies with other channels fixed",
             "response_units": "original outcome units",
+            **_outcome_attrs(prepared),
         },
     )
 
@@ -514,13 +517,17 @@ def media_metrics(
           increment is zero
         - **spend_share** — Each channel's share of all paid spending during
           ``spend_periods``, including unselected channels
+        - **exposure**, **effectiveness** — Total exposure during
+          ``spend_periods`` and total incremental response per unit of it. RF
+          channels use reach times frequency
         - **reference_response** — Full response at reference spending
         - **spend_period**, **response_period** — Selected dates
         - **channel_type** — Whether each channel is ordinary media or
           reach/frequency
 
         ``by`` retains response axes for the same overall intervention. Ratios
-        and spending aggregate periods and groups. Ratios are NaN at zero spend.
+        and spending aggregate periods and groups. Ratios are NaN at zero spend
+        or exposure.
         Sum effects within each draw before computing intervals. Zero spending
         can retain earlier carryover.
         These interventions provide no additional causal evidence.
@@ -646,6 +653,10 @@ def _allocation_metrics(
     marginal = np.moveaxis(differences[:, 1 + count :], (0, 1), (2, -1))
     response = np.moveaxis(responses[:, 0], 0, 2)
 
+    exposure = np.stack(
+        [np.asarray(context.evaluator.exposures(jnp.asarray(total)), dtype=np.float64)[indices] for total in totals]
+    )
+
     # Removing or proportionally increasing zero spending is unchanged, but
     # neither ratio is defined. Preserve missing values rather than zero returns.
     with np.errstate(over="ignore", invalid="ignore"):
@@ -662,6 +673,10 @@ def _allocation_metrics(
         )
         allocation_totals = totals.sum(axis=1, keepdims=True)
         spend_share = np.divide(spend, allocation_totals, out=np.full_like(spend, np.nan), where=allocation_totals > 0)
+        measurable = np.isfinite(exposure) & (exposure > 0)
+        effectiveness = np.divide(
+            total_incremental, exposure, out=np.full_like(total_incremental, np.nan), where=measurable
+        )
 
     if not np.all(np.isfinite(roi) | ~positive) or not np.all(np.isfinite(marginal_roi) | ~positive):
         raise ValueError("Channel returns are nonfinite. Check the response and spending units")
@@ -680,6 +695,8 @@ def _allocation_metrics(
             "response": (("chain", "draw", "allocation", *retained), response),
             "cost_per_incremental_response": (ratio_axes, cost_per_incremental_response),
             "spend_share": (("allocation", "channel"), spend_share),
+            "exposure": (("allocation", "channel"), exposure),
+            "effectiveness": (ratio_axes, effectiveness),
         },
         coords={
             **context.coords,
@@ -753,6 +770,13 @@ def _response_inputs(
         prepared = model.scaling.inverse_transform(prepared)
 
     return inputs, prepared, {name: jnp.asarray(value) for name, value in samples.items()}, coordinates
+
+
+def _outcome_attrs(prepared: PreparedData) -> dict[str, str]:
+    """Record the outcome column's name so plots can label responses with it."""
+    columns = prepared.columns.get("outcome", ())
+    recorded = {"outcome": str(columns[0])} if len(columns) == 1 else {}
+    return recorded
 
 
 def _response_coordinates(
@@ -922,6 +946,7 @@ def _prepare_response(
             "history": "fixed",
             "response_window": "selected supplied modeling periods only",
             "response_units": "original outcome units",
+            **_outcome_attrs(prepared),
         },
     )
 
@@ -1033,13 +1058,7 @@ class _BudgetResponse:
 
     def _scenario_inputs(self, budgets: jax.Array) -> tuple[_ModelData, jax.Array]:
         """Replace paid exposures and spending while preserving other model inputs."""
-        spend = self.spend_weights * budgets
-        mask = jnp.asarray(True)
-        if self.spend_mask is not None:
-            assert self.reference_spend is not None
-            mask = self.spend_mask.reshape((-1,) + (1,) * (spend.ndim - 1))
-            spend = jnp.where(mask, spend, self.reference_spend)
-
+        spend, mask = self._candidate_spend(budgets)
         values = dict(self.inputs.values)
         scaling = self.model.scaling
         transformations = {} if scaling is None else scaling.transformations
@@ -1118,3 +1137,28 @@ class _BudgetResponse:
         )
 
         return jnp.where(valid, totals, jnp.nan), jnp.where(valid, differences, jnp.nan)
+
+    def exposures(self, budgets: jax.Array) -> jax.Array:
+        """Total each paid channel's original-unit exposure over the spending periods of an allocation."""
+        spend, mask = self._candidate_spend(budgets)
+        n_media = 0 if self.convert is None else self.inputs.values["media"].shape[-1]
+        units = []
+        if self.convert is not None:
+            units.append(jnp.asarray(self.convert(spend[..., :n_media])))
+        if self.convert_reach_frequency is not None:
+            reach, frequency = self.convert_reach_frequency(spend[..., n_media:])
+            # Reach times frequency counts impressions, as contributions measures them.
+            units.append(jnp.asarray(reach) * jnp.asarray(frequency))
+        exposure = jnp.where(mask, jnp.concatenate(units, axis=-1), 0)
+        totals = jnp.sum(exposure, axis=tuple(range(exposure.ndim - 1)))
+        return totals
+
+    def _candidate_spend(self, budgets: jax.Array) -> tuple[jax.Array, jax.Array]:
+        """Spread channel budgets over the spending periods and keep reference spending elsewhere."""
+        spend = self.spend_weights * budgets
+        mask = jnp.asarray(True)
+        if self.spend_mask is not None:
+            assert self.reference_spend is not None
+            mask = self.spend_mask.reshape((-1,) + (1,) * (spend.ndim - 1))
+            spend = jnp.where(mask, spend, self.reference_spend)
+        return spend, mask

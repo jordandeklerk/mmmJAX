@@ -37,13 +37,14 @@ def custom_distribution(
     """Make a distribution written as plain functions usable like the built-in families.
 
     Write the pointwise log density as ``logpdf(value, *settings)`` and the
-    draw function as ``rng(key, *settings, sample_shape=())``. These
-    signatures follow the conventions of the built-in families. The returned
-    function sums the log density over every axis, so it adds to the target
-    in ``log_density`` the way ``normal`` or ``gamma`` does, and ``Prior``
-    accepts it with fixed settings for prior draws and pointwise log-prior
-    terms. Both functions must be pure JAX code whose settings broadcast
-    against the values.
+    draw function as ``rng(key, *settings, sample_shape=())``. These signatures
+    follow the conventions of the built-in families. Both functions must be
+    pure JAX code whose settings broadcast against the values.
+
+    The returned function sums the log density over every axis, so it adds to
+    the target in ``log_density`` the way ``normal`` or ``gamma`` does.
+    ``Prior`` accepts it with fixed settings for prior draws and pointwise
+    log-prior terms.
 
     Parameters
     ----------

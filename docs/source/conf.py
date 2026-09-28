@@ -1,6 +1,15 @@
 """Sphinx configuration for the mmmJAX documentation."""
 
+import os
 import re
+import sys
+from pathlib import Path
+
+# The extension that draws each plot function's example on its API page
+sys.path.insert(0, str(Path(__file__).parent / "_ext"))
+
+# Executed pages in every section load the stored fits in prerun, and the notebook kernels inherit this path.
+os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, [str(Path(__file__).parent), os.environ.get("PYTHONPATH")]))
 
 project = "mmmJAX"
 copyright = "2026, Jordan DeKlerk"
@@ -18,6 +27,8 @@ extensions = [
     "IPython.sphinxext.ipython_directive",
     "IPython.sphinxext.ipython_console_highlighting",
     "sphinx_immaterial",
+    "api_examples",
+    "last_updated",
 ]
 
 exclude_patterns = []
@@ -27,7 +38,7 @@ mathjax_path = "https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-mml-chtml.js"
 html_theme = "sphinx_immaterial"
 html_static_path = ["_static"]
 html_css_files = ["css/custom.css", "css/landing.css"]
-html_js_files = [("js/copybutton-shim.js", {"priority": 200}), "js/header-title-link.js", "js/landing.js"]
+html_js_files = [("js/copybutton-shim.js", {"priority": 200}), "js/header-title-link.js"]
 html_title = "mmmJAX"
 html_logo = "_static/mmmjax-logo.svg"
 html_favicon = "_static/favicon.ico"
@@ -52,6 +63,8 @@ html_theme_options = {
         "toc.follow",
     ],
     "toc_title": "On this page",
+    # List every page in the sidebar, so a section shows its arrow before it's opened.
+    "globaltoc_collapse": False,
     "palette": [
         {
             "media": "(prefers-color-scheme)",
@@ -113,6 +126,9 @@ nb_execution_timeout = 600
 nb_output_stderr = "remove"
 # Draw each cell's prints in one box. The kernel sends them in chunks that vary with timing.
 nb_merge_streams = True
+# A hide-input cell folds its code behind one line, as marimo's show code toggle does.
+nb_code_prompt_show = "Show code"
+nb_code_prompt_hide = "Hide code"
 
 
 def _format_signature_defaults(app, what, name, obj, options, signature, return_annotation):

@@ -122,14 +122,16 @@ def optimize_budget(
     """Allocate a fixed budget using posterior responses and a chosen objective.
 
     Optimize selected channels jointly using the full model. Retain their
-    reference spending proportions across selected periods and groups.
-    By default, redistribute the same total spending across those channels.
-    Other spending and earlier media history stay fixed. The result is a
-    local constrained solution and can depend on the starting allocation.
+    reference spending proportions across selected periods and groups. By
+    default, redistribute the same total spending across those channels.
+
+    Other spending and earlier media history stay fixed. The result is a local
+    constrained solution and can depend on the starting allocation.
+
     ``ValueError`` is raised for invalid inputs, infeasible constraints, and
     model evaluations that produce invalid responses, utility values, or
-    gradients. ``RuntimeError`` is raised when the solver fails to converge
-    or returns an infeasible allocation.
+    gradients. ``RuntimeError`` is raised when the solver fails to converge or
+    returns an infeasible allocation.
 
     Parameters
     ----------
@@ -243,16 +245,17 @@ def optimize_budget(
           **constraint_channels** — Group limits in spend units and membership
         - **incremental_response**, **roi**, **marginal_response**,
           **marginal_roi**, **incremental_spend**,
-          **cost_per_incremental_response**, **spend_share** — Metrics added
-          with ``include_metrics=True`` and evaluated at each allocation as
-          defined in :func:`media_metrics`. Their interventions are not
-          restricted to optimization bounds
+          **cost_per_incremental_response**, **spend_share**, **exposure**,
+          **effectiveness** — Metrics added with ``include_metrics=True`` and
+          evaluated at each allocation as defined in :func:`media_metrics`.
+          Their interventions are not restricted to optimization bounds
 
         Responses use original outcome units and retain chain, draw, and
         optional ``by`` axes. Channel ratios retain chain, draw, allocation,
-        and channel axes. They use totals across periods and groups. Spending
-        and ``spend_share`` have only allocation and channel axes. Breakdowns
-        describe one joint allocation, not separately optimized budgets.
+        and channel axes. They use totals across periods and groups. Spending,
+        ``spend_share``, and ``exposure`` have only allocation and channel
+        axes. Breakdowns describe one joint allocation, not separately
+        optimized budgets.
     """
     tolerance = _positive_number(tolerance, "tolerance")
     if tolerance >= 1:
@@ -545,6 +548,8 @@ def optimize_budget(
             "incremental_spend",
             "cost_per_incremental_response",
             "spend_share",
+            "exposure",
+            "effectiveness",
         ):
             report[name] = metrics[name]
         report.attrs["incremental_increase"] = incremental_increase

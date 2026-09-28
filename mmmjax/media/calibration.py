@@ -36,10 +36,11 @@ def contribution_coefficient(
     Without deviations one coefficient per channel satisfies
     :math:`\beta_m = C_m / \sum_g A_{gm}`. With deviations
     :math:`\delta_{gm}` the coefficients vary by group around a shared center
-    :math:`\beta_m` that the function solves for. Log-normal effects use
-    :math:`\beta_{gm} = \exp(\beta_m + \delta_{gm})` with
-    :math:`\beta_m = \log C_m - \log \sum_g A_{gm} e^{\delta_{gm}}`, and normal
-    effects use :math:`\beta_{gm} = \beta_m + \delta_{gm}` with
+    :math:`\beta_m` that the function solves for.
+
+    Log-normal effects use :math:`\beta_{gm} = \exp(\beta_m + \delta_{gm})`
+    with :math:`\beta_m = \log C_m - \log \sum_g A_{gm} e^{\delta_{gm}}`, and
+    normal effects use :math:`\beta_{gm} = \beta_m + \delta_{gm}` with
     :math:`\beta_m = (C_m - \sum_g A_{gm} \delta_{gm}) / \sum_g A_{gm}`. In
     every case :math:`\sum_g A_{gm} \beta_{gm} = C_m`.
 

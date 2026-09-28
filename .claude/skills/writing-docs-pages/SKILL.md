@@ -9,14 +9,16 @@ The Prose section of `.claude/CLAUDE.md` and the rules below govern every page, 
 
 ## Rules
 
-- User Guide pages are MyST-NB pages executed during the build, and no page samples. A sampling cell is tagged `skip-execution` and its fit loads from a stored file, as Stored fits describes. After changing `prerun/first_model.py` or a stored fit, delete `docs/_build/.jupyter_cache`.
-- Every number in the prose must match an executed output. Escape dollar amounts as `\$`, lead with runnable code, and use no Markdown tables.
+- User Guide pages are MyST-NB pages executed during the build, and no page samples. A sampling cell is tagged `skip-execution` and its fit loads from a stored file, as Stored fits describes. After changing a `prerun/*.py` model or a stored fit, delete `docs/_build/.jupyter_cache`.
+- Every number in the prose must match an executed output. Escape dollar amounts as `\$`, lead with runnable code, and use no Markdown tables except a symbol map, a reference list of names such as the supplied names in `data.md`, or an index page's table of pages. A table that would run past about eight rows splits by group into a `tab-set`, one table per tab, as From math to code and Supplied names do, and `custom.css` keeps table rows compact.
 - Print `az.summary` tables in full, and check convergence with `az.plot_rank(..., thin=True)` next to trace plots.
 - A model's first page shows its generative model in full, covering the data transformations, the model equation, the media transformation, and the priors. Variants show only what changes.
+- Every model goes math, then symbol map, then code. The symbol map is a table of each symbol, its name in the code, and where the name comes from, and each $\sim$ goes in `log_density`, as From math to code in `user_guide/first_model.md` does, and a variant maps only its new symbols and names any that leave.
+- `_ext/last_updated.py` puts the date of each page's last commit at its foot, so a new page shows no date until it's committed. Each plot function's API page shows the example in `api/examples/<name>.py`, which `_ext/api_examples.py` runs with `mj`, `model`, `priors`, and `results` from the first model's fit on every build. The file's last line is the plot, a new plot function adds a file, and a changed guide call changes its file too.
 
 ## Place the page
 
-Add the page to the toctree in its section's `index.md`, since a page in no toctree fails the build (`toc.not_included`), and keep section toctrees visible. The User Guide toctree runs in reading order, and the intro paragraph of `user_guide/index.md` names the first four pages, so update it when a page lands among them. Examples hold the in-depth tutorials with more complex models, and an Examples page adds a toctree to `examples/index.md` when it has none.
+Add the page to the toctree of its section, since a page in no toctree fails the build (`toc.not_included`), and keep section toctrees visible. The User Guide's `index.md` lists five section pages, `fundamentals`, `introductory_model`, `priors_and_inference`, `analysis`, and `extending`, and each holds the toctree for its pages in reading order, which gives the sidebar a collapsible group per section. Several captioned toctrees on one page collapse into the last caption in sphinx-immaterial, so sections are pages, never captions. Index pages follow marimo's, with a hidden toctree above the first heading and a table of each page's link and a one-line description, and `globaltoc_collapse: False` in `conf.py` gives every collapsible sidebar section its arrow. A new page adds a row to its index table as well as its toctree entry. Examples hold the in-depth tutorials with more complex models, and an Examples page adds a toctree to `examples/index.md` when it has none.
 
 ## Page skeleton
 
@@ -37,7 +39,7 @@ An intro paragraph that names the model it uses, such as the model from [A first
 ```{code-cell} ipython3
 :tags: [remove-cell]
 
-%run prerun/first_model.py
+%run -m prerun.first_model
 from prerun import first_model_results
 
 results = first_model_results(model)
@@ -54,39 +56,44 @@ plt.rcParams["axes.spines.top"] = False
 plt.rcParams["axes.spines.right"] = False
 plt.rcParams["xtick.major.size"] = 3.5
 plt.rcParams["ytick.major.size"] = 3.5
-plt.rcParams["figure.figsize"] = [12, 7]
+plt.rcParams["figure.figsize"] = [12, 5]
 plt.rcParams["figure.dpi"] = 100
 plt.rcParams["date.converter"] = "concise"  # only with date axes
 ```
 ````
 
-Without the front matter the cells never run. A page has one H1 and skips no heading level (`myst.header`). MyST-NB runs each page from its own folder, so `prerun` loads only from `user_guide/`, and for a page elsewhere ask the user where its setup should live. `example_data.md` and `data.md` come before the model and never load it or a fit, and the frame they simulate must come from the same `simulate_data` call as `prerun/first_model.py`. `first_model.md` shows its setup instead of hiding it, and its cells before the sampling cell must equal `prerun/first_model.py`, so change the two together.
+Without the front matter the cells never run. A page has one H1 and skips no heading level (`myst.header`). Shared setup and stored fits live in `docs/source/prerun`, which `conf.py` puts on the kernels' `PYTHONPATH`, so a page in any section loads a model with `%run -m prerun.<name>` and fits with `from prerun import ...`. `example_data.md` and `data.md` come before the model and never load it or a fit, and the frame they simulate must come from the same `simulate_data` call as `prerun/first_model.py`. `first_model.md` shows its setup instead of hiding it, and its cells before the sampling cell must equal `prerun/first_model.py`, as must the model cell of `getting_started/quickstart.md`, so change the three together. The Quickstart runs that model with no explanation, loads `first_model_results(model)`, and removes its outputs. What is mmmJAX explains the ideas in unexecuted pseudocode, never a workflow the User Guide covers. Every User Guide page uses that one model, a ten-channel brand, and pages that need its prior draws load them with `first_model_prior_results(model, priors)`, so every page reads one stored prior file.
 
 ## Stored fits
 
 - The hidden cell after a visible `skip-execution` cell runs `x = stored("x", lambda: <the visible call>, groups=[...])`. The call keeps the visible cell's seed and settings and adds at most a quiet flag, such as NumPyro's `progress_bar=False`. A fit of several statements goes in a `def fit_name()` inside the hidden cell, as in `user_guide/inference.md`.
 - List in `groups` only what the page reads. A group left out raises a KeyError in the build. `continue_sampling` needs `sampling_state`, which is why `first_model.nc` keeps every group.
-- `stored` loads an existing `.nc` without looking at the call, so delete a fit's file after changing its call or its model. A change to `prerun/first_model.py` or the simulated data can make every `prerun/*.nc` stale, so find them with `grep -n "stored(" docs/source/user_guide/*.md` and confirm with the user before refitting them all.
+- `stored` loads an existing `.nc` without looking at the call, so delete a fit's file after changing its call or its model. A change to `prerun/first_model.py` or the simulated data can make every `prerun/*.nc` stale, so find them with `grep -rn "stored(" docs/source --include="*.md"` and confirm with the user before refitting them all.
 - A missing file is sampled and saved by whichever run reaches it first, the draft below or the build. Read the Docs builds from a clean checkout, so tell the user each new `.nc` must be committed with its page.
 
 ## Cells
 
 - End each cell in one expression or a `print`, rounded to what the prose quotes, as in `round(float(x), 2)` or `.to_series().round(3)`. Print ArviZ text reports such as `az.compare`, but leave `az.loo(results)` bare.
 - The setup cell keeps `arviz-darkgrid` for its colors and fonts and swaps its gray panels for white ones with left and bottom axes, which the style otherwise hides. Pages name curves by color, as in the blue curves of `priors.md`, so a palette change means rereading the prose.
-- End plot cells with `plt.show()`. ArviZ 1.3 ignores the rc figure size. It draws multi-panel plots 24 inches wide or more and single-panel plots as 12 by 4 strips, so give every ArviZ plot `figure_kwargs={"figsize": (12, 7)}`, or `(12, 9)` with `col_wrap=2` for rank plots. Hand-made figures use `plt.subplots(layout="constrained")` and `legend(frameon=False)`. Keep one idea per figure.
-- `_static/css/custom.css` styles DataTree, Dataset, and data frame outputs. Any other HTML output is unstyled, so check it in the screenshot.
+- Prefer mmmJAX's plotting functions wherever one draws what the page needs, and see `user_guide/plotting.md`. A plotnine plot such as `mj.plot_fit(...)` ends its cell as the last expression, since a `ggplot` displays itself at its own size.
+- Every figure is 12 inches wide so it fills the column, and its height follows its panels. One panel is 12 by 5, which the setup cell sets for hand-made figures and mmmJAX's plots use by default. Side-by-side panels and small multiples are 12 by 7, so a hand-made figure with more than one panel passes `figsize=(12, 7)` to `plt.subplots`, and mmmJAX's plots raise themselves to it. ArviZ grids get about 3 inches per row, capped at 12 by 10, and past that the page shows fewer channels or parameters rather than stretching.
+- End other plot cells with `plt.show()`, including mmmJAX's ArviZ wrappers such as `mj.plot_rank`, which already follow these sizes. ArviZ 1.3 ignores the rc figure size. It draws multi-panel plots 24 inches wide or more and single-panel plots as 12 by 4 strips, so give every direct ArviZ plot `figure_kwargs` with the size above. Hand-made figures use `plt.subplots(layout="constrained")` and `legend(frameon=False)`. Keep one idea per figure.
+- Model code defines its parameters in a `parameters = {...}` block and passes that name to `mj.Model`, never an inline dict in the call.
+- Block signatures carry no comments on their arguments, since each model's symbol tables say where every name comes from. List the arguments as supplied names, then names returned by earlier blocks, then declared parameters, then constants, with the random key first in `generated_quantities`, and keep a signature on one line when it fits. `getting_started/what_is_mmmjax.md` explains the groups in `#write-the-math-first` and supplied names and your names in `#how-blocks-get-their-inputs`, and `user_guide/data.md` lists the supplied names, so other pages link there and add an `important` box only where the model or a variant first appears or a supplied name carries a rule a newcomer would miss.
+- Code a reader may want but need not read goes in a cell tagged `hide-input`, which folds it behind a Show code line styled in `custom.css`. That covers hand-made matplotlib or plotnine figures, pandas tables built for display, and code that rebuilds values from the simulation's truth, while mmmJAX calls, model code, and short reads of mmmJAX results stay visible, and `custom_plots.md` keeps its plotting code visible because that code is the lesson. Split a cell when an mmmJAX call sits among display code, so the call stays visible, and never let a visible cell use a name defined only in a folded one. Prose before a folded cell describes the table or figure, not the cell. The prompts are set in `conf.py`, so don't tag cells `hide-output`, whose toggle would read the same.
+- `_static/css/custom.css` styles DataTree, Dataset, and data frame outputs, and `:tags: [wide-table]` keeps a wide frame's rows on one line so it scrolls sideways. Any other HTML output is unstyled, so check it in the screenshot.
 - A cell meant to fail needs `:tags: [raises-exception]` and a hidden `%xmode minimal` cell earlier on the page, as in `user_guide/functions.md`. Any other error stops the build. Stderr is dropped, so warnings and progress bars never show.
 - Code cells are not linted. Write them in ruff style by hand, with two blank lines after a top-level `def`, and keep them plain. The code box shows about 110 characters before it scrolls sideways, so wrap lines well before ruff's 120.
 - A new import needs its package in both pixi's `[feature.docs.dependencies]` (or `pypi-dependencies`) and the `doc` extra in `pyproject.toml`, which Read the Docs installs.
 
-Use callout boxes sparingly, as `:::{admonition} Title` with `:class:` set to `note`, `warning`, or `important`. Put model logic in `$$` displays rather than long inline math. No User Guide model passes `media_history`.
+Callout boxes, written `:::{admonition} Title` with `:class:` set to `important`, `warning`, `tip`, or `note`, flag what a reader must not miss (`important`), could get wrong (`warning`), or would not guess (`tip`); a page gets a few where they help, not one per section. A list is fine where the content really is one, such as steps or parallel options, and never to break up an argument. On `plotting.md` each plot gets its introduction as its own paragraph before the cell, and the prose after it reads the plot and says what it shows about the brand. Its few tip boxes, with `:class: tip`, cover only behavior a reader would not guess, such as ArviZ's interval settings or how parameters reach the transform plots. Put model logic in `$$` displays rather than long inline math. No User Guide model passes `media_history`.
 
 ## Draft numbers before building
 
 Candidate numbers come from the stored fits in seconds.
 
 ```bash
-(cd docs/source/user_guide && PYTHONDONTWRITEBYTECODE=1 ../../../.pixi/envs/docs/bin/python - <<'EOF'
+(cd docs/source && PYTHONPATH=. PYTHONDONTWRITEBYTECODE=1 ../../.pixi/envs/docs/bin/python - <<'EOF'
 exec(open("prerun/first_model.py").read())
 from prerun import first_model_results, stored
 results = first_model_results(model)
@@ -110,8 +117,8 @@ A cold cache runs every page, close to two minutes of kernel time, so use a long
 Read the outputs in `docs/_build/html/user_guide/<page>.html`, since the notebooks in `docs/_build/jupyter_execute` hold no outputs in cache mode. The build never deletes old HTML, so delete a renamed page's old file from `docs/_build/html`.
 
 1. A role such as `{func}` that finds no target renders as plain code without a warning. A resolved one sits inside an `<a>` tag, so `grep -o '.\{2\}<code class="xref' <page>.html | grep -v '">'` prints only the unresolved ones.
-2. Match every number in the prose to an output and recompute derived ones, such as differences and percentages, from the printed values. After a fit or the model changes, grep the other pages for the numbers it moved, since pages quote each other (recovery repeats the TV retention from the sampling page, and example_data carries the true ROIs and shares).
-3. Read each figure the page's `<img>` tags point to in `docs/_build/html/_images`, and get its pixel size from `file`. About 1200 pixels wide is 12 inches at 100 dpi, and a height near 390 means a single-panel ArviZ plot is missing `figure_kwargs`. Look for grid lines, overlapping labels or legends, and squeezed panels.
+2. Match every number in the prose to an output and recompute derived ones, such as differences and percentages, from the printed values. After a fit or the model changes, grep the other pages for the numbers it moved, since pages quote each other (example_data carries the true ROIs and shares, recovery's values reach budgets and changing, and plotting's budget plan reaches custom_plots).
+3. Read each figure the page's `<img>` tags point to in `docs/_build/html/_images`, and get its pixel size from `file`. About 1200 pixels wide is 12 inches at 100 dpi, a height near 500 is one panel and near 700 several, and a height near 390 means a single-panel ArviZ plot is missing `figure_kwargs`. Look for grid lines, overlapping labels or legends, and squeezed panels.
 4. Screenshot the page into the scratchpad in light mode (`preferredColorScheme=1`) and dark mode (`0`) and read both. A taller window reaches further down a long page, and `--user-data-dir` makes Chrome hang.
 
    ```bash

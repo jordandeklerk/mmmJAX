@@ -131,6 +131,7 @@ from mmmjax.distributions import (
 )
 from mmmjax.inference.priors import Prior
 from mmmjax.inference.sampling import continue_sampling, generate_quantities, sample, sample_prior
+from mmmjax.inference.sensitivity import psense_summary
 from mmmjax.media.adstock import delayed_adstock, geometric_adstock, weibull_cdf_adstock, weibull_pdf_adstock
 from mmmjax.media.calibration import contribution_coefficient, roi_coefficient
 from mmmjax.media.composition import media_response, reach_frequency_response
@@ -146,6 +147,28 @@ from mmmjax.model.parameters import (
     Simplex,
     UpperBound,
 )
+from mmmjax.plotting.budget import plot_budget_response, plot_budget_spend
+from mmmjax.plotting.contributions import plot_contributions
+from mmmjax.plotting.diagnostics import (
+    plot_fit,
+    plot_ppc_dist,
+    plot_ppc_tstat,
+    plot_prior_posterior,
+    plot_psense,
+    plot_rank,
+    plot_residuals,
+    plot_rhat,
+    plot_trace_dist,
+)
+from mmmjax.plotting.media import (
+    plot_frequency_curves,
+    plot_media_metrics,
+    plot_response_curves,
+    plot_roi_bubbles,
+    plot_spend_vs_contribution,
+)
+from mmmjax.plotting.theme import theme_mmmjax
+from mmmjax.plotting.transforms import plot_adstock, plot_saturation
 
 __version__ = "0.0.1"
 
@@ -285,6 +308,25 @@ __all__ = [
     "normal_logsf",
     "normal_rng",
     "optimize_budget",
+    "plot_adstock",
+    "plot_budget_response",
+    "plot_budget_spend",
+    "plot_contributions",
+    "plot_fit",
+    "plot_frequency_curves",
+    "plot_media_metrics",
+    "plot_ppc_dist",
+    "plot_ppc_tstat",
+    "plot_prior_posterior",
+    "plot_psense",
+    "plot_rank",
+    "plot_residuals",
+    "plot_response_curves",
+    "plot_rhat",
+    "plot_roi_bubbles",
+    "plot_saturation",
+    "plot_spend_vs_contribution",
+    "plot_trace_dist",
     "poisson",
     "poisson_log",
     "poisson_log_logcdf",
@@ -297,6 +339,7 @@ __all__ = [
     "poisson_rng",
     "prepare_data",
     "prepare_hsgp",
+    "psense_summary",
     "reach_frequency_response",
     "response_curves",
     "roi_coefficient",
@@ -308,6 +351,7 @@ __all__ = [
     "student_t",
     "student_t_logpdf",
     "student_t_rng",
+    "theme_mmmjax",
     "truncated_normal",
     "truncated_normal_logcdf",
     "truncated_normal_logpdf",

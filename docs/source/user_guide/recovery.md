@@ -9,17 +9,18 @@ kernelspec:
 
 The checks on [Sampling and diagnostics](sampling) compare the model with the
 data, and a model can pass them while crediting revenue to the wrong cause.
-Real data never records the right answer, but `example.truth` does, so this
-page checks the model from [A first model](first_model) against it. Besides
-how noise enters, the model departs from the true process in two ways. It
-fixes TV's Hill slope at one where the true slope is 1.3, and it treats the
-weeks before the data as having no exposure, although TV aired in two of them
-and search in all eight.
+Real data never records the right answer, but `brand.truth` does. This page
+checks the ten-channel brand from [A first model](first_model) against it,
+from the paid channels to Email, the price, and the promotions. The model
+departs from the simulation in the ways [The example data](example_data)
+lists, and the brand runs several channels, its promotions, its price cuts,
+and its email sends on one campaign calendar. So the page also asks what the
+data can separate and what it leaves to the model's assumptions.
 
 ```{code-cell} ipython3
 :tags: [remove-cell]
 
-%run prerun/first_model.py
+%run -m prerun.first_model
 from prerun import first_model_results
 
 results = first_model_results(model)
@@ -36,254 +37,394 @@ plt.rcParams["axes.spines.top"] = False
 plt.rcParams["axes.spines.right"] = False
 plt.rcParams["xtick.major.size"] = 3.5
 plt.rcParams["ytick.major.size"] = 3.5
-plt.rcParams["figure.figsize"] = [12, 7]
+plt.rcParams["figure.figsize"] = [12, 5]
 plt.rcParams["figure.dpi"] = 100
 plt.rcParams["date.converter"] = "concise"
 ```
 
-## Totals and returns
+## Returns on spend
 
 ```{code-cell} ipython3
-import pandas as pd
-
-truth = example.truth.assign_coords(channel=["TV", "Search"], paid_channel=["TV", "Search"])
-effects = mj.contributions(model, results, quantity="mu")
+names = list(channels.values())
+truth = brand.truth.assign_coords(channel=names + ["Email"], paid_channel=names)
 returns = mj.media_metrics(model, results, quantity="mu")
-quantiles = [0.05, 0.5, 0.95]
-
-revenue = effects["incremental_response"].quantile(quantiles, dim=("chain", "draw")).T.to_pandas()
-revenue["truth"] = truth["contribution"].sum("time").to_series()
-roi = returns["roi"].quantile(quantiles, dim=("chain", "draw")).T.to_pandas()
-roi["truth"] = truth["roi"].to_series()
-pd.concat({"revenue": revenue.round(-3), "roi": roi.round(2)}, axis=1)
+true_returns = truth[["roi"]].rename(paid_channel="channel").expand_dims(chain=[0], draw=[0])
+mj.plot_media_metrics({"Model": returns, "Truth": true_returns})
 ```
 
-`assign_coords` gives the simulation's channels the model's names. Each row
-puts the 5th, 50th, and 95th percentiles of the posterior next to the true
-value, and every true value lands inside its 90 percent interval. TV's revenue
-is pinned down to between \$1.17 million and \$1.46 million around a true
-\$1.36 million, while search's interval is about five times as wide. Both
-medians fall below the truth, TV's by 3.5 percent and search's by 11 percent.
+`assign_coords` gives the simulation's channels the model's names. The truth
+also records Email, which has no return because it has no spend.
+
+:::{admonition} Plotting a known truth
+:class: tip
+
+`expand_dims` gives the true returns the chain and draw axes of a fit.
+{func}`~mmmjax.plot_media_metrics` then treats them as a result with a single
+draw and plots them next to the model's, the way [Plotting](plotting) compares
+labeled results.
+:::
+
+Each blue bar is the model's mean return with its 89 percent interval, and the
+orange bar beside it is the true return. All ten intervals hold the truth,
+though YouTube's true return of \$6.59 sits near the top of its interval.
+
+The means lean low. Eight of the ten sit below the truth, by as much as 39
+percent for TikTok and 38 percent for YouTube, while Streaming's \$4.04 and
+Generic search's \$3.07 sit above their true \$3.48 and \$2.99. The model sets
+each channel's return through its `roi` parameter, and that prior's median
+sits below every true return in the plot, as [Priors](priors) shows. Where the
+data says little, the estimates settle low.
 
 ```{code-cell} ipython3
-search_ahead = returns["roi"].sel(channel="Search") > returns["roi"].sel(channel="TV")
-round(float(search_ahead.mean()), 2)
+best = returns["roi"].idxmax("channel")
+best.to_series().value_counts(normalize=True).round(3)
 ```
 
-Search does return more per dollar, \$4.52 against \$3.71, and the model
-leans the same way, but it gives that order only a 68 percent chance. Medians
-of 4.03 and 3.58 look like a clear ranking, and the draws show that the data
-can't settle it. Comparing the channels within each draw keeps both
-estimates' uncertainty in the answer, which comparing medians throws away.
+`idxmax` names the channel with the highest return in each draw, so counting
+the names gives each channel's chance of being the best. YouTube, the true
+best, wins only 0.118 of the draws. Streaming takes 0.170 and Snapchat 0.153,
+though Streaming's true return is the second lowest of the ten. Comparing the
+channels within each draw keeps every estimate's uncertainty in the answer,
+where comparing the means would throw it away. Here the draws show that the
+data can't settle which channel pays best.
 
 ## Week by week
 
-Totals can come out right for the wrong reasons, so the next check follows
-each channel through the weeks, with the simulation's true contribution as a
-dashed line.
+A return can come out right for the wrong reasons, so the next check follows
+each channel through the weeks. With `by="time"`,
+{func}`~mmmjax.contributions` keeps every week's contribution for every draw.
 
 ```{code-cell} ipython3
-weekly = mj.contributions(model, results, quantity="mu", by="time")["incremental_response"]
+weekly_effects = mj.contributions(model, results, quantity="mu", by="time")
+weekly = weekly_effects["incremental_response"]
+dict(weekly.sizes)
+```
+
+Each figure below sets a channel's weekly median and 90 percent interval
+against the simulation's true contribution, drawn as a dashed line.
+
+```{code-cell} ipython3
+:tags: [hide-input]
+
+quantiles = [0.05, 0.5, 0.95]
 band = weekly.quantile(quantiles, dim=("chain", "draw"))
 
 
 def plot_weekly(channel):
     estimate = band.sel(channel=channel)
     fig, axis = plt.subplots(layout="constrained")
-    axis.fill_between(
-        estimate["time"], estimate.sel(quantile=0.05), estimate.sel(quantile=0.95), alpha=0.3, label="90% interval"
-    )
+    lower, upper = estimate.sel(quantile=0.05), estimate.sel(quantile=0.95)
+    axis.fill_between(estimate["time"], lower, upper, alpha=0.3, label="90% interval")
     axis.plot(estimate["time"], estimate.sel(quantile=0.5), linewidth=1, label="Posterior median")
     true = truth["contribution"].sel(channel=channel)
     axis.plot(truth["time"], true, color="black", linestyle="--", linewidth=1, label="Truth")
     axis.set_title(f"What {channel} adds to weekly revenue")
-    axis.legend(frameon=False)
+    axis.legend(frameon=False, loc="upper left", bbox_to_anchor=(1, 1))
     plt.show()
 
 
-plot_weekly("TV")
+plot_weekly("Linear TV")
 ```
 
-The model follows every TV flight as it rises and fades, and after the first
-eight weeks its median runs about 5 percent below the truth in a typical
-flight week. The clear miss is January 2022, where the truth starts at about
-\$18,600 and the median at \$11,600. TV aired in the last two weeks of
-December 2021, and this model treats those weeks as having no exposure, as
-the Media history box on [A first model](first_model) warns. Running the true
-process again with those weeks set to zero shows how much that costs.
+Linear TV shares its campaign calendar with TikTok, Streaming, and
+Influencer, as [Data and scaling](data.md) shows, so its flights air
+alongside theirs. The model follows each flight as it rises and fades, and
+the wide band holds the true contribution, but the median sits below the
+truth at every peak. The data can't say how much of a shared flight's lift
+belongs to Linear TV.
 
 ```{code-cell} ipython3
+:tags: [hide-input]
+
+plot_weekly("YouTube")
+```
+
+YouTube runs on a calendar of its own, so the data can time its effect, and
+the band rises and falls with each flight. At the peak of most flights the
+truth reaches the top of the band or climbs above it, just as YouTube's true
+return sits near the top of its interval in the first plot. The data times
+the flights well, but their size leans on the ROI prior.
+
+The model also treats the weeks before January 2022 as having no exposure, as
+the Media history box on [A first model](first_model) warns. Carryover reaches
+back eight weeks, so the missing weeks touch only the first eight weeks of the
+data, and they can't cost a channel more than all it added in those weeks.
+
+```{code-cell} ipython3
+true_weekly = truth["contribution"].sel(channel=names)
+first_weeks = true_weekly.isel(time=slice(0, 8)).sum("time") / true_weekly.sum("time")
+first_weeks.to_series().round(3)
+```
+
+Each value is the share of a channel's simulated revenue that came in the
+first eight weeks, and that share caps what the missing history can cost it.
+YouTube's 7.5 percent is far less than the 38 percent its return falls short
+by, and no channel's share passes 10.2 percent, so the missing history
+explains little of the gap. When you know what aired before your first week,
+`media_history` gives the model those weeks.
+
+## Email
+
+Email's sends go out in the flight weeks too, so the data sees them alongside
+TikTok, Streaming, Linear TV, and Influencer.
+
+```{code-cell} ipython3
+:tags: [hide-input]
+
+plot_weekly("Email")
+```
+
+The model sees email's lift in every flight, but it puts the median well above
+the truth. After each flight the truth drops to zero, while the model's band
+fades over several weeks. Two quantities sit behind that picture, email's
+share of revenue and its retention rate. The simulation records both, so the
+table below sets the model's quantiles beside them.
+
+```{code-cell} ipython3
+:tags: [hide-input]
+
+import pandas as pd
+
+email = results["posterior"].sel(organic_channel="Email")
+share = email["organic_share"].quantile(quantiles).values
+retention = email["organic_retention"].quantile(quantiles).values
+true_share = truth["contribution"].sel(channel="Email").sum() / truth["expected_revenue"].sum()
+true_retention = truth["retention"].sel(channel="Email")
+table = pd.DataFrame(
+    {
+        "organic_share": [*share, true_share.item()],
+        "organic_retention": [*retention, true_retention.item()],
+    },
+    index=[*quantiles, "truth"],
+)
+table.round(3)
+```
+
+The median share, 1.4 percent, is about twice the true 0.7 percent, and the
+interval from 0.3 to 3.4 percent spans most of what the
+$\operatorname{Beta}(2, 98)$ prior allows. The median retention of 0.524,
+against a true 0.1, sits near the middle of its $\operatorname{Beta}(2, 2)$
+prior. That's why the model's email keeps selling for weeks after each send,
+while the true email fades within a week. Email never goes out apart from the
+flights, so the data can't tell its lift from theirs, and both answers mostly
+repeat their priors.
+
+:::{admonition} Email's share rests on its prior
+:class: warning
+
+The share prior is what keeps email small, so give it the care
+[Priors](priors) describes.
+:::
+
+## Price and promotions
+
+The price and the promotions are treatments, so
+{func}`~mmmjax.contributions` reports what each one earned. Those answers need
+the same check as the channels'. Promotions run in the campaign weeks, cut the
+price, and come with email sends.
+
+```{code-cell} ipython3
+drivers = brand.frame[["promotion", "price", "email_sends", "linear_tv_impressions"]]
+drivers.corr()["promotion"].round(2)
+```
+
+Promotion correlates with price at -0.92 and with email sends and Linear TV's
+impressions at 0.79, so the data sees a campaign week as one bundle. The list
+price also climbs 4 percent a year, as [The example data](example_data)
+describes, so the price rises with the trend.
+
+The table below puts each treatment coefficient in the simulation's units,
+dollars of weekly revenue per dollar of price or per promotion week, by
+multiplying it by the standard deviation of revenue and dividing by that of
+the treatment. The simulation's treatment effects are straight lines,
+so a fitted slope recovers each true one. `prior_sd` puts the prior's standard
+deviation of 0.25 in the same units.
+
+```{code-cell} ipython3
+:tags: [hide-input]
+
+import numpy as np
+
+revenue_scale = scaling.transformations["outcome"].scale.item()
+treatment_scale = scaling.transformations["treatments"].scale[0]
+per_unit = results["posterior"]["treatment_coefficient"] * revenue_scale / treatment_scale
+
+treatments = ["price", "promotion"]
+table = per_unit.quantile(quantiles, dim=("chain", "draw")).T.to_pandas()
+table["prior_sd"] = 0.25 * revenue_scale / treatment_scale
+table["truth"] = [np.polyfit(brand.frame[name], truth[f"{name}_effect"], 1)[0] for name in treatments]
+table.round(-2)
+```
+
+Both intervals hold the truth, but neither says much. The price's interval
+runs from a loss of \$14,000 of weekly revenue for each dollar added to the
+price to a gain of \$7,600. The true effect is a loss of \$3,300, and the
+median, a loss of \$3,000, lands close to it. A promotion week is worth
+\$25,400 in the median against a true \$13,300, and its interval runs from a
+loss of \$11,300 to a gain of \$60,300. Set against prior standard deviations
+of \$9,200 and \$31,300, each interval covers much of what the prior allows.
+The prior does most of the work of keeping the two effects in bounds.
+
+The treatment role doesn't cause this. A control and a treatment enter the
+model as the same linear term, and what the fit learns about either depends
+only on the data and the prior. The role changes what the analyses report. As
+controls, the price and the promotions would only adjust the other estimates,
+and their loose coefficients would stay out of every answer. As treatments,
+their effects are answers of their own, so their uncertainty reaches you
+through {func}`~mmmjax.contributions` and its plots.
+
+:::{admonition} Treatment priors need more thought
+:class: important
+
+Because a treatment's effect is an answer of its own, its prior deserves more
+thought than a control's. [A first model](first_model) gives the price and the
+promotions a tighter one than demand and the holidays.
+:::
+
+What the data does pin down is the lift of the whole bundle, the extra revenue
+of a promotion week over any other week.
+
+```{code-cell} ipython3
+:tags: [hide-input]
+
+promotion = brand.frame["promotion"].to_numpy() == 1
+
+
+def lift(weekly_revenue):
+    during = weekly_revenue.isel(time=promotion).mean("time")
+    otherwise = weekly_revenue.isel(time=~promotion).mean("time")
+    return during - otherwise
+
+
+kind = weekly_effects["channel_type"]
+true_media = truth["contribution"].sum("channel")
+true_treatments = truth["price_effect"] + truth["promotion_effect"]
+true_baseline = truth["expected_revenue"] - true_media - true_treatments
+parts = {
+    "baseline": (weekly_effects["baseline_response"], true_baseline),
+    "media": (weekly.sel(channel=kind != "treatment").sum("channel"), true_media),
+    "treatments": (weekly.sel(channel=kind == "treatment").sum("channel"), true_treatments),
+    "total": (weekly_effects["reference_response"], truth["expected_revenue"]),
+}
+rows = {}
+for name, (fitted, actual) in parts.items():
+    rows[name] = [*lift(fitted).quantile(quantiles).values, lift(actual).item()]
+pd.DataFrame(rows, index=quantiles + ["truth"]).T.round(-2)
+```
+
+`lift` subtracts the mean of the other weeks from the mean of the promotion
+weeks, and the table applies it to four series.
+
+- `baseline` is the revenue the model expects with every channel removed and
+  the treatments at their lowest levels, so its lift comes from the trend, the
+  seasons, and the controls.
+- `media` sums the ten paid channels and Email.
+- `treatments` sums the price and the promotions.
+- `total` is the model's expected revenue.
+
+The truth's parts come from `brand.truth` the same way.
+
+The model gives the treatments \$34,700 of a promotion week's lift where the
+truth has \$23,800, and the media \$46,000 where the truth has \$59,900, above
+its whole interval. Together it finds \$89,100 against a true \$94,000. That
+interval, from \$84,100 to \$94,300, is far narrower than either part's and
+just holds the truth. The draws that give the treatments more give the media
+less, so the data measures what a campaign week does as a whole and leaves the
+split among its parts to the model's assumptions.
+
+## Linear TV's curve
+
+The model fixes the slope of every Hill curve at one, while the simulation
+gives each channel its own.
+
+```{code-cell} ipython3
+truth["slope"].sel(channel=names).to_series()
+```
+
+The true slopes run from 0.9 for Branded search to 1.3 for Snapchat and
+Linear TV. `true_response` runs the simulation's own adstock and Hill curve
+with the true settings. The first eight rows of the exposure hold the weeks
+before the data, and the function scales every channel's impressions after
+them by `multiplier`, the way {func}`~mmmjax.response_curves` scales spending.
+It returns the revenue each channel adds over the modeled weeks, and a dotted
+line draws Linear TV's true curve over the model's.
+
+```{code-cell} ipython3
+:tags: [hide-input]
+
+import plotnine as pn
+
 population = truth["population"].item()
 
 
-def true_contribution(impressions):
-    carried = mj.geometric_adstock(impressions / population, alpha=truth["retention"].values, max_lag=8)
+def true_response(multiplier):
+    exposure = truth["exposure"].values.copy()
+    exposure[8:] *= multiplier
+    carried = mj.geometric_adstock(exposure / population, alpha=truth["retention"].values, max_lag=8)
     saturated = mj.hill_saturation(carried, truth["half_saturation"].values, truth["slope"].values)
-    return saturated[8:] * truth["coefficient"].values
+    revenue = truth["coefficient"] * saturated[8:].sum(axis=0)
+    return revenue
 
 
-impressions = truth["exposure"].values
-no_history = impressions.copy()
-no_history[:8] = 0.0
-first_weeks = {
-    "truth": true_contribution(impressions)[:8, 0].sum(),
-    "truth with no history": true_contribution(no_history)[:8, 0].sum(),
-    "model": weekly.sel(channel="TV").isel(time=slice(0, 8)).sum("time").median(),
-}
-{name: round(float(value)) for name, value in first_weeks.items()}
+curves = mj.response_curves(model, results, quantity="mu")
+tv = curves["spend"].sel(channel="Linear TV").to_dataframe()
+tv["truth"] = [true_response(multiplier).sel(channel="Linear TV").item() for multiplier in tv.index]
+true_line = pn.geom_line(pn.aes("spend", "truth"), data=tv, linetype="dotted", size=1, inherit_aes=False)
+mj.plot_response_curves(curves, channels=["Linear TV"]) + true_line
 ```
 
-The record starts eight weeks before the data, and `true_contribution` runs
-the true adstock and Hill curve over it, matching `truth["contribution"]` to
-within a fraction of a cent. Over the first eight weeks TV added \$90,422.
-Without the earlier weeks the same process gives \$67,121, close to the
-model's \$67,264, so the January miss comes from the missing history and not
-from the fit. When you know what aired before your first week,
-`media_history` gives the model those weeks.
+The dotted line is the true curve, and the light blue line and band are the
+model's mean and 89 percent interval, with a point at today's spending. The
+band holds the true curve at every level of spending, but it's wide, so the
+data leaves the curve loose. The model's curve also has the wrong shape. It
+rises a little faster than the truth at first, drops below it well short of
+today's spending, and falls further behind past it.
 
-```{code-cell} ipython3
-plot_weekly("Search")
-```
-
-Every week of search falls inside its band, but the median sits below the
-truth in all 156 weeks, by about 9 percent in a typical week, and the band is
-about as wide as the estimate itself. The model has the timing of search's
-effect right and is unsure of its size. Search runs every week, so the data
-never shows revenue without it.
-
-```{code-cell} ipython3
-import xarray as xr
-
-intercept = results["posterior"]["intercept"]
-xr.corr(effects["incremental_response"], intercept, dim=("chain", "draw")).to_series().round(2)
-```
-
-Across draws, search's three-year revenue moves almost exactly against the
-intercept, while TV's barely does. A higher baseline with less search fits the
-data about as well as a lower baseline with more, so the data alone can't
-choose, and the intercept's prior does much of the choosing. It is centered
-where media adds nothing to average revenue, so it leans toward the higher
-baseline and less search. TV is off the air in about two thirds of the weeks,
-and those weeks show revenue with its effect faded or gone.
-
-## Parameters and curves
-
-Multiplying the price coefficient by the standard deviation of revenue and
-dividing by that of price turns it into dollars of weekly revenue per dollar
-of price, the units the simulation uses.
-
-```{code-cell} ipython3
-revenue_scale = scaling.transformations["outcome"].scale.item()
-price_scale = scaling.transformations["controls"].scale.item()
-price_effect = results["posterior"]["control_coefficient"].sel(control="price") * revenue_scale / price_scale
-price_effect.quantile(quantiles).values.round(), -0.015 * population
-```
-
-Each dollar added to the price costs about \$3,378 of weekly revenue in the
-middle of the posterior, and the interval holds the true \$3,332, the
-simulation's 1.5 cents per person across 222,147 people. TV's retention came
-back as 0.69 against a true 0.70 on [Sampling and diagnostics](sampling). TV's
-curve parameters need one more step. With $u$ carried impressions per person,
-$m$ TV's median nonzero week, and $P$ the population, the model's curve is
-
-$$
-s_r \beta\, \frac{u}{u + \kappa m / P},
-$$
-
-so $s_r \beta$ is the most TV can add in a week and $\kappa m / P$ is where it
-reaches half of that.
-
-```{code-cell} ipython3
-tv = results["posterior"].sel(channel="TV")
-median_week = scaling.transformations["media"].scale[0, 0].item()
-most = tv["coefficient"] * revenue_scale
-half = tv["half_saturation"] * median_week / population
-print(most.quantile(quantiles).values.round(-2), round(truth["coefficient"].sel(channel="TV").item(), -2))
-print(half.quantile(quantiles).values.round(2), truth["half_saturation"].sel(channel="TV").item())
-print(round(float(xr.corr(most, half)), 2))
-```
-
-The most TV can add comes out at about \$45,000 a week against a true
-\$33,500, and its half-saturation point at 1.85 carried impressions per person
-against a true 1.0. Both intervals leave out the truth. The two move together
-across draws, since a higher ceiling reached more slowly draws nearly the same
-curve over the data. With its slope fixed at one, the model can't draw TV's
-S-shaped start. The closest curve it can draw has a higher ceiling still,
-reached more slowly, and the prior on the coefficient holds these values
-between that curve and the truth.
-
-```{code-cell} ipython3
-import numpy as np
-
-exposure = xr.DataArray(np.linspace(0.0, 3.0, 301), dims="exposure")
-curve = (most * exposure / (exposure + half)).quantile(quantiles, dim=("chain", "draw"))
-settings = truth.sel(channel="TV")
-true_curve = settings["coefficient"].item() * mj.hill_saturation(
-    exposure.values, settings["half_saturation"].item(), settings["slope"].item()
-)
-carried = mj.geometric_adstock(impressions / population, alpha=truth["retention"].values, max_lag=8)
-
-fig, axis = plt.subplots(layout="constrained")
-axis.fill_between(exposure, curve.sel(quantile=0.05), curve.sel(quantile=0.95), alpha=0.3, label="90% interval")
-axis.plot(exposure, curve.sel(quantile=0.5), label="Posterior median")
-axis.plot(exposure, true_curve, color="black", linestyle="--", label="Truth")
-axis.axvline(carried[8:, 0].max(), color="gray", linewidth=1, label="Largest week in the data")
-axis.set_title("TV's response curve")
-axis.set_xlabel("Carried impressions per person")
-axis.set_ylabel("Revenue added per week")
-axis.legend(frameon=False)
-plt.show()
-```
-
-From about 0.2 carried impressions per person up to the largest week, at
-1.57, the band holds the true curve, and from 0.5 to that week the median
-runs 1 to 6 percent below it. Below 0.2 the whole band sits above the truth,
-with the median 44 percent too high at 0.1, because a slope of one rises from
-the first impression. Those low exposures are the fading weeks after each
-flight, where TV adds little. Contributions, returns, and budgets all run on
-the curve, so being right where most revenue is made matters more than
-matching parameters.
+A slope of one rises fastest at the first impression, while the true slope of
+1.3 starts slowly and then climbs past it. Linear TV runs in flights, high on
+its curve. That's where the model falls short, and it's why Linear TV's return
+comes in 34 percent low in the first plot.
 
 ## Marginal returns
 
 Budgets turn on marginal returns, which follow the slope of the curve rather
-than its height. `true_contribution` gives the true ones the way
-{func}`~mmmjax.media_metrics` computes them, from 1 percent more impressions
-on one channel in every modeled week.
+than its height. {func}`~mmmjax.media_metrics` finds each one from 1 percent
+more impressions on one channel in every modeled week, and `incremental_spend`
+records what that 1 percent costs. The simulation's channels don't affect each
+other, so raising them all at once in `true_response` gives each channel's
+true gain.
 
 ```{code-cell} ipython3
-spend = truth["spend"].values[8:].sum(axis=0)
-base = true_contribution(impressions).sum(axis=0)
-true_marginal = []
-for index in range(2):
-    more = impressions.copy()
-    more[8:, index] *= 1.01
-    gain = true_contribution(more).sum(axis=0)[index] - base[index]
-    true_marginal.append(float(gain / (0.01 * spend[index])))
+:tags: [hide-input]
 
-marginal = returns["marginal_roi"].quantile(quantiles, dim=("chain", "draw")).T.to_pandas()
-marginal["truth"] = true_marginal
-marginal.round(2)
+true_gain = (true_response(1.01) - true_response(1.0)).sel(channel=names)
+true_marginal = true_gain / returns["incremental_spend"]
+true_margins = true_marginal.expand_dims(chain=[0], draw=[0]).to_dataset(name="marginal_roi")
+mj.plot_media_metrics({"Model": returns, "Truth": true_margins}, metric="marginal_roi")
 ```
 
-In the simulation one more dollar brings \$2.71 on TV and \$2.20 on search.
-TV's interval holds its truth, but search's stops at \$2.16, so the model
-understates what more search would bring. TV still comes out ahead, so moving
-money from search to TV at the current split points the right way, though each
-dollar moved gains about 51 cents in the truth where the model counts 73. The
-plan that [Budget optimization](budgets) makes next still gains revenue in the
-truth, but it moves more money to TV than the truth's best split would.
+In the simulation the next dollar brings the most on YouTube, \$4.17, and on
+Linear TV, \$2.95, and the least on Generic search, \$1.34. Every channel's
+truth but YouTube's falls inside its interval, Linear TV's only just. The
+model's highest means belong to Snapchat and Streaming, at \$2.40 and \$2.39,
+where the truth has \$2.68 and \$1.96. So the plan that
+[Budget optimization](budgets) makes is right to cut Generic search, which is
+the lowest in the truth as well. It's wrong to move the most money into
+Streaming, whose true marginal return ranks seventh of the ten.
 
 ## What recovery shows
 
 Every comparison here sets one fit of one simulated dataset against the
-process that made it. A true value inside a 90 percent interval is a single
-observation, and showing that the intervals hold the truth nine times in ten
-takes many simulated datasets, each fitted and checked.
+process that made it. One interval that holds the truth is a single
+observation. To show that 90 percent intervals hold it nine times in ten, you'd
+need many simulated datasets, each fitted and checked.
 
-The simple setting also builds revenue from the same pieces this model
-has, with no season, no shifts in demand, and spending that ignores sales.
-Revenue in practice has all of these, and a model can match such data closely
-while crediting the wrong cause. A simulation shows where a model's answers
-rest on the data and where they rest on its assumptions, as search's do here.
-On real data, experiments such as lift tests come closest to a recorded truth.
+The brand simulation already has much of what revenue has in practice, with a
+drifting baseline, seasons that change strength, shifts in demand, holidays,
+and price cuts and promotions timed with the campaigns. The model absorbs some
+of this through its trend, Fourier terms, controls, and treatments. The data
+can't separate the channels on the shared calendar, the email sends that go
+out with them, or the price cuts and promotions that run alongside. Where it
+can't separate two causes, the model's answers rest on the priors and its
+structure instead. On real data, experiments such as lift tests come closest
+to a recorded truth.

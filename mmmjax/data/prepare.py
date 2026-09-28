@@ -68,13 +68,15 @@ class Reference:
     """Training inputs retained while a model evaluates new data.
 
     Request ``reference`` in a program block and read the training arrays as
-    attributes, such as ``reference.spend`` or ``reference.time``. The
-    training period count is ``reference.n_periods``. The attribute
-    names are the input names the blocks use, so a mapping declared through
-    ``Data`` variables applies here as well. These arrays never change for
-    scenarios, forecasts, or response curves, so calculations that must stay
-    anchored to the fitted data, such as a normalization that defines a
-    parameter, use them in place of the current inputs.
+    attributes, such as ``reference.spend`` or ``reference.time``. The training
+    period count is ``reference.n_periods``. The attribute names are the input
+    names the blocks use, so a mapping declared through ``Data`` variables
+    applies here as well.
+
+    These arrays never change for scenarios, forecasts, or response curves, so
+    calculations that must stay anchored to the fitted data, such as a
+    normalization that defines a parameter, use them in place of the current
+    inputs.
 
     Attributes
     ----------

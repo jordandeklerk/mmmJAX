@@ -1596,6 +1596,8 @@ def test_optimize_budget_reports_paired_channel_metrics_at_each_joint_allocation
         "incremental_spend",
         "cost_per_incremental_response",
         "spend_share",
+        "exposure",
+        "effectiveness",
     ]:
         xr.testing.assert_allclose(reported[name].sel(allocation="reference", drop=True), reference_metrics[name])
 
@@ -1620,7 +1622,9 @@ def test_optimize_budget_reports_paired_channel_metrics_at_each_joint_allocation
             "roi": incremental / spend,
             "marginal_response": marginal,
             "marginal_roi": marginal / increase,
+            "effectiveness": incremental / (exposure_per_spend * spend),
         }
+        np.testing.assert_allclose(reported["exposure"].sel(allocation=label), exposure_per_spend * spend, rtol=2e-6)
 
         for name, values in expected.items():
             assert reported[name].dims == ("chain", "draw", "allocation", "channel")
@@ -1646,7 +1650,8 @@ def test_optimize_budget_reports_undefined_returns_for_zero_spend_without_reject
     inactive = optimized.sel(channel=["video", "email"])
     for name in ["incremental_response", "marginal_response", "incremental_spend"]:
         np.testing.assert_array_equal(inactive[name], np.zeros(inactive[name].shape))
-    for name in ["roi", "marginal_roi"]:
+    np.testing.assert_array_equal(inactive["exposure"], [0.0, 0.0])
+    for name in ["roi", "marginal_roi", "effectiveness"]:
         assert np.isnan(inactive[name]).all()
         np.testing.assert_allclose(
             optimized[name].sel(channel="search"),

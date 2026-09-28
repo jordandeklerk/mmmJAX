@@ -9,14 +9,16 @@ kernelspec:
 
 A fitted model can say how revenue would change if the same money were spent
 differently. {func}`~mmmjax.optimize_budget` searches for the split of a
-budget that maximizes expected revenue, and every split it tries runs the
+budget that maximizes expected revenue. For every split it tries, it runs the
 blocks again on the posterior draws with only the spending changed. The
-examples use the model from [A first model](first_model).
+examples use the ten-channel brand from [A first model](first_model). Only the
+ten paid channels have spending to move, so Email's sends, the price, and the
+promotions keep their observed values in every split the optimizer tries.
 
 ```{code-cell} ipython3
 :tags: [remove-cell]
 
-%run prerun/first_model.py
+%run -m prerun.first_model
 from prerun import first_model_results
 
 results = first_model_results(model)
@@ -24,10 +26,10 @@ results = first_model_results(model)
 
 ## The problem
 
-Spending reaches the model through exposure. A new amount $s_c$ for channel
-$c$ scales every week's impressions by the same factor, which keeps the cost
-per impression and the timing of the campaigns, so with $S_c$ the channel's
-current spending the impressions become
+Spending reaches the model through exposure. A new amount $s_c$ for paid
+channel $c$ scales every week's impressions by the same factor, so the cost per
+impression and the timing of the campaigns stay as they were. With $S_c$ the
+channel's current spending, the impressions become
 
 $$
 z_{tc}(s) = z_{tc}\, \frac{s_c}{S_c}.
@@ -45,79 +47,115 @@ $$
 where $B$ is the budget and the limits $l_c$ and $u_c$ default to zero and the
 whole budget.
 
+:::{admonition} Each split arrives as new media and spend
+:class: important
+
+The optimizer hands every split to your blocks as new values of the supplied
+`media` and `spend`, while `reference` keeps the training weeks. A coefficient
+set from `spend` rather than `reference.spend` would redefine `roi` for every
+split, which is why [Scenarios](scenarios) keeps definitions on `reference`.
+:::
+
 ## Moving the current budget
 
-Without a `budget`, the total stays at what was spent.
+Without a `budget`, the total stays at what was spent. `include_metrics=True`
+also records each channel's returns under both splits for the plots below to
+read. {func}`~mmmjax.plot_budget_spend` shows where the plan moves the money.
 
 ```{code-cell} ipython3
 plan = mj.optimize_budget(model, results, quantity="mu", include_metrics=True)
-plan["spend"].to_pandas().round(-2)
+mj.plot_budget_spend(plan)
 ```
 
-The plan keeps the \$792,000 spent over the three years and moves about
-\$84,000 from search to TV. `include_metrics=True` adds each channel's returns
-at both splits, defined as in [Media effects](media_effects), and they show
-why.
+Each bar is a channel's optimized spending minus its current spending.
+Streaming gains the most, \$184,000, and YouTube next, \$65,800. Generic
+search gives up the most, \$145,000, then Meta, \$84,800, and Display, Branded
+search, and Linear TV give up smaller amounts.
+
+{func}`~mmmjax.plot_media_metrics` with `metric="marginal_roi"` shows why. The
+left panel holds the reference split, the spending as it was, and the right
+panel the optimized one.
 
 ```{code-cell} ipython3
-returns = plan[["roi", "marginal_roi"]].median(("chain", "draw"))
-returns.to_dataframe()[["roi", "marginal_roi"]].round(2)
+mj.plot_media_metrics(plan, metric="marginal_roi")
 ```
 
-At the current split one more dollar on TV brings \$2.52 and one more on
-search \$1.79, so moving a dollar from search to TV adds about 73 cents of
-revenue. In the simulation the two are \$2.71 and \$2.20, as [Recovering the
-truth](recovery) shows, so the move points the right way with a smaller gain
-for each dollar. The optimizer keeps moving money until the two marginal returns meet
-at about \$2.22, where no further move adds anything. The average return
-points the other way. Search has the higher ROI, and it rises to \$4.52 after
-the cut because the dollars search keeps are its most productive ones. A
-budget should follow marginal returns, not average ones.
+The returns are defined as in [Media effects](media_effects), and each bar is
+a posterior mean, since the optimizer maximizes mean revenue. At the current
+split, one more dollar on Snapchat brings \$2.40 and one more on Streaming
+\$2.39, against \$1.18 on Generic search. Moving a dollar from Generic search
+to Snapchat adds about \$1.22 of revenue. The optimizer keeps moving money
+until every marginal return meets at about \$1.67, where no further move adds
+anything.
+
+The average return, the plot's default metric, can point the other way.
 
 ```{code-cell} ipython3
-change = plan["response_change"]
-print(change.quantile([0.05, 0.5, 0.95]).round(-3).values)
-print(float((change > 0).mean()))
+mj.plot_media_metrics(plan)
 ```
 
-`response_change` compares the two splits draw by draw. The median gain is
-about \$31,000 over the three years, the 90 percent interval runs from a loss
-of \$14,000 to a gain of \$75,000, and 87 percent of the draws favor the new
-split.
+Meta has the fourth-highest ROI, \$3.49, yet the plan cuts it, because its next
+dollar brings \$1.40 against TikTok's \$1.93. TikTok gains money even though
+its ROI is only \$3.20. Meta's ROI then rises to \$3.85, because the dollars it
+keeps are its most productive ones.
+
+:::{admonition} Follow the marginal return
+:class: important
+
+Rank channels by what their next dollar brings, as `metric="marginal_roi"`
+shows, not by their ROI.
+:::
+
+[Recovering the truth](recovery) checks these marginal returns against the
+simulation. The truth backs the cut to Generic search but not the move into
+Streaming.
+
+`response_change` compares the two splits draw by draw, and
+{func}`~mmmjax.plot_budget_response` sums it up above a waterfall from the
+revenue the channels bring under the historical split to what they bring under
+the optimized one.
+
+```{code-cell} ipython3
+mj.plot_budget_response(plan)
+```
+
+Each bar between the two totals adds one channel's change in revenue, so the
+cut to Generic search costs \$204,000 and the increase in Streaming adds
+\$368,000. The subtitle puts the mean gain at \$156,000 over the three years,
+with an 89 percent interval from a loss of \$272,000 to a gain of \$612,000,
+and 71 percent of the draws favor the new split.
 
 ## Limits on each channel
 
-A plan rarely gets to move money freely. `spend_constraint_lower` and
+You rarely get to move money freely. `spend_constraint_lower` and
 `spend_constraint_upper` keep each channel within a fraction of its current
-spending, here 10 percent either way.
+spending, here 30 percent either way.
 
 ```{code-cell} ipython3
 limited = mj.optimize_budget(
     model,
     results,
     quantity="mu",
-    spend_constraint_lower=0.1,
-    spend_constraint_upper=0.1,
+    spend_constraint_lower=0.3,
+    spend_constraint_upper=0.3,
+    include_metrics=True,
 )
-limited["spend"].to_pandas().round(-2)
+mj.plot_budget_response(limited)
 ```
 
-TV stops at its cap of \$403,200, and search keeps the rest.
-
-```{code-cell} ipython3
-print(limited["response_change"].quantile([0.05, 0.5, 0.95]).round(-3).values)
-```
-
-The median gain falls to about \$21,000, but even the 5 percent quantile is
-now a gain. A smaller move keeps the plan close to the spending the data has
-seen, where the model knows the most. `bounds` sets the limits in dollars
-instead.
+The limits shrink the loss at the low end of the interval from \$272,000 to
+\$170,000 and raise the share of draws that gain from 71 to 77 percent. The
+cost is a smaller mean gain, \$134,000 instead of \$156,000. Streaming now adds
+\$204,000 rather than \$368,000. A smaller move keeps the plan close to the
+spending the data has seen, where the model knows the most. This is the plan
+that [Plotting](plotting) draws, and its response curves there show Streaming
+stopping at its upper limit. `bounds` sets the limits in dollars instead.
 
 ## Counting risk
 
 The optimizer maximizes the posterior mean by default. `utility_function`
 takes any differentiable JAX function of the total revenue in each draw, so
-an objective can count the spread as well.
+your objective can count the spread as well.
 
 ```{code-cell} ipython3
 import jax.numpy as jnp
@@ -127,21 +165,27 @@ def cautious(revenue):
     return jnp.mean(revenue) - jnp.std(revenue)
 
 
-careful = mj.optimize_budget(model, results, quantity="mu", utility_function=cautious)
-careful["spend"].to_pandas().round(-2)
+careful = mj.optimize_budget(
+    model,
+    results,
+    quantity="mu",
+    utility_function=cautious,
+    include_metrics=True,
+)
+mj.plot_budget_response(careful)
 ```
 
-Subtracting one standard deviation moves about \$69,000 instead of \$84,000.
-
-```{code-cell} ipython3
-print(careful["response_change"].quantile([0.05, 0.5, 0.95]).round(-3).values)
-```
-
-The median gain barely changes, at about \$30,000, while the 5 percent
-quantile improves from a loss of \$14,000 to a loss of \$6,000. Moving money
-to TV takes its flights past the largest ones in the data, where the draws
-disagree more, so the cautious objective stops before the last dollars that
-add more spread than revenue.
+Subtracting one standard deviation holds back on the channels the model knows
+least. Snapchat, whose small budget leaves the model the least to learn from,
+now adds \$57,700 of revenue instead of \$80,300, and Streaming adds \$175,000
+instead of \$368,000. The mean gain falls only to \$123,000, while the loss at
+the low end of the interval shrinks from \$272,000 to \$105,000 and 81 percent
+of the draws gain. Each extra dollar on Snapchat pushes its biggest weeks
+further past anything in the data, where the draws disagree more. The cautious
+objective stops before the last dollars, the ones that add more spread than
+revenue. Against the 30 percent limits it gives up \$11,000 of mean gain for a
+much smaller loss at the low end, \$105,000 against \$170,000, because it holds
+back where the draws disagree instead of on every channel alike.
 
 ## How big the budget should be
 
@@ -153,30 +197,45 @@ would bring.
 import pandas as pd
 
 marginal = {}
-for budget in [600_000, 800_000, 1_000_000, 1_200_000]:
+for budget in [2_000_000, 3_000_000, 4_000_000, 5_000_000]:
     sized = mj.optimize_budget(model, results, quantity="mu", budget=budget, include_metrics=True)
-    best = sized["marginal_roi"].sel(allocation="optimized")
-    marginal[budget] = best.median(("chain", "draw")).to_series()
-pd.DataFrame(marginal).T.round(2)
+    optimized = sized["marginal_roi"].sel(allocation="optimized")
+    marginal[budget] = optimized.mean(("chain", "draw")).to_series()
+pd.DataFrame(marginal).round(2)
 ```
 
-The return on the next dollar falls from about \$2.70 at \$600,000 to \$1.60 at
-\$1.2 million. A larger budget pays for itself while that return, multiplied
-by the profit margin on a dollar of revenue, stays above one. Budgets far from
-the current one also push spending beyond anything in the data, where the
-response curves rest more on the model's shape and priors than on evidence.
+Each column holds the ten marginal returns at one budget, and they agree to
+within a cent. The return on the next dollar falls from about \$2.27 at \$2
+million to \$0.99 at \$5 million, just below break-even.
+
+:::{admonition} Before you grow the budget
+:class: warning
+
+A larger budget pays for itself while the return on its next dollar,
+multiplied by the profit margin on a dollar of revenue, stays above one.
+Budgets far from what was spent also push spending beyond anything in the
+data, where the response curves rest more on the model's shape and priors than
+on evidence.
+:::
 
 ## Planning a period
 
 Budgets are usually set for a period. `spend_periods` picks the weeks whose
-spending the plan changes, and `response_periods` the weeks whose revenue
-counts. Carryover spreads each week's exposure over the eight weeks after it,
-so the revenue window here runs eight weeks past the end of 2023.
+spending the plan changes, and `response_periods` picks the weeks whose
+revenue counts.
+
+:::{admonition} Let the revenue window run past the spending
+:class: warning
+
+Carryover spreads each week's exposure over the eight weeks after it, so the
+revenue window here runs eight weeks past the end of 2023. Ending it with the
+year would miss what the last weeks of 2023 carry into 2024.
+:::
 
 ```{code-cell} ipython3
-weeks = pd.to_datetime(example.frame["week"])
-spend_weeks = example.frame["week"][weeks.dt.year == 2023].tolist()
-response_weeks = example.frame["week"][weeks.between("2023-01-01", "2024-02-19")].tolist()
+weeks = pd.to_datetime(brand.frame["week"])
+spend_weeks = weeks[weeks.dt.year == 2023]
+response_weeks = weeks[weeks.between("2023-01-01", "2024-02-19")]
 
 yearly = mj.optimize_budget(
     model,
@@ -185,15 +244,13 @@ yearly = mj.optimize_budget(
     spend_periods=spend_weeks,
     response_periods=response_weeks,
 )
-yearly["spend"].to_pandas().round(-2)
+mj.plot_budget_spend(yearly)
 ```
 
-The plan moves about \$18,000 of 2023's \$274,000 from search to TV. Ending the
-revenue window with the year would miss what TV's last flights carry into
-2024 and undervalue TV. A plan for weeks the data doesn't cover passes a
-frame of those weeks as `new_data`, which the next page,
-[Scenarios](scenarios), shows how to prepare.
+The plan moves 2023's money mostly into Streaming, \$48,600, and YouTube,
+\$18,700, and takes it mostly from Generic search and Branded search. To plan
+weeks the data doesn't cover, you pass data for those weeks as `new_data`. The
+next page, [Scenarios](scenarios), shows how to prepare it.
 
-Every plan on this page is what the model implies under its assumptions. The
-optimizer moves money on the model's response curves, so a curve that reads
-association as cause moves the budget on that basis too.
+The optimizer moves money along the model's response curves, so if a curve
+reads association as cause, the budget moves on that basis too.

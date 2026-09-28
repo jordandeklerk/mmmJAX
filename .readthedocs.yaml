@@ -7,6 +7,9 @@ build:
   tools:
     python: "3.12"
   jobs:
+    post_checkout:
+      # Each page shows the date of its last commit, which a shallow clone may not reach.
+      - git fetch --unshallow || true
     build:
       html:
         # Executable examples initialize threads that cannot safely be forked.

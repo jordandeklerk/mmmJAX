@@ -14,6 +14,7 @@ from jax.typing import DTypeLike
 from numpy.typing import NDArray
 
 from mmmjax.analysis.response import (
+    _outcome_attrs,
     _period_indices,
     _response_breakdown,
     _response_coordinates,
@@ -59,13 +60,16 @@ def contributions(
     """Decompose the expected response into a baseline and channel contributions.
 
     Remove one input at a time and compare the result with the reference
-    response. Remove every input at once to measure the baseline. Paid and
-    organic exposures are set to zero during ``periods``, only reach is set to
-    zero for reach and frequency families while frequency stays fixed, and
-    treatments are set to baseline levels. Controls, seasonality, earlier
-    history, and every other input stay fixed. Each scenario rewrites only the
-    input it removes. The baseline necessarily rewrites every removable input
-    at once. The full model is evaluated for each selected parameter draw and
+    response. Remove every input at once to measure the baseline.
+
+    Paid and organic exposures are set to zero during ``periods``, only reach
+    is set to zero for reach and frequency families while frequency stays
+    fixed, and treatments are set to baseline levels. Controls, seasonality,
+    earlier history, and every other input stay fixed. Each scenario rewrites
+    only the input it removes. The baseline necessarily rewrites every
+    removable input at once.
+
+    The full model is evaluated for each selected parameter draw and
     differences are taken within draws, so the returned draws support credible
     intervals.
 
@@ -360,6 +364,7 @@ def contributions(
             "treatment_baselines": baseline_rule,
             "history": "fixed",
             "response_units": "original outcome units",
+            **_outcome_attrs(prepared),
         },
     )
     return dataset

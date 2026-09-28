@@ -174,10 +174,22 @@ def test_response_curves_default_to_proportional_media():
     )
 
     xr.testing.assert_identical(curves, explicit)
+    assert curves.attrs["outcome"] == _data().columns["outcome"][0]
     for by in (None, (), []):
         xr.testing.assert_identical(
             curves, response_curves(model, results, quantity="expected", multipliers=[0.0, 1.0, 2.0], by=by)
         )
+
+
+def test_response_curves_default_to_twenty_one_multipliers_from_zero_to_two():
+    data = _data()
+    model = _model(data)
+    results = _results(model, data)
+    expected = response_curves(model, results, quantity="expected", multipliers=[index / 10 for index in range(21)])
+
+    curves = response_curves(model, results, quantity="expected")
+
+    xr.testing.assert_allclose(curves, expected, rtol=1e-12, atol=0)
 
 
 @pytest.mark.parametrize("new_data", [False, True])

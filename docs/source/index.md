@@ -14,7 +14,6 @@ hide-edit-link: true
 :hidden:
 :maxdepth: 1
 
-home
 Getting Started <getting_started/index>
 user_guide/index
 examples/index

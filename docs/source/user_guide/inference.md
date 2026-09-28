@@ -7,28 +7,42 @@ kernelspec:
 
 # Inference
 
-{func}`~mmmjax.sample` is one way to fit a model, not the only one. A model
-exposes its log density and the transforms around it as plain JAX functions,
-so any sampler that works with a JAX log density can fit it, and the analysis
-functions accept the draws it returns. This page covers what the log density
-guarantees, runs BlackJAX and NumPyro directly on the model from [A first
-model](first_model), and tries an approximation that skips MCMC.
+{func}`~mmmjax.sample` isn't the only way to fit a model. A model exposes its
+log density and the transforms around it as plain JAX functions, so any
+sampler that works with a JAX log density can fit it, and the analysis and
+plotting functions accept the draws it returns. This page covers what the
+log density guarantees, runs BlackJAX and NumPyro directly on the ten-channel
+brand model from [A first model](first_model), and tries an approximation that
+skips MCMC.
+
+The page runs in 64-bit precision, which the Pathfinder section needs. The
+cell below turns it on before the model is built, because a model keeps the
+precision that was in effect when it was created, as
+[Installation](../getting_started/installation.md#choosing-float32-or-float64)
+explains.
+
+```{code-cell} ipython3
+import jax
+
+jax.config.update("jax_enable_x64", True)
+```
 
 ```{code-cell} ipython3
 :tags: [remove-cell]
 
-%run prerun/first_model.py
-from prerun import stored
+%run -m prerun.first_model
+from prerun import first_model_results, stored
+
+results = first_model_results(model)
 ```
 
 ## The interface
 
-A model works on an unconstrained position, a dictionary with one array per
-parameter, and it provides everything a gradient-based sampler needs to move
-around that space.
+A model works on an unconstrained position, a dictionary with one array for
+each parameter under the name you declared in `parameters`, and it provides
+everything a gradient-based sampler needs to move around that space.
 
 ```{code-cell} ipython3
-import jax
 import jax.numpy as jnp
 
 position = model.initialize_random(jax.random.key(0))
@@ -39,7 +53,7 @@ model.constrain(position)["retention"]
 {meth}`~mmmjax.Model.initialize_random` draws a starting point,
 {meth}`~mmmjax.Model.log_density` evaluates the model at a position, and
 {meth}`~mmmjax.Model.constrain` maps a position back to the natural scale,
-where each retention rate lies between zero and one.
+where each of the ten retention rates lies between zero and one.
 {meth}`~mmmjax.Model.unconstrain` goes the other way.
 
 ## What the log density guarantees
@@ -62,21 +76,26 @@ finite_gradient = all(bool(jnp.all(jnp.isfinite(leaf))) for leaf in jax.tree.lea
 bool(jnp.isfinite(value)), finite_gradient
 ```
 
-Both checks pass for the first model. The density also has to be pure, giving
-the same value every time it sees the same position, which rules out
-randomness and changing global state inside `transformed_parameters` and
-`log_density`. It does not have to be normalized, since samplers only use
-differences in the log density and its gradient, but mmmJAX's distributions
-keep their constants, so pointwise log likelihoods stay comparable across
-models. [User-defined functions](functions) covers the rules JAX sets for code
-that runs inside a block.
+Both checks pass for the brand model. The density doesn't have to be
+normalized, since samplers only use differences in the log density and its
+gradient, but mmmJAX's distributions keep their constants, so pointwise log
+likelihoods stay comparable across models. [User-defined functions](functions)
+covers the rules JAX sets for code that runs inside a block.
+
+:::{admonition} Keep the density pure
+:class: important
+
+The density has to give the same value every time it sees the same position.
+That rules out randomness and changing global state inside
+`transformed_parameters` and `log_density`.
+:::
 
 ## BlackJAX
 
 BlackJAX is the library {func}`~mmmjax.sample` uses for NUTS, and it can run on
-the model directly. The function below adapts a NUTS kernel with window
-adaptation and then draws from one chain, keeping each draw's position and
-whether its transition diverged.
+the model directly. The function below tunes a NUTS kernel with window
+adaptation, then runs one chain and keeps each draw's position and whether its
+transition diverged.
 
 ```{code-cell} ipython3
 import blackjax
@@ -105,8 +124,14 @@ def run_chain(key, num_warmup=1000, num_draws=1000):
 ```
 
 The draws come back on the unconstrained scale. `to_results` maps them to the
-natural scale and labels them the way mmmJAX labels its own results, with
-chain and draw axes and the channel and control names from the data.
+natural scale and labels them the way mmmJAX labels its own results. It adds
+chain and draw axes and gives the `channel`, `organic_channel`, `control`, and
+`treatment` axes their labels from the data. Those axes are supplied names,
+listed in [Data and scaling](data.md#supplied-names), which is why the
+parameters' `dims` can use them. The four seasonal coefficients are declared
+as `mj.Real(4)` with no `dims`, so their axis takes the name
+{func}`~mmmjax.sample` gives it, `annual_coefficients_dim_0`, with the labels 0
+to 3.
 
 ```{code-cell} ipython3
 import xarray as xr
@@ -114,12 +139,18 @@ import xarray as xr
 
 def to_results(draws, diverging=None):
     constrained = jax.vmap(jax.vmap(model.constrain))(draws)
+    dims = {name: parameter.dims for name, parameter in model.parameters.items()}
+    # The seasonal coefficients have no dims, so their axis takes the name sample gives it.
+    dims["annual_coefficients"] = ("annual_coefficients_dim_0",)
     posterior = xr.Dataset(
-        {
-            name: (("chain", "draw", *model.parameters[name].dims), values)
-            for name, values in constrained.items()
+        {name: (("chain", "draw", *dims[name]), values) for name, values in constrained.items()},
+        coords={
+            "channel": list(data.channels),
+            "organic_channel": list(data.organic_channels),
+            "control": list(data.columns["controls"]),
+            "treatment": list(data.columns["treatments"]),
+            "annual_coefficients_dim_0": [0, 1, 2, 3],
         },
-        coords={"channel": list(data.channels), "control": list(data.columns["controls"])},
     )
     groups = {"posterior": posterior}
     if diverging is not None:
@@ -127,6 +158,16 @@ def to_results(draws, diverging=None):
     results = xr.DataTree.from_dict(groups)
     return results
 ```
+
+:::{admonition} Label draws the way sample does
+:class: important
+
+{func}`~mmmjax.media_metrics`, {func}`~mmmjax.generate_quantities`, and the
+other functions that evaluate the model on draws reject any other labels. A
+data axis named in `dims` needs the data's labels in the data's order, and each
+axis of a parameter declared without `dims` needs the parameter's name
+followed by `_dim_0`, `_dim_1`, and so on, with labels counting from zero.
+:::
 
 `jax.vmap` runs four chains at once, one for each key, and stacks them into
 one set of results.
@@ -148,23 +189,40 @@ def fit_blackjax():
     return to_results(positions, diverging)
 
 
-blackjax_results = stored("blackjax", fit_blackjax)
+blackjax_results = stored("blackjax", fit_blackjax, groups=["posterior", "sample_stats"])
 ```
 
 ```{code-cell} ipython3
 int(blackjax_results["sample_stats"]["diverging"].sum())
 ```
 
-None of the 4,000 transitions diverged, and the analysis functions take these
-results as they are.
+None of the 4,000 transitions diverged. The plots take these results as they
+are, so {func}`~mmmjax.plot_rhat` checks that the four chains agree.
 
 ```{code-cell} ipython3
-shares = mj.contributions(model, blackjax_results, quantity="mu")
-shares["contribution_share"].mean(("chain", "draw")).to_series().round(3)
+mj.plot_rhat(blackjax_results)
 ```
 
-The shares match the ones {func}`~mmmjax.sample` produced in [A first
-model](first_model), as two runs of the same sampler on the same model should.
+The subtitle confirms that all 45 values sit at or below ArviZ's limit of 1.01,
+and the other convergence checks in [Sampling and diagnostics](sampling), such
+as the rank plot, read these results the same way. The checks on predictions
+need predictive draws, which the last section adds.
+
+The analysis functions take them as they are too.
+{func}`~mmmjax.media_metrics` computes each channel's return on investment from
+them and from `results`, the fit that {func}`~mmmjax.sample` produced in [A
+first model](first_model), and {func}`~mmmjax.plot_media_metrics` draws the two
+side by side.
+
+```{code-cell} ipython3
+sample_returns = mj.media_metrics(model, results, quantity="mu")
+blackjax_returns = mj.media_metrics(model, blackjax_results, quantity="mu")
+mj.plot_media_metrics({"sample": sample_returns, "BlackJAX": blackjax_returns})
+```
+
+Each pair of bars agrees in its mean and its interval, as two runs of the same
+sampler on the same model should. Meta returns \$3.49 on a dollar in the fit
+from `sample` and \$3.55 in the one from BlackJAX.
 
 ## NumPyro
 
@@ -213,29 +271,36 @@ def fit_numpyro():
     return to_results(mcmc.get_samples(group_by_chain=True), diverging)
 
 
-numpyro_results = stored("numpyro", fit_numpyro)
-```
-
-```{code-cell} ipython3
-shares = mj.contributions(model, numpyro_results, quantity="mu")
-shares["contribution_share"].mean(("chain", "draw")).to_series().round(3)
+numpyro_results = stored("numpyro", fit_numpyro, groups=["posterior", "sample_stats"])
 ```
 
 NumPyro's samples come back grouped by chain and keyed by parameter name, so
-the same `to_results` labels them.
+the same `to_results` labels them, and their returns go next to the ones from
+`sample`.
+
+```{code-cell} ipython3
+numpyro_returns = mj.media_metrics(model, numpyro_results, quantity="mu")
+mj.plot_media_metrics({"sample": sample_returns, "NumPyro": numpyro_returns})
+```
+
+NumPyro's NUTS is a separate implementation and still lands on the same
+returns. The widest gap is YouTube's, \$4.15 from NumPyro against \$4.06 from
+`sample`, and Branded search differs by almost as much, \$3.56 against \$3.48.
+Both gaps are small next to intervals that span several dollars.
 
 ## Pathfinder
 
 Pathfinder, also part of BlackJAX, fits a variational approximation along the
 path of an optimizer instead of running a Markov chain, and then draws from
-that approximation.
+that approximation. It keeps the approximation along the path with the highest
+ELBO, its estimate of how close each one comes to the posterior.
 
 ```{code-cell} ipython3
 :tags: [skip-execution]
 
 approximate_key, sample_key = jax.random.split(jax.random.key(4))
 state, _ = blackjax.vi.pathfinder.approximate(
-    approximate_key, logdensity, model.initialize_random(jax.random.key(5))
+    approximate_key, logdensity, model.initialize_random(jax.random.key(5)), maxiter=1000
 )
 draws, _ = blackjax.vi.pathfinder.sample(sample_key, state, 1000)
 one_chain = {name: values[None] for name, values in draws.items()}
@@ -248,35 +313,61 @@ pathfinder_results = to_results(one_chain)
 def fit_pathfinder():
     approximate_key, sample_key = jax.random.split(jax.random.key(4))
     state, _ = blackjax.vi.pathfinder.approximate(
-        approximate_key, logdensity, model.initialize_random(jax.random.key(5))
+        approximate_key, logdensity, model.initialize_random(jax.random.key(5)), maxiter=1000
     )
     draws, _ = blackjax.vi.pathfinder.sample(sample_key, state, 1000)
     one_chain = {name: values[None] for name, values in draws.items()}
     return to_results(one_chain)
 
 
-pathfinder_results = stored("pathfinder", fit_pathfinder)
+pathfinder_results = stored("pathfinder", fit_pathfinder, groups=["posterior"])
 ```
+
+The default of 30 optimizer steps ends far from the posterior mode on this
+model, where the gradient is still large, so the call raises `maxiter` and the
+optimizer stops on its own well before the limit.
+
+The 64-bit switch at the top of the page is for this section. BlackJAX finds
+the log determinant of the approximation's covariance by taking the log of a
+product of 45 variances, one per unconstrained parameter, and in 32-bit that
+product rounds to zero. Every ELBO then comes out as minus infinity, and
+Pathfinder falls back to the approximation at its random starting point, so its
+draws carry nothing the optimizer learned. A finite `state.elbo` shows that a
+run avoided this.
 
 ```{code-cell} ipython3
-shares = mj.contributions(model, pathfinder_results, quantity="mu")
-shares["contribution_share"].mean(("chain", "draw")).to_series().round(3)
+pathfinder_returns = mj.media_metrics(model, pathfinder_results, quantity="mu")
+mj.plot_media_metrics({"sample": sample_returns, "Pathfinder": pathfinder_returns})
 ```
 
-The approximation puts search's share at about 5.1 percent, below the 5.6 and
-5.7 percent the two NUTS runs found and the true 6.1 percent, so it serves for
-a quick look or as starting points for MCMC rather than as the final fit.
+Pathfinder's intervals are far narrower than the ones from NUTS, because an
+approximation chosen by its ELBO tends to understate how spread out a posterior
+is. Its means move as well. Nine of the ten fall, TikTok's the furthest, to
+\$2.63 from \$3.20, and Streaming's rises to \$4.36 from \$4.04.
+
+:::{admonition} What Pathfinder is for
+:class: warning
+
+Use Pathfinder's draws for a quick look or as starting points for MCMC, not
+as the final fit.
+:::
 
 ## From draws to everything else
 
 Once the draws are labeled, the rest of mmmJAX treats them like its own.
 {func}`~mmmjax.generate_quantities` adds the predictions and pointwise log
 likelihoods that ArviZ uses for the checks in [Sampling and
-diagnostics](sampling).
+diagnostics](sampling), and {func}`~mmmjax.plot_fit` draws the predictions
+against observed revenue.
 
 ```{code-cell} ipython3
-mj.generate_quantities(model, blackjax_results)
+generated = mj.generate_quantities(model, blackjax_results)
+mj.plot_fit(model, generated)
 ```
 
-The one exception is {func}`~mmmjax.continue_sampling`, which resumes from the
-sampler state that only {func}`~mmmjax.sample` records.
+The subtitle gives the BlackJAX draws an $R^2$ of 0.91, a weighted mean
+absolute percentage error of 4.1 percent, and 93 percent of weeks inside the
+band, much as [Plotting](plotting) finds for the draws from `sample`.
+
+{func}`~mmmjax.continue_sampling` alone can't use these draws, because it
+resumes from the sampler state that only {func}`~mmmjax.sample` records.

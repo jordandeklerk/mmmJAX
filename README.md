@@ -18,9 +18,11 @@
 
 ## What is mmmJAX?
 
-mmmJAX is a library for Bayesian marketing mix modeling in [JAX](https://docs.jax.dev/). Packaged MMM APIs give you a great first model. It answers the initial questions a business asks but rarely has the flexibility for the ones that follow. In mmmJAX you write the model yourself as a [Stan](https://mc-stan.org/)-style program with a few named blocks of plain Python. Every prior, transformation, and assumption is spelled out where you would change it.
+mmmJAX is an open-source Python library for Bayesian marketing mix modeling in [JAX](https://docs.jax.dev/), built for experienced developers and practitioners. We believe packaged MMM APIs give users a great first model but often fall short as business demands grow. In mmmJAX you write the model yourself as a [Stan](https://mc-stan.org/)-style program of plain Python blocks, and the library makes none of the modeling decisions for you.
 
-The blocks are ordinary JAX code, so the model can be differentiated, compiled, and vectorized. mmmJAX supplies marketing functions such as adstock, saturation, and seasonality to call inside the blocks, and a NUTS sampler for inference. None of them are required, and the library's tools, from data preparation to budget optimization, keep working as the model grows.
+Everything around the model comes packaged as convenient shortcuts, from data preparation and media transformations to sampling, budget optimization, and plots, so that your time goes into building the model. The blocks are ordinary JAX code, so the model can be differentiated, compiled, and vectorized.
+
+If you're new to marketing mix models or to Bayesian modeling, a packaged tool with sensible defaults is a more forgiving place to start.
 
 ## Installation
 
@@ -30,16 +32,16 @@ mmmJAX is in alpha and requires Python 3.12 or later. It is not yet on PyPI, so 
 pip install "git+https://github.com/jordandeklerk/mmmJAX.git"
 ```
 
-JAX runs on the CPU by default. For GPU sampling, install the JAX wheel for your accelerator first by following the [JAX installation guide](https://docs.jax.dev/en/latest/installation.html).
+JAX runs on the CPU by default. On an NVIDIA GPU with CUDA 12, the `gpu` extra installs the CUDA build of JAX with mmmJAX, and the [installation guide](https://mmmjax.readthedocs.io/en/latest/getting_started/installation.html) covers other accelerators and 64-bit precision.
 
 ## Program blocks
 
-A model is built from up to six blocks, given to `Model` in the order they run. This skeleton shows all of them with their bodies left as comments. Each function asks for what it needs by argument name, and mmmJAX supplies it from the prepared data, the outputs of earlier blocks, or the parameter draws.
+A model is built from up to six blocks, given to `Model` in the order they run. Each function asks for what it needs by argument name, and mmmJAX supplies it from the prepared data, the outputs of earlier blocks, or the parameter draws.
 
 ```python
 import mmmjax as mj
 
-data = mj.prepare_data(frame, time="week", outcome="sales", media=channels)
+data = mj.prepare_data(frame, time="week", outcome="sales", media=channels, controls=controls)
 
 
 def transformed_data(media, controls):
@@ -77,11 +79,9 @@ model = mj.Model(
 )
 ```
 
-Only `parameters` and `log_density` are required. Data-only work runs once, the density runs on every evaluation, and generated quantities run once per retained draw. Parameters are declared with their constraints and named axes, and each declaration owns the transform to the unconstrained scale and its Jacobian adjustment, so every block sees parameters on their natural scale and the log density contains only the terms you wrote.
-
 ## Distributions
 
-Every prior and likelihood term comes from a Stan-style distribution library built on TensorFlow Probability. Each family has a summed log density for use in `log_density`, a pointwise version for likelihood diagnostics, a random draw function, and log cumulative and log survival functions where they exist. They are plain JAX functions, so they broadcast, differentiate, and compile like any other.
+Every prior and likelihood term comes from a Stan-style distribution library built on TensorFlow Probability. They are plain JAX functions, so they broadcast, differentiate, and compile like any other.
 
 ```python
 import jax
@@ -94,15 +94,13 @@ draws = mj.gamma_rng(jax.random.key(0), shape=2.0, rate=0.5, sample_shape=(1000,
 
 ## Inference is separate from the model
 
-A `Model` does not know how it will be fit. It exposes `log_density` for an unconstrained position, `initialize_random` for a starting point, and `constrain` to map draws back to the parameter scale, and that is the whole interface a sampler needs. The log density is an ordinary JAX function, so its gradient is one transformation away.
+A `Model` does not know how it will be fit. It exposes `log_density` for an unconstrained position, `initialize_random` for a starting point, and `constrain` to map draws back to the parameter scale, and that is the whole interface a sampler needs.
 
 ```python
 position = model.initialize_random(jax.random.key(0))
 value, gradient = jax.value_and_grad(model.log_density)(position, model.data)
 parameters = model.constrain(position)
 ```
-
-The built-in `sample` uses this interface to run NUTS with window adaptation and returns an xarray [DataTree](https://docs.xarray.dev/en/stable/user-guide/hierarchical-data.html) labeled with your data's coordinates, with the sampler state stored alongside so `continue_sampling` can add draws later. Any other sampler that accepts a log density and its gradient, in NumPyro, BlackJAX, or your own code, works with the same object.
 
 ## Documentation
 

@@ -520,6 +520,7 @@ def test_contributions_restore_original_outcome_units_with_fitted_outcome_scalin
     plain = contributions(_model(data), results, quantity="expected_users")
 
     assert result.attrs["response_units"] == "original outcome units"
+    assert result.attrs["outcome"] == "outcome"
     assert not np.allclose(result["reference_response"], plain["reference_response"])
     _assert_closed_form(result, data, results, baselines=_baselines(data), scaling=scaling)
 
