@@ -34,7 +34,7 @@ JAX runs on the CPU by default. On an NVIDIA GPU with CUDA 12, the `gpu` extra i
 
 ## Program blocks
 
-A model is built from up to six blocks, given to `Model` in the order they run. This skeleton shows all of them with their bodies left as comments. Each function asks for what it needs by argument name, and mmmJAX supplies it from the prepared data, the outputs of earlier blocks, or the parameter draws.
+A model is built from up to six blocks, given to `Model` in the order they run. Each function asks for what it needs by argument name, and mmmJAX supplies it from the prepared data, the outputs of earlier blocks, or the parameter draws.
 
 ```python
 import mmmjax as mj
@@ -81,7 +81,7 @@ Only `parameters` and `log_density` are required. Data-only work runs once, the 
 
 ## Distributions
 
-Every prior and likelihood term comes from a Stan-style distribution library built on TensorFlow Probability. Each family has a summed log density for use in `log_density`, a pointwise version for likelihood diagnostics, a random draw function, and log cumulative and log survival functions where they exist. They are plain JAX functions, so they broadcast, differentiate, and compile like any other.
+Every prior and likelihood term comes from a Stan-style distribution library built on TensorFlow Probability. They are plain JAX functions, so they broadcast, differentiate, and compile like any other.
 
 ```python
 import jax
@@ -94,7 +94,7 @@ draws = mj.gamma_rng(jax.random.key(0), shape=2.0, rate=0.5, sample_shape=(1000,
 
 ## Inference is separate from the model
 
-A `Model` does not know how it will be fit. It exposes `log_density` for an unconstrained position, `initialize_random` for a starting point, and `constrain` to map draws back to the parameter scale, and that is the whole interface a sampler needs. The log density is an ordinary JAX function, so its gradient is one transformation away.
+A `Model` does not know how it will be fit. It exposes `log_density` for an unconstrained position, `initialize_random` for a starting point, and `constrain` to map draws back to the parameter scale, and that is the whole interface a sampler needs.
 
 ```python
 position = model.initialize_random(jax.random.key(0))
