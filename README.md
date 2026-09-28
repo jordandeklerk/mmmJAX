@@ -102,8 +102,6 @@ value, gradient = jax.value_and_grad(model.log_density)(position, model.data)
 parameters = model.constrain(position)
 ```
 
-The built-in `sample` uses this interface to run NUTS with window adaptation and returns an xarray [DataTree](https://docs.xarray.dev/en/stable/user-guide/hierarchical-data.html) labeled with your data's coordinates, with the sampler state stored alongside so `continue_sampling` can add draws later. Any other sampler that accepts a log density and its gradient, in NumPyro, BlackJAX, or your own code, works with the same object.
-
 ## Documentation
 
 For details about the API, see the [reference documentation](https://mmmjax.readthedocs.io/en/latest/).
