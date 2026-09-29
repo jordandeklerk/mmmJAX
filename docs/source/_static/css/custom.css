@@ -78,6 +78,13 @@ header.md-header,
   font-size: 0.7rem;
 }
 
+/* The User Guide's sidebar lists its sections as headings, and the theme sets their pages flush with the heading, so this indents them as ArviZ's sidebar does. */
+@media screen and (min-width: 76.25em) {
+  .md-nav--primary .md-nav__item--section .md-nav__item--section > .md-nav {
+    margin-left: 0;
+  }
+}
+
 .highlight {
   background-color: var(--md-code-bg-color);
   border-radius: 4px;

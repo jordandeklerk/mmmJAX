@@ -3213,6 +3213,33 @@ def test_model_inputs_omit_absent_roles_and_calendar_names_for_numeric_labels():
     assert "reference" in unobserved.model_inputs
 
 
+def test_model_inputs_give_outcome_scaling_the_group_axis_the_model_supplies():
+    rows = [
+        {"time": time, "region": f"region_{group}", "sales": (group + 1) * (time + 2), "population": 10 * (group + 1)}
+        for time in range(3)
+        for group in range(2)
+    ]
+    data = prepare_data(pl.DataFrame(rows), time="time", groups=["region"], outcome="sales", population="population")
+    population = fit_data_scaling(data, scale_outcome="population")
+    declarations = {
+        ("group",): [Data(data, scaling=population), population.transform(data)],
+        (): [data, Data(data, scaling="auto"), Data(data, scaling=fit_data_scaling(data, scale_outcome=True))],
+    }
+
+    for axes, cases in declarations.items():
+        for declaration in cases:
+            model = Model(
+                parameters={},
+                log_density=lambda outcome: jnp.sum(outcome),
+                generated_quantities=lambda key, outcome_scaling: {"scale": outcome_scaling.scale},
+                data=declaration,
+            )
+            supplied = model.generate_quantities(jax.random.key(0), {}, model.data)["scale"]
+
+            assert declaration.model_inputs["outcome_scaling"] == ModelInput(kind="object", axes=axes, source="builtin")
+            assert supplied.shape == (2,) * len(axes)
+
+
 def test_data_constants_are_validated_copied_and_listed(block_observations):
     approximation = prepare_hsgp((0.0, 10.0), length_scale_range=(1.0, 4.0))
     constants = {"max_lag": 3, "annual_order": 2, "approximation": approximation}

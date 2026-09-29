@@ -29,24 +29,28 @@ def geometric_adstock(
             1 & \text{otherwise}.
         \end{cases}
 
-    The lag-zero weight is one, including when :math:`\alpha = 0`.
+    The lag-zero weight is one, including when :math:`\alpha = 0`, so zero
+    retention leaves the input values unchanged. A retention of one gives
+    every lag in the window the same weight.
 
     Media before the supplied series is assumed to be zero. When
     normalization is enabled, weights are normalized over the full lag
     window, even for short series.
 
+    For ``(time, group, channel)`` inputs, channel-level retention has shape
+    ``(channel,)`` and group-channel retention has shape
+    ``(group, channel)``. Use ``jax.vmap`` to evaluate additional parameter
+    draws.
+
     Parameters
     ----------
     media : array_like
         Real-valued array with at least one dimension. Observations along
-        ``axis`` must represent equally spaced time periods. Other axes
-        identify independent series, such as channels and groups.
+        ``axis`` must represent equally spaced periods. Other axes identify
+        independent series, such as channels and groups.
     alpha : array_like
         Finite retention parameter between zero and one, inclusive. Its
-        shape must broadcast to the shape of ``media`` with the time axis
-        removed. For ``media.shape == (time, group, channel)``, channel-level
-        parameters have shape ``(channel,)`` and group-channel parameters
-        have shape ``(group, channel)``. Use ``jax.vmap`` for additional draws.
+        shape must broadcast to the non-time shape of ``media``.
     max_lag : int
         Nonnegative number of previous periods to include. The window has
         ``max_lag + 1`` weights, including the current period. Keep this
@@ -61,9 +65,9 @@ def geometric_adstock(
     Returns
     -------
     jax.Array
-        Transformed values with the same shape as ``media``. Inputs are
-        promoted to a common floating-point dtype of at least float32.
-        Invalid retention parameters produce ``nan`` for their series.
+        Transformed values with the same shape as ``media``. Floating dtype
+        is at least float32. Invalid retention parameters give ``nan`` for
+        their series.
 
     Examples
     --------
@@ -151,7 +155,7 @@ def delayed_adstock(
         \end{cases}
 
     The delay can be fractional. For :math:`\alpha < 1`, the sampled
-    weights are largest at the lag or lags nearest :math:`\theta`;
+    weights are largest at the lag or lags nearest :math:`\theta`, and
     :math:`\alpha = 1` gives equal weights throughout the window.
     Unlike geometric adstock, setting :math:`\theta = 0` gives weights
     :math:`\alpha^{\ell^2}`, not :math:`\alpha^\ell`.
@@ -159,6 +163,10 @@ def delayed_adstock(
     Media before the supplied series is assumed to be zero. When
     normalization is enabled, weights are normalized over the full lag
     window, even for short series.
+
+    For ``(time, group, channel)`` inputs, each parameter can have shape
+    ``(channel,)``, ``(group, 1)``, or ``(group, channel)`` independently
+    of the other. Use ``jax.vmap`` to evaluate additional parameter draws.
 
     Parameters
     ----------
@@ -168,15 +176,12 @@ def delayed_adstock(
         independent series, such as channels and groups.
     alpha : array_like
         Finite retention parameter greater than zero and at most one.
-        Smaller values concentrate the effect around ``theta``. Zero is
-        excluded because all weights vanish for a fractional delay.
-        Its shape must broadcast to the non-time shape of ``media``.
+        Smaller values concentrate the effect around ``theta``. Its shape
+        must broadcast to the non-time shape of ``media``.
     theta : array_like
         Finite peak delay between zero and ``max_lag``, inclusive, measured
         in periods. Its shape must broadcast to the non-time shape of
-        ``media`` independently of ``alpha``. For inputs shaped
-        ``(time, group, channel)``, parameters can have shape ``(channel,)``,
-        ``(group, 1)``, or ``(group, channel)``. Use ``jax.vmap`` for extra draws.
+        ``media``.
     max_lag : int
         Nonnegative number of previous periods to include. The window has
         ``max_lag + 1`` weights, including the current period. Keep this
@@ -191,9 +196,9 @@ def delayed_adstock(
     Returns
     -------
     jax.Array
-        Transformed values with the same shape as ``media``. Inputs are
-        promoted to a common floating-point dtype of at least float32.
-        Invalid retention or delay parameters produce ``nan`` for their series.
+        Transformed values with the same shape as ``media``. Floating dtype
+        is at least float32. Invalid retention or delay parameters give
+        ``nan`` for their series.
 
     Examples
     --------
@@ -290,20 +295,25 @@ def weibull_pdf_adstock(
         \end{cases}
 
     Sampling starts at one to avoid a singular density at zero for shapes
-    below one. The min/max rescaling is applied even with ``normalize=False``;
-    the weights are not raw density values. It is piecewise differentiable
-    and can have kinks where the sampled minimum or maximum changes.
+    below one. The min/max rescaling is applied even with
+    ``normalize=False``, so the weights are not raw density values. The
+    rescaling is piecewise differentiable and can have kinks where the
+    sampled minimum or maximum changes.
 
     Rescaling works from differences of log densities, so it stays accurate
     when the scale far exceeds ``max_lag``. At shape one the rescaled weights
     then approach a linear decline from one to zero. A scale within a small
-    factor of the largest finite float loses the density differences between
-    lags, so its weights are unreliable. Setting ``max_lag=0`` retains only
-    the current period.
+    factor of the largest finite float loses those differences, so its
+    weights are unreliable.
 
     Media before the supplied series is assumed to be zero. When
     normalization is enabled, weights are normalized over the full lag
-    window, even for short series.
+    window, even for short series. Setting ``max_lag=0`` retains only the
+    current period.
+
+    For ``(time, group, channel)`` inputs, each parameter can have shape
+    ``(channel,)``, ``(group, 1)``, or ``(group, channel)`` independently
+    of the other. Use ``jax.vmap`` to evaluate additional parameter draws.
 
     Parameters
     ----------
@@ -313,13 +323,11 @@ def weibull_pdf_adstock(
         independent series, such as channels and groups.
     shape : array_like
         Finite positive Weibull shape. Shapes at most one give decreasing
-        density weights; larger shapes can give a delayed peak. Its shape
+        density weights, and larger shapes can give a delayed peak. Its shape
         must broadcast to the non-time shape of ``media``.
     scale : array_like
         Finite positive Weibull scale, measured in periods. Its shape must
-        broadcast to the non-time shape of ``media`` independently of
-        ``shape``. For ``(time, group, channel)`` inputs, parameters can have
-        shape ``(channel,)``, ``(group, 1)``, or ``(group, channel)``.
+        broadcast to the non-time shape of ``media``.
     max_lag : int
         Nonnegative number of previous periods to include. The window has
         ``max_lag + 1`` weights, including the current period. Keep this
@@ -334,9 +342,9 @@ def weibull_pdf_adstock(
     Returns
     -------
     jax.Array
-        Transformed values with the same shape as ``media``. Inputs are
-        promoted to a common floating-point dtype of at least float32.
-        Invalid shape or scale parameters produce ``nan`` for their series.
+        Transformed values with the same shape as ``media``. Floating dtype
+        is at least float32. Invalid shape or scale parameters give ``nan``
+        for their series.
 
     Examples
     --------
@@ -451,6 +459,10 @@ def weibull_cdf_adstock(
     normalization is enabled, weights are normalized over the full lag
     window, even for short series.
 
+    For ``(time, group, channel)`` inputs, each parameter can have shape
+    ``(channel,)``, ``(group, 1)``, or ``(group, channel)`` independently
+    of the other. Use ``jax.vmap`` to evaluate additional parameter draws.
+
     Parameters
     ----------
     media : array_like
@@ -464,9 +476,7 @@ def weibull_cdf_adstock(
     scale : array_like
         Finite positive Weibull scale, measured in periods. Larger values
         retain more of earlier inputs. Its shape must broadcast to the
-        non-time shape of ``media`` independently of ``shape``. For
-        ``(time, group, channel)`` inputs, parameters can have shape
-        ``(channel,)``, ``(group, 1)``, or ``(group, channel)``.
+        non-time shape of ``media``.
     max_lag : int
         Nonnegative number of previous periods to include. The window has
         ``max_lag + 1`` weights, including the current period. Keep this
@@ -481,9 +491,9 @@ def weibull_cdf_adstock(
     Returns
     -------
     jax.Array
-        Transformed values with the same shape as ``media``. Inputs are
-        promoted to a common floating-point dtype of at least float32.
-        Invalid shape or scale parameters produce ``nan`` for their series.
+        Transformed values with the same shape as ``media``. Floating dtype
+        is at least float32. Invalid shape or scale parameters give ``nan``
+        for their series.
 
     Examples
     --------

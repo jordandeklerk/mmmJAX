@@ -35,8 +35,6 @@ from mmmjax import (
     dirichlet_rng,
     exponential_logpdf,
     exponential_rng,
-    fit_media_scaling,
-    fit_scaling,
     fourier_features,
     gamma_logpdf,
     gamma_rng,
@@ -92,6 +90,7 @@ from mmmjax import (
     weibull_pdf_adstock,
 )
 from mmmjax.data._results import _collect_results
+from mmmjax.data.scaling import _fit_media_scaling, _fit_standardization
 
 # Later marks take precedence. The pinned tfp-nightly still calls deprecated JAX
 # APIs, so only those two messages and only from its own modules are ignored.
@@ -285,8 +284,8 @@ def test_calibration_coefficients_avoid_deprecated_jax_apis():
 def test_scaling_avoids_deprecated_jax_apis():
     values = [[1.0, 2.0], [3.0, 6.0]]
 
-    scaling = fit_scaling(values)
-    media_scaling = fit_media_scaling(values)
+    scaling = _fit_standardization(values)
+    media_scaling = _fit_media_scaling(values)
     restored = scaling.inverse_transform(scaling.transform(values))
     media_restored = media_scaling.inverse_transform(media_scaling.transform(values))
 

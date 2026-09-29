@@ -39,6 +39,10 @@ class _TimeInput(StrEnum):
 class ModelInput(NamedTuple):
     """Describe one name that model functions can request from prepared data.
 
+    ``PreparedData.model_inputs`` and ``Data.model_inputs`` give one of these
+    for every input they supply. Each says what kind of value a block
+    receives, which axes an array runs over, and where the value comes from.
+
     Attributes
     ----------
     kind : str
@@ -47,9 +51,9 @@ class ModelInput(NamedTuple):
         namespace, or ``constant`` for declared Python values passed through
         unchanged.
     axes : tuple of str
-        Named axes of an array input. Empty for scalars. Training references
-        use ``reference_time`` and ``reference_media_time`` for their time
-        axes. Outcome conversions gain a group axis under population scaling.
+        Named axes of an array input, or ``("group",)`` for
+        ``outcome_scaling`` when a grouped outcome is scaled by population.
+        Empty for scalars and other kinds.
     source : str
         ``data`` for selected roles, ``time`` for positions computed from the
         observation labels, ``builtin`` for model-supplied values,
@@ -65,23 +69,26 @@ class ModelInput(NamedTuple):
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True, eq=False)
 class Reference:
-    """Training inputs retained while a model evaluates new data.
+    """Retain training inputs while a model evaluates new data.
 
-    Request ``reference`` in a program block and read the training arrays as
-    attributes, such as ``reference.spend`` or ``reference.time``. The training
-    period count is ``reference.n_periods``. The attribute names are the input
-    names the blocks use, so a mapping declared through ``Data`` variables
-    applies here as well.
+    A block that requests ``reference`` reads the training arrays as
+    attributes, such as ``reference.spend`` or ``reference.time``, and the
+    training period count as ``reference.n_periods``. The attribute names are
+    the input names the blocks use, so a mapping declared through ``Data``
+    variables renames them as well.
 
-    These arrays never change for scenarios, forecasts, or response curves, so
-    calculations that must stay anchored to the fitted data, such as a
-    normalization that defines a parameter, use them in place of the current
-    inputs.
+    These arrays never change for scenarios, forecasts, or response curves. A
+    calculation that must stay anchored to the fitted data, such as a
+    normalization that defines a parameter, reads them in place of the
+    current inputs.
+
+    The results label the time axis of a training array that a block returns
+    unchanged as ``reference_time`` or ``reference_media_time``.
 
     Attributes
     ----------
     values : dict of str to jax.Array
-        Training arrays by role and time input name.
+        Training arrays by the input names the blocks use.
     n_periods : int
         Number of training periods.
     """
@@ -102,22 +109,26 @@ class Reference:
 class PreparedData:
     """Store prepared model inputs together with their observation labels.
 
-    Create validated inputs with :func:`prepare_data`. Direct construction
-    skips validation. If editing arrays, preserve their shapes and label order.
+    :func:`prepare_data` builds this object after it validates the data.
+    Constructing one directly skips those checks, so an edited array must
+    keep its shape and the order of its labels.
+
+    Each time-varying array runs over time, group when there are groups, and
+    its columns in that order. Outcome and revenue per outcome have no column
+    axis, and population holds one value per group, or a scalar without
+    groups. Exposure arrays also cover any history periods, while the other
+    time-varying arrays cover only the modeling periods.
 
     Attributes
     ----------
     arrays : dict of str to numpy.ndarray
-        Independent arrays ordered by time, optional group, then feature.
-        Outcome and revenue per outcome have no feature axis. Population
-        is a group vector or a scalar. Exposure inputs include history.
-        Other time-varying inputs cover only the modeling periods.
+        Independent NumPy arrays by role, such as ``outcome`` or ``media``.
     time_column : str
         Source column identifying observation periods.
     time_values : tuple
         Sorted modeling periods.
     media_time_values : tuple
-        Shared exposure periods, including history. Matches ``time_values``
+        Shared exposure periods, history included. Matches ``time_values``
         without history and is empty without exposure inputs.
     group_columns : tuple of str
         Source columns identifying each series. Empty for a single series.
@@ -129,7 +140,8 @@ class PreparedData:
     channels : tuple of str
         Channel labels shared by media and spend. Empty without media.
     organic_channels : tuple of str
-        Labels for the separate organic media axis. Empty without organic media.
+        Labels for the separate organic media axis. Empty without organic
+        media.
     rf_channels : tuple of str
         Labels for the separate paid reach, frequency, and spend axis.
         Empty without these inputs.
@@ -189,7 +201,7 @@ class PreparedData:
     @property
     def model_inputs(self) -> dict[str, ModelInput]:
         """Return each name a model function can request with its ``ModelInput`` description."""
-        return _model_inputs(self)
+        return _model_inputs(self, self._scaling)
 
     def _to_jax(
         self,
@@ -369,30 +381,38 @@ class PreparedData:
 class Data:
     """Declare model data together with its variable names and fixed preprocessing.
 
-    Supply this object to ``Model(data=...)``. Observations, variable names,
-    and auxiliary inputs are copied. Fitted scaling objects are reused.
+    ``Model(data=...)`` takes this object in place of bare prepared data when
+    the blocks need renamed inputs, extra fixed inputs, constants, or
+    scaling. The observations, variable names, inputs, and constants are
+    copied when it is built. A fitted scaling object is kept rather than
+    copied, so data it has already transformed is not scaled twice.
+
+    Blocks request inputs by their standard names, such as ``media`` or
+    ``reference``, unless ``variables`` declares new ones. A declaration makes
+    only the declared data inputs available, so even the model-supplied
+    ``reference``, ``outcome_scaling``, and ``n_periods`` need an entry such
+    as ``{"training": "reference"}``.
+
+    Constants reach the blocks unchanged rather than as arrays, so an integer
+    stays usable as a shape under ``jax.jit``. They stay the same in every
+    scenario.
 
     Parameters
     ----------
     data : PreparedData
         Observations and labels returned by :func:`prepare_data`.
     variables : mapping of str to str, optional
-        Model function argument names mapped to prepared or auxiliary input
-        names. ``PreparedData.model_inputs`` lists the available names. If
-        omitted, functions use the standard input names. When supplied, only
-        the declared names are available to model functions. Even the
-        model-supplied inputs ``reference``, ``outcome_scaling``, and
-        ``n_periods`` need a declaration such as ``{"training": "reference"}``
-        to be requested.
+        Block argument names mapped to input names from ``model_inputs``.
+        Omit to use the standard input names.
     inputs : xarray.Dataset, optional
         Additional fixed inputs, such as experiment measurements.
     constants : mapping of str to object, optional
-        Fixed specification values that model functions request by name,
-        such as a carryover length or a prepared HSGP approximation. Values
-        must be hashable and pass through unchanged, so integers stay usable
-        as shapes under ``jax.jit``. They never change across scenarios.
+        Hashable values that blocks request by name, such as a carryover
+        length or a prepared HSGP approximation.
     scaling : DataScaling or {"auto"}, optional
-        Fitted transformations or automatic scaling. None uses unchanged data.
+        Transformations fitted by ``fit_data_scaling``, or ``"auto"`` to fit
+        them on ``data`` with the default settings. Omit to use ``data``
+        unchanged.
     """
 
     _observations: PreparedData
@@ -482,8 +502,12 @@ class Data:
 
     @property
     def model_inputs(self) -> dict[str, ModelInput]:
-        """Return every name a block can request from this data declaration."""
-        inputs = self._observations.model_inputs
+        """Return every input this declaration supplies with its ``ModelInput``."""
+        # The model applies the declared scaling, or the observations' own when none is declared.
+        # "auto" fits the default scaling, which leaves the outcome in its original units.
+        applied = self._observations._scaling if self._scaling is None else self._scaling
+        fitted = None if isinstance(applied, str) else applied
+        inputs = _model_inputs(self._observations, fitted)
         if self._inputs is not None:
             for name, variable in self._inputs.data_vars.items():
                 inputs[str(name)] = ModelInput("array", tuple(str(axis) for axis in variable.dims), "input")
@@ -560,17 +584,24 @@ def _reference_dimensions(data: PreparedData) -> dict[str, tuple[str, ...]]:
     return dimensions
 
 
-def _model_inputs(data: PreparedData) -> dict[str, ModelInput]:
-    """Enumerate the inputs a model can request from prepared data."""
+def _model_inputs(data: PreparedData, scaling: "DataScaling | None") -> dict[str, ModelInput]:
+    """Enumerate the inputs a model can request from prepared data under the scaling it applies."""
     role_axes = _data_dimensions(data)
     inputs = {role: ModelInput("array", role_axes[role], "data") for role in data.arrays}
     for name in _time_input_names(data):
         inputs[name] = ModelInput("array", _time_input_axes(name), "time")
     inputs["n_periods"] = ModelInput("integer", (), "builtin")
     if "outcome" in data.arrays:
-        inputs["outcome_scaling"] = ModelInput("object", (), "builtin")
+        scaling_axes = ("group",) if _grouped_outcome_scale(data, scaling) else ()
+        inputs["outcome_scaling"] = ModelInput("object", scaling_axes, "builtin")
     inputs["reference"] = ModelInput("object", (), "reference")
     return inputs
+
+
+def _grouped_outcome_scale(data: PreparedData, scaling: "DataScaling | None") -> bool:
+    """Report whether the outcome transform holds one scale and offset per group."""
+    grouped = scaling is not None and "outcome" in scaling._population_roles and bool(data.group_columns)
+    return grouped
 
 
 @dataclass(frozen=True, slots=True)
@@ -660,74 +691,85 @@ def prepare_data(
 ) -> PreparedData:
     """Prepare a dataframe for modeling while keeping its observation labels.
 
+    Each selected role becomes a NumPy array that runs over time, group when
+    there are groups, and its columns in that order. Outcome and revenue per
+    outcome have no column axis, and population holds one value per group, or
+    a scalar without groups. Periods are sorted, groups keep the order in
+    which they first appear, and every axis keeps its labels. An integer
+    outcome or population keeps its integer dtype.
+
+    Every role is optional, and a role that accepts several columns takes a
+    list and keeps a column axis even for one. Columns selected for a role
+    must be integer, floating-point, or boolean, and no selected column may
+    hold missing, NaN, or infinite values. Each combination of time and group
+    labels must appear once, and every group must cover the same periods.
+    Exposures and spending must be nonnegative, while the outcome, controls,
+    and treatments may take any sign.
+
+    ``media_history`` adds earlier periods to the exposure arrays so that
+    carryover reaches the first modeling periods. Every other role covers only
+    the modeling periods. Preparation applies no scaling or adstock. It never
+    modifies either dataframe, and the arrays share no memory with them.
+
+    Date and string labels, history included, are checked against the
+    declared ``frequency`` or, by default, a spacing inferred from three or
+    more dates. A missing or irregular period raises ``ValueError``, and
+    ``frequency=None`` skips the checks. Monthly and longer periods follow the
+    day of the first date, or the month end when it falls on one.
+
     Parameters
     ----------
     frame : dataframe-like
-        Eager dataframe supported by Narwhals, including pandas and Polars
-        DataFrames and PyArrow Tables. Selected values must be finite,
-        nonmissing, and numeric or boolean. The input is not modified.
-        Omit value selections to prepare only time and group labels.
+        Eager dataframe supported by Narwhals, such as a pandas or Polars
+        DataFrame or a PyArrow Table.
     time : str
-        Observation periods that sort chronologically. Each time-group
-        combination must be unique.
+        Column of observation periods whose labels sort chronologically.
         Calendar checks accept dates, timezone-naive datetimes, or strings
-        written as ``YYYY-MM-DD``. Original labels are retained.
+        written as ``YYYY-MM-DD``.
     outcome : str, optional
-        Column containing the response, such as sales or conversions.
-        Omit it when preparing prediction data without observed outcomes.
+        Column containing the response, such as sales or conversions. Omit
+        for new data without observed outcomes.
     revenue_per_outcome : str, optional
-        Nonnegative revenue per sale or conversion that varies by period and
-        group. Stored separately without converting the outcome to revenue.
-        Boolean values are not accepted. Does not require an outcome.
+        Column of nonnegative revenue per sale or conversion for each period
+        and group. Boolean values are not accepted, and the outcome keeps its
+        own units.
     population : str, optional
-        Positive population, constant across periods within each group.
-        Without groups, repeat one value across all periods. Boolean values
-        are not accepted. Supplying population does not apply scaling.
+        Column of positive population estimates, constant over time within
+        each series. Boolean values are not accepted.
     media : sequence of str, optional
-        Columns containing nonnegative paid media inputs, such as impressions
-        or spending. Their order defines the channel axis. Use a list
-        even for one channel.
+        Columns of paid media inputs, such as impressions or spending. Their
+        order sets the channel axis.
     organic_media : sequence of str, optional
-        Nonnegative unpaid exposures, such as email clicks or organic social
-        impressions. Their order defines a separate channel axis. Use a list
-        even for one channel. Paid media and spend are not required.
+        Columns of unpaid exposures, such as email clicks or organic social
+        impressions. Their order sets a separate channel axis.
     reach : sequence of str, optional
-        Nonnegative audience reached per paid channel and period. Pair with
-        ``media_frequency`` in matching order. Uses a separate channel axis
-        and does not require ``media``.
+        Columns of audience reached per paid channel and period, on a separate
+        channel axis. Requires ``media_frequency`` in matching order.
     media_frequency : sequence of str, optional
-        Nonnegative average exposures per person reached. Pair with
-        ``reach`` in matching order. This is advertising frequency, not
-        calendar spacing.
-    organic_reach : sequence of str, optional
-        Nonnegative audience reached by unpaid channels. Pair with
-        ``organic_frequency`` in matching order. Uses a separate channel axis
-        and does not require other media inputs.
-    organic_frequency : sequence of str, optional
-        Nonnegative average organic exposures per person reached. Pair with
-        ``organic_reach`` in matching order. This is separate from calendar
+        Columns of average exposures per person reached, one per ``reach``
+        channel in matching order. This is advertising frequency, not calendar
         spacing.
+    organic_reach : sequence of str, optional
+        Columns of audience reached by unpaid channels, on a separate channel
+        axis. Requires ``organic_frequency`` in matching order.
+    organic_frequency : sequence of str, optional
+        Columns of average organic exposures per person reached, one per
+        ``organic_reach`` channel in matching order.
     media_history : dataframe-like, optional
-        Earlier exposures for carryover into the first modeling periods.
-        Include all selected exposure columns and all groups. Use the same
-        time and group columns as ``frame``. All periods must precede ``frame``.
-        Other inputs are not required. Requires at least one exposure selection.
-        Calendar checks cover both frames. Preparation does not apply adstock.
+        Earlier exposures in the time, group, and selected exposure columns of
+        ``frame``. It must hold the same groups and only periods before those
+        of ``frame``. Requires an exposure selection.
     spend : sequence of str, optional
-        Nonnegative spending, with one column per ``media`` channel in matching
-        order. The same columns may be selected for media and spend.
+        Spending columns, one per ``media`` channel in matching order. The
+        same columns may be selected for media and spend.
     rf_spend : sequence of str, optional
-        Nonnegative spending, with one column per ``reach`` channel in matching
-        order. Covers only the modeling periods.
+        Spending columns, one per ``reach`` channel in matching order.
     controls : sequence of str, optional
-        Columns containing adjustment variables, such as temperature or
-        economic indicators. Their order defines the control axis.
-        Negative values are allowed for controls and the outcome.
+        Columns of adjustment variables, such as temperature or economic
+        indicators. Their order sets the control axis.
     treatments : sequence of str, optional
-        Non-media inputs whose effects the model estimates, such as product
-        prices or promotions. Negative and boolean values are accepted.
-        Their order defines the treatment axis. Use a list even for one
-        treatment. Media and spend are not required.
+        Columns of non-media inputs whose effects the model estimates, such as
+        product prices or promotions. Their order sets the treatment axis.
     channels : sequence of str, optional
         Unique labels shared by media and spend, in column order.
         Defaults to the ``media`` column names. Requires ``media``.
@@ -736,45 +778,37 @@ def prepare_data(
         column names. Requires ``organic_media``.
     rf_channels : sequence of str, optional
         Unique labels shared by reach, media frequency, and their spend, in
-        column order. Defaults to the ``reach`` column names. Requires ``reach``.
+        column order. Defaults to the ``reach`` column names. Requires
+        ``reach``.
     organic_rf_channels : sequence of str, optional
         Unique labels shared by organic reach and frequency, in column order.
-        Defaults to the ``organic_reach`` column names. Requires ``organic_reach``.
-    groups : sequence of str, optional
-        Columns identifying each series, such as ``["region"]``. All groups
-        must have the same periods. Observed combinations share one array
-        axis in first-appearance order. Omit for a single series.
+        Defaults to the ``organic_reach`` column names. Requires
+        ``organic_reach``.
+    groups : sequence of str, default ()
+        Columns whose observed combinations identify each series, such as
+        ``["region"]``. Empty for a single series.
     frequency : str or None, default "auto"
-        Infer ``"daily"``, ``"weekly"``, ``"monthly"``, ``"quarterly"``,
-        or ``"yearly"`` from at least three dates, including history.
-        Calendar periods follow the first date's day or month-end.
-        Specify the expected spacing to check for missing periods, including
-        short series. Numeric labels are not assigned calendar units.
-        Set to ``None`` to skip calendar checks.
+        Calendar spacing of the periods, one of ``"daily"``, ``"weekly"``,
+        ``"monthly"``, ``"quarterly"``, or ``"yearly"``. A declared spacing
+        needs date labels, ``"auto"`` infers one, and None skips the calendar
+        checks.
 
     Returns
     -------
     PreparedData
         Prepared inputs with the following fields.
 
-        - **arrays** — Independent NumPy arrays by role, excluding omitted inputs
-        - **time_column**, **time_values** — Source time column and sorted periods
-        - **media_time_values** — Shared paid and organic exposure periods,
-          including history. Empty without exposures
-        - **group_columns**, **group_values** — Group columns and observed label
-          tuples in array order
-        - **columns** — Source columns by role, in selected order
+        - **arrays** — NumPy arrays by selected role
+        - **time_column**, **time_values** — Source time column and sorted
+          periods
+        - **media_time_values** — Exposure periods including history
+        - **group_columns**, **group_values** — Group columns and observed
+          label tuples in array order
+        - **columns** — Source columns by role in selected order
         - **channels**, **organic_channels** — Paid and organic media labels
-        - **rf_channels**, **organic_rf_channels** — Paid and organic
-          reach-frequency labels. Paid channel labels also align with spend
+        - **rf_channels**, **organic_rf_channels** — Paid and organic reach and
+          frequency labels
         - **frequency** — Inferred or declared calendar spacing, or None
-
-        Time-varying axes are time, optional group, then feature. Outcome and
-        revenue per outcome omit the feature axis. Population has shape
-        ``(n_groups,)``, or ``()`` without groups. Other inputs retain a feature
-        axis, even for one column. Integer outcome and population dtypes are
-        preserved separately from continuous inputs. Arrays share no memory
-        with either dataframe. Unused group and channel labels are empty tuples.
 
     Examples
     --------
@@ -1024,8 +1058,12 @@ def select_channels(
 ) -> jax.Array:
     """Select named channels without changing the preceding dimensions.
 
-    Select parameters for channel-specific priors or retrieve contributions
-    by channel name.
+    The selected channels follow the order of ``select``, and a single name
+    still leaves a channel axis of length one. Blocks use it to give chosen
+    channels their own priors or to read contributions by channel name.
+
+    A name missing from ``channels`` raises ``ValueError``, as does a final
+    axis whose length differs from the number of channels.
 
     Parameters
     ----------
@@ -1043,7 +1081,6 @@ def select_channels(
     -------
     jax.Array
         Selected values with the input's preceding dimensions and dtype.
-        Selecting one name retains a final channel axis of length one.
 
     Examples
     --------

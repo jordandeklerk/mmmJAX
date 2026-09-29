@@ -36,10 +36,11 @@ def custom_distribution(
 ) -> _Distribution:
     """Make a distribution written as plain functions usable like the built-in families.
 
-    Write the pointwise log density as ``logpdf(value, *settings)`` and the
-    draw function as ``rng(key, *settings, sample_shape=())``. These signatures
-    follow the conventions of the built-in families. Both functions must be
-    pure JAX code whose settings broadcast against the values.
+    The pointwise log density is written as ``logpdf(value, *settings)`` and
+    the draw function as ``rng(key, *settings, sample_shape=())``. These
+    signatures follow the conventions of the built-in families. Both functions
+    must name the same settings in the same order and be pure JAX code whose
+    settings broadcast against the values.
 
     The returned function sums the log density over every axis, so it adds to
     the target in ``log_density`` the way ``normal`` or ``gamma`` does.
@@ -52,18 +53,17 @@ def custom_distribution(
         Pointwise log density or log mass. Its first argument is the value
         and the remaining arguments name the distribution settings.
     rng : callable
-        Random draws. Its first argument is a JAX random key, the settings
-        follow with the same names as in ``logpdf``, and a keyword argument
-        ``sample_shape`` with a default of ``()`` prepends independent
-        sample axes to the broadcast setting shape.
+        Random draws. Its first argument is a JAX random key and the
+        ``logpdf`` settings follow it. Its ``sample_shape`` keyword defaults
+        to ``()`` and prepends independent sample axes to the broadcast
+        setting shape.
     name : str, optional
         Name of the returned function. Defaults to the ``logpdf`` name
         without its ``_logpdf`` or ``_logpmf`` suffix.
     event_ndims : int, default 0
-        Trailing value axes that form one event. Use zero for scalar
-        families and one for vector families such as a Dirichlet. A vector
-        family needs at least one setting listed in ``parameter_event_ndims``
-        so the event size is known.
+        Trailing value axes that form one event. Zero marks a scalar family
+        and one a vector family such as a Dirichlet. A vector family needs a
+        setting with an event axis in ``parameter_event_ndims``.
     parameter_event_ndims : mapping of str to int, optional
         Trailing event axes of any setting that is a vector per batch entry,
         such as ``{"concentration": 1}``. Unlisted settings are scalars.

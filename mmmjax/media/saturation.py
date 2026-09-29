@@ -25,35 +25,38 @@ def hill_saturation(
 
     Zero exposure gives zero response, exposure equal to ``half_saturation``
     gives one half, and the curve approaches one as exposure increases.
-    Slopes at most one give a concave curve. Larger slopes give an S-shaped
-    curve with an initial period of increasing marginal response.
+    Slopes at most one give a concave curve, and slopes below one make its
+    exposure gradient infinite at zero. Larger slopes give an S-shaped curve
+    with an initial period of increasing marginal response.
+
+    The function acts elementwise and does not mix periods, groups, or
+    channels. Its inputs must broadcast together, so a scalar parameter is
+    shared across every input and an array such as ``(channel,)`` or
+    ``(group, channel)`` gives separate curves. Use ``jax.vmap`` to evaluate
+    additional parameter draws.
+
+    Multiply the response by a separate model coefficient to express its
+    contribution in outcome units.
 
     Parameters
     ----------
     media : array_like
         Finite, nonnegative exposures, either raw or transformed. Scalars
         and arrays are accepted. For grouped data, use the prepared layout
-        ``(time, group, channel)``. This function acts elementwise and does
-        not mix periods, groups, or channels.
+        ``(time, group, channel)``.
     half_saturation : array_like
         Positive, finite exposure at which the response is one half.
         Use the same units as ``media``, including any scaling applied
-        beforehand. Supply a scalar to share it across inputs or an array
-        such as ``(channel,)`` or ``(group, channel)`` for separate curves.
+        beforehand.
     slope : array_like
-        Positive, finite parameter controlling the curve's shape. Supply
-        a scalar or an array that broadcasts with the other inputs.
-        Slopes below one give an infinite exposure gradient at zero.
-        Use ``jax.vmap`` to evaluate additional parameter draws.
+        Positive, finite parameter controlling the curve's shape.
 
     Returns
     -------
     jax.Array
         Responses between zero and one with the broadcast shape of the
-        inputs. Values use a common floating-point dtype of at least
-        float32. Invalid numeric inputs produce ``nan`` at the affected
-        positions. Multiply the response by a separate model coefficient
-        to express its contribution in outcome units.
+        inputs. Floating dtype is at least float32. Invalid numeric inputs
+        give ``nan`` at the affected positions.
 
     Examples
     --------
@@ -131,28 +134,32 @@ def logistic_saturation(media: ArrayLike, half_saturation: ArrayLike) -> jax.Arr
     Marginal response decreases with increasing exposure. The
     half-saturation point has the same meaning as in :func:`hill_saturation`.
 
+    The function acts elementwise and does not mix periods, groups, or
+    channels. Its inputs must broadcast together, so a scalar
+    ``half_saturation`` is shared across every input and an array such as
+    ``(channel,)`` or ``(group, channel)`` gives separate curves. Use
+    ``jax.vmap`` to evaluate additional parameter draws.
+
+    Multiply the response by a separate model coefficient to express its
+    contribution in outcome units.
+
     Parameters
     ----------
     media : array_like
         Finite, nonnegative exposures, either raw or transformed. Scalars
         and arrays are accepted. For grouped data, use the prepared layout
-        ``(time, group, channel)``. The function acts elementwise without
-        mixing periods, groups, or channels.
+        ``(time, group, channel)``.
     half_saturation : array_like
         Positive, finite exposure at which the response is one half.
         Use the same units as ``media``, including any scaling applied
-        beforehand. Supply a scalar to share a curve or an array such as
-        ``(channel,)`` or ``(group, channel)`` for separate curves.
-        Larger values require more exposure to reach the same response.
+        beforehand.
 
     Returns
     -------
     jax.Array
         Responses between zero and one with the broadcast shape of the
-        inputs. Values use a common floating-point dtype of at least
-        float32. Invalid numeric inputs produce ``nan`` at the affected
-        positions. Multiply the response by a separate model coefficient
-        to express its contribution in outcome units.
+        inputs. Floating dtype is at least float32. Invalid numeric inputs
+        give ``nan`` at the affected positions.
 
     Examples
     --------
@@ -215,25 +222,30 @@ def root_saturation(media: ArrayLike, exponent: ArrayLike) -> jax.Array:
     the input values unchanged. Unlike Hill and logistic curves, root curves
     have no fixed upper limit and their responses can exceed one.
 
+    The function acts elementwise and does not mix periods, groups, or
+    channels. Its inputs must broadcast together, so a scalar ``exponent``
+    is shared across every input and an array such as ``(channel,)`` or
+    ``(group, channel)`` gives separate curves. Use ``jax.vmap`` to evaluate
+    additional parameter draws.
+
+    Input scaling remains a separate step. Multiply the response by a
+    separate model coefficient to express its contribution in outcome units.
+
     Parameters
     ----------
     media : array_like
         Finite, nonnegative exposures, either raw or transformed. Scalars
         and arrays are accepted. For grouped data, use the prepared layout
-        ``(time, group, channel)``. Input scaling remains a separate step.
+        ``(time, group, channel)``.
     exponent : array_like
-        Finite exponent greater than zero and at most one. Supply a scalar
-        for a shared curve or an array such as ``(channel,)`` or
-        ``(group, channel)`` that broadcasts with ``media``.
+        Finite exponent greater than zero and at most one.
 
     Returns
     -------
     jax.Array
         Nonnegative responses with the broadcast shape of the inputs.
-        Values use a common floating-point dtype of at least float32.
-        Invalid numeric inputs produce ``nan`` at the affected positions.
-        Multiply the response by a separate model coefficient to express
-        its contribution in outcome units.
+        Floating dtype is at least float32. Invalid numeric inputs give
+        ``nan`` at the affected positions.
 
     Examples
     --------
@@ -296,22 +308,23 @@ def log_saturation(media: ArrayLike) -> jax.Array:
     diminishing marginal returns but has no fixed upper limit. Unlike
     Hill and logistic curves, its values can exceed one.
 
+    Rescaling the inputs changes the response, so choose the input units
+    before applying this function. Multiply the response by a separate model
+    coefficient to express its contribution in outcome units.
+
     Parameters
     ----------
     media : array_like
         Finite, nonnegative exposures, either raw or transformed. Scalars
         and arrays are accepted. For grouped data, use the prepared layout
-        ``(time, group, channel)``. Choose the input units before applying
-        this function. Rescaling the inputs changes the response.
+        ``(time, group, channel)``.
 
     Returns
     -------
     jax.Array
-        Nonnegative responses with the same shape as ``media`` and a
-        floating-point dtype of at least float32. Invalid numeric inputs
-        produce ``nan`` at the affected positions. Multiply the response
-        by a separate model coefficient to express its contribution in
-        outcome units.
+        Nonnegative responses with the same shape as ``media``. Floating
+        dtype is at least float32. Invalid numeric inputs give ``nan`` at the
+        affected positions.
 
     Examples
     --------

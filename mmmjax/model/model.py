@@ -23,6 +23,7 @@ from mmmjax.data.prepare import (
     _data_dimensions,
     _DataLayout,
     _day_of_year,
+    _grouped_outcome_scale,
     _prepare_model_frame,
     _time_input_names,
     _time_positions,
@@ -239,71 +240,71 @@ class Model:
 
     Prepared data supplies the selected role names, such as ``outcome`` and
     ``media``, together with elapsed ``time`` and ``media_time``, the calendar
-    ``day_of_year`` and ``media_day_of_year``, the period count ``n_periods``,
-    the fitted outcome transform ``outcome_scaling`` with its ``scale``,
-    ``offset``, and ``inverse_transform``, and the ``reference`` namespace
-    holding every training input, such as ``reference.spend``, for evaluating
-    new data. ``Data`` variables replace these names with declared ones.
+    ``day_of_year`` and ``media_day_of_year``, and the period count
+    ``n_periods``. The fitted outcome transform ``outcome_scaling`` carries its
+    ``scale``, ``offset``, and ``inverse_transform``. The ``reference``
+    namespace holds the training arrays, such as ``reference.spend``, for
+    evaluating new data. ``Data`` variables replace these names with declared
+    ones.
+
+    ``transformed_data`` runs once at construction and again for new data
+    rather than per parameter draw. Python integers it returns stay static, so
+    later blocks can use them as array shapes. ``transformed_parameters`` runs
+    at every density or generated-quantities evaluation, so new data must
+    supply every data input it requests. Results keep its outputs only when
+    ``generated_quantities`` returns them.
+
+    The mappings ``generated_quantities`` returns under ``predictive``,
+    ``log_likelihood``, and ``log_prior`` fill the matching result groups, and
+    every other entry is a generated quantity. With prepared data, name the
+    predictive draws and the pointwise log likelihood ``outcome``. Pointwise
+    log likelihoods exclude priors and adjustments, and log-prior terms count
+    each prior factor once without constraint adjustments.
 
     Inspect derived quantities with ``evaluate`` and the constrained log
-    density with ``log_prob`` before fitting. Samplers call ``log_density``
-    on unconstrained positions and add parameterization adjustments.
+    density with ``log_prob`` before fitting. Samplers call ``log_density`` on
+    unconstrained positions, and it adds the parameterization adjustments.
 
     Parameters
     ----------
     data : Data or PreparedData, optional
-        Fixed model inputs and their declarations. Use ``Data`` for
-        custom names, auxiliary observations, constants, or scaling. Plain
-        prepared data uses standard role names without fitting new
-        transformations.
+        Fixed model inputs and their declarations. Use ``Data`` for custom
+        names, auxiliary observations, constants, or scaling. Omit to pass the
+        data at each evaluation instead.
     transformed_data : callable, optional
-        Data-only calculations returning named fixed values. Runs once at
-        construction and again for changed data, not per parameter draw.
-        Inputs must be declared data variables and outputs must have distinct
-        names from inputs and parameters. Return finite real arrays or scalars.
-        Python integers remain static for array shapes. Requires prepared data.
-        Use pure JAX-compatible operations for response analysis and optimization.
+        Pure JAX-compatible function of data inputs returning named fixed
+        values. Values must be finite real arrays or scalars. Names must not
+        shadow declared inputs or parameters. Requires prepared data.
     parameters : mapping of str to Parameterization
-        Required. All named parameter declarations and constraints. Use declaration
-        dimensions, such as ``Real(dims="control")``, to infer shapes and
-        result labels from prepared data or ``coords``.
+        Required. All named parameter declarations and constraints. Use
+        declaration dimensions, such as ``Real(dims="control")``, to infer
+        shapes and result labels from prepared data or ``coords``.
     transformed_parameters : callable, optional
         Pure JAX-compatible function returning a mapping of names to derived
-        arrays shared by the density and generated-quantities callbacks.
-        Evaluated for density and output calculations. Requires prepared data
-        and named inputs. Names must not shadow declared inputs or parameters.
-        Outputs are not sampled parameters. Return them from
-        ``generated_quantities`` to retain them in results.
-        All requested inputs are needed for output evaluation.
+        arrays. Names must not shadow declared inputs or parameters. Requires
+        prepared data and named inputs.
     log_density : callable
-        Required. Scalar log density for constrained parameters. Every user-declared
-        parameter must be requested here or by ``transformed_parameters``.
-        Only parameterization adjustments are added automatically.
+        Required. Scalar log density for constrained parameters. Every
+        user-declared parameter must be requested here or by
+        ``transformed_parameters``. Only parameterization adjustments are
+        added automatically.
     generated_quantities : callable, optional
-        Function returning named reporting quantities or simulated observations.
-        Outputs do not contribute to the log density.
-        Receives a JAX random key first, followed by the model inputs it needs.
-        Entries under the keys ``predictive``, ``log_likelihood``, and
-        ``log_prior`` are mappings of named outputs stored in the matching
-        result groups, and all other entries are ordinary generated quantities.
-        Predictive draws and pointwise log likelihoods matching the outcome
-        shape inherit its observation labels. With prepared data, name both
-        ``outcome``. Pointwise log likelihoods exclude priors and adjustments.
-        Log-prior terms are prior factors, each once and without constraint
-        adjustments.
+        Function returning named reporting quantities or simulated
+        observations. Receives a JAX random key first and then the model
+        inputs it needs.
     dims : mapping of str to str or sequence of str, optional
-        Named axes for constrained parameter arrays, excluding chain and draw.
-        A single string names one axis.
-        Use for custom parameterizations or explicit-shape declarations.
-        Must agree with any dimensions set on a declaration.
+        Named axes of each constrained parameter, apart from chain and draw,
+        for custom parameterizations or explicit-shape declarations. A single
+        string names one axis. Must agree with any dimensions set on a
+        declaration.
     coords : mapping of str to array_like, optional
-        One-dimensional labels for named axes. Labels are copied at construction.
+        One-dimensional labels for named axes. Labels are copied at
+        construction.
     generated_dims : mapping of str to str or sequence of str, optional
-        Axis labels for saved or generated arrays, excluding chain and draw.
-        A single string names one axis.
-        Overrides labels inherited from unchanged data or parameter
-        inputs and from observation-shaped predictive and log-likelihood
-        outputs. A name shared by several result groups receives the same axes.
+        Named axes for each output of ``generated_quantities`` apart from
+        chain and draw. A single string names one axis. Overrides labels
+        inherited from unchanged inputs and from outcome-shaped predictive and
+        log-likelihood outputs.
 
     Examples
     --------
@@ -448,12 +449,14 @@ class Model:
     def data_variables(self) -> dict[str, str]:
         """Return the available model input names and their declared sources.
 
+        Declared ``Data`` variables map to their sources, and constants map to
+        their own names. Without declarations, every standard name maps to
+        itself. A model without prepared data returns an empty mapping.
+
         Returns
         -------
         dict of str to str
-            A copy of the input declarations, with constants mapped to their
-            own names. Without explicit declarations, every standard name maps
-            to itself. Models without prepared data return an empty mapping.
+            Copy of the input names and their sources.
         """
         if self._data is None:
             return {}
@@ -473,13 +476,15 @@ class Model:
     def scaling(self) -> DataScaling | None:
         """Return the fitted input transformations or None for unscaled inputs.
 
+        When the outcome is scaled, its transformation restores predicted
+        levels to their original units. Contributions convert through its
+        scale alone, since the offset cancels in a difference.
+
         Returns
         -------
         DataScaling or None
             Fitted transformations available by role through
-            ``transformations``. Use the outcome transformation to restore
-            predicted levels to their original units. Multiply contributions
-            by its scale without adding the outcome offset.
+            ``transformations``.
         """
         return None if self._training is None else self._training.scaling
 
@@ -487,15 +492,18 @@ class Model:
     def data(self) -> object:
         """Return prepared training inputs for density and generation calls.
 
-        Pass to ``log_density`` or ``generate_quantities``, including under JIT.
-        Arrays are copied at construction, independent of later source edits.
+        ``log_density`` and ``generate_quantities`` take the bundle as their
+        ``data`` argument with or without JIT. Blocks receive the inputs they
+        request one by one rather than the bundle. Arrays are copied at
+        construction, independent of later source edits.
+
+        Accessing it on a model built without prepared ``data`` raises
+        ``RuntimeError``.
 
         Returns
         -------
         object
-            JAX-compatible observation arrays. Callbacks
-            receive their requested inputs one by one rather than this bundle.
-            Requires prepared ``data`` at construction.
+            JAX-compatible observation arrays.
         """
         if self._data is None:
             raise RuntimeError("This model has no prepared data. Pass your data directly when evaluating it")
@@ -509,29 +517,31 @@ class Model:
     def prepare_data(self, data: object) -> object:
         """Prepare new observations using the model's training configuration.
 
-        Reuse fitted scaling, the time origin, and parameter declarations
-        without changing the model's stored data. Call outside JAX transformations.
-        Auxiliary ``Data`` inputs retain their original values and labels.
+        The new inputs reuse the fitted scaling, the time origin, and any
+        ``Data`` declarations, and every input follows the training group and
+        channel order. Auxiliary ``Data`` inputs keep their training values and
+        labels, and the model's stored data stays unchanged.
+
+        Dataframes reuse the model's column selections. Scenarios with explicit
+        media history pass the output of ``prepare_data(media_history=...)``
+        instead. Call this outside JAX transformations.
+
+        When the training data carries an inferred or declared frequency,
+        scenario dates must follow its calendar without gaps. Training
+        prepared with ``frequency=None`` leaves scenario dates unchecked.
 
         Parameters
         ----------
         data : dataframe-like or PreparedData
             Observations using the original source columns and groups.
-            Dataframes reuse the model's selections, and every scenario
-            follows the calendar of the training periods without gaps.
-            These calendar checks apply when the training data carries an
-            inferred or declared frequency. Training prepared with
-            ``frequency=None`` leaves scenario dates unchecked.
             Prepared inputs may be raw or use this model's fitted scaling.
             Omit inputs only when no evaluated callback needs them.
-            For explicit media history, use ``prepare_data(media_history=...)``.
 
         Returns
         -------
         object
-            JAX-compatible inputs for ``log_density`` or ``generate_quantities``
-            that cover the supplied periods in the fitted group and channel
-            order. Independent of stored model data and later source edits.
+            JAX-compatible inputs for ``log_density`` or
+            ``generate_quantities`` covering the supplied periods.
         """
         return self._prepare_data(data)[0]
 
@@ -664,9 +674,11 @@ class Model:
     def evaluate(self, parameters: ParameterValues, data: object = None) -> dict[str, jax.Array]:
         """Inspect deterministic model quantities at chosen parameter values.
 
-        Evaluate transformed parameters without sampling or
-        calling the density or generation functions. Supports JIT, automatic
-        differentiation, and batching through ``jax.vmap``.
+        Runs ``transformed_parameters`` at the given values without sampling
+        or calling the density or generation functions. The result is empty
+        when the model has no ``transformed_parameters`` block. The call
+        supports JIT, automatic differentiation, and batching through
+        ``jax.vmap``.
 
         Parameters
         ----------
@@ -676,13 +688,13 @@ class Model:
             declaration's dtype.
         data : object, optional
             Prepared model inputs from ``model.prepare_data``. Defaults to
-            stored training inputs. Prepare new data outside JAX transformations.
+            stored training inputs. Prepare new data outside JAX
+            transformations.
 
         Returns
         -------
         dict of str to jax.Array
-            All quantities returned by ``transformed_parameters``. Returns an
-            empty dictionary when no transformation function is supplied.
+            All quantities returned by ``transformed_parameters``.
         """
         values = self._constrained_values(parameters)
         return self._blocks.evaluate_transformed(values, self._default_data(data))
@@ -690,9 +702,10 @@ class Model:
     def log_prob(self, parameters: ParameterValues, data: object = None) -> jax.Array:
         """Evaluate the scalar log density at constrained parameter values.
 
-        Includes the priors and likelihood written in the density callback
-        but no parameterization adjustments. This need not be a normalized
-        probability density. Supports JIT, gradients, and ``jax.vmap``.
+        The value includes the priors and likelihood written in the density
+        callback but no parameterization adjustments. It need not be a
+        normalized probability density. The call supports JIT, gradients, and
+        ``jax.vmap``.
 
         Parameters
         ----------
@@ -708,8 +721,7 @@ class Model:
         Returns
         -------
         jax.Array
-            Scalar log density in model space, without constraint Jacobians
-            or other parameterization adjustments.
+            Scalar log density in model space.
         """
         values = self._constrained_values(parameters)
         return self._blocks.evaluate_density(values, self._default_data(data))
@@ -781,14 +793,19 @@ class Model:
     ) -> dict[str, jax.Array | dict[str, jax.Array]]:
         """Evaluate saved and generated quantities from constrained model parameters.
 
+        Calls the ``generated_quantities`` callback with the key and the inputs
+        it requests. Every declared parameter must be supplied, even when the
+        callback requests only some. A model without that callback raises
+        ``RuntimeError``.
+
         Parameters
         ----------
         key : jax.Array
-            JAX random key passed to the ``generated_quantities`` callback. The callback
-            must split it when drawing multiple independent samples.
+            JAX random key passed to the ``generated_quantities`` callback.
+            The callback must split it when drawing multiple independent
+            samples.
         parameters : mapping of str to array_like
-            Constrained values for every declared parameter. Only the names
-            requested by the ``generated_quantities`` callback are passed to it.
+            Constrained values for every declared parameter.
         data : object
             For a prepared model, pass ``model.data`` or the result of
             ``model.prepare_data``. Otherwise, pass a JAX-compatible PyTree
@@ -797,9 +814,8 @@ class Model:
         Returns
         -------
         dict of str to jax.Array or dict of str to jax.Array
-            Saved transformed quantities and ordinary callback outputs by name.
-            Outputs returned under ``predictive``, ``log_likelihood``, and
-            ``log_prior`` appear as mappings under those keys when present.
+            Outputs by name, and mappings of grouped outputs under
+            ``predictive``, ``log_likelihood``, and ``log_prior``.
         """
         quantities = self._generate_with_inputs(key, parameters, data)[0]
         outputs: dict[str, jax.Array | dict[str, jax.Array]] = {
@@ -916,7 +932,7 @@ def _outcome_scaling(data: PreparedData, fitted: DataScaling | None, has_outcome
 
     An outcome scaled by population across regions gets one factor per region. Any other outcome gets scalars.
     """
-    population_outcome = fitted is not None and "outcome" in fitted._population_roles and bool(data.group_columns)
+    population_outcome = _grouped_outcome_scale(data, fitted)
     if not has_outcome:
         return None, population_outcome
     transform = Scaling(offset=jnp.asarray(0.0), scale=jnp.asarray(1.0))

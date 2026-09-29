@@ -9,7 +9,7 @@ The Code section of `.claude/CLAUDE.md` sets the rules, and this skill adds the 
 
 ## Before handing over
 
-1. Run `pixi run lint` and `pixi run typecheck`.
+1. Run `pixi run lint` and `pixi run typecheck`. The hooks check only files git tracks, so also run `pixi run -e check prek run --files <path>` on every new file, including docs extensions.
 2. Read the diff for what no tool checks, which is definition order, module-level constants, named returns, error message format, docstring types and Examples, and comment placement.
 3. The avoid-ai-writing detector's hits on numpydoc `**name**` bullets, on the em dash in Returns field bullets, and on LaTeX blocks read as lists are false positives.
 

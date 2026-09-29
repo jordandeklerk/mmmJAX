@@ -53,45 +53,58 @@ def sample(
 ) -> xr.DataTree:
     """Sample a model with NUTS and return labeled posterior results.
 
-    Warmup tunes each chain's step size and, when long enough, its selected
-    mass matrix. Warmup draws are discarded, and generated quantities are
-    evaluated for every retained draw when available. The results carry the
-    final sampler state, so :func:`continue_sampling` can add draws later
-    without repeating warmup, including after saving the results to disk.
+    Warmup tunes the step size of each chain and, when ``warmup`` is long
+    enough, the chain's mass matrix. The warmup draws are discarded, and every
+    retained draw is mapped back to the constrained parameter space. Unless
+    ``generate`` is false, the model's ``generated_quantities`` callback runs
+    once for every retained draw.
+
+    Parameters keep their declared axes and labels in the results. Predictive
+    and log-likelihood outputs shaped like the outcome take its labels, and
+    log-prior terms named after a parameter take its axes. Custom axes use the
+    model's ``dims``, ``generated_dims``, and ``coords``.
+
+    The results carry each chain's final position, tuning, and random
+    stream, so :func:`continue_sampling` can add draws later without
+    repeating warmup, even after the results are saved to disk.
+
+    A ``ValueError`` is raised before warmup when a starting position has a
+    nonfinite log density or gradient, and a ``RuntimeError`` when a retained
+    draw has a nonfinite log density. Divergent transitions and draws that
+    reach ``max_tree_depth`` trigger a ``RuntimeWarning`` and are recorded in
+    ``sample_stats``.
 
     Parameters
     ----------
     model : Model
         Model defining parameter constraints, priors, and likelihood.
     data : object, optional
-        Inputs for a model without prepared data. Prepared models use their
-        stored observations and fitted scaling automatically.
+        Inputs for a model without prepared data. Omit it for prepared
+        models, since they use their stored observations and fitted scaling.
     draws : int, default 1000
         Retained draws per chain, excluding warmup.
     warmup : int, default 1000
-        Adaptation steps per chain.
+        Adaptation steps per chain, at least one.
     chains : int, default 4
         Number of independently adapted chains.
     chain_method : {"sequential", "vectorized", "parallel"}, default "sequential"
         Run chains one at a time, together on one device, or one per local
         JAX device. Parallel sampling requires at least ``chains`` devices.
-        Vectorized chains use more memory and can wait for the longest
-        trajectory, so they are not always faster.
+        Vectorized chains use more memory and are not always faster.
     seed : int, default 0
         Random seed for initialization, sampling, and generated quantities,
         from 0 to ``2**32 - 1``.
     target_accept : float, default 0.8
         Target acceptance probability during adaptation, between zero and one.
     mass_matrix : {"diagonal", "dense"}, default "diagonal"
-        Adapt individual unconstrained parameter scales, or also their
-        correlations with a full dense matrix. Dense adaptation uses more
-        computation. Its matrix storage grows quadratically in the number of
-        unconstrained parameter values.
+        Adapt one scale per unconstrained parameter value, or also their
+        correlations in a dense matrix. The dense matrix costs more
+        computation and grows quadratically with the number of values.
     max_tree_depth : int, default 10
         Maximum trajectory expansion depth for each NUTS step.
     initial_values : mapping of str to array_like, optional
         Complete constrained parameter values used to start every chain.
-        Otherwise, each chain starts from a random unconstrained position.
+        Omit to start each chain from its own random unconstrained position.
     generate : bool, default True
         Evaluate outputs from the ``generated_quantities`` callback.
     save_unconstrained : bool, default True
@@ -102,13 +115,12 @@ def sample(
         to host memory. Smaller chunks reduce device memory use without
         restarting warmup or thinning draws.
     batch_size : int, default 64
-        Maximum draws evaluated together across chains when converting
+        Maximum draws evaluated together across chains when constraining
         parameters and generating quantities. Smaller batches reduce working
-        memory. This does not change NUTS or the number of retained draws.
+        memory without changing NUTS or the number of retained draws.
     progress : bool, default True
-        Show warmup and sampling progress bars. Sampling bars restart for each
-        chunk. Parallel counters reflect individual devices, not completion
-        of all chains.
+        Show progress bars for warmup and for each sampling chunk. Parallel
+        counters follow individual devices rather than all chains.
 
     Returns
     -------
@@ -116,23 +128,16 @@ def sample(
         Results with chain and draw dimensions that must fit in host memory.
 
         - **posterior** — Constrained parameter draws
-        - **sample_stats** — Diagnostics including divergences and
+        - **sample_stats** — Diagnostics such as divergences and the
           unconstrained log density ``lp``
         - **posterior_predictive** — Outputs returned under ``predictive``
-        - **log_likelihood**, **log_prior** — Outputs returned under the
-          corresponding keys by ``generated_quantities``
+        - **log_likelihood**, **log_prior** — Outputs returned under the keys
+          of the same name
         - **generated_quantities** — Other generated outputs
-        - **observed_data**, **constant_data** — Inputs in evaluated units,
-          including fitted scaling. Auxiliary ``Data`` uses **constant_data**
+        - **observed_data**, **constant_data** — Inputs in model units
         - **unconstrained_posterior** — Draws in the sampler's unconstrained
-          space unless ``save_unconstrained=False``
-        - **sampling_state** — Chain positions, tuning, and random streams
-          for continued sampling
-
-        Declared axes retain labels. Predictive and likelihood outputs matching
-        observations inherit outcome labels, and log-prior terms named after a
-        parameter inherit its axes. Custom axes use model ``dims``,
-        ``generated_dims``, and ``coords``. Inspect diagnostics before interpretation.
+          space
+        - **sampling_state** — Final sampler state for ``continue_sampling``
     """
     if not isinstance(model, Model):
         raise TypeError("model must be a Model")
@@ -275,9 +280,20 @@ def continue_sampling(
     Resumes every chain from the final position, tuning, and random stream
     stored in the ``sampling_state`` group, so the combined draws match a
     single longer run. Results cut to a subset of chains with ``sel`` or
-    ``isel`` continue only those chains. The supplied results are not
-    modified. For a different model or dataset, start a new run with
-    :func:`sample`.
+    ``isel`` continue only those chains.
+
+    The new draws extend every sampled group of ``results``, and their
+    numbering starts where the sampler stopped. The ``sampling_state`` group
+    advances with them, so the combined results can be continued again. The
+    supplied results are not modified.
+
+    A ``ValueError`` is raised when the JAX precision setting differs from
+    the original run's, or when a parallel run has fewer local devices than
+    chains. A different model or dataset needs a new run with :func:`sample`.
+
+    A new draw with a nonfinite log density raises a ``RuntimeError`` and
+    leaves ``results`` unchanged. Divergent transitions and draws that reach
+    the maximum tree depth trigger a ``RuntimeWarning``, as in :func:`sample`.
 
     Parameters
     ----------
@@ -285,11 +301,11 @@ def continue_sampling(
         The model that produced ``results``. Its parameter names and shapes
         must match the stored draws.
     results : xarray.DataTree
-        Results returned by :func:`sample` or this function, including the
-        ``sampling_state`` group. Results restored from disk are accepted.
+        Output of ``sample`` or ``continue_sampling`` with its
+        ``sampling_state`` group. Results read back from disk also work.
     data : object, optional
-        Inputs from the original run for a model without prepared data.
-        Prepared models use their stored observations automatically.
+        Inputs from the original run for a model without prepared data. Omit
+        it for prepared models, since they use their stored observations.
     draws : int, default 1000
         Additional retained draws per chain.
     chunk_size : int, default 100
@@ -302,9 +318,7 @@ def continue_sampling(
     Returns
     -------
     xarray.DataTree
-        Original and additional draws in every sampled group. Draw numbering
-        is continuous, observation labels are unchanged, and the advanced
-        ``sampling_state`` supports further continuation.
+        Original and additional draws in every sampled group.
     """
     if not isinstance(model, Model):
         raise TypeError("model must be a Model")
@@ -662,10 +676,18 @@ def sample_prior(
 ) -> xr.DataTree:
     """Draw explicit priors and inspect their implied outcomes before fitting.
 
-    Draw every parameter from the supplied priors and reuse the model's
-    transformed parameters and ``generated_quantities`` callback.
-    The ``log_density`` callback and posterior sampler are not evaluated.
-    Keep the sampling distributions consistent with the priors in ``log_density``.
+    Every parameter is drawn from ``prior``, and neither the ``log_density``
+    callback nor the sampler runs. A ``ValueError`` is raised when a draw has
+    the wrong shape, is not finite, or falls outside its parameter's
+    constraints.
+
+    Unless ``generate`` is false, the model's ``generated_quantities``
+    callback runs at each draw with any transformed quantities it requests.
+    Its predictive outputs show the outcomes the priors imply before any
+    fitting, and its log-likelihood and log-prior outputs are left out.
+
+    Because ``log_density`` never runs, the draws describe the model only
+    when ``prior`` states the same distributions as the priors written in it.
 
     Parameters
     ----------
@@ -676,8 +698,8 @@ def sample_prior(
         declared shapes, or a JAX-compatible function ``prior(key)`` returning
         one constrained draw per declared parameter for dependent draws.
     data : object, optional
-        Inputs for a model without prepared data. Prepared models use their
-        stored observations and fitted scaling automatically.
+        Inputs for a model without prepared data. Omit it for prepared
+        models, since they use their stored observations and fitted scaling.
     draws : int, default 500
         Number of independent prior draws.
     seed : int, default 0
@@ -687,22 +709,17 @@ def sample_prior(
         Evaluate outputs from the ``generated_quantities`` callback.
     batch_size : int, default 64
         Maximum prior draws evaluated together, including generated quantities.
-        Smaller batches reduce working memory without reducing the draw count.
+        Smaller batches reduce working memory.
 
     Returns
     -------
     xarray.DataTree
-        Labeled results with one chain and ``draws`` draws that must fit in
-        host memory. The chain axis serves result compatibility, not MCMC.
+        Independent draws on a single chain that must fit in host memory.
 
         - **prior** — Constrained parameter draws
-        - **prior_predictive** — Callback outputs under ``predictive``
+        - **prior_predictive** — Outputs returned under ``predictive``
         - **prior_generated_quantities** — Other generated outputs
-        - **observed_data**, **constant_data** — Inputs in evaluated units,
-          including fitted scaling. Auxiliary ``Data`` uses **constant_data**
-
-        Log-likelihood and log-prior outputs are omitted. Without generation,
-        only prior draws and available inputs are returned.
+        - **observed_data**, **constant_data** — Inputs in model units
     """
     if not isinstance(model, Model):
         raise TypeError("model must be a Model")
@@ -863,9 +880,24 @@ def generate_quantities(
 ) -> xr.DataTree:
     """Evaluate generated quantities from existing posterior draws without refitting.
 
-    Evaluate the ``generated_quantities`` callback for every draw. The
-    ``log_density`` callback and sampling are not rerun. Scenario
-    calculations remain defined by the model.
+    Evaluates the ``generated_quantities`` callback at every posterior draw in
+    ``results``, and neither ``log_density`` nor the sampler runs. Each draw
+    gets its own random key from ``seed``. The new results take only the
+    posterior from ``results`` and leave out its sampler diagnostics. The
+    supplied results are not modified.
+
+    On a prepared model, a ``new_data`` dataframe reuses the column
+    selections, labels, and fitted scaling of the training data, and auxiliary
+    ``Data`` inputs keep their training values. Exposures before the
+    scenario's first period come only from ``PreparedData`` built with
+    ``media_history``, since none carry over from training. A model without
+    prepared data receives ``new_data`` as is.
+
+    With ``new_data`` on a prepared model, predictive draws go to
+    ``predictions``, pointwise log likelihoods to
+    ``predictions_log_likelihood``, and the new inputs and outcome to
+    ``predictions_constant_data``. ArviZ's checks on the fit never read these
+    groups.
 
     Parameters
     ----------
@@ -873,19 +905,15 @@ def generate_quantities(
         Model with a ``generated_quantities`` callback and the fitted
         parameter declarations.
     results : xarray.DataTree
-        Results containing constrained posterior draws with the model's parameter
-        names, shapes, and axis labels. Draws may be sliced or thinned.
+        Results containing constrained posterior draws with the model's
+        parameter names, shapes, and axis labels. Draws may be sliced or
+        thinned.
     new_data : dataframe-like, PreparedData, or object, optional
-        Scenario observations using the original source columns. Dataframes
-        reuse the model's column selections, labels, and fitted scaling.
-        Omit to evaluate stored observations. Earlier exposures are not added
-        automatically. Include them through ``prepare_data(media_history=...)``.
-        Other models receive this input directly. Omit outcomes only when no
-        evaluated callback needs them. Auxiliary ``Data`` inputs remain
-        fixed across scenarios.
+        Scenario observations in the original source columns. Omit to evaluate
+        the stored observations. Outcomes are needed only when an evaluated
+        callback uses them.
     seed : int, default 0
-        Random seed for generated quantities, from 0 to ``2**32 - 1``. Draws
-        get independent keys.
+        Random seed for generated quantities, from 0 to ``2**32 - 1``.
     batch_size : int, default 64
         Maximum posterior draws evaluated together across chains. Smaller
         batches reduce working memory without changing the selected draws.
@@ -893,20 +921,12 @@ def generate_quantities(
     Returns
     -------
     xarray.DataTree
-        New results that must fit in host memory. The supplied results are
-        not modified.
+        New results that must fit in host memory.
 
         - **posterior** — Draws and sample labels from ``results``
         - **posterior_predictive**, **log_likelihood**, **log_prior**,
           **generated_quantities** — Newly evaluated model outputs
         - **observed_data**, **constant_data** — Inputs in model units
-
-        With ``new_data`` and prepared data, predictive draws go to
-        **predictions**, pointwise log likelihoods to
-        **predictions_log_likelihood**, and the new inputs and outcome to
-        **predictions_constant_data**. ArviZ's checks on the fit never read
-        these groups. Original sampler diagnostics are
-        omitted.
     """
     if not isinstance(model, Model):
         raise TypeError("model must be a Model")

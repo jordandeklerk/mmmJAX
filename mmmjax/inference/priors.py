@@ -18,10 +18,17 @@ __all__ = ["Prior"]
 class Prior:
     """Bind fixed distribution settings for density evaluation and sampling.
 
-    Calling a prior evaluates its summed log density. Include that call
-    explicitly in the model density. Pass the same objects by parameter name
-    to ``sample_prior`` for independent prior draws, and use ``logpdf`` for
-    pointwise log-prior terms in ``generated_quantities``.
+    Calling a prior evaluates its summed log density. The model never adds a
+    prior on its own, so a prior counts only when ``log_density`` adds it to
+    the target.
+
+    Passed by parameter name to ``sample_prior``, the same objects give
+    independent prior draws in each parameter's declared shape. Their
+    ``logpdf`` gives pointwise log-prior terms for ``generated_quantities``.
+
+    Like any other JAX array, each setting is copied at the precision in
+    effect when the prior is built. A prior built before 64-bit mode is
+    enabled keeps 32-bit settings.
 
     Parameters
     ----------
@@ -30,11 +37,9 @@ class Prior:
         ``lognormal``, or ``dirichlet``, or one returned by
         ``custom_distribution`` for a distribution written as plain functions.
     **parameters : array_like
-        All named distribution settings. Construction copies them in the
-        precision in effect at that moment, so enable JAX 64-bit mode before
-        building priors as with any other array. Multinomial priors also
-        require ``trials`` and reject counts with another total. LKJ priors
-        accept optional ``dimension`` for direct ``sample`` calls. A model's
+        All named distribution settings. Multinomial priors also require
+        ``trials``, the total of every count vector. An LKJ prior needs
+        ``dimension`` only for direct ``sample`` calls, since a model's
         parameter declaration supplies it otherwise.
 
     Examples

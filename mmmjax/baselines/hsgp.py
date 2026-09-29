@@ -15,11 +15,15 @@ __all__ = ["HSGPApproximation", "hsgp_basis", "hsgp_weights", "prepare_hsgp"]
 class HSGPApproximation:
     """Retain one HSGP approximation for training and prediction.
 
-    Use :func:`prepare_hsgp` to choose these settings before defining a
-    model. Calling :meth:`basis` for new time positions reuses the same
-    domain, basis count, and column centering. Calling :meth:`weights`
-    reuses the frequencies and covariance family while allowing length
-    scales and amplitudes to vary.
+    :func:`prepare_hsgp` builds this object before the model is defined. It
+    holds the domain, basis count, and covariance family that training and
+    prediction share.
+
+    Calling :meth:`basis` on new time positions reuses the same domain, basis
+    count, and column centering, so a forecast basis lines up column for
+    column with the training basis. Calling :meth:`weights` reuses the
+    frequencies and covariance family, and the length scales and amplitudes
+    can change from call to call.
 
     Attributes
     ----------
@@ -56,6 +60,11 @@ class HSGPApproximation:
     def basis(self, time: ArrayLike) -> jax.Array:
         """Evaluate the stored basis without changing its time reference.
 
+        The center, domain, and basis count come from preparation, so new
+        positions get the same columns as the training basis. When the
+        approximation was prepared with ``center_columns``, each column also
+        has its mean over the training positions subtracted.
+
         Parameters
         ----------
         time : array_like
@@ -65,9 +74,8 @@ class HSGPApproximation:
         Returns
         -------
         jax.Array
-            Matrix with shape ``(len(time), n_basis)``. The preparation column
-            means are subtracted when centering was requested. Nonfinite
-            positions or positions outside the domain give ``nan`` rows.
+            Matrix with shape ``(len(time), n_basis)``. Nonfinite positions
+            or positions outside the domain give ``nan`` rows.
         """
         basis, _ = hsgp_basis(time, center=self.center, boundary=self.boundary, n_basis=self.n_basis)
         if self.column_means is not None:
@@ -82,12 +90,16 @@ class HSGPApproximation:
     ) -> jax.Array:
         """Compute coefficient weights using the stored frequencies and covariance.
 
+        The weights match :func:`hsgp_weights` for the prepared frequencies
+        and covariance family. The length scale range given to
+        ``prepare_hsgp`` only sized the approximation. It neither limits
+        these length scales nor sets their prior.
+
         Parameters
         ----------
         length_scale : array_like
             Positive, finite length scales in the same units as the time
-            positions. The preparation range guides approximation sizing
-            and does not constrain these values or specify a prior.
+            positions.
         amplitude : array_like, default 1.0
             Nonnegative, finite process standard deviations. Their shape
             must broadcast with ``length_scale``.
@@ -96,8 +108,9 @@ class HSGPApproximation:
         -------
         jax.Array
             Coefficient standard deviations with shape
-            ``batch_shape + (n_basis,)``. Invalid numeric inputs give
-            ``nan`` in affected positions, as in :func:`hsgp_weights`.
+            ``batch_shape + (n_basis,)``. ``batch_shape`` is the broadcast
+            shape of ``length_scale`` and ``amplitude``. Invalid numeric
+            inputs give ``nan`` in affected positions.
         """
         return hsgp_weights(
             self.frequencies, length_scale=length_scale, amplitude=amplitude, covariance=self.covariance
@@ -115,53 +128,55 @@ def prepare_hsgp(
 ) -> HSGPApproximation:
     """Choose a fixed domain and basis count for a time-varying process.
 
-    Prepare the approximation once before defining the model, outside
-    ``jax.jit``. The longest expected length scale determines how far the
-    domain extends beyond the observations. The shortest determines how
-    many basis functions are needed to represent faster changes.
+    The longest expected length scale sets how far the domain reaches past
+    the time range, and the shortest sets how many basis functions it takes
+    to follow faster changes. The recommended half-width is never less than
+    1.2 times half the time span.
 
-    These heuristic recommendations can understate variation near the
-    ends of the time range. Check that model results remain stable with a
-    wider domain and more basis functions. More functions alone cannot
-    correct insufficient domain padding. Preparation does not fit a curve
-    or define any priors.
+    These recommendations for each covariance family follow
+    Riutort-Mayol et al. (2022) and can understate variation near the ends of
+    the time range. Refitting with a wider ``boundary`` and a larger
+    ``n_basis`` shows whether results depend on the approximation. More basis
+    functions alone cannot make up for too little padding.
+
+    The approximation is prepared once on the host, outside ``jax.jit``,
+    before the model is defined. It fits no curve and sets no priors, and the
+    length scale range places no limit on the model's length scales.
+
+    Later predictions reuse the approximation and must measure time from the
+    same origin. With ``center_columns``, any curve built on the basis
+    averages zero over the observed positions, so an intercept keeps the
+    level.
 
     Parameters
     ----------
     time_range : array_like
-        Two finite numeric endpoints in increasing order that cover both
-        training observations and planned forecasts. For example, use
-        ``(0, 116)`` for observations in weeks 0 through 104 and predictions
-        through week 116. Keep the same time origin for later predictions.
-        When observed positions such as ``data.time_positions`` are passed
-        directly, their smallest and largest values are used.
+        Two finite numeric endpoints in increasing order that cover the
+        training periods and planned forecasts, as in ``(0, 116)`` for weeks
+        0 through 104 and forecasts through week 116. Observed positions such
+        as ``data.time_positions`` reduce to their smallest and largest values.
     length_scale_range : array_like
-        Two positive, finite endpoints in increasing order, in the same
-        units as ``time_range``. Choose a range covering the length scales
-        you expect the model to use, such as most of the prior probability.
-        This range guides sizing and does not constrain model parameters.
+        Two positive, finite endpoints in increasing order, in the units of
+        ``time_range``. The range should hold most of the prior probability
+        of the model's length scales.
     covariance : {"expquad", "matern32", "matern52"}, default "matern52"
-        Covariance family. The returned settings retain this choice for
-        subsequent weight calculations.
+        Covariance family.
     boundary : float, optional
-        Domain half-width in time units. When omitted, use the recommended
-        padding. Supply a larger value to check boundary sensitivity. It
-        must be finite and greater than half the supplied time span.
-        The recommended basis count is recalculated for this domain.
+        Domain half-width in the units of ``time_range``. It must be finite
+        and greater than half the time span. Defaults to the recommended
+        half-width.
     n_basis : int, optional
-        Positive number of basis functions. When omitted, choose a count
-        using the domain half-width and shortest expected length scale.
-        Supply a larger value to check sensitivity to the approximation.
+        Positive number of basis functions. Defaults to the recommended count
+        for the domain half-width and the shortest length scale.
     center_columns : bool, default False
-        Subtract each basis column's mean over the supplied positions from
-        every later evaluation, so the process is a zero-mean deviation over
-        the training window and an intercept keeps the level. Requires the
-        observed positions rather than two endpoints.
+        Subtract each basis column's mean over the observed positions from
+        every later evaluation. Requires observed positions in ``time_range``
+        rather than two endpoints.
 
     Returns
     -------
     HSGPApproximation
-        Reusable ``basis`` and ``weights`` settings for modeling and prediction.
+        Reusable approximation with the following fields.
 
         - **center** — Time range midpoint
         - **boundary** — Padded domain half-width
@@ -297,41 +312,45 @@ def hsgp_basis(
         \phi_j(t) = \frac{1}{\sqrt{L}}
         \sin\left(\omega_j(t-c+L)\right), \quad j=1,\ldots,m.
 
-    The basis can be shared across groups and channels. Combine it with
-    :func:`hsgp_weights` and model coefficients to obtain time-varying curves.
-    This function does not choose priors or estimate a curve from observations.
+    The basis depends only on time, so one basis serves every group and
+    channel. The frequencies go to :func:`hsgp_weights`, and multiplying the
+    basis by those weights and by model coefficients gives a time-varying
+    curve. The function chooses no priors and fits no curve to observations.
+
+    Every basis function vanishes at ``center - boundary`` and
+    ``center + boundary``, so training and forecast positions should lie well
+    inside that interval. More functions follow shorter-scale changes, and a
+    wider domain generally needs more of them for the same resolution.
+
+    Forecast calls must reuse the training center, boundary, and basis count
+    and measure dated inputs from the same reference date. Their basis then
+    lines up with the training basis instead of being recentered on the new
+    data.
 
     Parameters
     ----------
     time : array_like
-        One-dimensional, finite numeric time positions. For dated inputs,
-        measure elapsed time from a fixed reference date and retain that
-        reference for prediction.
+        One-dimensional, finite numeric time positions, such as elapsed time
+        from a fixed reference date.
     center : array_like
-        Finite scalar subtracted from the time positions. The midpoint of
-        the training time range is a useful choice. Reuse this value for
-        prediction rather than recentering each new dataset.
+        Finite scalar subtracted from the time positions, such as the
+        midpoint of the training time range.
     boundary : array_like
         Positive, finite half-width of the approximation domain in the same
-        units as ``time``. Both training and intended prediction dates should
-        lie well inside ``center - boundary`` and ``center + boundary``.
-        The basis vanishes at the endpoints. Keep this value fixed after
-        defining the model.
+        units as ``time``.
     n_basis : int
-        Positive number of basis functions. More functions allow the
-        approximation to capture shorter-scale changes. A wider domain
-        generally needs more functions for the same resolution. Keep this
-        argument static when using ``jax.jit``.
+        Positive number of basis functions. Keep this argument static when
+        using ``jax.jit``.
 
     Returns
     -------
     basis : jax.Array
         Shape ``(len(time), n_basis)`` in increasing frequency order. Floating
         dtype is at least float32. Nonfinite or out-of-domain times give
-        ``nan`` rows. Invalid center or boundary gives an invalid basis.
+        ``nan`` rows. An invalid center or boundary makes every row ``nan``.
     frequencies : jax.Array
-        Angular frequencies shaped ``(n_basis,)`` in inverse time units for
-        :func:`hsgp_weights`. Invalid boundary gives ``nan`` frequencies.
+        Angular frequencies shaped ``(n_basis,)`` in inverse time units. An
+        invalid boundary gives ``nan`` frequencies.
 
     Examples
     --------
@@ -416,9 +435,19 @@ def hsgp_weights(
               & \text{matern52}.
         \end{cases}
 
-    With standard-normal model coefficients ``z``, evaluate a curve as
-    ``basis @ (weights * z)``. Alternatively, put zero-mean Normal priors
-    with these standard deviations directly on the basis coefficients.
+    With standard-normal model coefficients ``z``, the curve is
+    ``basis @ (weights * z)``. Zero-mean Normal priors with these standard
+    deviations placed directly on the basis coefficients give the same prior
+    over curves.
+
+    Larger length scales favor slower changes. Matérn 3/2 allows rougher
+    curves than Matérn 5/2, and the squared-exponential family ``expquad``
+    produces very smooth curves.
+
+    The amplitude is the standard deviation of the underlying process, so
+    zero disables variation. The target marginal variance is
+    ``amplitude**2``, and how closely the approximation matches it depends on
+    the domain and basis count.
 
     Parameters
     ----------
@@ -426,19 +455,14 @@ def hsgp_weights(
         One-dimensional, finite angular frequencies returned by
         :func:`hsgp_basis`. Zero and negative frequencies are also accepted.
     length_scale : array_like
-        Positive, finite scale controlling how quickly the curve changes. It
-        is measured in the same time units used to build the basis. Larger
-        values favor slower changes. Use a scalar for a shared scale or
-        an array such as ``(group, channel)`` for separate scales.
+        Positive, finite length scale in the time units used to build the
+        basis. A scalar gives one shared scale and an array such as
+        ``(group, channel)`` gives separate scales.
     amplitude : array_like, default 1.0
         Nonnegative, finite standard deviation of the underlying stationary
-        process. Zero disables variation. Its shape must broadcast with
-        ``length_scale``. The target marginal variance is ``amplitude**2``.
-        Approximation quality also depends on the domain and basis count.
+        process. Its shape must broadcast with ``length_scale``.
     covariance : {"expquad", "matern32", "matern52"}, default "matern52"
-        Covariance family. Matérn 3/2 allows rougher curves than Matérn 5/2.
-        The squared-exponential family ``expquad`` produces very smooth
-        curves. Keep this argument static when using ``jax.jit``.
+        Covariance family. Keep this argument static when using ``jax.jit``.
 
     Returns
     -------

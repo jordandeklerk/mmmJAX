@@ -27,8 +27,6 @@ Scaling
    :nosignatures:
 
    fit_data_scaling
-   fit_scaling
-   fit_media_scaling
 
 Containers
 ----------

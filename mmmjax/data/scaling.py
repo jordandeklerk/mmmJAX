@@ -11,7 +11,7 @@ from numpy.typing import NDArray
 
 from mmmjax.data.prepare import PreparedData, _DataLayout
 
-__all__ = ["DataScaling", "Scaling", "fit_data_scaling", "fit_media_scaling", "fit_scaling"]
+__all__ = ["DataScaling", "Scaling", "fit_data_scaling"]
 
 
 @jax.tree_util.register_dataclass
@@ -26,9 +26,10 @@ class Scaling:
 
         z = \frac{x - c}{s}, \qquad x = z s + c.
 
-    Estimate fixed statistics with :func:`fit_scaling` or
-    :func:`fit_media_scaling`. Direct construction skips validation.
-    This object supports JAX transformations.
+    :func:`fit_data_scaling` fits one for each scaled input role, and blocks
+    receive the outcome's as ``outcome_scaling``. Direct construction skips
+    validation. The object is registered as a JAX pytree, so it can pass
+    through JAX transformations and its methods work inside them.
 
     Attributes
     ----------
@@ -109,10 +110,14 @@ class Scaling:
 class DataScaling:
     """Store training transformations together with their input labels.
 
-    Create with :func:`fit_data_scaling`. Reuse fitted statistics while
-    matching group and column order internally. New groups or changed
-    channel-to-column assignments are not accepted. Access individual
-    :class:`Scaling` objects through :attr:`transformations`.
+    :func:`fit_data_scaling` builds this object from training data. It keeps
+    one :class:`Scaling` for each scaled input role, and
+    :attr:`transformations` returns them by role.
+
+    ``transform`` and ``inverse_transform`` put new data in the training
+    group and column order before applying the fitted statistics. The data
+    must hold exactly the training groups, and a changed channel-to-column
+    assignment raises an error.
     """
 
     _fitted: tuple[tuple[str, Scaling], ...]
@@ -135,6 +140,10 @@ class DataScaling:
     def transform(self, data: PreparedData) -> PreparedData:
         """Apply training scales and match the training input order.
 
+        The call runs on the host, outside JAX transformations, and leaves
+        the original data unchanged. Data that was already scaled raises an
+        error.
+
         Parameters
         ----------
         data : PreparedData
@@ -151,27 +160,28 @@ class DataScaling:
             - **columns** — Source columns in training order
             - **group_values** — Groups in training order
             - **time_values** — Supplied modeling periods
-            - **media_time_values** — Supplied exposure periods, including
+            - **media_time_values** — Supplied exposure periods including
               history
-
-            The original data is unchanged. Call outside JAX transformations.
         """
         return self._apply(data, inverse=False)
 
     def inverse_transform(self, data: PreparedData) -> PreparedData:
         """Return selected inputs to their original units.
 
+        Supplied groups and columns are matched to their training order as in
+        :meth:`transform`. Restored arrays stay floating-point even where the
+        original inputs were integers. Data scaled by a different
+        ``DataScaling`` raises an error.
+
         Parameters
         ----------
         data : PreparedData
             Scaled data with the same input identities as the training data.
-            Supplied groups and columns are matched to their training order.
 
         Returns
         -------
         PreparedData
-            New inputs in original units. Alignment matches :meth:`transform`.
-            Restored arrays remain floating-point, including original integers.
+            New inputs in original units.
         """
         return self._apply(data, inverse=True)
 
@@ -216,302 +226,6 @@ class DataScaling:
         return replace(aligned, _scaling=None if inverse else self)
 
 
-def fit_scaling(
-    values: ArrayLike,
-    *,
-    axis: int | tuple[int, ...] | None = 0,
-    center: bool = True,
-    scale: bool = True,
-) -> Scaling:
-    """Estimate reusable centering and scaling from training observations.
-
-    Subtract the mean and divide by the standard deviation with ``ddof=0``.
-    Constant series use a scale of one. Fit outside JAX transformations.
-    Use the stored transformation with JIT, gradients, or vectorization.
-
-    Parameters
-    ----------
-    values : array_like
-        Finite real observations with at least one dimension and no empty axes.
-        Boolean values are treated as zeros and ones. Inputs are not modified.
-    axis : int or tuple of int or None, default 0
-        Axes over which to estimate statistics. For values shaped
-        ``(time, group, feature)``, use ``0`` for separate group-feature
-        statistics or ``(0, 1)`` to pool observations across groups.
-        ``None`` uses all axes. Negative axes are accepted.
-    center : bool, default True
-        Subtract the mean. When disabled, the offset is zero.
-    scale : bool, default True
-        Divide by the standard deviation. When disabled, the divisor is one.
-
-    Returns
-    -------
-    Scaling
-        Fitted transformation with the following fields.
-
-        - **offset** — Training means, or zeros without centering
-        - **scale** — Training standard deviations, or ones for constant series
-          or disabled scaling
-
-        Reduced axes retain length one for broadcasting.
-        Precision is at least float32. Float64 requires JAX 64-bit mode.
-
-    Examples
-    --------
-    Fit separate statistics for two training columns.
-
-    .. ipython::
-
-        In [1]: import polars as pl
-           ...: from mmmjax import fit_scaling
-
-        In [2]: training = pl.DataFrame({
-           ...:     "temperature": [10.0, 12.0, 14.0],
-           ...:     "price": [8.0, 10.0, 12.0],
-           ...: })
-
-        In [3]: scaling = fit_scaling(training.to_numpy())
-
-    Later observations use the training statistics rather than their own,
-    and the inverse recovers the original values.
-
-    .. ipython::
-
-        In [4]: future = pl.DataFrame({"temperature": [16.0], "price": [9.0]})
-           ...: scaled = scaling.transform(future.to_numpy())
-
-        In [5]: scaling.inverse_transform(scaled)
-    """
-    if not isinstance(center, bool):
-        raise TypeError(f"center must be True or False, got {center!r}")
-    if not isinstance(scale, bool):
-        raise TypeError(f"scale must be True or False, got {scale!r}")
-
-    try:
-        array = np.asarray(values)
-    except (TypeError, ValueError) as error:
-        raise TypeError("values must be a real numeric array or sequence") from error
-    if array.dtype.kind not in "biuf":
-        raise TypeError(f"values must have a real numeric dtype, got {array.dtype}")
-    if array.ndim == 0 or array.size == 0:
-        raise ValueError(f"values must have at least one dimension and no empty axes, got shape {array.shape}")
-    if not np.isfinite(array).all():
-        raise ValueError("values contain NaN or infinite entries. Resolve them before fitting scaling")
-
-    if axis is None:
-        axes = tuple(range(array.ndim))
-    else:
-        requested_axes = axis if isinstance(axis, tuple) else (axis,)
-        if not requested_axes or any(
-            isinstance(item, (bool, np.bool_)) or not isinstance(item, (int, np.integer)) for item in requested_axes
-        ):
-            raise TypeError("axis must be an integer, a nonempty tuple of integers, or None")
-        if any(item < -array.ndim or item >= array.ndim for item in requested_axes):
-            raise ValueError(f"axis {axis!r} is out of bounds for values with {array.ndim} dimensions")
-        axes = tuple(int(item) % array.ndim for item in requested_axes)
-        if len(set(axes)) != len(axes):
-            raise ValueError(f"axis {axis!r} selects an axis more than once. Select each axis only once")
-
-    dtype = array.dtype
-    if not np.issubdtype(dtype, np.floating):
-        dtype = np.dtype(np.float64 if dtype.itemsize == 8 else np.float32)
-    dtype = jax.dtypes.canonicalize_dtype(np.promote_types(dtype, np.float32))
-    # Estimate once on the host with a wider accumulator, then store the chosen JAX precision
-    offset, deviation = _scaling_statistics(array.astype(np.float64, copy=False), axes, center=center, scale=scale)
-    with np.errstate(over="ignore", invalid="ignore"):
-        scale_values = deviation.astype(dtype)
-        offset = offset.astype(dtype)
-    if not np.isfinite(offset).all() or not np.isfinite(scale_values).all() or np.any(scale_values <= 0):
-        raise ValueError(
-            f"values do not produce a finite offset and positive scale in {dtype}. "
-            "Rescale the training values or use float64 inputs with JAX 64-bit mode"
-        )
-
-    return Scaling(offset=jnp.asarray(offset), scale=jnp.asarray(scale_values))
-
-
-def _scaling_statistics(
-    array: NDArray[np.float64],
-    axes: tuple[int, ...],
-    *,
-    center: bool = True,
-    scale: bool = True,
-) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """Estimate host statistics before converting to the requested storage precision."""
-    statistic_shape = tuple(1 if index in axes else size for index, size in enumerate(array.shape))
-    with np.errstate(over="ignore", invalid="ignore"):
-        offset = np.mean(array, axis=axes, dtype=np.float64, keepdims=True) if center else np.zeros(statistic_shape)
-        deviation = np.std(array, axis=axes, dtype=np.float64, keepdims=True) if scale else np.ones(statistic_shape)
-        if scale:
-            minimum = np.min(array, axis=axes, keepdims=True)
-            constant = minimum == np.max(array, axis=axes, keepdims=True)
-            # Even identical decimal values can have a tiny computed standard deviation
-            deviation = np.where(constant | (deviation == 0), 1.0, deviation)
-            if center:
-                offset = np.where(constant, minimum, offset)
-    return np.asarray(offset), np.asarray(deviation)
-
-
-def fit_media_scaling(
-    media: ArrayLike,
-    *,
-    method: Literal["median", "mean", "max"] = "median",
-    population: ArrayLike | None = None,
-) -> Scaling:
-    r"""Estimate reusable channel scales from media exposures.
-
-    Divide each channel by a statistic pooled across periods and groups.
-    Media is not centered, so zero exposure stays zero. Scaling sets the
-    units for response-curve parameters and their priors.
-
-    With population estimates :math:`p_g`, first calculate exposure per
-    person. For training exposures :math:`x_{t,g,c}` and the selected
-    statistic :math:`T`, the stored divisor is
-
-    .. math::
-
-        a_c = T_{t,g}\!\left(\frac{x_{t,g,c}}{p_g}\right),
-        \qquad s_{g,c} = p_g a_c.
-
-    Transformed exposures are :math:`x_{t,g,c}/s_{g,c}`.
-    Without population, use :math:`p_g = 1`.
-
-    Parameters
-    ----------
-    media : array_like
-        Nonnegative, finite impressions or reach shaped ``(time, channel)``
-        or ``(time, group, channel)``. Keep the channel axis for one channel.
-        Each channel needs at least one positive exposure. Not intended
-        for advertising frequency inputs.
-    method : {"median", "mean", "max"}, default "median"
-        Channel statistic. The median excludes zeros, the mean includes
-        them, and the maximum uses the largest exposure. New values can
-        exceed one after scaling.
-    population : array_like, optional
-        Positive, finite population. Supply a scalar for one series or a
-        vector shaped ``(n_groups,)``. Boolean values are not accepted.
-        Omit to skip adjustment. For one series, population cancels from
-        the normalized result.
-
-    Returns
-    -------
-    Scaling
-        Fitted transformation with the following fields.
-
-        - **offset** — Zeros to preserve absent exposure
-        - **scale** — Channel statistics multiplied by population where supplied
-
-        Time retains length one. Group also retains length one unless
-        population-specific factors are used. Reuse fixed factors in the fitted
-        group and channel order.
-
-    Examples
-    --------
-    Start with two impression columns that each include a period with no
-    activity.
-
-    .. ipython::
-
-        In [1]: import polars as pl
-           ...: from mmmjax import fit_media_scaling
-
-        In [2]: training = pl.DataFrame({
-           ...:     "search": [0.0, 1_000.0, 3_000.0],
-           ...:     "video": [2_000.0, 0.0, 6_000.0],
-           ...: })
-
-    The default method divides by the median of the nonzero values, so zeros
-    stay zero and a later week is scaled with the training statistics.
-
-    .. ipython::
-
-        In [3]: scaling = fit_media_scaling(training.to_numpy())
-
-        In [4]: future = pl.DataFrame({"search": [4_000.0], "video": [0.0]})
-           ...: scaling.transform(future.to_numpy())
-
-    Dividing by the training maximum instead keeps training values within
-    the unit interval.
-
-    .. ipython::
-
-        In [5]: maximum = fit_media_scaling(training.to_numpy(), method="max")
-           ...: maximum.transform(future.to_numpy())
-    """
-    if not isinstance(method, str):
-        raise TypeError(f"method must be 'median', 'mean' or 'max', got {method!r}")
-    if method not in ("median", "mean", "max"):
-        raise ValueError(f"method must be 'median', 'mean' or 'max', got {method!r}")
-
-    try:
-        media_array = np.asarray(media)
-    except (TypeError, ValueError) as error:
-        raise TypeError("media must be a real numeric array or sequence") from error
-    if media_array.dtype.kind not in "biuf":
-        raise TypeError(f"media must have a real numeric dtype, got {media_array.dtype}")
-    if media_array.ndim not in (2, 3) or media_array.size == 0:
-        raise ValueError(
-            "media must have shape (time, channel) or (time, group, channel) with no empty axes. "
-            f"Got shape {media_array.shape}"
-        )
-    if not np.isfinite(media_array).all() or np.any(media_array < 0):
-        raise ValueError("media must contain finite nonnegative exposures. Resolve negative, NaN or infinite values")
-
-    population_factors = np.ones((1,) * media_array.ndim)
-    dtype = jnp.result_type(media_array)
-    if population is not None:
-        try:
-            population_array = np.asarray(population)
-        except (TypeError, ValueError) as error:
-            raise TypeError("population must contain real numeric estimates") from error
-        if population_array.dtype.kind not in "iuf":
-            raise TypeError(f"population must have a real numeric dtype, not boolean, got {population_array.dtype}")
-        expected_shape = (media_array.shape[1],) if media_array.ndim == 3 else ()
-        if population_array.shape != expected_shape:
-            raise ValueError(
-                f"population must have shape {expected_shape} for media with shape {media_array.shape}. "
-                f"Got shape {population_array.shape}"
-            )
-        if not np.isfinite(population_array).all() or np.any(population_array <= 0):
-            raise ValueError("population must contain positive finite estimates. Check each group's population")
-        dtype = jnp.result_type(media_array, population_array)
-        population_factors = population_array.astype(np.float64).reshape(1, *expected_shape, 1)
-
-    if not np.issubdtype(dtype, np.floating):
-        dtype = np.dtype(np.float64 if dtype.itemsize == 8 else np.float32)
-    dtype = jax.dtypes.canonicalize_dtype(np.promote_types(dtype, np.float32))
-    axes = tuple(range(media_array.ndim - 1))
-
-    with np.errstate(over="ignore", invalid="ignore"):
-        adjusted = media_array.astype(np.float64) / population_factors
-    if not np.isfinite(adjusted).all():
-        raise ValueError("media and population produce nonfinite adjusted exposures. Check their units and magnitudes")
-    positive = adjusted > 0
-    inactive_channels = np.flatnonzero(~np.any(positive, axis=axes)).tolist()
-    if inactive_channels:
-        raise ValueError(
-            f"media channels at indices {inactive_channels} have no positive observations to estimate a scale. "
-            "Check media and population values or remove inactive channels"
-        )
-
-    # Fit once on the host, keeping a separate statistic for each channel
-    with np.errstate(over="ignore", invalid="ignore"):
-        if method == "median":
-            channel_scale = np.nanmedian(np.where(positive, adjusted, np.nan), axis=axes, keepdims=True)
-        elif method == "mean":
-            channel_scale = np.mean(adjusted, axis=axes, keepdims=True)
-        else:
-            channel_scale = np.max(adjusted, axis=axes, keepdims=True)
-        scale_values = (channel_scale * population_factors).astype(dtype)
-    if not np.isfinite(scale_values).all() or np.any(scale_values <= 0):
-        raise ValueError(
-            f"media and population do not produce a positive finite scale in {dtype}. "
-            "Rescale the inputs or use float64 inputs with JAX 64-bit mode"
-        )
-
-    return Scaling(offset=jnp.zeros(scale_values.shape, dtype=dtype), scale=jnp.asarray(scale_values))
-
-
 def fit_data_scaling(
     data: PreparedData,
     *,
@@ -523,27 +237,33 @@ def fit_data_scaling(
 ) -> DataScaling:
     """Fit reusable transformations for labeled model inputs.
 
-    By default, scale exposure inputs by their positive medians and
-    standardize controls and non-media treatments. Outcomes stay in their
-    original units unless scaling is requested. Spend, population, revenue
-    per outcome, and both frequency inputs are always left unchanged.
+    By default, paid and organic impressions and reach are divided by their
+    positive medians, and controls and non-media treatments are standardized.
+    The outcome stays in its original units unless ``scale_outcome`` is set.
+    Spend, population, revenue per outcome, and both frequency inputs are
+    always left unchanged.
+
+    Statistics pool periods and groups per feature. Exposure statistics
+    include the media history, and the others use only the modeling periods.
+    The data itself is not modified.
+
+    The returned ``DataScaling`` applies the training statistics to new
+    prepared data, and its ``inverse_transform`` restores the original units.
+    New data may omit population. Any population it supplies must match the
+    training population when it also holds population-adjusted inputs.
 
     Parameters
     ----------
     data : PreparedData
-        Unscaled inputs from :func:`prepare_data`. Statistics pool periods
-        and groups per feature. Exposure statistics include history. Other
-        statistics use only modeling periods. Inputs are not modified.
+        Unscaled inputs from :func:`prepare_data`.
     media_method : {"median", "mean", "max"} or None, default "median"
         Statistic for paid and organic impressions and reach. The median
         excludes zeros and the mean includes them. Each channel needs positive
-        exposure. Use ``None`` to preserve original units.
+        exposure. ``None`` leaves them in their original units.
     scale_outcome : bool or {"population"}, default False
-        Use ``True`` to standardize the outcome, or ``"population"`` to first
-        divide it by population. Statistics pool periods and groups.
-        Inverse transformation restores the original outcome units.
-        Requires an outcome and, for ``"population"``, population estimates.
-        Leave disabled for count likelihoods.
+        ``True`` standardizes the outcome and ``"population"`` first divides
+        it by population. Requires an outcome and, for ``"population"``,
+        population estimates. Leave disabled for count likelihoods.
     scale_controls : bool, default True
         Standardize each supplied control using its mean and standard deviation.
     scale_treatments : bool, default True
@@ -551,18 +271,12 @@ def fit_data_scaling(
         standard deviation.
     adjust_population : bool, default False
         Divide exposures by population before fitting channel statistics.
-        Requires population and affects exposures only. Use
-        ``scale_outcome="population"`` to adjust outcomes as well. New data
-        may omit population. Supplied estimates must match the fitted values
-        when transforming population-adjusted inputs.
+        Requires population and affects exposures only.
 
     Returns
     -------
     DataScaling
-        ``transformations`` maps inputs to :class:`Scaling` offsets and divisors.
-        Retains alignment labels without observations. ``transform`` and
-        ``inverse_transform`` return new :class:`PreparedData` objects using
-        the fitted statistics.
+        Fitted transformations by input role with their training labels.
 
     Examples
     --------
@@ -641,7 +355,7 @@ def fit_data_scaling(
         for name in media_inputs:
             if name in data.arrays:
                 try:
-                    fitted[name] = fit_media_scaling(data.arrays[name], method=media_method, population=population)
+                    fitted[name] = _fit_media_scaling(data.arrays[name], method=media_method, population=population)
                 except ValueError as error:
                     raise ValueError(f"Cannot fit scaling for {name!r}. {error}") from error
                 if adjust_population:
@@ -654,7 +368,7 @@ def fit_data_scaling(
                 fitted[name] = _fit_population_outcome(data.arrays[name], data.arrays["population"])
                 population_roles.append(name)
             else:
-                fitted[name] = fit_scaling(data.arrays[name], axis=observation_axes)
+                fitted[name] = _fit_standardization(data.arrays[name], axis=observation_axes)
 
     stored_population = data.arrays["population"].copy() if population_roles else None
     result = DataScaling(
@@ -664,6 +378,87 @@ def fit_data_scaling(
         _population_roles=tuple(population_roles),
     )
     return result
+
+
+def _fit_media_scaling(
+    media: ArrayLike,
+    *,
+    method: Literal["median", "mean", "max"] = "median",
+    population: ArrayLike | None = None,
+) -> Scaling:
+    """Divide each channel by one statistic of its exposures so that zero exposure stays zero."""
+    if not isinstance(method, str):
+        raise TypeError(f"method must be 'median', 'mean' or 'max', got {method!r}")
+    if method not in ("median", "mean", "max"):
+        raise ValueError(f"method must be 'median', 'mean' or 'max', got {method!r}")
+
+    try:
+        media_array = np.asarray(media)
+    except (TypeError, ValueError) as error:
+        raise TypeError("media must be a real numeric array or sequence") from error
+    if media_array.dtype.kind not in "biuf":
+        raise TypeError(f"media must have a real numeric dtype, got {media_array.dtype}")
+    if media_array.ndim not in (2, 3) or media_array.size == 0:
+        raise ValueError(
+            "media must have shape (time, channel) or (time, group, channel) with no empty axes. "
+            f"Got shape {media_array.shape}"
+        )
+    if not np.isfinite(media_array).all() or np.any(media_array < 0):
+        raise ValueError("media must contain finite nonnegative exposures. Resolve negative, NaN or infinite values")
+
+    population_factors = np.ones((1,) * media_array.ndim)
+    dtype = jnp.result_type(media_array)
+    if population is not None:
+        try:
+            population_array = np.asarray(population)
+        except (TypeError, ValueError) as error:
+            raise TypeError("population must contain real numeric estimates") from error
+        if population_array.dtype.kind not in "iuf":
+            raise TypeError(f"population must have a real numeric dtype, not boolean, got {population_array.dtype}")
+        expected_shape = (media_array.shape[1],) if media_array.ndim == 3 else ()
+        if population_array.shape != expected_shape:
+            raise ValueError(
+                f"population must have shape {expected_shape} for media with shape {media_array.shape}. "
+                f"Got shape {population_array.shape}"
+            )
+        if not np.isfinite(population_array).all() or np.any(population_array <= 0):
+            raise ValueError("population must contain positive finite estimates. Check each group's population")
+        dtype = jnp.result_type(media_array, population_array)
+        population_factors = population_array.astype(np.float64).reshape(1, *expected_shape, 1)
+
+    if not np.issubdtype(dtype, np.floating):
+        dtype = np.dtype(np.float64 if dtype.itemsize == 8 else np.float32)
+    dtype = jax.dtypes.canonicalize_dtype(np.promote_types(dtype, np.float32))
+    axes = tuple(range(media_array.ndim - 1))
+
+    with np.errstate(over="ignore", invalid="ignore"):
+        adjusted = media_array.astype(np.float64) / population_factors
+    if not np.isfinite(adjusted).all():
+        raise ValueError("media and population produce nonfinite adjusted exposures. Check their units and magnitudes")
+    positive = adjusted > 0
+    inactive_channels = np.flatnonzero(~np.any(positive, axis=axes)).tolist()
+    if inactive_channels:
+        raise ValueError(
+            f"media channels at indices {inactive_channels} have no positive observations to estimate a scale. "
+            "Check media and population values or remove inactive channels"
+        )
+
+    # Fit once on the host, keeping a separate statistic for each channel
+    with np.errstate(over="ignore", invalid="ignore"):
+        if method == "median":
+            channel_scale = np.nanmedian(np.where(positive, adjusted, np.nan), axis=axes, keepdims=True)
+        elif method == "mean":
+            channel_scale = np.mean(adjusted, axis=axes, keepdims=True)
+        else:
+            channel_scale = np.max(adjusted, axis=axes, keepdims=True)
+        scale_values = (channel_scale * population_factors).astype(dtype)
+    if not np.isfinite(scale_values).all() or np.any(scale_values <= 0):
+        raise ValueError(
+            f"media and population do not produce a positive finite scale in {dtype}. "
+            "Rescale the inputs or use float64 inputs with JAX 64-bit mode"
+        )
+
+    return Scaling(offset=jnp.zeros(scale_values.shape, dtype=dtype), scale=jnp.asarray(scale_values))
 
 
 def _fit_population_outcome(outcome: NDArray[np.generic], population: NDArray[np.generic]) -> Scaling:
@@ -703,3 +498,81 @@ def _fit_population_outcome(outcome: NDArray[np.generic], population: NDArray[np
 
     result = Scaling(offset=jnp.asarray(offset), scale=jnp.asarray(scale))
     return result
+
+
+def _fit_standardization(
+    values: ArrayLike,
+    *,
+    axis: int | tuple[int, ...] | None = 0,
+    center: bool = True,
+    scale: bool = True,
+) -> Scaling:
+    """Estimate centering and scaling statistics over the given axes of training values."""
+    if not isinstance(center, bool):
+        raise TypeError(f"center must be True or False, got {center!r}")
+    if not isinstance(scale, bool):
+        raise TypeError(f"scale must be True or False, got {scale!r}")
+
+    try:
+        array = np.asarray(values)
+    except (TypeError, ValueError) as error:
+        raise TypeError("values must be a real numeric array or sequence") from error
+    if array.dtype.kind not in "biuf":
+        raise TypeError(f"values must have a real numeric dtype, got {array.dtype}")
+    if array.ndim == 0 or array.size == 0:
+        raise ValueError(f"values must have at least one dimension and no empty axes, got shape {array.shape}")
+    if not np.isfinite(array).all():
+        raise ValueError("values contain NaN or infinite entries. Resolve them before fitting scaling")
+
+    if axis is None:
+        axes = tuple(range(array.ndim))
+    else:
+        requested_axes = axis if isinstance(axis, tuple) else (axis,)
+        if not requested_axes or any(
+            isinstance(item, (bool, np.bool_)) or not isinstance(item, (int, np.integer)) for item in requested_axes
+        ):
+            raise TypeError("axis must be an integer, a nonempty tuple of integers, or None")
+        if any(item < -array.ndim or item >= array.ndim for item in requested_axes):
+            raise ValueError(f"axis {axis!r} is out of bounds for values with {array.ndim} dimensions")
+        axes = tuple(int(item) % array.ndim for item in requested_axes)
+        if len(set(axes)) != len(axes):
+            raise ValueError(f"axis {axis!r} selects an axis more than once. Select each axis only once")
+
+    dtype = array.dtype
+    if not np.issubdtype(dtype, np.floating):
+        dtype = np.dtype(np.float64 if dtype.itemsize == 8 else np.float32)
+    dtype = jax.dtypes.canonicalize_dtype(np.promote_types(dtype, np.float32))
+    # Estimate once on the host with a wider accumulator, then store the chosen JAX precision
+    offset, deviation = _scaling_statistics(array.astype(np.float64, copy=False), axes, center=center, scale=scale)
+    with np.errstate(over="ignore", invalid="ignore"):
+        scale_values = deviation.astype(dtype)
+        offset = offset.astype(dtype)
+    if not np.isfinite(offset).all() or not np.isfinite(scale_values).all() or np.any(scale_values <= 0):
+        raise ValueError(
+            f"values do not produce a finite offset and positive scale in {dtype}. "
+            "Rescale the training values or use float64 inputs with JAX 64-bit mode"
+        )
+
+    return Scaling(offset=jnp.asarray(offset), scale=jnp.asarray(scale_values))
+
+
+def _scaling_statistics(
+    array: NDArray[np.float64],
+    axes: tuple[int, ...],
+    *,
+    center: bool = True,
+    scale: bool = True,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Estimate host statistics before converting to the requested storage precision."""
+    statistic_shape = tuple(1 if index in axes else size for index, size in enumerate(array.shape))
+    with np.errstate(over="ignore", invalid="ignore"):
+        offset = np.mean(array, axis=axes, dtype=np.float64, keepdims=True) if center else np.zeros(statistic_shape)
+        deviation = np.std(array, axis=axes, dtype=np.float64, keepdims=True) if scale else np.ones(statistic_shape)
+        if scale:
+            minimum = np.min(array, axis=axes, keepdims=True)
+            constant = minimum == np.max(array, axis=axes, keepdims=True)
+            # Even identical decimal values can have a tiny computed standard deviation
+            deviation = np.where(constant | (deviation == 0), 1.0, deviation)
+            if center:
+                offset = np.where(constant, minimum, offset)
+    return np.asarray(offset), np.asarray(deviation)
