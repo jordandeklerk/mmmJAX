@@ -82,7 +82,7 @@ jax.config.update("jax_enable_x64", True)
 ```
 
 :::{admonition} Set precision first
-:class: warning
+:class: important
 
 Put this line at the top of the script or notebook, before you fit any
 scaling, create priors, or build a model. Those objects keep the precision

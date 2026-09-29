@@ -84,7 +84,7 @@ weeks you supply, so carryover past the last week goes uncounted.
 Guide's brand.
 
 :::{admonition} Compute returns draw by draw
-:class: warning
+:class: important
 
 A Bayesian fit gives these returns for every posterior draw. Jin et al. warn
 against plugging the posterior means of the parameters into the formulas.
@@ -188,11 +188,11 @@ season or a Gaussian process. The analysis functions read $\mu_t$ itself,
 never $g(\mu_t)$, and difference it draw by draw, so they work under any link.
 [A first model](../user_guide/first_model) writes out the specification the
 User Guide fits, and
-[Changing the model](../user_guide/changing.md#the-trend) swaps its trend for a
-Gaussian process.
+[Changing the model](../user_guide/changing) lets its media effect drift over
+time through a Gaussian process.
 
 :::{admonition} Where the analyses find the mean
-:class: important
+:class: note
 
 The name $\mu_t$ goes by, such as `mu`, is
 [one of your names](what_is_mmmjax.md#how-blocks-get-their-inputs), and the
@@ -533,7 +533,7 @@ Query volume is both, a confounder for search ads and a mediator for channels
 that drive searches.
 
 :::{admonition} Don't read controls causally
-:class: warning
+:class: danger
 
 A control's coefficient holds the media fixed and may carry confounding of its
 own, so it has no causal reading
@@ -566,10 +566,9 @@ well, since price, distribution, and seasonal proxies often predict sales
 without any media. Those models still split the budget differently, and
 ranking them by predictive accuracy won't weed out the ones whose returns
 are wrong ([Chan and Perry, 2017](https://storage.googleapis.com/gweb-research2023-media/pubtools/3803.pdf),
-section 4.3). [Changing the model](../user_guide/changing) compares versions by
-cross-validation and by their returns. A constant coefficient also averages
-over any drift in a channel's effect, while a coefficient that varies over
-time can follow it.
+section 4.3). A constant coefficient also averages over any drift in the
+media's effect, while a multiplier that varies over time can follow a drift the
+channels share, as [Changing the model](../user_guide/changing) shows.
 
 Real data never record the true return, and an experiment gives one estimate
 for one channel, window, and spend level. {func}`~mmmjax.simulate_data`

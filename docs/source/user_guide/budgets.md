@@ -19,7 +19,7 @@ promotions keep their observed values in every split the optimizer tries.
 :tags: [remove-cell]
 
 %run -m prerun.first_model
-from prerun import first_model_limited_plan, first_model_results, stored
+from prerun import first_model_limited_plan, first_model_plan, first_model_results, stored
 
 results = first_model_results(model)
 ```
@@ -48,7 +48,7 @@ where $B$ is the budget and the limits $l_c$ and $u_c$ default to zero and the
 whole budget.
 
 :::{admonition} Each split arrives as new media and spend
-:class: important
+:class: note
 
 The optimizer hands every split to your blocks as new values of the supplied
 `media` and `spend`, while `reference` keeps the training weeks. A coefficient
@@ -71,7 +71,7 @@ plan = mj.optimize_budget(model, results, quantity="mu", include_metrics=True)
 ```{code-cell} ipython3
 :tags: [remove-cell]
 
-plan = stored("first_model_plan", lambda: mj.optimize_budget(model, results, quantity="mu", include_metrics=True))
+plan = first_model_plan(model, results)
 ```
 
 ```{code-cell} ipython3
@@ -283,7 +283,7 @@ spending the plan changes, and `response_periods` picks the weeks whose
 revenue counts.
 
 :::{admonition} Let the revenue window run past the spending
-:class: warning
+:class: tip
 
 Carryover spreads each week's exposure over the eight weeks after it, so the
 revenue window here runs eight weeks past the end of 2023. Ending it with the

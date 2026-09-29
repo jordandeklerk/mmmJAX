@@ -532,7 +532,7 @@ def _metric_bars(
         value_position=frame["upper"] + offset,
         kind=np.where(frame["channel"] == "Other channels", "Other channels", "Channel"),
     )
-    dodge = pn.position_dodge(width=0.8)
+    dodge = pn.position_dodge(width=0.6)
     fill = "result" if compared else "kind"
     colors = (
         dict(zip(datasets, _colors(len(datasets)), strict=True))
@@ -549,7 +549,7 @@ def _metric_bars(
         figure(frame, pn.aes("channel", "estimate", fill=fill))
         + lines
         # A pale fill inside a solid outline keeps the bars light enough for the intervals to read over them.
-        + pn.geom_col(pn.aes(color=fill), position=dodge, width=0.6, alpha=0.22, size=0.9)
+        + pn.geom_col(pn.aes(color=fill), position=dodge, width=0.45, alpha=0.22, size=0.9)
         + pn.geom_errorbar(pn.aes(ymin="lower", ymax="upper"), position=dodge, width=0.25, color="#262626", size=0.6)
         + pn.geom_text(
             pn.aes(y="value_position", label="value"), position=dodge, va="bottom", size=8 if compared else 9

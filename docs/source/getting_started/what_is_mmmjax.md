@@ -228,8 +228,7 @@ supplied names the guide's data offers with what each holds and its axes, and
 {class}`~mmmjax.Data` can also rename supplied inputs, which few models need.
 Its `variables` argument maps names you choose to supplied ones, as in
 `mj.Data(data, variables={"impressions": "media", ...})`, and blocks then see
-only the names it declares. [Scenarios](../user_guide/scenarios) shows it on
-the guide's model.
+only the names it declares.
 
 ### Common mistakes
 
@@ -330,7 +329,7 @@ model.log_density({"sigma": jnp.log(0.5)}, model.data)
 by that adjustment and nothing else.
 
 :::{admonition} The sampler won't stop you
-:class: important
+:class: warning
 
 A parameter with no term in `log_density` gets a flat prior over its support,
 and mmmJAX will sample a model with more channels and curve shapes than the
@@ -462,8 +461,7 @@ peak = jnp.max(media, axis=0)
 peak = jnp.max(reference.media, axis=0)
 ```
 
-[Scenarios](../user_guide/scenarios) shows what goes wrong when a block breaks
-these rules.
+[Scenarios](../user_guide/scenarios) puts these rules to work on a forecast.
 
 ## If you know Stan
 

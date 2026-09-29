@@ -146,7 +146,7 @@ The data's axis names are supplied names too. A parameter declared with
 names, and `organic_channel`, `control`, and `treatment` work the same way.
 
 :::{admonition} Data axes and your own axes
-:class: important
+:class: note
 
 The axes above keep mmmJAX's spelling, as do `rf_channel` and
 `organic_rf_channel` with reach and frequency data and `group` for grouped
@@ -173,7 +173,7 @@ for each control, but a control's coefficient has no causal reading. No
 analysis reports a contribution for it, and its effect stays in the baseline.
 
 :::{admonition} Don't control for what the ads move
-:class: warning
+:class: danger
 
 Leave out anything the ads themselves move, such as site visits. Adjusting for
 it hides part of the effect you want to measure.
@@ -371,7 +371,7 @@ The factor reaches 120.3 for Email, 105.9 for TikTok, and 87.5 for Linear TV,
 and the matched channels are all off in 0.68 of the weeks.
 
 :::{admonition} Priors decide the split
-:class: important
+:class: warning
 
 The matched channels are never active apart, so the data sees the combined
 lift of a flight and can't say how to split it among them. A model fit to this
@@ -439,7 +439,7 @@ flag. The analyses don't report on that scale.
 data's own units, \$17.13 for price, and returns revenue in dollars.
 
 :::{admonition} The outcome keeps its units by default
-:class: tip
+:class: note
 
 Revenue is standardized here only because the call asks for
 `scale_outcome=True`. By default the outcome keeps its own units, which is

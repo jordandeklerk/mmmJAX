@@ -160,7 +160,7 @@ def to_results(draws, diverging=None):
 ```
 
 :::{admonition} Label draws the way sample does
-:class: important
+:class: note
 
 {func}`~mmmjax.media_metrics`, {func}`~mmmjax.generate_quantities`, and the
 other functions that evaluate the model on draws reject any other labels. A

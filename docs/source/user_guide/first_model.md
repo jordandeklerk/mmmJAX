@@ -246,7 +246,7 @@ and each prior and the likelihood, the statements written with $\sim$,
 becomes one term of `target` in `log_density`.
 
 :::{admonition} The code follows the math
-:class: important
+:class: tip
 
 Every argument in the block signatures below, apart from the random key,
 carries a symbol above. A name you can't place usually means a symbol you
@@ -254,7 +254,7 @@ skipped, so find it in the math before you read on.
 :::
 
 The tables below sort the symbols by where each name comes from, one tab for
-each place.
+each place, and highlight each symbol in a formula that uses it.
 
 ::::{tab-set}
 
@@ -263,19 +263,19 @@ each place.
 The data arrive under names mmmJAX supplies, with the media, controls,
 treatments, and revenue already scaled.
 
-| Symbol | Name in the code |
-| --- | --- |
-| $y_t$ | `outcome` |
-| $x_{tc}$ | `media` |
-| $x_{to}$ | `organic_media` |
-| $p_{tj}$ | `controls` |
-| $g_{ti}$ | `treatments` |
-| $e_t$ | `time` |
-| $d_t$ | `day_of_year` |
-| $x_{tc}$ and $x_{to}$ in the training weeks | `reference.media` and `reference.organic_media` |
-| $v_{tc}$ | `reference.spend` |
-| $R_t$ | `outcome_scaling.inverse_transform(reference.outcome)` |
-| $s_R$ | `outcome_scaling.scale` |
+| Symbol | In the math | Name in the code |
+| --- | --- | --- |
+| $y_t$ | $\hl{y_t} \sim \operatorname{Normal}(\mu_t, \sigma)$ | `outcome` |
+| $x_{tc}$ | $h_{tc} = \operatorname{HillAdstock}\big(\{\hl{x_{t-\ell,c}}\}_{\ell=0}^{8};\, \rho_c, \kappa_c\big)$ | `media` |
+| $x_{to}$ | $h_{to} = \operatorname{HillAdstock}\big(\{\hl{x_{t-\ell,o}}\}_{\ell=0}^{8};\, \rho_o, \kappa_o\big)$ | `organic_media` |
+| $p_{tj}$ | $\sum_{j} \gamma_j \hl{p_{tj}}$ | `controls` |
+| $g_{ti}$ | $\sum_{i} \theta_i \hl{g_{ti}}$ | `treatments` |
+| $e_t$ | $\tau_t = \hl{e_t} / 365.25$ | `time` |
+| $d_t$ | $a_k \sin(2\pi k \hl{d_t} / 365.25)$ | `day_of_year` |
+| $x_{tc}$ and $x_{to}$ in the training weeks | $\beta_c = \dfrac{r_c S_c}{s_R \sum_t \operatorname{HillAdstock}(\{\hl{x_{t-\ell,c}}\};\, \rho_c, \kappa_c)}$ | `reference.media` and `reference.organic_media` |
+| $v_{tc}$ | $S_c = \sum_t \hl{v_{tc}}$ | `reference.spend` |
+| $R_t$ | $\lambda_o = \dfrac{\phi_o \sum_t \hl{R_t}}{s_R \sum_t h_{to}}$ | `outcome_scaling.inverse_transform(reference.outcome)` |
+| $s_R$ | $\beta_c = \dfrac{r_c S_c}{\hl{s_R} \sum_t h_{tc}}$ | `outcome_scaling.scale` |
 
 :::
 
@@ -284,21 +284,21 @@ treatments, and revenue already scaled.
 Each unknown is one of your names, and its subscript becomes the axis named in
 its `dims`.
 
-| Symbol | Name in the code | Axis in `dims` |
-| --- | --- | --- |
-| $\alpha$ | `intercept` | none |
-| $\delta_1$ | `growth` | none |
-| $\delta_2$ | `curvature` | none |
-| $a_1$, $a_2$, $b_1$, $b_2$ | `annual_coefficients`, in that order | none, a plain shape of four |
-| $r_c$ | `roi` | `"channel"` |
-| $\rho_c$ | `retention` | `"channel"` |
-| $\kappa_c$ | `half_saturation` | `"channel"` |
-| $\phi_o$ | `organic_share` | `"organic_channel"` |
-| $\rho_o$ | `organic_retention` | `"organic_channel"` |
-| $\kappa_o$ | `organic_half_saturation` | `"organic_channel"` |
-| $\gamma_j$ | `control_coefficient` | `"control"` |
-| $\theta_i$ | `treatment_coefficient` | `"treatment"` |
-| $\sigma$ | `sigma` | none |
+| Symbol | In the math | Name in the code | Axis in `dims` |
+| --- | --- | --- | --- |
+| $\alpha$ | $\mu_t = \hl{\alpha} + \delta_1 \tau_t + \cdots$ | `intercept` | none |
+| $\delta_1$ | $\mu_t = \alpha + \hl{\delta_1} \tau_t + \cdots$ | `growth` | none |
+| $\delta_2$ | $\mu_t = \alpha + \delta_1 \tau_t + \hl{\delta_2} \tau_t^2 + \cdots$ | `curvature` | none |
+| $a_1$, $a_2$, $b_1$, $b_2$ | $\sum_{k=1}^{2} \big(\hl{a_k} \sin(2\pi k d_t / 365.25) + \hl{b_k} \cos(2\pi k d_t / 365.25)\big)$ | `annual_coefficients`, in that order | none, a plain shape of four |
+| $r_c$ | $\beta_c = \dfrac{\hl{r_c} S_c}{s_R \sum_t h_{tc}}$ | `roi` | `"channel"` |
+| $\rho_c$ | $h_{tc} = \operatorname{HillAdstock}(\ldots;\, \hl{\rho_c}, \kappa_c)$ | `retention` | `"channel"` |
+| $\kappa_c$ | $h_{tc} = \operatorname{HillAdstock}(\ldots;\, \rho_c, \hl{\kappa_c})$ | `half_saturation` | `"channel"` |
+| $\phi_o$ | $\lambda_o = \dfrac{\hl{\phi_o} \sum_t R_t}{s_R \sum_t h_{to}}$ | `organic_share` | `"organic_channel"` |
+| $\rho_o$ | $h_{to} = \operatorname{HillAdstock}(\ldots;\, \hl{\rho_o}, \kappa_o)$ | `organic_retention` | `"organic_channel"` |
+| $\kappa_o$ | $h_{to} = \operatorname{HillAdstock}(\ldots;\, \rho_o, \hl{\kappa_o})$ | `organic_half_saturation` | `"organic_channel"` |
+| $\gamma_j$ | $\sum_{j} \hl{\gamma_j} p_{tj}$ | `control_coefficient` | `"control"` |
+| $\theta_i$ | $\sum_{i} \hl{\theta_i} g_{ti}$ | `treatment_coefficient` | `"treatment"` |
+| $\sigma$ | $y_t \sim \operatorname{Normal}(\mu_t, \hl{\sigma})$ | `sigma` | none |
 
 :::
 
@@ -309,16 +309,16 @@ too. `mu` is the only one `transformed_parameters` returns, since no other
 block asks for the steps on the way to it, and {func}`~mmmjax.roi_coefficient`
 totals $S_c$ from `reference.spend` itself.
 
-| Symbol | Name in the code | Where it's computed |
-| --- | --- | --- |
-| $\tau_t$ | `trend` | Returned by `transformed_data` |
-| The sines and cosines of $d_t$ | `annual` | Returned by `transformed_data` |
-| $\mu_t$ | `mu` | Returned by `transformed_parameters` |
-| $h_{tc}$ and $h_{to}$ in the training weeks | `trained` and `organic_trained` | Local to `transformed_parameters` |
-| $h_{to}$ in the weeks being evaluated | `organic_saturated` | Local to `transformed_parameters` |
-| $\beta_c$ | `coefficient` | Local to `transformed_parameters` |
-| $\lambda_o$ | `organic_coefficient` | Local to `transformed_parameters` |
-| $\sum_t R_t$ | `total_revenue` | Local to `transformed_parameters` |
+| Symbol | In the math | Name in the code | Where it's computed |
+| --- | --- | --- | --- |
+| $\tau_t$ | $\mu_t = \alpha + \delta_1 \hl{\tau_t} + \delta_2 \hl{\tau_t}^2 + \cdots$ | `trend` | Returned by `transformed_data` |
+| The sines and cosines of $d_t$ | $\sum_{k=1}^{2} \big(a_k \hl{\sin(2\pi k d_t / 365.25)} + b_k \hl{\cos(2\pi k d_t / 365.25)}\big)$ | `annual` | Returned by `transformed_data` |
+| $\mu_t$ | $y_t \sim \operatorname{Normal}(\hl{\mu_t}, \sigma)$ | `mu` | Returned by `transformed_parameters` |
+| $h_{tc}$ and $h_{to}$ in the training weeks | $\beta_c = \dfrac{r_c S_c}{s_R \sum_t \hl{h_{tc}}}$ | `trained` and `organic_trained` | Local to `transformed_parameters` |
+| $h_{to}$ in the weeks being evaluated | $\mu_t = \cdots + \sum_{o} \lambda_o \hl{h_{to}} + \cdots$ | `organic_saturated` | Local to `transformed_parameters` |
+| $\beta_c$ | $\mu_t = \cdots + \sum_{c} \hl{\beta_c} h_{tc} + \cdots$ | `coefficient` | Local to `transformed_parameters` |
+| $\lambda_o$ | $\mu_t = \cdots + \sum_{o} \hl{\lambda_o} h_{to} + \cdots$ | `organic_coefficient` | Local to `transformed_parameters` |
+| $\sum_t R_t$ | $\lambda_o = \dfrac{\phi_o \hl{\sum_t R_t}}{s_R \sum_t h_{to}}$ | `total_revenue` | Local to `transformed_parameters` |
 
 :::
 
@@ -344,17 +344,21 @@ You declare each parameter with its support and its axes.
 
 ```{code-cell} ipython3
 parameters = {
+    # The baseline's level, the trend's growth and curvature, and the season.
     "intercept": mj.Real(),
     "growth": mj.Real(),
     "curvature": mj.Real(),
     # No data axis runs over the four Fourier weights, and they need no labels, so a plain shape does.
     "annual_coefficients": mj.Real(4),
+    # Each paid channel's return, carryover, and half-saturation point.
     "roi": mj.Positive(dims="channel"),
     "retention": mj.Interval(0.0, 1.0, dims="channel"),
     "half_saturation": mj.Positive(dims="channel"),
+    # Email's share of revenue, carryover, and half-saturation point.
     "organic_share": mj.Interval(0.0, 1.0, dims="organic_channel"),
     "organic_retention": mj.Interval(0.0, 1.0, dims="organic_channel"),
     "organic_half_saturation": mj.Positive(dims="organic_channel"),
+    # One coefficient for each control and each treatment, and the noise scale.
     "control_coefficient": mj.Real(dims="control"),
     "treatment_coefficient": mj.Real(dims="treatment"),
     "sigma": mj.Positive(),
@@ -374,7 +378,7 @@ names from the data, and `dims="organic_channel"` gives it one labeled Email.
 column.
 
 :::{admonition} Data axes and your own axes
-:class: important
+:class: note
 
 `"channel"` and the other three axes here come from the data, so they keep
 mmmJAX's spelling and take the data's lengths and labels. An axis of your own
@@ -392,9 +396,11 @@ four.
 def transformed_data(day_of_year, time):
     # Nothing here depends on a parameter, so this block runs once per dataset, not at every draw.
     annual = mj.fourier_features(day_of_year, period=365.25, order=2)
+
     # Years keep trend and trend**2 on the scale the growth and curvature priors assume,
     # and time keeps counting past the training weeks, so a forecast extends the trend.
     trend = time / 365.25
+
     return {"annual": annual, "trend": trend}
 ```
 
@@ -434,6 +440,8 @@ def hill_adstock(media, retention, half_saturation):
     # Eight weeks is the longest you believe exposure keeps working. It sets an array shape,
     # so it stays a fixed int rather than a parameter the sampler learns.
     carried = mj.geometric_adstock(media, alpha=retention, max_lag=8)
+
+    # The slope stays at one, so the curve rises fastest at the first impression.
     saturated = mj.hill_saturation(carried, half_saturation=half_saturation, slope=1.0)
     return saturated
 ```
@@ -469,25 +477,33 @@ def transformed_parameters(
     control_coefficient,
     treatment_coefficient,
 ):
-    # reference holds the training data in every scenario, so the coefficients
-    # keep their fitted values when an analysis changes media.
+    # Paid media's coefficients come from the returns. reference holds the training data in every
+    # scenario, so the coefficients keep their fitted values when an analysis changes media. The
+    # prior sits on ROI because revenue per dollar is easier to judge than a scaled coefficient.
     trained = hill_adstock(reference.media, retention, half_saturation)
-    # The prior sits on ROI because revenue per dollar is easier to judge than a scaled coefficient.
     coefficient = mj.roi_coefficient(roi, trained, reference.spend, outcome_scale=outcome_scaling.scale)
-    organic_trained = hill_adstock(reference.organic_media, organic_retention, organic_half_saturation)
+
     # With no spend, email has no ROI, so its prior sits on its share of revenue. The share
     # is of dollars, since standardized revenue sums to zero over the training weeks.
+    organic_trained = hill_adstock(reference.organic_media, organic_retention, organic_half_saturation)
     total_revenue = outcome_scaling.inverse_transform(reference.outcome).sum()
     organic_contribution = organic_share * total_revenue
     organic_coefficient = mj.contribution_coefficient(
         organic_contribution, organic_trained, outcome_scale=outcome_scaling.scale
     )
+
+    # The baseline follows the trend and the season.
     baseline = intercept + growth * trend + curvature * trend**2 + annual @ annual_coefficients
+
+    # Each effect reads the inputs the model is given, so a scenario that changes media,
+    # sends, or prices changes it.
     media_effect = hill_adstock(media, retention, half_saturation) @ coefficient
     organic_saturated = hill_adstock(organic_media, organic_retention, organic_half_saturation)
     organic_effect = organic_saturated @ organic_coefficient
     control_effect = controls @ control_coefficient
     treatment_effect = treatments @ treatment_coefficient
+
+    # Expected revenue in each week, which the likelihood and every analysis read.
     mu = baseline + media_effect + organic_effect + control_effect + treatment_effect
     return {"mu": mu}
 ```
@@ -573,20 +589,29 @@ def log_density(
     treatment_coefficient,
     sigma,
 ):
+    # The baseline's priors describe standardized revenue. The curvature's scale is smaller
+    # because trend**2 outgrows trend after the first year.
     target = mj.normal(intercept, 0.0, 1.0)
     target += mj.normal(growth, 0.0, 1.0)
     target += mj.normal(curvature, 0.0, 0.25)
     target += mj.normal(annual_coefficients, 0.0, 0.5)
+
+    # Paid media's returns, carryover, and saturation.
     target += mj.lognormal(roi, 1.0, 0.6)
     target += mj.beta(retention, 2.0, 2.0)
     target += mj.lognormal(half_saturation, 0.0, 0.5)
+
     # You expect email to be small, and Beta(2, 98) puts its mean share of revenue at 2 percent.
     target += mj.beta(organic_share, 2.0, 98.0)
     target += mj.beta(organic_retention, 2.0, 2.0)
     target += mj.lognormal(organic_half_saturation, 0.0, 0.5)
+
+    # The treatments get a tighter prior than the controls. The price climbs with the trend,
+    # and a wider prior would let the fit credit price with growth.
     target += mj.normal(control_coefficient, 0.0, 1.0)
-    # The price climbs with the trend. A wider prior would let the fit credit price with growth.
     target += mj.normal(treatment_coefficient, 0.0, 0.25)
+
+    # The noise scale's prior and the likelihood, normal noise around the expected revenue.
     target += mj.half_normal(sigma, 1.0)
     target += mj.normal(outcome, mu, sigma)
     return target
@@ -642,8 +667,10 @@ and the `_rng` functions draw with it.
 
 ```{code-cell} ipython3
 def generated_quantities(key, outcome, mu, sigma):
+    # Simulated revenue for every week, and each observed week's log likelihood.
     prediction = mj.normal_rng(key, mu, sigma)
     pointwise = mj.normal_logpdf(outcome, mu, sigma)
+
     # "predictive" and "log_likelihood" are supplied names that tell mmmJAX where to store
     # the draws, and "outcome" matches the observed data because ArviZ pairs them by name.
     return {
@@ -661,9 +688,10 @@ distribution's pointwise and `_rng` versions sit next to the summed one that
 
 The keys `predictive` and `log_likelihood` tell mmmJAX where to store the
 draws. Posterior predictive checks compare the simulated revenue under
-`predictive` with the data, and ArviZ compares models using each week's log
-likelihood under `log_likelihood`. Both entries are named `outcome`, like the
-observed revenue they describe, because ArviZ pairs groups by variable name.
+`predictive` with the data, and the sensitivity checks on
+[Plotting](plotting) read each week's log likelihood under `log_likelihood`.
+Both entries are named `outcome`, like the observed revenue they describe,
+because ArviZ pairs groups by variable name.
 
 ## Fitting
 

@@ -180,22 +180,31 @@ after the adstock in place of `hill_adstock`.
 ```{code-cell} ipython3
 # A plain function rather than a block, so mmmJAX never fills its arguments.
 def exponential_adstock(media, retention, rate):
+    # The same carryover as hill_adstock. The eight-week lag sets an array shape, so it stays
+    # a fixed int rather than a parameter the sampler learns.
     carried = mj.geometric_adstock(media, alpha=retention, max_lag=8)
+
+    # The exponential curve takes the Hill curve's place. A larger rate makes it level off sooner.
     saturated = exponential_saturation(carried, rate)
     return saturated
 
 
 exponential_parameters = {
+    # The baseline's level, the trend's growth and curvature, and the season.
     "intercept": mj.Real(),
     "growth": mj.Real(),
     "curvature": mj.Real(),
+    # No data axis runs over the four Fourier weights, and they need no labels, so a plain shape does.
     "annual_coefficients": mj.Real(4),
+    # Each paid channel's return, carryover, and saturation rate.
     "roi": mj.Positive(dims="channel"),
     "retention": mj.Interval(0.0, 1.0, dims="channel"),
     "rate": mj.Positive(dims="channel"),
+    # Email's share of revenue, carryover, and saturation rate.
     "organic_share": mj.Interval(0.0, 1.0, dims="organic_channel"),
     "organic_retention": mj.Interval(0.0, 1.0, dims="organic_channel"),
     "organic_rate": mj.Positive(dims="organic_channel"),
+    # One coefficient for each control and each treatment, and the noise scale.
     "control_coefficient": mj.Real(dims="control"),
     "treatment_coefficient": mj.Real(dims="treatment"),
     "sigma": mj.Positive(),
@@ -209,7 +218,7 @@ The call on `reference.organic_media` does the same for email's share through
 {func}`~mmmjax.contribution_coefficient`.
 
 :::{admonition} Swap all four calls
-:class: warning
+:class: important
 
 If the call on `reference.media` kept the Hill curve while the call on `media`
 used the exponential one, $\beta_c$ would no longer make the channel's
@@ -244,20 +253,33 @@ def exponential_transformed_parameters(
     control_coefficient,
     treatment_coefficient,
 ):
+    # Paid media's coefficients come from the returns through the exponential curve over the
+    # training weeks. The media effect below needs the same curve, or roi would stop being each
+    # channel's return.
     trained = exponential_adstock(reference.media, retention, rate)
     coefficient = mj.roi_coefficient(roi, trained, reference.spend, outcome_scale=outcome_scaling.scale)
+
+    # Email's coefficient comes from its share of revenue through its own exponential curve. The
+    # share is of dollars, since standardized revenue sums to zero over the training weeks.
     organic_trained = exponential_adstock(reference.organic_media, organic_retention, organic_rate)
     total_revenue = outcome_scaling.inverse_transform(reference.outcome).sum()
     organic_contribution = organic_share * total_revenue
     organic_coefficient = mj.contribution_coefficient(
         organic_contribution, organic_trained, outcome_scale=outcome_scaling.scale
     )
+
+    # The baseline follows the trend and the season.
     baseline = intercept + growth * trend + curvature * trend**2 + annual @ annual_coefficients
+
+    # Each effect reads the inputs the model is given, so a scenario that changes media,
+    # sends, or prices changes it.
     media_effect = exponential_adstock(media, retention, rate) @ coefficient
     organic_saturated = exponential_adstock(organic_media, organic_retention, organic_rate)
     organic_effect = organic_saturated @ organic_coefficient
     control_effect = controls @ control_coefficient
     treatment_effect = treatments @ treatment_coefficient
+
+    # Expected revenue in each week, which the likelihood and every analysis read.
     mu = baseline + media_effect + organic_effect + control_effect + treatment_effect
     return {"mu": mu}
 
@@ -279,18 +301,30 @@ def exponential_log_density(
     treatment_coefficient,
     sigma,
 ):
+    # The baseline's priors describe standardized revenue. The curvature's scale is smaller
+    # because trend**2 outgrows trend after the first year.
     target = mj.normal(intercept, 0.0, 1.0)
     target += mj.normal(growth, 0.0, 1.0)
     target += mj.normal(curvature, 0.0, 0.25)
     target += mj.normal(annual_coefficients, 0.0, 0.5)
+
+    # Paid media's returns, carryover, and saturation rates.
     target += mj.lognormal(roi, 1.0, 0.6)
     target += mj.beta(retention, 2.0, 2.0)
     target += mj.lognormal(rate, 0.0, 0.5)
+
+    # You expect email to be small, and Beta(2, 98) puts its mean share of revenue at 2 percent.
     target += mj.beta(organic_share, 2.0, 98.0)
     target += mj.beta(organic_retention, 2.0, 2.0)
     target += mj.lognormal(organic_rate, 0.0, 0.5)
+
+    # The treatments get a tighter prior than the controls. The price climbs with the trend,
+    # and a wider prior would let the fit credit price with growth.
     target += mj.normal(control_coefficient, 0.0, 1.0)
     target += mj.normal(treatment_coefficient, 0.0, 0.25)
+
+    # The noise scale's prior, now the half-Cauchy from the previous section, and the likelihood,
+    # normal noise around the expected revenue.
     target += half_cauchy(sigma, 1.0)
     target += mj.normal(outcome, mu, sigma)
     return target
@@ -307,7 +341,7 @@ exponential_model = mj.Model(
 ```
 
 :::{admonition} Only your names change
-:class: important
+:class: note
 
 `rate` and `organic_rate` take the place of `half_saturation` and
 `organic_half_saturation` among the declared parameters. They're your names,
@@ -430,8 +464,8 @@ jax.jit(threshold_response)(jnp.array([0.5, 1.5, 2.5]), 1.0)
 NumPy functions fail on placeholders in the same way, which is why helpers use
 `jax.numpy`. Anything that sets an array's shape, such as `max_lag=8` in
 `exponential_adstock` or `order=2` in the model's `transformed_data`, has to be
-a Python integer. Write it in the code or pass it as a constant through
-{class}`~mmmjax.Data`, as [Scenarios](scenarios) shows. Tracing also explains
+a Python integer. Write it in the code or pass it through the `constants` of
+{class}`~mmmjax.Data`, which blocks request by name. Tracing also explains
 why `print` is the wrong tool for looking inside a block.
 
 ```{code-cell} ipython3

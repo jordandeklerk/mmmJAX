@@ -42,7 +42,7 @@ plt.rcParams["figure.dpi"] = 100
 ```
 
 :::{admonition} A separate draw
-:class: important
+:class: note
 
 The regional data comes from the same simulator, seed, and channel settings as
 the national series, but it's a draw of its own and not the national series
@@ -252,7 +252,7 @@ since $e^{0.2}$ is about 1.2. The half-normal favors smaller spreads over
 larger ones.
 
 :::{admonition} Write the offsets noncentered
-:class: warning
+:class: tip
 
 Drawing each region's log coefficient around the center with standard
 deviation $\eta_c$ would make the offsets shrink with $\eta_c$. As $\eta_c$
@@ -286,7 +286,9 @@ needs the population $P_g$ itself.
 
 ```{code-cell} ipython3
 geo_parameters = parameters | {
+    # One intercept for each region, in place of the first model's single intercept.
     "intercept": mj.Real(dims="group"),
+    # How far each channel's return varies by region, and a standard normal offset per region and channel.
     "roi_spread": mj.Positive(dims="channel"),
     "roi_offset": mj.Real(dims=("group", "channel")),
 }
@@ -305,6 +307,9 @@ keep only their time axis.
 `transformed_parameters` changes in a few lines.
 
 ```{code-cell} ipython3
+import jax.numpy as jnp
+
+
 def geo_transformed_parameters(
     media,
     organic_media,
@@ -329,35 +334,60 @@ def geo_transformed_parameters(
     control_coefficient,
     treatment_coefficient,
 ):
+    # Paid media's coefficients read the training exposure. reference holds the training data
+    # in every scenario, so the coefficients keep their fitted values when an analysis changes media.
     trained = hill_adstock(reference.media, retention, half_saturation)
+
+    # A region's deviation is its standard normal offset times the channel's spread. This
+    # noncentered form gives the sampler the same geometry whatever the spread.
     deviations = roi_spread * roi_offset
+
+    # The deviations set how the regions' coefficients compare, and roi_coefficient sets their
+    # level so the regions' contributions add up to roi times the channel's total spending.
     coefficient = mj.roi_coefficient(
         roi, trained, reference.spend, outcome_scale=outcome_scaling.scale, deviations=deviations
     )
+
+    # Email's coefficient is shared, and its share covers the revenue of every region. The share
+    # is of dollars, since standardized revenue sums to zero over the training weeks and regions.
     organic_trained = hill_adstock(reference.organic_media, organic_retention, organic_half_saturation)
     total_revenue = outcome_scaling.inverse_transform(reference.outcome).sum()
     organic_contribution = organic_share * total_revenue
     organic_coefficient = mj.contribution_coefficient(
         organic_contribution, organic_trained, outcome_scale=outcome_scaling.scale
     )
+
+    # Every region shares the trend and the season, and adds its own intercept because the
+    # regions differ in baseline revenue per person.
     shared = growth * trend + curvature * trend**2 + annual @ annual_coefficients
     baseline = intercept + shared[:, None]
-    media_effect = (hill_adstock(media, retention, half_saturation) * coefficient).sum(-1)
+
+    # The paid coefficients differ by region, so the media effect uses einsum in place of @.
+    # "tgc,gc->tg" lists each input's axes, then the output's, with t for week, g for region,
+    # and c for channel. c is absent from the output, so the channels are summed over.
+    saturated = hill_adstock(media, retention, half_saturation)
+    media_effect = jnp.einsum("tgc,gc->tg", saturated, coefficient)
+
+    # The other effects work as in the first model, and every effect reads the inputs the
+    # model is given, so a scenario that changes media, sends, or prices changes it.
     organic_saturated = hill_adstock(organic_media, organic_retention, organic_half_saturation)
     organic_effect = organic_saturated @ organic_coefficient
     control_effect = controls @ control_coefficient
     treatment_effect = treatments @ treatment_coefficient
+
+    # Expected revenue in each week and region, which the likelihood and every analysis read.
     mu = baseline + media_effect + organic_effect + control_effect + treatment_effect
     return {"mu": mu}
 ```
 
 {func}`~mmmjax.roi_coefficient` applies the formula for $\beta_{gc}$ above, and
 its default `effects="lognormal"` keeps every coefficient positive. With the
-region axis, `hill_adstock` returns weeks by regions by channels, and
-multiplying by the region-by-channel coefficients and summing over channels
-takes the place of `@`. `shared` holds the trend and the season, and
-`[:, None]` spreads it over the regions before the intercepts are added.
-Email, the controls, and the treatments work unchanged.
+region axis, `hill_adstock` returns weeks by regions by channels. `jnp.einsum`
+multiplies it by the region-by-channel coefficients and sums over channels,
+which `@` can't express because each region has coefficients of its own.
+`shared` holds the trend and the season, and `[:, None]` spreads it over the
+regions before the intercepts are added. Email, the controls, and the
+treatments work unchanged.
 
 :::{admonition} One scale per region
 :class: warning
@@ -391,20 +421,38 @@ def geo_log_density(
     treatment_coefficient,
     sigma,
 ):
+    # The baseline's priors describe standardized revenue, and every region's intercept gets
+    # the same Normal(0, 1). The curvature's scale is smaller because trend**2 outgrows trend
+    # after the first year.
     target = mj.normal(intercept, 0.0, 1.0)
     target += mj.normal(growth, 0.0, 1.0)
     target += mj.normal(curvature, 0.0, 0.25)
     target += mj.normal(annual_coefficients, 0.0, 0.5)
+
+    # Each channel's shared return, and the spread and offsets that let it vary by region.
+    # A spread of 0.2 lets a region's coefficient sit about 20 percent above or below the
+    # center, and the half-normal favors smaller spreads.
     target += mj.lognormal(roi, 1.0, 0.6)
     target += mj.half_normal(roi_spread, 0.2)
     target += mj.normal(roi_offset, 0.0, 1.0)
+
+    # Carryover and saturation stay shared, since three years of weekly data from three
+    # regions leave little to pin down a curve for each region and channel.
     target += mj.beta(retention, 2.0, 2.0)
     target += mj.lognormal(half_saturation, 0.0, 0.5)
+
+    # You expect email to be small, and Beta(2, 98) puts its mean share of revenue at 2 percent.
     target += mj.beta(organic_share, 2.0, 98.0)
     target += mj.beta(organic_retention, 2.0, 2.0)
     target += mj.lognormal(organic_half_saturation, 0.0, 0.5)
+
+    # The treatments get a tighter prior than the controls. The price climbs with the trend,
+    # and a wider prior would let the fit credit price with growth.
     target += mj.normal(control_coefficient, 0.0, 1.0)
     target += mj.normal(treatment_coefficient, 0.0, 0.25)
+
+    # The noise scale's prior and the likelihood, normal noise around the expected revenue.
+    # One noise scale serves every region.
     target += mj.half_normal(sigma, 1.0)
     target += mj.normal(outcome, mu, sigma)
     return target
@@ -558,7 +606,7 @@ more data makes a fit more confident in whatever answer those differences
 favor.
 
 :::{admonition} Narrower is not always closer
-:class: important
+:class: warning
 
 Check a regional fit against what you know, such as an experiment, as
 carefully as a national one.

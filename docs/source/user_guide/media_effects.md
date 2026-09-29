@@ -146,7 +146,7 @@ Its upper end is only 1.7 times its lower one, against at least four times for
 each channel alone.
 
 :::{admonition} The total is firmer than the split
-:class: important
+:class: note
 
 Several channels run on one shared campaign calendar, as
 [Data and scaling](data.md) shows, so the data pins down what paid media adds

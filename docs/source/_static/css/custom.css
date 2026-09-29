@@ -6,6 +6,8 @@ body[data-md-color-scheme="default"] {
   --mmmj-search-bg: rgba(0, 0, 0, 0.07);
   --mmmj-search-fg: #212121;
   --mmmj-search-placeholder: rgba(0, 0, 0, 0.6);
+  --mmmj-symbol: #d9432a;
+  --mmmj-code-parameter: #b04f00;
 }
 
 body[data-md-color-scheme="slate"] {
@@ -14,6 +16,8 @@ body[data-md-color-scheme="slate"] {
   --mmmj-search-bg: #0f1013;
   --mmmj-search-fg: #ffffff;
   --mmmj-search-placeholder: rgba(255, 255, 255, 0.7);
+  --mmmj-symbol: #ff7a5c;
+  --mmmj-code-parameter: #ffa657;
 }
 
 /* Both schemes take the sea green of the logo's contours for the accent instead of the theme's teal. */
@@ -79,8 +83,30 @@ header.md-header,
   border-radius: 4px;
 }
 
+/* The semantic_highlighting extension tags parameters and keyword arguments, which take orange as in an editor, while calls keep the theme's purple. */
+.highlight .nv,
+.highlight .na {
+  color: var(--mmmj-code-parameter);
+}
+
 .admonition {
   border-left-width: 4px !important;
+}
+
+/* \hl in a formula marks where a symbol appears, in the coral of the logo's sampler path, deepened on the light scheme so it reads on white. */
+.md-typeset .mmmj-symbol {
+  color: var(--mmmj-symbol);
+}
+
+/* Index pages end with the logo at the right, as marimo's home page does. */
+.md-typeset .mmmj-footer-logo {
+  margin-top: 3rem;
+  text-align: right;
+}
+
+.md-typeset .mmmj-footer-logo img {
+  width: 525px;
+  max-width: 100%;
 }
 
 /*

@@ -164,7 +164,7 @@ comes from; the docs give that in each model's symbol tables.
   likelihood's support, such as a standardized outcome under `lognormal` or a
   fractional count under `poisson`. A non-finite gradient often comes from a
   Hill slope below one on a channel with zero-exposure weeks, which
-  `mj.LowerBound(1.0)` prevents, as `changing.md` shows.
+  `mj.LowerBound(1.0)` prevents.
 - `Transformed quantity 'x' is not available` or `The response quantity must be
   floating-point with the observation shape` points to rule 5.
 - `generated_quantities requires input 'outcome'` means new data without an
@@ -183,18 +183,20 @@ These User Guide pages in `docs/source/user_guide/` are executed examples.
 - `data.md` for roles, arrays, groups, and scaling
 - `distributions.md` for function forms, shapes, and support
 - `priors.md` for `Prior`, `sample_prior`, and `check_prior`
-- `changing.md` for variants, a free Hill slope, a Student-t likelihood, and
-  an HSGP trend
+- `changing.md` for a variant with a media effect that varies over time, an
+  HSGP multiplier whose training-week values enter the ROI calibration through
+  `reference.time`
 - `geo.md` for grouped data, population scaling, and a noncentered regional
   ROI hierarchy through `roi_coefficient(..., deviations=...)`
 - `functions.md` for custom functions, `custom_distribution`, and tracing
-- `scenarios.md` for new data, `reference`, and `Data` variables and constants
+- `scenarios.md` for new data, a forecast with the eight weeks before it
+  prepended, and two plans compared through `contributions(..., new_data=...)`
 - `sampling.md` for diagnostics, `continue_sampling`, `generate_quantities`,
   and `outcome_scaling` inside a block
 - `inference.md` for external samplers
 - `media_effects.md` and `budgets.md` for the analysis functions
 - `../getting_started/installation.md` for precision and parallel chains
 
-`first_model.md` covers ROI calibration through `mj.roi_coefficient`, and the trend
-section of `changing.md` builds an HSGP trend. Contribution calibration has no
+`first_model.md` covers ROI calibration through `mj.roi_coefficient`, and
+`changing.md` builds an HSGP with `mj.prepare_hsgp`. Contribution calibration has no
 User Guide page, and the docstring examples in `mmmjax/media/calibration.py` cover it.

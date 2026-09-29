@@ -9,7 +9,7 @@ optimize the budget, and run scenarios on data you prepare.
 | [Media effects](media_effects) | Contributions, returns, and response curves from the fitted model |
 | [Recovering the truth](recovery) | The fit's answers checked against the simulation's true values |
 | [Budget optimization](budgets) | The split of a budget that maximizes expected revenue |
-| [Scenarios](scenarios) | Running the blocks on data you prepare, and renaming the supplied names |
+| [Scenarios](scenarios) | A forecast for next quarter from data you prepare, and two plans compared |
 
 ```{toctree}
 :hidden:
@@ -20,3 +20,7 @@ recovery
 budgets
 scenarios
 ```
+
+<p class="mmmj-footer-logo">
+  <img src="../_static/mmmjax-logo.svg" alt="mmmJAX logo">
+</p>
