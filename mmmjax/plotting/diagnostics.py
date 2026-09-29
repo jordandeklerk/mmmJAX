@@ -744,6 +744,7 @@ def plot_rhat(results: xr.DataTree, *, var_names: Sequence[str] | None = None) -
         + pn.scale_x_discrete(limits=names[::-1], labels=dict(zip(names, texts, strict=True)))
         + pn.geom_hline(yintercept=1.01, linetype="dotted", color="#8c8c8c", size=0.8)
         + pn.annotate("text", x=len(names) + 0.45, y=1.01, label=" 1.01", ha="left", va="center", color="#262626")
+        # Boxes fill 0.55 of each slot, the width every bar and box in the package takes.
         + pn.geom_boxplot(outlier_shape="", width=0.55, color="#545454", fill="#e9eafc", size=0.5)
         # A fixed seed keeps the jittered points in place from one drawing to the next.
         + pn.geom_point(

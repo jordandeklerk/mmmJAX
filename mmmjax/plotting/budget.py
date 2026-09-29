@@ -84,7 +84,10 @@ def plot_budget_response(
     low, high = _waterfall_range(frame)
     colors = _move_colors() | {"Historical": "#6b7280", "Optimized": _colors(1)[0]}
     figure, texts, layout = _bar_layout(list(frame["name"]), 0.8)
-    bars = pn.aes(xmin="position - 0.3", xmax="position + 0.3", ymin="bottom", ymax="top", fill="kind", color="kind")
+    # Each bar fills 0.55 of its slot, the width every bar and box in the package takes.
+    bars = pn.aes(
+        xmin="position - 0.275", xmax="position + 0.275", ymin="bottom", ymax="top", fill="kind", color="kind"
+    )
 
     plot: pn.ggplot = (
         figure(frame)
@@ -152,7 +155,8 @@ def plot_budget_spend(plan: xr.Dataset, *, channels: Sequence[str] | None = None
     plot: pn.ggplot = (
         figure(frame, pn.aes("channel", "change", fill="kind"))
         + pn.geom_hline(yintercept=0, color="#8c8c8c", size=0.6)
-        + _HatchedCol(pn.aes(color="kind", alpha="kind"), width=0.6, size=0.7, hatched=colors["Decrease"])
+        # Bars fill 0.55 of each slot, the width every bar and box in the package takes.
+        + _HatchedCol(pn.aes(color="kind", alpha="kind"), width=0.55, size=0.7, hatched=colors["Decrease"])
         + pn.geom_text(pn.aes(y="label_position", label="label"), size=10)
         + pn.scale_fill_manual(values=colors)
         + pn.scale_color_manual(values=colors)

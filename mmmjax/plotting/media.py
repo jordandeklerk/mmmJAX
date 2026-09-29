@@ -473,8 +473,9 @@ def plot_spend_vs_contribution(
 
     plot: pn.ggplot = (
         figure(long, pn.aes("channel", "share", fill="measure", color="measure", alpha="measure"))
-        # Spending stands beside the response it bought, hatched so the pair reads without color.
-        + _HatchedCol(position=pn.position_dodge(width=0.8), width=0.8, size=0.6, hatched=colors[spend_label])
+        # Spending stands beside the response it bought, hatched so the pair reads without color. The pair
+        # fills 0.55 of its slot, the width every bar and box in the package takes.
+        + _HatchedCol(position=pn.position_dodge(width=0.55), width=0.55, size=0.6, hatched=colors[spend_label])
         + pn.geom_text(pn.aes("channel", "position", label="text"), data=marks, inherit_aes=False, va="bottom", size=9)
         + pn.scale_fill_manual(values=colors, breaks=measures)
         + pn.scale_color_manual(values=colors, breaks=measures)
@@ -532,7 +533,8 @@ def _metric_bars(
         value_position=frame["upper"] + offset,
         kind=np.where(frame["channel"] == "Other channels", "Other channels", "Channel"),
     )
-    dodge = pn.position_dodge(width=0.6)
+    # Bars fill 0.55 of each slot, the width every bar and box in the package takes, and compared results share it.
+    dodge = pn.position_dodge(width=0.55)
     fill = "result" if compared else "kind"
     colors = (
         dict(zip(datasets, _colors(len(datasets)), strict=True))
@@ -549,7 +551,7 @@ def _metric_bars(
         figure(frame, pn.aes("channel", "estimate", fill=fill))
         + lines
         # A pale fill inside a solid outline keeps the bars light enough for the intervals to read over them.
-        + pn.geom_col(pn.aes(color=fill), position=dodge, width=0.45, alpha=0.22, size=0.9)
+        + pn.geom_col(pn.aes(color=fill), position=dodge, width=0.55, alpha=0.22, size=0.9)
         + pn.geom_errorbar(pn.aes(ymin="lower", ymax="upper"), position=dodge, width=0.25, color="#262626", size=0.6)
         + pn.geom_text(
             pn.aes(y="value_position", label="value"), position=dodge, va="bottom", size=8 if compared else 9

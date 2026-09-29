@@ -163,8 +163,30 @@ def _landing_template(app, pagename, templatename, context, doctree):
     return None
 
 
+def _user_guide_sections(app, pagename, templatename, context, doctree):
+    """List the User Guide's sections in its sidebar as headings with their pages below."""
+    # The theme's navigation.sections feature would open every tab's sections, and the API's
+    # sections hold hundreds of generated pages, so it is switched on for User Guide pages only.
+    if pagename.startswith("user_guide/"):
+        theme = context["config"]["theme"]
+        features = [*theme["features"], "navigation.sections"]
+        context["config"] = {**context["config"], "theme": {**theme, "features": features}}
+        # The theme copies each sidebar entry for every page but leaves its parent pointing at the
+        # uncopied entry, which is never open, so a section's check for an open parent always fails.
+        _link_parents(context["nav"])
+
+
+def _link_parents(entries, parent=None):
+    """Point each sidebar entry at the entry that holds it on the current page."""
+    for entry in entries:
+        entry.parent = parent
+        _link_parents(entry.children, entry)
+
+
 def setup(app):
-    """Register API signature formatting, example box styling, and the landing page."""
+    """Register API signature formatting, example box styling, the landing page, and guide sections."""
     app.connect("autodoc-process-signature", _format_signature_defaults)
     app.connect("doctree-read", _open_examples_boxes)
     app.connect("html-page-context", _landing_template)
+    # The theme fills in its configuration at the default priority, so this runs after it.
+    app.connect("html-page-context", _user_guide_sections, priority=600)
