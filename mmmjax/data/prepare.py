@@ -51,9 +51,9 @@ class ModelInput(NamedTuple):
         namespace, or ``constant`` for declared Python values passed through
         unchanged.
     axes : tuple of str
-        Named axes of an array input. Empty for scalars and other kinds,
-        though ``outcome_scaling`` holds one factor per group when a grouped
-        outcome is scaled by population.
+        Named axes of an array input, or ``("group",)`` for
+        ``outcome_scaling`` when a grouped outcome is scaled by population.
+        Empty for scalars and other kinds.
     source : str
         ``data`` for selected roles, ``time`` for positions computed from the
         observation labels, ``builtin`` for model-supplied values,
@@ -201,7 +201,7 @@ class PreparedData:
     @property
     def model_inputs(self) -> dict[str, ModelInput]:
         """Return each name a model function can request with its ``ModelInput`` description."""
-        return _model_inputs(self)
+        return _model_inputs(self, self._scaling)
 
     def _to_jax(
         self,
@@ -503,7 +503,11 @@ class Data:
     @property
     def model_inputs(self) -> dict[str, ModelInput]:
         """Return every input this declaration supplies with its ``ModelInput``."""
-        inputs = self._observations.model_inputs
+        # The model applies the declared scaling, or the observations' own when none is declared.
+        # "auto" fits the default scaling, which leaves the outcome in its original units.
+        applied = self._observations._scaling if self._scaling is None else self._scaling
+        fitted = None if isinstance(applied, str) else applied
+        inputs = _model_inputs(self._observations, fitted)
         if self._inputs is not None:
             for name, variable in self._inputs.data_vars.items():
                 inputs[str(name)] = ModelInput("array", tuple(str(axis) for axis in variable.dims), "input")
@@ -580,17 +584,24 @@ def _reference_dimensions(data: PreparedData) -> dict[str, tuple[str, ...]]:
     return dimensions
 
 
-def _model_inputs(data: PreparedData) -> dict[str, ModelInput]:
-    """Enumerate the inputs a model can request from prepared data."""
+def _model_inputs(data: PreparedData, scaling: "DataScaling | None") -> dict[str, ModelInput]:
+    """Enumerate the inputs a model can request from prepared data under the scaling it applies."""
     role_axes = _data_dimensions(data)
     inputs = {role: ModelInput("array", role_axes[role], "data") for role in data.arrays}
     for name in _time_input_names(data):
         inputs[name] = ModelInput("array", _time_input_axes(name), "time")
     inputs["n_periods"] = ModelInput("integer", (), "builtin")
     if "outcome" in data.arrays:
-        inputs["outcome_scaling"] = ModelInput("object", (), "builtin")
+        scaling_axes = ("group",) if _grouped_outcome_scale(data, scaling) else ()
+        inputs["outcome_scaling"] = ModelInput("object", scaling_axes, "builtin")
     inputs["reference"] = ModelInput("object", (), "reference")
     return inputs
+
+
+def _grouped_outcome_scale(data: PreparedData, scaling: "DataScaling | None") -> bool:
+    """Report whether the outcome transform holds one scale and offset per group."""
+    grouped = scaling is not None and "outcome" in scaling._population_roles and bool(data.group_columns)
+    return grouped
 
 
 @dataclass(frozen=True, slots=True)

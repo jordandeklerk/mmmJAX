@@ -23,6 +23,7 @@ from mmmjax.data.prepare import (
     _data_dimensions,
     _DataLayout,
     _day_of_year,
+    _grouped_outcome_scale,
     _prepare_model_frame,
     _time_input_names,
     _time_positions,
@@ -931,7 +932,7 @@ def _outcome_scaling(data: PreparedData, fitted: DataScaling | None, has_outcome
 
     An outcome scaled by population across regions gets one factor per region. Any other outcome gets scalars.
     """
-    population_outcome = fitted is not None and "outcome" in fitted._population_roles and bool(data.group_columns)
+    population_outcome = _grouped_outcome_scale(data, fitted)
     if not has_outcome:
         return None, population_outcome
     transform = Scaling(offset=jnp.asarray(0.0), scale=jnp.asarray(1.0))
