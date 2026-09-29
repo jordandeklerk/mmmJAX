@@ -18,31 +18,35 @@ def fourier_features(time: ArrayLike, *, period: ArrayLike, order: int) -> jax.A
         \sin\left(\frac{2\pi kt}{P}\right), \qquad
         \cos\left(\frac{2\pi kt}{P}\right).
 
-    Multiply the features by model coefficients to obtain a seasonal
-    contribution. Coefficients and their priors are specified separately.
+    Multiplying the features by model coefficients gives a seasonal
+    contribution. The coefficients and their priors are specified separately,
+    and the features include no intercept. Higher orders allow more detailed
+    patterns within a cycle.
+
+    Dated observations enter as elapsed time from a fixed reference date.
+    Predictions must keep that reference date and the time units so their
+    features continue the training cycle.
 
     Parameters
     ----------
     time : array_like
-        One-dimensional, finite numeric positions for the modeling periods.
-        For dated observations, use elapsed time from a fixed reference date.
-        Keep that reference date and the time units unchanged for prediction.
-        Negative and fractional positions are accepted.
+        One-dimensional, finite numeric positions for the modeling periods,
+        such as elapsed days from a fixed reference date. Negative and
+        fractional positions are accepted.
     period : array_like
         Positive, finite scalar giving the cycle length in the same units as
-        ``time``. For example, use 7 for weekly seasonality when time is in
-        days, or 365.25 for an annual cycle measured in days.
+        ``time``, such as 7 for weekly seasonality or 365.25 for an annual
+        cycle when time is in days.
     order : int
         Positive number of harmonics. Each adds a sine and a cosine term.
-        Higher orders allow more detailed patterns within a cycle. Keep
-        this argument static when using ``jax.jit``.
+        Keep this argument static when using ``jax.jit``.
 
     Returns
     -------
     jax.Array
         Features shaped ``(len(time), 2 * order)`` with sine then cosine terms,
-        each in increasing harmonic order. No intercept is included. Floating
-        dtype is at least float32. Invalid numeric inputs give ``nan`` rows.
+        each in increasing harmonic order. Floating dtype is at least float32.
+        Invalid numeric inputs give ``nan`` rows.
 
     Examples
     --------

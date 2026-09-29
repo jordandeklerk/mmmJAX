@@ -20,23 +20,28 @@ __all__ = ["SyntheticData", "simulate_data"]
 class SyntheticData:
     """Store synthetic observations with their channel descriptions and known effects.
 
-    Generate a simulation with :func:`simulate_data`.
+    :func:`simulate_data` builds this object. Its ``frame`` and
+    ``media_history`` go to ``prepare_data`` as observed data would, and the
+    ``channels`` table names the exposure and spend columns of each channel.
+
+    ``truth`` records the process that generated the data, so a fitted model
+    can be checked against it. Its values are simulation truth, not posterior
+    estimates or additional modeling inputs.
 
     Attributes
     ----------
     frame : pandas.DataFrame
-        Weekly observations with separate exposure and spend columns.
-        Includes revenue, population, demand, price, promotions, and holidays.
+        Weekly observations with separate exposure and spend columns, revenue,
+        population, and price. The full setting adds demand, promotions, and
+        holidays.
     media_history : pandas.DataFrame
-        Eight preceding weeks of exposures for carryover calculations.
-        Pass this to ``prepare_data`` with the observations.
+        Exposures for the eight weeks before the first modeling week.
     channels : pandas.DataFrame
         Channel families, platforms, input column names, and illustrative
         generation settings. Email is organic and has no spend column.
     truth : xarray.Dataset
-        Labeled parameters, baseline paths, true exposures, response curves,
-        contributions, expected revenue, and observation noise. These are
-        simulation truth, not posterior estimates or additional modeling inputs.
+        Labeled parameters, baseline paths, true exposures, responses,
+        contributions, expected revenue, and observation noise.
     """
 
     frame: pd.DataFrame
@@ -58,10 +63,11 @@ def simulate_data(
     r"""Generate a fictional consumer brand's weekly marketing data.
 
     Ten paid channels and owned email combine always-on activity, campaign
-    flights, and a later channel launch. Demand, holidays, and promotions
-    influence both media execution and revenue. Baseline revenue drifts smoothly
-    over time, alongside changing costs and seasonal patterns. Defaults are
-    illustrative, not platform benchmarks.
+    flights, and a later channel launch. Demand and holidays raise both media
+    execution and revenue, and promotions run during campaign flights and
+    holidays. Baseline revenue drifts smoothly over time, alongside changing
+    costs and seasonal patterns. Defaults are illustrative, not platform
+    benchmarks.
 
     Revenue has conditional mean :math:`\mu` equal to baseline, seasonal,
     demand, price, promotion, holiday, and channel contributions. Each channel
@@ -69,29 +75,37 @@ def simulate_data(
     per person. Observation noise is mean-one lognormal multiplicative noise
     with standard deviation ``noise_scale`` relative to :math:`\mu`.
 
-    The data is complete and nonnegative where required.
-    Zero exposures mean inactivity, not missing reports.
-    Measurement error changes reported exposures without changing true effects.
+    The frame has no missing values, and its exposures and spending are
+    nonnegative. A zero exposure means the channel was inactive, not that a
+    report is missing. Measurement error changes only the reported exposures,
+    so the true effects and revenue stay the same.
 
-    The simple setting keeps only linear TV and generic search on the same
-    campaign calendar. Revenue there is a constant regional baseline plus a
-    price effect and the two channels. Price moves independently of the media,
-    and there are no demand, seasonal, promotion, or holiday effects. Every model
-    input a regression on the two channels and price needs is present, so the
-    true effects are recoverable.
+    The simple setting keeps only linear TV and generic search, and its shared
+    campaign calendar matches the one in the full setting. Revenue there is a
+    constant regional baseline plus a price effect and the two channels. Price
+    moves independently of the media, and there are no demand, seasonal,
+    promotion, or holiday effects. The frame holds every input that a
+    regression on the two channels and price needs, so the true effects are
+    recoverable.
+
+    The ROI in ``truth`` divides a paid channel's revenue contribution over
+    the modeling weeks by its spending over those weeks. That contribution
+    counts carryover from the lead-in, and a channel without spending has a
+    NaN ROI.
 
     Parameters
     ----------
     seed : int, default 0
-        Nonnegative seed for reproducible observations and generating parameters.
+        Nonnegative seed for reproducible observations and generating
+        parameters.
     n_periods : int, default 156
-        Number of weekly modeling periods, excluding the eight-week lead-in.
-    groups : sequence of str or None, optional
-        Unique region labels. Defaults to three regions. Use ``None`` for
-        a single series without a region column or group dimension.
+        Number of weekly modeling periods after the eight-week lead-in.
+    groups : sequence of str or None, default ("north", "south", "west")
+        Unique region labels. None gives a single series without a region
+        column or group dimension.
     start : str or datetime.date, default "2022-01-03"
-        First modeling date, as an ISO date or date object. Subsequent
-        observations are spaced seven days apart.
+        First modeling date as a ``YYYY-MM-DD`` string or a date without a
+        time. Later observations are spaced seven days apart.
     campaign_overlap : float, default 0.7
         Probability that a channel in a region follows the shared campaign
         calendar. Zero uses independent calendars and one uses shared timing.
@@ -100,24 +114,20 @@ def simulate_data(
         Zero returns the conditional mean without observation noise.
     measurement_error : float, default 0.0
         Nonnegative relative noise in reported exposures. True zero activity
-        remains zero. Spend and the underlying response remain unchanged.
+        remains zero.
     complexity : {"full", "simple"}, default "full"
-        The full brand with every channel and revenue driver, or the simple
-        setting with two channels and a price effect described above.
+        ``"full"`` for every channel and revenue driver, or ``"simple"`` for
+        two channels and a price effect.
 
     Returns
     -------
     SyntheticData
         Simulation with the following fields.
 
-        - **frame**, **media_history** — Weekly observations and earlier exposures
+        - **frame**, **media_history** — Weekly observations and earlier
+          exposures
         - **channels** — Channel labels, columns, and settings
         - **truth** — Parameters, effects, and paid-channel revenue ROI
-
-        ROI is the modeling-window revenue difference divided by
-        modeling-window spend. The difference comes from removing a channel
-        from both lead-in and modeling periods with other inputs held fixed.
-        Zero spend gives undefined ROI.
 
     Examples
     --------

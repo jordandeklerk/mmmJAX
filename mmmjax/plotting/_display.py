@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 
 class _ScrollingPlot(pn.ggplot):
-    """Fit a wide plot to its notebook cell, and scroll it once shrinking would make it hard to read."""
+    """Fit a wide plot to its notebook cell and scroll it once shrinking would make it hard to read."""
 
     def save(
         self,
@@ -33,7 +33,7 @@ class _ScrollingPlot(pn.ggplot):
         super().save(filename, format, path, width, height, units, dpi, guarded, verbose, **kwargs)
 
     def _repr_mimebundle_(self, include: Any = None, exclude: Any = None) -> "MimeBundle":
-        """Shrink the plot to fit the cell down to a readable width, and scroll it past that."""
+        """Shrink the plot to fit the cell down to a readable width and scroll it past that."""
         buffer = BytesIO()
         self.save(buffer, "svg", verbose=False)
         width, height = self.theme.getp("figure_size")

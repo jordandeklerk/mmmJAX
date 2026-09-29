@@ -261,7 +261,7 @@ def _bind_arguments(
     supplied: dict[str, object],
     name: str,
 ) -> tuple[dict[str, str], dict[str, object]]:
-    """Give each argument after the media a result variable, a fixed value, or its own default."""
+    """Decide where each argument after the media gets its value."""
     if not isinstance(results, xr.DataTree):
         raise TypeError(f"results must be an xarray DataTree, got {type(results).__name__}")
     if group not in ("prior", "posterior"):

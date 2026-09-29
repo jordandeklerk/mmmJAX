@@ -68,7 +68,8 @@ def contribution_coefficient(
     deviations : array_like, optional
         Centered random effects with shape ``(groups, channels)``, already
         multiplied by their dispersion, such as ``eta * dev`` for a
-        noncentered hierarchy. Requires a group axis in ``response``.
+        noncentered hierarchy. Requires a group axis in ``response``. Omit to
+        return one coefficient per channel.
     effects : {"lognormal", "normal"}, default "lognormal"
         How deviations enter. Log-normal effects keep every coefficient
         positive and normal effects leave the sign free. Ignored without
@@ -165,6 +166,11 @@ def roi_coefficient(
     identity with the response difference between reference and increased
     exposures and the spending increment as ``spend``.
 
+    When the exposures include earlier history, ``response`` should hold only
+    the response to exposure inside the window. It equals the full response
+    minus the response with the window's exposure removed, so carryover from
+    earlier periods is not credited to the channel.
+
     Parameters
     ----------
     roi : array_like
@@ -172,11 +178,8 @@ def roi_coefficient(
         one value per channel. Log-normal effects need positive values.
     response : array_like
         Transformed exposures with time first, an optional group axis, and
-        channels last, on the scale the model multiplies by the coefficients,
-        over the same periods as ``spend``. When the exposures include earlier
-        history, pass the response to exposure inside the window, the full
-        response minus the response with window exposure removed, so carryover
-        from earlier weeks is not credited to the channel.
+        channels last, on the scale the model multiplies by the coefficients.
+        Cover the same periods as ``spend``.
     spend : array_like
         Spending in original units, either totaled per channel or with time
         and optional group axes that are summed here.
@@ -186,6 +189,7 @@ def roi_coefficient(
     deviations : array_like, optional
         Centered random effects with shape ``(groups, channels)``, already
         multiplied by their dispersion. Requires a group axis in ``response``.
+        Omit to return one coefficient per channel.
     effects : {"lognormal", "normal"}, default "lognormal"
         How deviations enter, as for :func:`contribution_coefficient`.
 

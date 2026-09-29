@@ -20,8 +20,15 @@ def media_response(
 ) -> jax.Array:
     """Apply carryover and saturation and keep the requested modeling periods.
 
-    Apply both transformations to the full exposure history before selecting
-    modeling periods. Scaling and coefficient multiplication remain separate.
+    Both transformations run over the full exposure history, so earlier
+    exposure carries into the first modeling periods. The result then keeps
+    only the final ``n_periods`` periods along the first axis. Scaling,
+    coefficient multiplication, and channel summation remain separate.
+
+    Carryover comes first unless ``adstock_first`` is False. For learned
+    parameters, define both callbacks inside ``transformed_parameters`` or
+    the log density using current values. Each callback must keep the shape
+    of ``media``, and one that changes it raises ``ValueError``.
 
     Parameters
     ----------
@@ -35,9 +42,7 @@ def media_response(
         argument static when using ``jax.jit``.
     saturation : callable
         Shape-preserving response curve with parameters supplied as for
-        ``adstock``. For learned parameters, define both callbacks inside
-        ``transformed_parameters`` or the log density using current values.
-        Keep this argument static when using ``jax.jit``.
+        ``adstock``. Keep this argument static when using ``jax.jit``.
     n_periods : int, optional
         Number of final periods to return, such as ``len(data.time_values)``.
         Must be positive and not exceed the exposure window. Omit to return
@@ -52,7 +57,7 @@ def media_response(
     jax.Array
         Media responses over the selected periods with all other axes
         unchanged. Precision and numeric domain behavior follow the supplied
-        transformations. Channel contributions are not summed.
+        transformations.
 
     Examples
     --------
@@ -160,6 +165,13 @@ def reach_frequency_response(
     :math:`\odot` denotes elementwise multiplication. Earlier reach and
     frequency contribute to carryover before the modeling periods are
     selected. The same calculation supports paid and organic channels.
+    Scaling, coefficient multiplication, and channel summation remain
+    separate.
+
+    For learned parameters, define both callbacks inside
+    ``transformed_parameters`` or the log density using current values.
+    Each callback must keep the shape of ``reach``, and one that changes it
+    raises ``ValueError``.
 
     Parameters
     ----------
@@ -177,23 +189,19 @@ def reach_frequency_response(
         Keep this argument static when using ``jax.jit``.
     saturation : callable
         Shape-preserving response curve with thresholds in frequency units.
-        Supply parameters with a function or ``functools.partial``. For
-        learned parameters, define callbacks inside ``transformed_parameters``
-        or the log density using current values. Keep this argument static
-        when using ``jax.jit``.
+        Supply parameters with a function or ``functools.partial``. Keep this
+        argument static when using ``jax.jit``.
     n_periods : int, optional
-        Number of final modeling periods to return, such as
-        ``len(data.time_values)``. Must be positive and not exceed the
-        exposure window. Omit to return all periods. Keep this argument
-        static when using ``jax.jit``.
+        Number of final periods to return, such as ``len(data.time_values)``.
+        Must be positive and not exceed the exposure window. Omit to return
+        all periods, including history. Keep this argument static when using
+        ``jax.jit``.
 
     Returns
     -------
     jax.Array
-        Reach-weighted responses over the selected periods, with other
-        axes unchanged. Reach and saturated frequency are multiplied using
-        a common floating-point dtype of at least float32. Scaling, model
-        coefficients, and channel summation remain separate.
+        Reach-weighted responses over the selected periods with the other
+        axes unchanged.
 
     Examples
     --------

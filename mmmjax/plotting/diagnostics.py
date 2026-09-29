@@ -1324,7 +1324,7 @@ def _convergence_panels(
 
 
 def _drop_trace_titles(collection: "PlotCollection") -> None:
-    """Clear the axis title beside each trace, which repeats the name under its density."""
+    """Clear the axis title beside each trace because it repeats the name under its density."""
     plots = collection.viz["plot"].to_dataset()
     for name in plots.data_vars:
         for axis in np.ravel(plots[name].sel(column="trace").values):

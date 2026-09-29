@@ -21,33 +21,40 @@ def check_prior(
 ) -> xr.Dataset:
     """Inspect prior probability outside a range meaningful to the modeler.
 
-    Use existing prior predictions, parameters, or calculated quantities such
-    as channel ROI. Limits must use the same units as the selected quantity.
-    No sampling, model changes, or automatic pass/fail decisions are performed.
+    Each probability in the report is the fraction of prior draws below
+    ``lower``, above ``upper``, or outside either limit. The draws can be
+    prior predictions, parameters, or a calculated quantity such as channel
+    ROI, and the limits must use the same units. Nothing is sampled, and the
+    report makes no pass or fail decision.
+
+    Every axis other than ``chain`` and ``draw`` is retained, so each period,
+    geography, or channel gets its own probabilities. To check a total
+    instead, sum within each draw before the call.
+
+    Only finite draws count toward the probabilities, and
+    ``nonfinite_fraction`` reports the fraction left out. Where no draw is
+    finite, the probabilities are NaN.
 
     Parameters
     ----------
     draws : xarray.DataArray
         Prior draws with a ``draw`` axis and an optional ``chain`` axis.
-        Other axes are retained. Aggregate within each draw first when checking
-        a total rather than individual periods, geographies, or channels.
     lower, upper : float or xarray.DataArray, optional
-        Inclusive plausible limits. Supply at least one. Labeled limits may
-        vary across the retained axes and must match their coordinate labels.
-        Omit a limit to leave that side unbounded.
+        Inclusive plausible limits. Supply at least one, and omit the other to
+        leave that side unbounded. Labeled limits may vary across the retained
+        axes and must match their coordinate labels.
 
     Returns
     -------
     xarray.Dataset
         Checks over retained axes with the following fields.
 
-        - **finite_draws**, **nonfinite_fraction** — Finite count and nonfinite fraction
-        - **probability_below**, **probability_above** — Probability beyond each
-          supplied limit
+        - **finite_draws**, **nonfinite_fraction** — Finite count and
+          nonfinite fraction
+        - **probability_below**, **probability_above** — Probability beyond
+          each supplied limit
         - **probability_outside** — Probability outside either limit
-        - **lower**, **upper** — Supplied limits in evaluated order
-
-        Probabilities condition on finite draws and are NaN where none are finite.
+        - **lower**, **upper** — Supplied limits aligned to the draws
     """
     if not isinstance(draws, xr.DataArray):
         raise TypeError("draws must be an xarray.DataArray selected from prior results")
@@ -149,53 +156,57 @@ def check_data(
 ) -> xr.DataTree:
     """Inspect marketing inputs for measurement issues and overlapping signals.
 
-    Check raw modeling periods without changing the data. Earlier media history
-    is counted separately and excluded from the calculations. Flags identify
-    patterns to review, not invalid inputs or proof of causal identification.
-    Correlations describe raw inputs, not their adstock or saturation transforms.
+    Every check reads the raw modeling periods and leaves the data unchanged.
+    Earlier media history appears only in the coverage, and correlations
+    describe the raw inputs rather than their adstock or saturation
+    transforms. A flag marks a pattern to review, not an invalid input or
+    proof of causal identification.
+
+    Series statistics and cost checks run over time within each feature and
+    group. An outlier lies more than 1.5 interquartile ranges beyond the
+    quartiles. Cost per exposure divides spending by reach times frequency for
+    reach and frequency channels, and it is NaN in a period without exposure.
+
+    Pairs and predictors leave out the outcome and spending. Correlations pool
+    every period and group, a constant input gives NaN, and with groups
+    ``within_group_correlation`` first removes each group's mean over time.
+    Between two media or reach inputs, ``activity_overlap`` is the
+    intersection over union of their active observations, and
+    ``matching_activity`` flags an identical on and off pattern that changes
+    over time. Every other pair holds a NaN overlap and -1 active observation
+    counts.
+
+    A variance inflation factor is NaN for a constant predictor and infinite
+    for a linearly dependent one. With groups, the report adds the unadjusted
+    fraction of each predictor's variation that group indicators, time
+    indicators, and both together explain.
 
     Parameters
     ----------
     data : PreparedData
-        Inputs from ``prepare_data``, before scaling. Numeric validity and
-        observation alignment are checked during preparation.
+        Unscaled inputs from ``prepare_data``.
     max_zero_fraction : float, default 0.8
-        Flag a series as sparse when at least this fraction of its periods
-        are zero. Must be greater than zero and at most one.
+        Smallest fraction of zero periods that makes a series sparse. Must be
+        greater than zero and at most one.
     correlation_threshold : float, default 0.9
-        Flag absolute Pearson correlations at or above this value.
-        Must be greater than zero and at most one.
+        Smallest absolute Pearson correlation that flags a pair. Must be
+        greater than zero and at most one.
 
     Returns
     -------
     xarray.DataTree
         Five report groups with features labeled by role and source column.
 
-        - **coverage** — Modeling and history dates, groups, and cadence
-        - **series** — Minimum, maximum, mean, population standard deviation,
-          nonzero periods, zero fraction, longest zero run, quartiles, and
-          ``constant``/``sparse`` flags by feature and optional group.
-          ``outlier_periods`` counts values beyond quartiles plus or minus
-          1.5 interquartile ranges. ``std_without_outliers`` excludes these
-          values, and ``outlier_driven_variation`` flags variation lost
-          entirely without them
-        - **pairs** — Predictor correlations and ``high_correlation`` flags,
-          excluding outcomes and spend. ``within_group_correlation`` removes
-          group temporal means and has its own flag. Constant inputs give NaN.
-          Exposure pairs include jointly and exclusively active counts, activity
-          overlap as intersection over union, and ``matching_activity`` for
-          identical nonzero patterns with temporal on/off variation. These count
-          observations, not campaigns. Other pairs have NaN overlap and -1 counts.
-          All-inactive pairs have NaN overlap. Constant or always-active pairs
-          are not flagged as matching
-        - **spend** — Dated spend/exposure mismatches and cost-per-exposure
-          outliers. Reach-frequency exposure is reach times frequency. Costs are
-          NaN without exposure. Fences use quartiles plus or minus 1.5 interquartile
-          ranges across time within each channel and group
-        - **predictors** — ``vif`` variance inflation factors. Constant
-          predictors give NaN and linear dependence gives infinity. Grouped
-          inputs also report unadjusted variation explained by group and time
-          indicators, separately and together
+        - **coverage** — Modeling and history periods, groups, and calendar
+          spacing
+        - **series** — Summary statistics, zero runs, quartiles, outliers, and
+          flags by feature
+        - **pairs** — Predictor correlations, exposure activity, and their
+          flags
+        - **spend** — Spending and exposure mismatches, cost per exposure, and
+          cost outliers
+        - **predictors** — Variance inflation factors and variation explained
+          by group and time
     """
     if not isinstance(data, PreparedData):
         raise TypeError("data must be PreparedData returned by prepare_data")

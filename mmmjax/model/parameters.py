@@ -24,7 +24,14 @@ __all__ = [
 
 @runtime_checkable
 class Parameterization(Protocol):
-    """Contract for mapping unconstrained positions to model parameters."""
+    """Contract for mapping unconstrained positions to model parameters.
+
+    ``Model`` accepts any object with these properties and methods as a
+    parameter declaration, and built-in declarations such as ``Real`` follow
+    the same contract. Samplers work on unconstrained positions with shape
+    ``position_shape``, ``constrain`` maps each one into model space, and
+    ``Model.log_density`` adds each declaration's ``log_density_adjustment``.
+    """
 
     @property
     def shape(self) -> tuple[int, ...]:
@@ -250,10 +257,9 @@ class Real:
 class Positive:
     """Positive parameter using an exponential parameterization.
 
-    ``unconstrain`` assumes its input is strictly positive. Support validation
-    belongs at the eager model boundary so this numerical kernel remains safe
-    to use with traced JAX arrays. Finite-precision arithmetic can round
-    constrained values to zero for extreme negative positions.
+    ``unconstrain`` assumes without checking that its input is strictly
+    positive. Finite-precision arithmetic can round constrained values to zero
+    for extreme negative positions.
 
     Parameters
     ----------
@@ -381,10 +387,9 @@ class LowerBound:
     For an unconstrained position :math:`z` and lower bound :math:`a`, the
     parameter is :math:`a + \exp(z)`.
 
-    ``unconstrain`` assumes its input is greater than ``lower``. Support
-    validation belongs at the eager model boundary so this numerical kernel
-    remains safe to use with traced JAX arrays. Finite-precision arithmetic can
-    round constrained values to the boundary for extreme negative positions.
+    ``unconstrain`` assumes without checking that its input is greater than
+    ``lower``. Finite-precision arithmetic can round constrained values to the
+    boundary for extreme negative positions.
 
     Parameters
     ----------
@@ -521,10 +526,9 @@ class UpperBound:
     For an unconstrained position :math:`z` and upper bound :math:`b`, the
     parameter is :math:`b - \exp(z)`.
 
-    ``unconstrain`` assumes its input is less than ``upper``. Support
-    validation belongs at the eager model boundary so this numerical kernel
-    remains safe to use with traced JAX arrays. Finite-precision arithmetic can
-    round constrained values to the boundary for extreme negative positions.
+    ``unconstrain`` assumes without checking that its input is less than
+    ``upper``. Finite-precision arithmetic can round constrained values to the
+    boundary for extreme negative positions.
 
     Parameters
     ----------
@@ -662,9 +666,12 @@ class Interval:
     bound :math:`b`, the parameter is
     :math:`a + (b - a)\operatorname{sigmoid}(z)`.
 
-    ``unconstrain`` assumes its input is inside the interval. Finite-precision
-    arithmetic can round constrained values to a boundary for extreme
-    positions.
+    ``unconstrain`` assumes without checking that its input is inside the
+    interval. Finite-precision arithmetic can round constrained values to a
+    boundary for extreme positions.
+
+    Construction raises ``ValueError`` unless ``lower`` stays below ``upper``
+    after conversion to ``dtype`` and their difference is finite.
 
     Parameters
     ----------
@@ -823,10 +830,9 @@ class Simplex:
     :math:`K` weights is represented by :math:`K - 1` unconstrained values
     using the isometric log-ratio transform.
 
-    ``unconstrain`` assumes every simplex is strictly positive and sums to
-    one. Support validation belongs at the eager model boundary so this
-    numerical kernel remains safe to use with traced JAX arrays. Softmax can
-    round weights to zero for extreme finite positions.
+    ``unconstrain`` assumes without checking that every simplex is strictly
+    positive and sums to one. Softmax can round weights to zero for extreme
+    finite positions.
 
     Parameters
     ----------

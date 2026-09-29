@@ -59,8 +59,10 @@ def contributions(
 ) -> xr.Dataset:
     """Decompose the expected response into a baseline and channel contributions.
 
-    Remove one input at a time and compare the result with the reference
-    response. Remove every input at once to measure the baseline.
+    Each input's contribution is the reference response minus the response
+    with that input removed on its own. Removing every input at once gives the
+    baseline. When inputs interact, their contributions need not add up to the
+    joint effect of removing them all.
 
     Paid and organic exposures are set to zero during ``periods``, only reach
     is set to zero for reach and frequency families while frequency stays
@@ -69,9 +71,15 @@ def contributions(
     only the input it removes. The baseline necessarily rewrites every
     removable input at once.
 
-    The full model is evaluated for each selected parameter draw and
-    differences are taken within draws, so the returned draws support credible
-    intervals.
+    ``quantity`` is recomputed for each scenario and draw, and the fitted
+    outcome scaling restores original outcome units before anything is summed.
+    Differences are taken within draws, so the returned draws support credible
+    intervals. Shares and effectiveness divide totals over periods and groups
+    within each draw.
+
+    A nonfinite response in any scenario raises ``ValueError``. Any
+    normalization inside the blocks should read the training arrays from
+    ``reference`` so that removing an input cannot zero it.
 
     Parameters
     ----------
@@ -83,41 +91,34 @@ def contributions(
     quantity : str
         Key returned by ``transformed_parameters`` holding the expected outcome
         for every observation on the scale the likelihood uses, such as
-        ``"mu"``. It is recomputed for each scenario and draw, and the fitted
-        outcome scaling restores original outcome units before anything is
-        summed, so results are in the units of the outcome column. Any
-        normalization by exposures or spending inside the blocks should read
-        the training arrays from ``reference`` so that a scenario cannot zero it.
+        ``"mu"``.
     group : {"prior", "posterior"}, default "posterior"
         Parameter draws to use. Choose ``"prior"`` with results from
         ``sample_prior`` to inspect contributions implied by the priors.
         No sampling is performed. Compare groups using separate calls.
     channels : sequence of str, optional
-        Labels to report, in the desired order. Defaults to every member of
-        every family present. The default order is paid media, reach and
-        frequency, organic media, organic reach and frequency, and then
-        treatments by their column names. Labels must be unique across
-        families.
+        Channels and treatment columns to report, in the desired order.
+        Defaults to all of them, paid media first and treatments last. Names
+        must be unique across input families.
     treatment_baselines : {"min", "max"} or mapping, default "min"
-        Counterfactual level for each treatment in original data units. A word
-        applies the minimum or maximum observed in the training data to every
-        treatment. A mapping from treatment name to a number or to one of those
-        words sets treatments individually, and unnamed treatments use the
-        minimum.
+        Counterfactual level of each treatment in original units. ``"min"`` or
+        ``"max"`` applies the training minimum or maximum to every treatment,
+        and a mapping sets named treatments to finite numbers or those words.
+        Unnamed treatments use the minimum.
     new_data : dataframe-like or PreparedData, optional
         Reference observations using the model's columns and fitted scales.
         Omit to use stored observations. Supply ``PreparedData`` with
         ``media_history`` to include earlier exposures for new observations.
     periods : sequence, optional
         Time labels during which inputs are removed. Defaults to all supplied
-        modeling periods. Earlier history is never changed.
+        modeling periods.
     response_periods : sequence, optional
         Time labels whose responses count. Defaults to all supplied modeling
         periods. Include later dates to count carryover.
     by : str or sequence of str, optional
-        Retain ``"time"``, ``"group"``, or both in response fields. Group
-        labels come from ``prepare_data`` and require grouped data. Omit for
-        totals. Retained axes follow time then group order.
+        Observation axes to keep in the responses, as ``"time"``, ``"group"``,
+        or both. Keeping ``"group"`` requires grouped data. Omit to sum over
+        both.
     batch_size : int, default 64
         Maximum parameter draws evaluated together. Scenarios run sequentially.
 
@@ -128,23 +129,18 @@ def contributions(
         ``group`` attribute identifying the parameter draws.
 
         - **reference_response** — Full model response
-        - **baseline_response** — Response with all exposures removed and
-          treatments at baseline levels during ``periods``. Earlier history is
-          unchanged
+        - **baseline_response** — Response with every input removed during
+          ``periods``
         - **joint_incremental_response** — Reference minus baseline response
         - **incremental_response** — Response lost by removing each input alone
         - **contribution_share**, **baseline_share** — Each increment and the
-          baseline, respectively, divided by the reference response
+          baseline as shares of the reference response
         - **exposure**, **effectiveness** — Total exposure during ``periods``
           and increment per exposure. RF channels use reach times frequency.
           Both are missing for treatments
         - **treatment_baseline** — Treatment counterfactual levels
         - **channel_type**, **period**, **response_period** — Input families
           and selected dates
-
-        Responses retain chain, draw, and optional ``by`` axes. Shares and
-        effectiveness use totals across periods and groups within each draw.
-        Interacting channel effects need not sum to the joint effect.
     """
     inputs, prepared, samples, coordinates = _response_inputs(
         model, results, quantity, new_data, batch_size, group=group

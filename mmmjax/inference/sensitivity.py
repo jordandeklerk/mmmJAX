@@ -38,8 +38,9 @@ def psense_summary(
     The log prior comes from ``priors`` when it is given, evaluated at every
     posterior draw, and otherwise from the ``log_prior`` group that
     ``generated_quantities`` returned. Scaling every prior together can
-    credit one prior with another's effect when parameters are correlated,
-    so each prior also gets a column of its own.
+    credit one prior with another's effect when parameters are correlated.
+    By default, with two or more priors, each also gets a ``<name> prior``
+    column from scaling it on its own.
 
     Parameters
     ----------
@@ -65,8 +66,7 @@ def psense_summary(
     -------
     pandas.DataFrame
         One row per element with ``prior``, ``likelihood``, and ``diagnosis``
-        columns. With two or more priors, a ``<name> prior`` column follows
-        for each.
+        columns.
     """
     if not isinstance(per_prior, bool):
         raise TypeError(f"per_prior must be a bool, got {type(per_prior).__name__}")

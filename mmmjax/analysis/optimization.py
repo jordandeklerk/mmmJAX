@@ -28,20 +28,26 @@ __all__ = ["SpendConstraint", "optimize_budget"]
 class SpendConstraint:
     """Limit combined spending across a named set of channels.
 
+    ``optimize_budget`` accepts these through ``constraints`` and keeps the
+    combined spending of each constraint's channels between its ``lower`` and
+    ``upper``. The total budget and each channel's own limits still apply, and
+    constraints may share channels.
+
     Parameters
     ----------
     name : str
         Unique label for this constraint in the allocation report.
     channels : sequence of str
-        Channel names included in the combined spending total. All must
-        be selected for optimization. Constraints may share channels.
+        Distinct channel names included in the combined spending total. All
+        must be selected for optimization.
     lower : float, default 0.0
         Minimum combined spending. Set equal to ``upper`` to fix the total.
     upper : float, optional
         Maximum combined spending. Defaults to the entire selected budget.
     units : {"spend", "share"}, default "spend"
-        Use original spending units or fractions of the selected budget.
-        With ``"share"``, ``upper=0.3`` caps the group at 30% of that budget.
+        Units of ``lower`` and ``upper``, either original spending or fractions
+        of the selected budget. With ``"share"``, ``upper=0.3`` caps the group
+        at 30% of that budget.
 
     Examples
     --------
@@ -121,94 +127,94 @@ def optimize_budget(
 ) -> xr.Dataset:
     """Allocate a fixed budget using posterior responses and a chosen objective.
 
-    Optimize selected channels jointly using the full model. Retain their
-    reference spending proportions across selected periods and groups. By
-    default, redistribute the same total spending across those channels.
+    The selected channels share ``budget`` and are optimized jointly through
+    the full model. Each keeps its reference split of spending across
+    ``spend_periods`` and groups, while other spending and earlier media
+    history stay fixed. The result is a local constrained solution and can
+    depend on the starting allocation.
 
-    Other spending and earlier media history stay fixed. The result is a local
-    constrained solution and can depend on the starting allocation.
+    ``quantity`` is recomputed for each allocation and draw, and the fitted
+    outcome scaling restores original outcome units before anything is summed.
+    By default the solver maximizes the posterior mean response and compares
+    allocations through paired changes. A custom ``utility_function`` scores
+    absolute totals instead, so in float32 it can lose precision.
+
+    The solver works on totals over periods and groups, and ``by`` only splits
+    the reported responses of the one joint allocation. The scenarios behind
+    ``include_metrics`` remove or raise one channel's spending at a time
+    without regard to the bounds.
 
     ``ValueError`` is raised for invalid inputs, infeasible constraints, and
     model evaluations that produce invalid responses, utility values, or
     gradients. ``RuntimeError`` is raised when the solver fails to converge or
-    returns an infeasible allocation.
+    returns an infeasible allocation. Any normalization by exposures or
+    spending inside the blocks should read the training arrays from
+    ``reference`` so that an allocation cannot zero it.
 
     Parameters
     ----------
     model : Model
-        Prepared model with ordinary media and spend, reach/frequency and
-        ``rf_spend``, or both. Media without paired spending stay fixed.
+        Prepared model with media and spend, reach/frequency and their spend,
+        or both. Input families without spending stay fixed.
     results : xarray.DataTree
         Results containing the model's constrained posterior draws.
     budget : float, optional
-        Positive total spending for the selected channels and spending
-        periods, in original spend units. Defaults to their total reference
-        spending. The reference comes from ``new_data`` when supplied.
+        Positive total spending for the selected channels over
+        ``spend_periods`` in original units. Defaults to their reference total.
     quantity : str
         Key returned by ``transformed_parameters`` holding the expected outcome
         for every observation on the scale the likelihood uses, such as
-        ``"mu"``. It is recomputed for each scenario and draw, and the fitted
-        outcome scaling restores original outcome units before anything is
-        summed, so results are in the units of the outcome column. Any
-        normalization by exposures or spending inside the blocks should read
-        the training arrays from ``reference`` so that a scenario cannot zero it.
+        ``"mu"``.
     utility_function : callable, optional
-        Differentiable JAX function receiving total expected responses with
-        shape ``(chain, draw)`` and returning a floating-point scalar to
-        maximize. Defaults to the posterior mean. Custom functions can
-        penalize uncertainty. Inputs are total expected responses in original
-        outcome units, not changes from the reference allocation. Because they
-        are absolute totals, a custom utility that differences them works on
-        offset-laden float32 values and should be scaled sensibly. The
-        default objective differences paired responses and is unaffected.
+        Differentiable JAX function mapping total expected responses in
+        original outcome units, shaped ``(chain, draw)``, to a floating-point
+        scalar to maximize. Defaults to the posterior mean.
     spend_to_media : {"proportional"} or callable, default "proportional"
-        By default, exposure scales with spending at each period and group.
-        Exposure per unit spend keeps its reference value. A differentiable
-        JAX callable instead receives only ordinary-media spending in original
-        channel order and returns raw exposures of the same shape.
+        ``"proportional"`` scales exposure with spending in each period and
+        group. A differentiable JAX callable instead maps ordinary media
+        spending to nonnegative exposures of the same shape, both in original
+        units and the model's channel order.
     spend_to_rf : {"reach", "frequency"} or callable, default "reach"
-        Scale reach at fixed frequency, or frequency at fixed reach. Both
-        assume constant cost per impression. A differentiable JAX callable
-        instead receives raw RF spending in original ``rf_channels`` order and
-        returns ``(reach, frequency)`` arrays of the same shape. Conversion
-        covers supplied modeling periods. Earlier history stays fixed.
+        ``"reach"`` scales reach at fixed frequency and ``"frequency"`` scales
+        frequency at fixed reach. A differentiable JAX callable instead maps RF
+        spending to a ``(reach, frequency)`` pair of the same shape, all in
+        original units and ``rf_channels`` order.
     bounds : tuple of float or mapping of str to tuple of float, optional
-        Finite nonnegative lower and upper spending limits in original units.
-        Supply one pair for all selected channels or one pair per channel name.
-        Cannot be combined with percentage constraints. Without either form,
-        each channel may receive zero through the total budget.
+        Finite nonnegative spending limits in original units, as one
+        ``(lower, upper)`` pair for all selected channels or a mapping with a
+        pair for each. Cannot be combined with ``spend_constraint_lower`` or
+        ``spend_constraint_upper``. Defaults to zero through ``budget``.
     spend_constraint_lower : float or sequence of float, optional
-        Allowed fractional decrease from each channel's share of ``budget``
-        using reference spending proportions. Use ``0.5`` for a 50% decrease
-        across all channels or one value per selected channel in ``channels``
-        order. Values must be between zero and one. Omit for a zero lower limit.
+        Allowed fractional decrease from each channel's reference share of
+        ``budget``, as one value or one per selected channel in ``channels``
+        order. Values must lie between zero and one. Omit to keep the lower
+        limits of ``bounds``.
     spend_constraint_upper : float or sequence of float, optional
-        Allowed fractional increase from the same reference-proportioned
-        budget. Use ``0.5`` for a 50% increase or one value per selected channel.
-        Values must be finite and nonnegative. Omit for an upper limit equal
-        to the total budget. Lists use data channel order if ``channels`` is omitted.
+        Allowed fractional increase from each channel's reference share of
+        ``budget``, as one value or one per selected channel in ``channels``
+        order. Values must be finite and nonnegative. Omit to keep the upper
+        limits of ``bounds``.
     constraints : sequence of SpendConstraint, optional
-        Limits on combined spending across named channel groups. These apply
-        alongside the total budget and individual channel limits. Overlapping
-        groups are allowed. Omit for individual limits only.
+        Limits on combined spending across named channel groups. They apply
+        alongside the budget and each channel's limits, and groups may overlap.
     channels : sequence of str, optional
-        Paid channels to optimize. Defaults to ordinary-media channels followed
-        by reach/frequency channels with paired spending. Names must be unique
-        across both types. Each selected channel needs positive reference
-        spending to define its allocation across periods and groups.
+        Paid channels to optimize, in the desired order. Defaults to all of
+        them, ordinary media first. Names must be unique, and each needs
+        positive reference spending during ``spend_periods``.
     new_data : dataframe-like or PreparedData, optional
-        Reference observations. Omit to use stored observations. The model's
-        fitted scales are reused.
+        Reference observations using the model's columns and fitted scales.
+        Omit to use stored observations. Supply ``PreparedData`` with
+        ``media_history`` to include earlier exposures for new observations.
     spend_periods : sequence, optional
-        Time labels whose spending changes. Defaults to all supplied periods.
+        Time labels whose spending changes. Defaults to all supplied modeling
+        periods.
     response_periods : sequence, optional
-        Time labels whose responses count. Defaults to all supplied periods.
-        Include later dates to measure carryover. No periods are added.
+        Time labels whose responses count. Defaults to all supplied modeling
+        periods. Include later dates to count carryover.
     by : str or sequence of str, optional
-        Retain ``"time"``, ``"group"``, or both in reported response effects.
-        Group breakdowns require grouped data. Axes follow time then group.
-        Omit to report totals. The objective, utility inputs, spending, and
-        ROI remain aggregated across periods and groups.
+        Observation axes to keep in the responses, as ``"time"``, ``"group"``,
+        or both. Keeping ``"group"`` requires grouped data. Omit to sum over
+        both.
     initial_spend : mapping of str to float, optional
         Feasible starting spend for each selected channel. Defaults to
         reference proportions adjusted to the budget, bounds, and constraints.
@@ -216,8 +222,9 @@ def optimize_budget(
         Also report channel incremental response, ROI, and marginal ROI at
         both allocations. Requires additional evaluations after optimization.
     incremental_increase : float, default 0.01
-        Positive fractional spend increase for marginal ROI when
-        ``include_metrics=True``. The default measures a 1% increase.
+        Positive fractional spending increase for marginal ROI when
+        ``include_metrics=True``. The default measures return on a 1%
+        increase, not an exact derivative.
     batch_size : int, default 64
         Maximum posterior draws evaluated together.
     maxiter : int, default 200
@@ -236,26 +243,17 @@ def optimize_budget(
         - **utility** — Objective value for each allocation
         - **lower_bound**, **upper_bound**, **initial_spend** — Channel limits
           and starting budgets in original spend units
-        - **spend_period**, **response_period**, **channel_type** — Labels for
-          selected dates and ordinary-media or reach/frequency channels
+        - **spend_period**, **response_period**, **channel_type** — Selected
+          dates and channel types
         - **constraint_spend**, **constraint_satisfied** — Group spending and
-          whether each allocation meets the supplied constraints. The reference
-          may violate them
+          whether each allocation meets the supplied constraints
         - **constraint_lower_bound**, **constraint_upper_bound**,
           **constraint_channels** — Group limits in spend units and membership
         - **incremental_response**, **roi**, **marginal_response**,
           **marginal_roi**, **incremental_spend**,
           **cost_per_incremental_response**, **spend_share**, **exposure**,
-          **effectiveness** — Metrics added with ``include_metrics=True`` and
-          evaluated at each allocation as defined in :func:`media_metrics`.
-          Their interventions are not restricted to optimization bounds
-
-        Responses use original outcome units and retain chain, draw, and
-        optional ``by`` axes. Channel ratios retain chain, draw, allocation,
-        and channel axes. They use totals across periods and groups. Spending,
-        ``spend_share``, and ``exposure`` have only allocation and channel
-        axes. Breakdowns describe one joint allocation, not separately
-        optimized budgets.
+          **effectiveness** — Channel metrics of :func:`media_metrics` at each
+          allocation with ``include_metrics=True``
     """
     tolerance = _positive_number(tolerance, "tolerance")
     if tolerance >= 1:
