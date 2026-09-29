@@ -7,7 +7,7 @@ from mmmjax.baselines.hsgp import HSGPApproximation, hsgp_basis, hsgp_weights, p
 from mmmjax.baselines.seasonality import fourier_features
 from mmmjax.data.checks import check_data, check_prior
 from mmmjax.data.prepare import Data, ModelInput, PreparedData, Reference, prepare_data, select_channels
-from mmmjax.data.scaling import DataScaling, Scaling, fit_data_scaling, fit_media_scaling, fit_scaling
+from mmmjax.data.scaling import DataScaling, Scaling, fit_data_scaling
 from mmmjax.data.synthetic import SyntheticData, simulate_data
 from mmmjax.distributions import (
     bernoulli,
@@ -242,8 +242,6 @@ __all__ = [
     "exponential_logsf",
     "exponential_rng",
     "fit_data_scaling",
-    "fit_media_scaling",
-    "fit_scaling",
     "fourier_features",
     "frequency_curves",
     "gamma",

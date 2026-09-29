@@ -122,7 +122,7 @@ Each line gives the old form and its replacement, checked against 0.10.2. Remove
 ## Pytrees
 
 - `writing-mmmjax-code` covers registered dataclasses and their static fields, which the package writes as `field(..., metadata={"static": True})`. A static field never holds an array, and `Data.__init__` in `data/prepare.py` checks that its constants hash.
-- Keep validation and array conversion out of a registered class's `__init__` and `__post_init__`, because transformations rebuild instances with placeholder leaves. Validate in a factory, as `fit_scaling` does for `Scaling`.
+- Keep validation and array conversion out of a registered class's `__init__` and `__post_init__`, because transformations rebuild instances with placeholder leaves. Validate in a factory, as the fitting helpers in `data/scaling.py` do for `Scaling`.
 
 ## Pin changes, custom rules, PRNG keys, devices, debugging, and testing
 
