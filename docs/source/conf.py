@@ -29,11 +29,14 @@ extensions = [
     "sphinx_immaterial",
     "api_examples",
     "last_updated",
+    "semantic_highlighting",
 ]
 
 exclude_patterns = []
 templates_path = ["_templates"]
 mathjax_path = "https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-mml-chtml.js"
+# \hl{x} marks where a symbol appears in a formula, colored by custom.css in each scheme.
+mathjax3_config = {"tex": {"macros": {"hl": [r"\class{mmmj-symbol}{#1}", 1]}}}
 
 html_theme = "sphinx_immaterial"
 html_static_path = ["_static"]
@@ -100,9 +103,11 @@ napoleon_use_ivar = True
 # Examples sections become admonitions so the theme can style them as example boxes
 napoleon_use_admonition_for_examples = True
 
-# Recolor the theme's example admonition to the brand forest green
+# Recolor the theme's example admonition to the brand forest green. The theme gives important boxes
+# no style of their own, so they take a purple that no other box uses.
 sphinx_immaterial_custom_admonitions = [
     {"name": "example", "override": True, "icon": "material/code-braces", "color": (7, 66, 48)},
+    {"name": "important", "override": True, "icon": "material/alert-decagram", "color": (124, 77, 255)},
 ]
 
 # Keep example output compact without rounding the values used in calculations

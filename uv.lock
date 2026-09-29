@@ -1880,6 +1880,7 @@ dependencies = [
     { name = "pandas" },
     { name = "plotnine" },
     { name = "scipy" },
+    { name = "sphinx" },
     { name = "tfp-nightly" },
     { name = "xarray" },
 ]
@@ -1959,6 +1960,7 @@ requires-dist = [
     { name = "pytest-xdist", marker = "extra == 'test'", specifier = ">=3.8" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.16.4" },
     { name = "scipy", specifier = ">=1.14" },
+    { name = "sphinx", specifier = ">=8.2.3" },
     { name = "sphinx", marker = "extra == 'doc'", specifier = ">=8,<9" },
     { name = "sphinx-copybutton", marker = "extra == 'doc'", specifier = ">=0.5" },
     { name = "sphinx-design", marker = "extra == 'doc'", specifier = ">=0.7" },

@@ -17,3 +17,7 @@ priors
 sampling
 inference
 ```
+
+<p class="mmmj-footer-logo">
+  <img src="../_static/mmmjax-logo.svg" alt="mmmJAX logo">
+</p>

@@ -310,45 +310,8 @@ reproduce, the same persistence the residual plot showed. `statistics` also
 takes your own function from one series to a number, such as the largest week
 or the share of weeks above a target.
 
-The pointwise log likelihood supports a sharper check. Leave-one-out
-cross-validation asks how well the model predicts each week when that week is
-left out of the fit, and ArviZ estimates it from the draws already in hand
-instead of refitting the model 156 times.
-
-```{code-cell} ipython3
-az.loo(results)
-```
-
-`elpd_loo` adds up the log predictive density of each week left out. The
-number only means something next to another version's, which is how [Changing
-the model](changing) uses it. `p_loo` estimates the effective number of
-parameters. At about 15 it sits well under the 45 the model declares, since
-channels that move together act like fewer parameters and the priors hold many
-of the rest in place. A value well above the declared count would point to a
-misspecified model. The Pareto $k$ values check the shortcut behind the
-estimate, and all 156 weeks fall in the good range. The same shortcut gives a
-calibration check.
-
-```{code-cell} ipython3
-az.plot_loo_pit(results, figure_kwargs={"figsize": (12, 5)})
-plt.show()
-```
-
-LOO-PIT, the leave-one-out probability integral transform, is the probability
-that a prediction made without a given week falls below that week's observed
-revenue. In a calibrated model these values are uniform, and the line shows
-how far their cumulative distribution strays from the uniform one. It stays
-within 0.05 of zero, and the test in the corner gives p = 0.46, so the wiggles
-are no larger than uniform values would show by chance. ArviZ took the log
-likelihood, the predictive draws, and the observed data for this check from
-the same `results`.
-
-LOO-PIT pools the weeks, so a model that misses something lasting longer than
-a week can still pass it, as this one does. The residual autocorrelation keeps
-the weeks in order and catches what LOO-PIT lets through.
-
 :::{admonition} Fit checks don't test causes
-:class: important
+:class: warning
 
 Every check so far compares the model with the data. A model can pass them all
 and still credit revenue to the wrong cause, and [Recovering the
@@ -425,9 +388,13 @@ asks for the supplied name `outcome_scaling` and converts, as this one does.
 
 ```{code-cell} ipython3
 def revenue_generated_quantities(key, outcome, outcome_scaling, mu, sigma):
+    # Simulated revenue for every week, and each observed week's log likelihood.
     prediction = mj.normal_rng(key, mu, sigma)
     pointwise = mj.normal_logpdf(outcome, mu, sigma)
+
+    # Each week's expected revenue in dollars, since mu holds standardized revenue.
     expected_revenue = outcome_scaling.inverse_transform(mu)
+
     # "predictive" and "log_likelihood" are supplied names, and expected_revenue is yours.
     return {
         "predictive": {"outcome": prediction},

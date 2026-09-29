@@ -48,7 +48,7 @@ brand.frame.head().round(2)
 ```
 
 :::{admonition} One national series
-:class: tip
+:class: note
 
 {func}`~mmmjax.simulate_data` makes three regions unless told otherwise, so
 the call above passes `groups=None` to get one national series instead.
@@ -362,4 +362,5 @@ The model departs from the simulation in four ways.
   strength changes from year to year.
 - Its noise adds to revenue, where the simulation's multiplies it.
 
-[Changing the model](changing) frees the slope and replaces the quadratic trend.
+[Changing the model](changing) adds a media effect that varies over time and
+warns that they can leak into it.

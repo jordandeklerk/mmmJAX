@@ -18,8 +18,8 @@ The functions are there for convenience, and nothing stops you from plotting
 another way. Results are ordinary xarray DataTree objects and every analysis
 output is an ordinary xarray Dataset, so ArviZ, plotnine, matplotlib, or any
 other plotting library can draw from them directly.
-[Customizing plots](custom_plots) shows how to change what these functions
-draw and how to build new plots from the same outputs.
+[Customizing plots](custom_plots) builds three figures of its own from the
+same outputs.
 
 ```{code-cell} ipython3
 :tags: [remove-cell]
@@ -117,8 +117,9 @@ the band, and [Sampling and diagnostics](sampling) reads the weeks outside it.
 
 Every plot follows ArviZ's settings, which give 89 percent intervals around
 the mean unless you change them. `ci_prob` changes the interval for one call,
-and [Customizing plots](custom_plots) shows how to change both for a block of
-code.
+and ArviZ's `rc_context`, as in
+`az.rc_context({"stats.ci_prob": 0.9, "stats.point_estimate": "median"})`,
+changes both for a block of code.
 :::
 
 `show_baseline=True` adds the baseline, the revenue the model expects with
@@ -289,7 +290,7 @@ the inputs under a line that traces what removing them all at once would
 cost.
 
 :::{admonition} The axis starts above zero
-:class: tip
+:class: note
 
 The vertical axis starts near the lowest weekly baseline rather than at zero,
 so the inputs stay visible.
@@ -413,7 +414,7 @@ mj.plot_adstock(
 ```
 
 :::{admonition} How the parameters reach the function
-:class: tip
+:class: note
 
 The function receives each draw of a parameter through the argument of the
 same name, the way the model's blocks receive their inputs. `parameters` maps

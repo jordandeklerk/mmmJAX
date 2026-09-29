@@ -9,290 +9,232 @@ kernelspec:
 
 Every plot mmmJAX draws is an ordinary plotnine `ggplot` or ArviZ
 `PlotCollection`, and every analysis output is an xarray Dataset with a value
-for each draw. This page recolors, annotates, reorders, and combines the plots
-from [Plotting](plotting), and builds one new plot from an analysis output, all
-on the ten-channel brand from [A first model](first_model).
+for each draw. For example, adding a plotnine scale, label, or theme with `+` changes a
+plot, as `+ pn.labs(title="Returns")` retitles one, and `save` writes it to a
+file. We don't intend to delve deep into the mechanics of the customization provided by [plotnine](https://plotnine.org/) or
+[ArviZ](https://python.arviz.org/) here and would refer the reader to their specific documentation for a full treatment.
 
-The examples cover the main ideas, not everything the two libraries can do.
-The [plotnine](https://plotnine.org/) and [ArviZ](https://python.arviz.org/)
-documentation cover the rest.
+Instead, we build three figures the built-in plots don't draw, each from one
+mmmJAX output for the ten-channel brand from [A first model](first_model).
 
 ```{code-cell} ipython3
 :tags: [remove-cell]
 
 %run -m prerun.first_model
-from prerun import first_model_results
+from prerun import first_model_plan, first_model_results
 
 results = first_model_results(model)
-
-import arviz as az
-import matplotlib.pyplot as plt
-
-az.style.use("arviz-darkgrid")
-plt.rcParams["axes.grid"] = False
-plt.rcParams["axes.facecolor"] = "white"
-plt.rcParams["axes.edgecolor"] = ".33"
-plt.rcParams["axes.linewidth"] = 0.8
-plt.rcParams["axes.spines.top"] = False
-plt.rcParams["axes.spines.right"] = False
-plt.rcParams["xtick.major.size"] = 3.5
-plt.rcParams["ytick.major.size"] = 3.5
-plt.rcParams["figure.figsize"] = [12, 5]
-plt.rcParams["figure.dpi"] = 100
 ```
 
-## Colors
+## Every return in full
 
-A plotnine plot colors its marks through scales, and `+` with a new scale
-replaces the plot's own. The ROI bars take their fill and outline from two
-scales keyed by the kind of bar.
+{func}`~mmmjax.plot_media_metrics` reduces each channel's return on ad spend
+to a mean and an interval. A ridgeline draws the whole posterior instead, from
+the draws that {func}`~mmmjax.media_metrics` returns.
 
 ```{code-cell} ipython3
-import plotnine as pn
-
 returns = mj.media_metrics(model, results, quantity="mu")
-roi = mj.plot_media_metrics(returns)
-coral = {"Channel": "#fb5639", "Other channels": "#a6a6a6"}
-roi + pn.scale_fill_manual(values=coral) + pn.scale_color_manual(values=coral)
 ```
 
-`"Other channels"` is the pooled bar that appears when `channels` leaves some
-out. `roi` itself keeps its own colors, so one plot can start several
-variants.
-
-:::{admonition} Finding a plot's keys
-:class: tip
-
-A comparison of several results keys its colors by each label you pass
-instead, and each plot keeps the data it draws in `data`. The column a scale
-maps, such as `kind` for these bars or `series` for
-{func}`~mmmjax.plot_fit`, holds the keys a new scale needs.
-:::
-
-## Annotations
-
-`annotate` places a mark at positions you give, and a plot's own `data`
-supplies them, since it holds each point estimate and interval the plot draws.
-
 ```{code-cell} ipython3
-best = roi.data.loc[roi.data["estimate"].idxmax()]
-note = pn.annotate(
-    "text",
-    x=best["channel"],
-    y=best["upper"] + 1.4,
-    label="Highest mean return",
-    color="#c10c90",
-    size=11,
-)
-roi + note
-```
+:tags: [hide-input]
 
-YouTube has the highest mean return at 4.06, and the note sits above its
-interval, whose top is 6.84. On a plot over time, `x` takes a date.
-
-```{code-cell} ipython3
-import pandas as pd
-
-residuals = mj.plot_residuals(model, results)
-worst = residuals.data.loc[residuals.data["estimate"].abs().idxmax()]
-label = f"Largest miss, week of {worst['time']:%B %-d, %Y}"
-point = pn.annotate("point", x=worst["time"], y=worst["estimate"], color="#c10c90", size=3)
-text = pn.annotate(
-    "text",
-    x=worst["time"] + pd.Timedelta(days=12),
-    y=worst["estimate"],
-    label=label,
-    ha="left",
-    color="#c10c90",
-    size=11,
-)
-residuals + point + text
-```
-
-The largest residual comes in the week of March 27, 2023, at about \$52,600.
-
-A layer can also bring data of its own. The source data records the weeks
-Linear TV was on air, and a gray band over each one shows whether the model
-misses something while TV runs.
-
-```{code-cell} ipython3
 import numpy as np
+import pandas as pd
+import plotnine as pn
+from scipy.stats import gaussian_kde
 
-weeks = pd.to_datetime(brand.frame["week"])
-on_air = brand.frame["linear_tv_spend"] > 0
-half_week = pd.Timedelta(days=3.5)
-flights = pd.DataFrame({"start": weeks - half_week, "end": weeks + half_week})
-shading = pn.geom_rect(
-    pn.aes(xmin="start", xmax="end"),
-    data=flights[on_air],
-    ymin=-np.inf,
-    ymax=np.inf,
-    fill="#8c8c8c",
-    alpha=0.15,
-    inherit_aes=False,
-)
-residuals + shading
-```
-
-Each band covers one week of TV spending, and neighboring weeks merge into
-the flights. Infinite bounds stretch each band over the whole panel.
-
-:::{admonition} Layers with their own data
-:class: tip
-
-`inherit_aes=False` keeps a layer that brings its own data from looking for
-the plot's own columns.
-:::
-
-The residuals inside the bands center on zero like the ones outside, so the
-model shows no steady miss while TV runs. The two largest misses, in March
-2023, do fall inside a flight.
-
-## Order, titles, and size
-
-The bars run from the most spending to the least. A new `x` scale with
-`limits` puts them in any order, here by mean return.
-
-```{code-cell} ipython3
-order = roi.data.sort_values("estimate", ascending=False)["channel"].astype(str).tolist()
-(
-    roi
-    + pn.scale_x_discrete(limits=order)
-    + pn.labs(title="Return on ad spend, highest mean first")
-    + pn.theme(figure_size=(12, 4))
-)
-```
-
-`labs` sets any title, subtitle, caption, or axis label. `theme` changes any
-setting of {func}`~mmmjax.theme_mmmjax`, from the figure's size here to fonts,
-legends, and tick labels.
-
-## Combining plots
-
-plotnine stacks plots with `/` and sets them side by side with `|`.
-
-```{code-cell} ipython3
-fit = mj.plot_fit(model, results) + pn.labs(x="")
-residuals = mj.plot_residuals(model, results) + pn.labs(y="Residual")
-fit / residuals
-```
-
-The fit sits above its residuals on the same weeks, so a week where the black
-line leaves the band lines up with the residual it leaves behind. The panels
-align across the two plots, `labs(x="")` drops the axis title the upper one
-would repeat, and a shorter `y` title fits the lower one's half height.
-
-## Your own plots
-
-Every analysis output holds a value for each draw, so a plot the library
-doesn't draw is often a few lines of xarray away, and
-{func}`~mmmjax.theme_mmmjax` gives it the same look.
-
-```{code-cell} ipython3
-effects = mj.contributions(model, results, quantity="mu", by="time")
-pair = effects["incremental_response"].sel(channel=["Linear TV", "Generic search"])
-quantiles = pair.quantile([0.05, 0.5, 0.95], dim=("chain", "draw"))
-names = {0.05: "lower", 0.5: "median", 0.95: "upper"}
-band = quantiles.to_series().unstack("quantile").rename(columns=names).reset_index()
-colors = {"Linear TV": "#2a2eec", "Generic search": "#fa7c17"}
-(
-    pn.ggplot(band, pn.aes("time", "median", color="channel", fill="channel"))
-    + pn.geom_ribbon(pn.aes(ymin="lower", ymax="upper"), alpha=0.2, color="none")
-    + pn.geom_line()
-    + pn.scale_color_manual(values=colors)
-    + pn.scale_fill_manual(values=colors)
-    + pn.scale_x_datetime(date_labels="%b %Y")
-    + pn.labs(
-        x="Week",
-        y="Incremental revenue",
-        color="Channel, 90% interval",
-        fill="Channel, 90% interval",
+draws = returns["roi"].stack(sample=("chain", "draw"))
+order = draws.mean("sample").to_series().sort_values().index.tolist()
+grid = np.union1d(np.linspace(0, float(draws.quantile(0.995)), 400), [1.0])
+ridges = []
+for position, channel in enumerate(order):
+    values = draws.sel(channel=channel).values
+    density = gaussian_kde(values)(grid)
+    ridges.append(
+        pd.DataFrame(
+            {
+                "channel": channel,
+                "roi": grid,
+                "base": position,
+                "top": position + 1.6 * density / density.max(),
+                "side": np.where(grid < 1, "below", "above"),
+                "share": f"{(values > 1).mean():.0%} above 1",
+            }
+        )
     )
+ridges = pd.concat(ridges)
+# Lower ridges draw later, so each one covers the foot of the ridge above it.
+layers = [channel + side for channel in reversed(order) for side in ("below", "above")]
+ridges["layer"] = pd.Categorical(ridges["channel"] + ridges["side"], categories=layers)
+labels = ridges.drop_duplicates("channel")
+(
+    pn.ggplot(ridges, pn.aes("roi"))
+    + pn.geom_ribbon(
+        pn.aes(ymin="base", ymax="top", fill="side", group="layer"),
+        color="#2a2eec",
+        size=0.5,
+        outline_type="upper",
+    )
+    + pn.geom_vline(xintercept=1, linetype="dashed", color="#8c8c8c")
+    + pn.annotate("text", x=1.08, y=len(order) + 0.4, label="Break-even", ha="left", size=9, color="#4d4d4d")
+    + pn.geom_text(
+        pn.aes(x=float(grid.max()), y="base + 0.25", label="share"),
+        data=labels,
+        ha="right",
+        size=9,
+        color="#4d4d4d",
+    )
+    + pn.scale_fill_manual(values={"above": "#d2d3fb", "below": "#f4b7aa"})
+    + pn.scale_y_continuous(
+        breaks=list(range(len(order))), labels=order, minor_breaks=[], expand=(0.02, 0, 0.12, 0)
+    )
+    + pn.guides(fill="none")
+    + pn.labs(x="Return on ad spend", y="")
     + mj.theme_mmmjax()
+    + pn.theme(figure_size=(12, 6))
 )
 ```
 
-`quantile` reduces the draws to each week's median and 90 percent interval,
-and `unstack` gives each quantile its own column. Linear TV's contribution
-comes in flights with wide bands at their peaks, while Generic search's runs
-every week. The stacked areas of {func}`~mmmjax.plot_contributions` leave that
-uncertainty out.
+Every return leans right, with a long tail of draws well above its mean. The
+coral foot of each ridge holds the draws below break-even, at most 5 percent
+for any channel, and YouTube and Streaming pay for themselves in 99 percent of
+the draws.
 
-## ArviZ plots
+## Where the optimizer moves money
 
-The diagnostics pass any extra keyword to the [ArviZ](https://python.arviz.org/)
-function they wrap and return its `PlotCollection`.
-
-```{code-cell} ipython3
-pc = mj.plot_trace_dist(
-    results,
-    var_names=["retention"],
-    coords={"channel": ["Meta", "YouTube", "Streaming"]},
-    compact=False,
-    aes={"color": ["channel"]},
-    figure_kwargs={"figsize": (12, 7)},
-)
-pc.add_legend("channel")
-pc.add_title("Retention by channel")
-plt.show()
-```
-
-`coords` keeps three of the ten channels, `compact=False` gives each its own
-row, `aes` colors each one, and the collection's own methods add the legend
-and the title. Meta's retention stays as spread out as its prior, while
-YouTube's leans toward shorter carryover, as the adstock plot on
-[Plotting](plotting) showed.
-
-ArviZ's own functions read the analysis outputs as well, since their draws sit
-on the same chain and draw axes as a fit's.
-
-```{code-cell} ipython3
-import arviz as az
-
-az.plot_forest(returns[["roi", "marginal_roi"]], combined=True, figure_kwargs={"figsize": (12, 7)})
-plt.show()
-```
-
-Each row places one channel's return or marginal return, with the point at its
-mean, the thick line over the middle half of the draws, and the thin line over
-89 percent of them. Every channel's marginal return sits left of its average
-return, and Snapchat's thin lines reach furthest in both, since its budget is
-the smallest.
-
-## Intervals and point estimates
-
-ArviZ's settings decide the intervals and point estimates of every plot, and
-`rc_context` changes them for a block of code.
-
-```{code-cell} ipython3
-with az.rc_context({"stats.ci_prob": 0.9, "stats.point_estimate": "median"}):
-    median_roi = mj.plot_media_metrics(returns)
-median_roi
-```
-
-The bars now mark each channel's median return, 2.99 for Meta instead of its
-mean of 3.49, and the error bars cover 90 percent. Every median sits below its
-mean, since the returns have long right tails.
-
-:::{admonition} When the settings apply
-:class: tip
-
-A plot reads the settings when it's made, so it keeps them after the block
-ends. Assigning to `az.rcParams` changes them for the rest of a session.
-:::
-
-## Saving
-
-`save` writes a plotnine plot in any format matplotlib supports, and a
-`PlotCollection` has `savefig`.
+The [budget optimizer](budgets) moves money until every channel's next dollar
+returns the same. The left panel follows each channel's revenue from its next
+dollar, from today's spending to the optimized plan, and the right panel shows
+the budget the plan moves.
 
 ```{code-cell} ipython3
 :tags: [skip-execution]
 
-roi.save("roi.png", dpi=200)
-pc.savefig("retention.png")
+plan = mj.optimize_budget(model, results, quantity="mu", include_metrics=True)
 ```
 
-A bar chart with many channels saves at its full width, so SVG or PDF keeps
-every bar sharp. For anything plotnine can't express, `draw` returns the
-matplotlib figure behind a plot.
+```{code-cell} ipython3
+:tags: [remove-cell]
+
+plan = first_model_plan(model, results)
+```
+
+```{code-cell} ipython3
+:tags: [hide-input]
+
+marginal = plan["marginal_roi"].mean(("chain", "draw")).to_pandas().T
+moved = plan["spend"].sel(allocation="optimized") - plan["spend"].sel(allocation="reference")
+moves = marginal.assign(change=moved.to_series()).reset_index().sort_values("reference")
+moves["direction"] = np.where(moves["change"] >= 0, "Gains budget", "Loses budget")
+moves["label"] = [
+    f"+${value / 1e3:,.0f}K" if value >= 0 else f"−${-value / 1e3:,.0f}K" for value in moves["change"]
+]
+common = moves["optimized"].mean()
+
+# Each layer's data names the panel it draws in.
+panels = ["Revenue from the next dollar", "Budget moved"]
+returns_panel = moves.assign(panel=panels[0])
+offset = np.sign(moves["change"]) * 6e3
+budget_panel = moves.assign(panel=panels[1], zero=0.0, text_x=moves["change"] + offset)
+splits = moves.melt(
+    id_vars="channel", value_vars=["reference", "optimized"], var_name="split", value_name="marginal"
+)
+names = {"reference": "Current spending", "optimized": "Optimized plan"}
+splits = splits.assign(panel=panels[0], split=splits["split"].map(names))
+common_line = pd.DataFrame({"panel": [panels[0]], "x": [common]})
+zero_line = pd.DataFrame({"panel": [panels[1]], "x": [0.0]})
+for frame in (returns_panel, budget_panel, splits, common_line, zero_line):
+    frame["panel"] = pd.Categorical(frame["panel"], categories=panels)
+
+
+def dollars(values):
+    # The panels share one x scale, so returns read in cents and budgets in thousands.
+    labels = []
+    for value in values:
+        if value == 0:
+            labels.append("$0")
+        elif abs(value) < 10:
+            labels.append(f"${value:.2f}")
+        else:
+            labels.append(f"{'+' if value > 0 else '−'}${abs(value) / 1e3:,.0f}K")
+    return labels
+
+
+gains = budget_panel[budget_panel["change"] >= 0]
+losses = budget_panel[budget_panel["change"] < 0]
+(
+    pn.ggplot(mapping=pn.aes(y="channel"))
+    + pn.geom_vline(pn.aes(xintercept="x"), data=common_line, linetype="dashed", color="#8c8c8c")
+    + pn.geom_vline(pn.aes(xintercept="x"), data=zero_line, color="#8c8c8c")
+    + pn.geom_segment(
+        pn.aes(x="reference", xend="optimized", yend="channel", color="direction"),
+        data=returns_panel,
+        size=1.2,
+    )
+    + pn.geom_point(pn.aes(x="marginal", fill="split"), data=splits, size=3.6, color="#262626", stroke=0.8)
+    + pn.geom_segment(
+        pn.aes(x="zero", xend="change", yend="channel", color="direction"), data=budget_panel, size=7
+    )
+    + pn.geom_text(pn.aes(x="text_x", label="label", color="direction"), data=gains, ha="left", size=9)
+    + pn.geom_text(pn.aes(x="text_x", label="label", color="direction"), data=losses, ha="right", size=9)
+    + pn.facet_wrap("panel", scales="free_x", ncol=2)
+    + pn.scale_y_discrete(limits=moves["channel"].tolist())
+    + pn.scale_x_continuous(labels=dollars, expand=(0.12, 0))
+    + pn.scale_color_manual(values={"Gains budget": "#2a2eec", "Loses budget": "#d9432a"})
+    + pn.scale_fill_manual(values={"Current spending": "white", "Optimized plan": "#262626"})
+    + pn.labs(
+        x="",
+        y="",
+        color="",
+        fill="",
+        title=f"The optimizer moves budget until every channel's next dollar returns about ${common:.2f}",
+    )
+    + mj.theme_mmmjax()
+    + pn.theme(figure_size=(12, 6), legend_position="top", subplots_adjust={"wspace": 0.08})
+)
+```
+
+The channels whose next dollar returns the most gain budget, and their return
+on the next dollar falls as they grow. The rest give budget up, and theirs
+rises, until all ten meet at about \$1.67. Streaming gains the most,
+\$184,000, and Generic search gives up the most, \$145,000.
+
+## When each channel earns
+
+{func}`~mmmjax.contributions` with `by="time"` gives each channel's
+incremental revenue in every week and draw. A heatmap of the weekly means,
+each scaled to the channel's best week, shows when each channel earns.
+
+```{code-cell} ipython3
+effects = mj.contributions(model, results, quantity="mu", by="time")
+```
+
+```{code-cell} ipython3
+:tags: [hide-input]
+
+paid = effects["incremental_response"].sel(channel=effects["channel_type"] == "media")
+weekly = paid.mean(("chain", "draw"))
+calendar = weekly.to_dataframe(name="revenue").reset_index()
+calendar["share"] = calendar["revenue"] / calendar.groupby("channel")["revenue"].transform("max")
+ranking = weekly.sum("time").to_series().sort_values().index.tolist()
+(
+    pn.ggplot(calendar, pn.aes("time", "channel", fill="share"))
+    + pn.geom_tile(width=7, height=0.9)
+    + pn.scale_y_discrete(limits=ranking)
+    + pn.scale_x_datetime(date_labels="%b %Y", expand=(0, 0))
+    + pn.scale_fill_gradient(
+        low="#f3f7f5", high="#074230", labels=lambda values: [f"{value:.0%}" for value in values]
+    )
+    + pn.labs(x="", y="", fill="Share of the\nchannel's best week")
+    + mj.theme_mmmjax()
+    + pn.theme(figure_size=(12, 5))
+)
+```
+
+Meta, Display, and both search channels spend every week and earn every week.
+Streaming, Linear TV, TikTok, and Influencer run flights on one shared
+calendar, which Snapchat joins in July 2022, and each flight's revenue fades
+over the weeks after it ends as carryover runs out. That shared calendar is why
+[Media effects](media_effects) finds the total these channels bring firmer than
+its split among them. YouTube runs flights on a schedule of its own.

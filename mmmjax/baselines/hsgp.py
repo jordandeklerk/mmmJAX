@@ -232,7 +232,7 @@ def prepare_hsgp(
     center = (start + end) / 2
     half_span = (end - start) / 2
 
-    # One-dimensional sizing recommendations from Ruitort-Mayol et al.
+    # One-dimensional sizing recommendations from Riutort-Mayol et al.
     # Domain padding controls boundary effects and the basis count controls
     # how much of the high-frequency spectrum is retained.
     if covariance == "expquad":

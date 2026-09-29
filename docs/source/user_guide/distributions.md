@@ -66,8 +66,8 @@ The five calls above each do a different job.
 `generated_quantities` returns the log likelihood under the
 [supplied key](../getting_started/what_is_mmmjax.md#how-blocks-get-their-inputs)
 `"log_likelihood"`, and it needs one term per observation from the pointwise
-form. The summed form is stored without an error, but LOO then scores the
-whole series as a single observation.
+form. The summed form is stored without an error, but a check that scores
+the weeks one at a time then sees the whole series as a single week.
 :::
 
 Discrete families use `_logpmf` in place of `_logpdf`. Every family in the

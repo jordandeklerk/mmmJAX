@@ -274,7 +274,7 @@ their effects are answers of their own, so their uncertainty reaches you
 through {func}`~mmmjax.contributions` and its plots.
 
 :::{admonition} Treatment priors need more thought
-:class: important
+:class: note
 
 Because a treatment's effect is an answer of its own, its prior deserves more
 thought than a control's. [A first model](first_model) gives the price and the

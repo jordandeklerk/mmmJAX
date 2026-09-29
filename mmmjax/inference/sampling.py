@@ -904,8 +904,8 @@ def generate_quantities(
         With ``new_data`` and prepared data, predictive draws go to
         **predictions**, pointwise log likelihoods to
         **predictions_log_likelihood**, and the new inputs and outcome to
-        **predictions_constant_data**. ArviZ's in-sample checks such as
-        ``loo`` never read these groups. Original sampler diagnostics are
+        **predictions_constant_data**. ArviZ's checks on the fit never read
+        these groups. Original sampler diagnostics are
         omitted.
     """
     if not isinstance(model, Model):

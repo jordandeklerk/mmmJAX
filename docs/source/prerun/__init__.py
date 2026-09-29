@@ -68,6 +68,12 @@ def first_model_curves(model: mj.Model, results: xr.DataTree) -> xr.Dataset:
     return curves
 
 
+def first_model_plan(model: mj.Model, results: xr.DataTree) -> xr.Dataset:
+    """Load the stored budget plan that moves the current budget freely among the channels."""
+    plan = stored("first_model_plan", lambda: mj.optimize_budget(model, results, quantity="mu", include_metrics=True))
+    return plan
+
+
 def first_model_limited_plan(model: mj.Model, results: xr.DataTree) -> xr.Dataset:
     """Load the stored budget plan that keeps each channel within 30 percent of its spending."""
     plan = stored(

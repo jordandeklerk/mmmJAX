@@ -452,7 +452,7 @@ and its flag together, far better than either part, and the treatment prior
 does the splitting.
 
 :::{admonition} Priors that decide the answer
-:class: important
+:class: warning
 
 Where a posterior repeats its prior, as email's share largely does here, the
 answer comes from the prior, so that prior needs the most thought.
