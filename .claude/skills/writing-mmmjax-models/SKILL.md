@@ -93,9 +93,11 @@ comes from; the docs give that in each model's symbol tables.
    the user instead of choosing silently.
 2. Every model's `generated_quantities` returns both `predictive` and
    `log_likelihood`, not only docs fits. Draw with the likelihood's `_rng` form
-   and score with its `_logpdf` or `_logpmf` form. Key both `"outcome"` even
-   when `Data(variables=...)` renames the argument, because `observed_data`
-   always names it `outcome`.
+   and score with its `_logpdf` or `_logpmf` form. Return each as a plain
+   array, as in `{"predictive": prediction, "log_likelihood": pointwise}`, and
+   mmmJAX stores both as `outcome`, the name `observed_data` always uses, even
+   when `Data(variables=...)` renames the argument. A model without prepared
+   data names them in a mapping instead.
 3. Priors describe the data in model units. Under `fit_data_scaling` that is
    media divided by its positive median, standardized controls and
    treatments, and the outcome only when `scale_outcome` is set, and under a

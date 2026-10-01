@@ -366,8 +366,8 @@ def varying_generated_quantities(key, outcome, mu, multiplier, sigma):
 
     # multiplier is one of your names, so it lands in the results under that key.
     return {
-        "predictive": {"outcome": prediction},
-        "log_likelihood": {"outcome": pointwise},
+        "predictive": prediction,
+        "log_likelihood": pointwise,
         "multiplier": multiplier,
     }
 

@@ -137,7 +137,7 @@ def log_density(...):
 
 def generated_quantities(...):
     # Predictions and the pointwise log likelihood, once for each saved draw.
-    return {"predictive": {...}, "log_likelihood": {...}}
+    return {"predictive": ..., "log_likelihood": ...}
 
 
 model = mj.Model(
@@ -151,9 +151,9 @@ model = mj.Model(
 ```
 
 `"predictive"` and `"log_likelihood"` are supplied names that decide where
-mmmJAX stores the draws, and with prepared data both hold their draws under
-`"outcome"` so they line up with the observed data. `"log_prior"` is supplied
-too, for the prior terms, and any other key you return is yours to name.
+mmmJAX stores the draws. With prepared data, mmmJAX names both `"outcome"` so
+they line up with the observed data. `"log_prior"` is supplied too, for the
+prior terms, and any other key you return is yours to name.
 
 Only `parameters` and `log_density` are required, and you add the other blocks
 as your model needs them. The block you put a calculation in decides how often

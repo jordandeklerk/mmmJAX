@@ -542,6 +542,29 @@ def test_transformed_outputs_routed_to_result_groups_keep_observation_labels(res
         np.testing.assert_array_equal(result[group]["draw"], results["posterior"]["draw"])
 
 
+def test_arrays_returned_under_predictive_and_log_likelihood_are_stored_as_the_outcome(results):
+    def named(key, signal, pointwise):
+        return {"predictive": {"outcome": signal}, "log_likelihood": {"outcome": pointwise}}
+
+    def unnamed(key, signal, pointwise):
+        return {"predictive": signal, "log_likelihood": pointwise}
+
+    expected = generate_quantities(_saved_model(generate=named), results)
+
+    result = generate_quantities(_saved_model(generate=unnamed), results)
+
+    for group in ("posterior_predictive", "log_likelihood"):
+        assert result[group]["outcome"].dims == ("chain", "draw", "time")
+        xr.testing.assert_identical(result[group].to_dataset(), expected[group].to_dataset())
+
+
+def test_log_prior_requires_terms_named_by_parameter_with_prepared_data(results):
+    model = _saved_model(generate=lambda key, total: {"log_prior": total})
+
+    with pytest.raises(TypeError, match=r"under 'log_prior', got .+\. Key each log-prior term by its parameter's name"):
+        generate_quantities(model, results)
+
+
 def test_transformed_log_prior_terms_are_collected_through_the_generation_callback(results):
     model = Model(
         parameters={"scale": Positive((2,))},

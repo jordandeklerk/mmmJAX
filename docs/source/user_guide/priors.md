@@ -210,8 +210,8 @@ prior_results = first_model_prior_results(model, priors)
 `sample_prior` draws each parameter from its prior and runs
 `transformed_parameters` and `generated_quantities` on those draws. What
 `generated_quantities` returns under the supplied name `"predictive"` lands in
-the `prior_predictive` group. For this model that's `"outcome"`, one simulated
-revenue series per draw.
+the `prior_predictive` group as `"outcome"`, one simulated revenue series per
+draw.
 
 {func}`~mmmjax.plot_ppc_dist` puts those series back in dollars and draws
 their distributions with [ArviZ](https://python.arviz.org/). On a prior check

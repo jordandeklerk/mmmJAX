@@ -438,8 +438,8 @@ def revenue_generated_quantities(key, outcome, outcome_scaling, mu, sigma):
 
     # "predictive" and "log_likelihood" are supplied names, and expected_revenue is yours.
     return {
-        "predictive": {"outcome": prediction},
-        "log_likelihood": {"outcome": pointwise},
+        "predictive": prediction,
+        "log_likelihood": pointwise,
         "expected_revenue": expected_revenue,
     }
 

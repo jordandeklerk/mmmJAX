@@ -1214,6 +1214,26 @@ def test_generate_must_return_mapping() -> None:
         specification.generate_quantities(jax.random.key(0), {"a": 0.0}, {})
 
 
+@pytest.mark.parametrize(
+    "group, message",
+    [
+        ("predictive", "Only a model with prepared data stores an unnamed output as its outcome"),
+        ("log_likelihood", "Only a model with prepared data stores an unnamed output as its outcome"),
+        ("log_prior", "Key each log-prior term by its parameter's name"),
+    ],
+)
+def test_result_groups_require_named_outputs_without_prepared_data(group, message) -> None:
+    def generate(key, data, a):
+        return {group: a}
+
+    specification = Model(
+        parameters={"a": Real()}, log_density=_one_parameter_log_density, generated_quantities=generate
+    )
+
+    with pytest.raises(TypeError, match=f"under '{group}', got .+\\. {message}"):
+        specification.generate_quantities(jax.random.key(0), {"a": 0.0}, {})
+
+
 def test_generated_quantity_values_must_be_array_like() -> None:
     def generate(key, data, a):
         return {"bad_value": object()}

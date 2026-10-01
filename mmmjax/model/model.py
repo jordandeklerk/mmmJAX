@@ -257,10 +257,14 @@ class Model:
 
     The mappings ``generated_quantities`` returns under ``predictive``,
     ``log_likelihood``, and ``log_prior`` fill the matching result groups, and
-    every other entry is a generated quantity. With prepared data, name the
-    predictive draws and the pointwise log likelihood ``outcome``. Pointwise
-    log likelihoods exclude priors and adjustments, and log-prior terms count
-    each prior factor once without constraint adjustments.
+    every other entry is a generated quantity. Pointwise log likelihoods
+    exclude priors and adjustments, and log-prior terms count each prior
+    factor once without constraint adjustments.
+
+    With prepared data, an array returned directly under ``predictive`` or
+    ``log_likelihood`` is stored as ``outcome``, the name the observed data
+    carries, so ArviZ can pair the two. A mapping there names each output
+    instead, and models without prepared data always need one.
 
     Inspect derived quantities with ``evaluate`` and the constrained log
     density with ``log_prob`` before fitting. Samplers call ``log_density`` on
@@ -847,10 +851,11 @@ class Model:
         ordered = {name: constrained[name] for name in parameters}
         generated, arguments = self._blocks.evaluate_generated(key, ordered, data)
         reserved = frozenset() if self._data is None else self._data.reserved_names
-        return _collect_outputs(generated, reserved), arguments
+        outputs = _collect_outputs(generated, reserved, prepared=self._data is not None)
+        return outputs, arguments
 
 
-def _collect_outputs(generated: object, reserved: frozenset[str]) -> dict[_OutputKey, jax.Array]:
+def _collect_outputs(generated: object, reserved: frozenset[str], *, prepared: bool) -> dict[_OutputKey, jax.Array]:
     """Validate and flatten callback outputs into arrays keyed by result group and name."""
     if not isinstance(generated, Mapping):
         raise TypeError(
@@ -861,12 +866,7 @@ def _collect_outputs(generated: object, reserved: frozenset[str]) -> dict[_Outpu
     for group in _ResultGroup:
         if group not in generated:
             continue
-        grouped = generated[group]
-        if not isinstance(grouped, Mapping):
-            raise TypeError(
-                f"generated_quantities must return a mapping of named outputs under {group.value!r}, "
-                f"got {type(grouped).__name__}"
-            )
+        grouped = _named_outputs(generated[group], group, prepared=prepared)
         for output_name, output in grouped.items():
             _validate_output_name(output_name, reserved, label=f"{group} quantity")
             outputs[(group, output_name)] = output
@@ -885,6 +885,25 @@ def _collect_outputs(generated: object, reserved: frozenset[str]) -> dict[_Outpu
                 f"generated quantity {output_key[1]!r} must be array-like, got {type(value).__name__}"
             ) from exc
     return quantities
+
+
+def _named_outputs(grouped: object, group: _ResultGroup, *, prepared: bool) -> Mapping[str, object]:
+    """Name an array returned directly under a result group after the observed outcome."""
+    if isinstance(grouped, Mapping):
+        return grouped
+    # Prepared data observes only the outcome, and ArviZ pairs these groups with it by name.
+    if prepared and group != _ResultGroup.LOG_PRIOR:
+        named = {"outcome": grouped}
+        return named
+    remedy = (
+        "Key each log-prior term by its parameter's name"
+        if group == _ResultGroup.LOG_PRIOR
+        else "Only a model with prepared data stores an unnamed output as its outcome"
+    )
+    raise TypeError(
+        f"generated_quantities must return a mapping of named outputs under {group.value!r}, "
+        f"got {type(grouped).__name__}. {remedy}"
+    )
 
 
 def _validate_output_name(name: object, reserved: frozenset[str], *, label: str) -> None:

@@ -651,14 +651,19 @@ adjustments its declarations make for their constraints.
 
 ## The priors as objects
 
-Some tools never run `log_density`, so they need the priors as objects they
-can draw from and score. {func}`~mmmjax.sample_prior` draws from the priors
-alone, and [Priors](priors) uses those draws to check what the model believes
-before it sees the data. {func}`~mmmjax.psense_summary` and
-{func}`~mmmjax.plot_psense` score the posterior draws under them to measure
-how much each posterior depends on the priors. For these tools, you state the
-same thirteen priors a second time in a dictionary of {class}`~mmmjax.Prior`
-objects.
+`log_density` hands mmmJAX one number, the total of every term you added to
+`target`. The sampler needs nothing more than that to fit the model, but a few
+tools need to work with the priors themselves. {func}`~mmmjax.sample_prior`
+draws each parameter from its prior so that [Priors](priors) can show you what
+the model believes before it sees any data. `log_density` can score any values
+you give it, but it has no way to produce new ones.
+{func}`~mmmjax.psense_summary` and {func}`~mmmjax.plot_psense` measure how
+much each estimate leans on its prior, so they need each prior's share of the
+total rather than the total alone.
+
+A dictionary of {class}`~mmmjax.Prior` objects gives those tools the priors in
+a form they can draw from and score one at a time. Since each entry mirrors a
+line of `log_density` above, you can carry its settings straight across.
 
 ```{code-cell} ipython3
 # The prior tools read this mapping and log_density never does, so keep the two in step.
@@ -679,11 +684,12 @@ priors = {
 }
 ```
 
-A prior binds one of the distribution functions to fixed settings, so
-`priors["roi"]` holds the lognormal with location 1.0 and scale 0.6 that
-`log_density` writes for `roi`. You now state each prior in two places, and
-[Priors](priors.md#checking-the-mapping-against-the-density) shows how to
-check that the two agree.
+Each {class}`~mmmjax.Prior` pairs a distribution function with fixed settings,
+so `priors["roi"]` is the same lognormal with location 1.0 and scale 0.6 that
+`log_density` uses for `roi`. Because the dictionary and `log_density` describe
+the same model, it's worth keeping them matched whenever you change a prior.
+[Priors](priors.md#checking-the-mapping-against-the-density) shows a check you
+can run to confirm that the two agree.
 
 ## Generated quantities
 
@@ -699,11 +705,8 @@ def generated_quantities(key, outcome, mu, sigma):
     pointwise = mj.normal_logpdf(outcome, mu, sigma)
 
     # "predictive" and "log_likelihood" are supplied names that tell mmmJAX where to store
-    # the draws, and "outcome" matches the observed data because ArviZ pairs them by name.
-    return {
-        "predictive": {"outcome": prediction},
-        "log_likelihood": {"outcome": pointwise},
-    }
+    # the draws, and mmmJAX names both "outcome" so ArviZ pairs them with the observed data.
+    return {"predictive": prediction, "log_likelihood": pointwise}
 ```
 
 For each draw of the parameters, `prediction` redraws every week's
