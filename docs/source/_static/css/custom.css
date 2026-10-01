@@ -87,6 +87,88 @@ header.md-header,
   }
 }
 
+/*
+toc-rail.js traces the "On this page" outline with a hairline that curves in and out with its indentation and
+slides a solid thumb over the sections on screen. Sections on screen stay bright, the one being read turns
+green, and the rest dim.
+*/
+.md-sidebar--secondary {
+  --mmmj-rail-line: color-mix(in srgb, var(--md-default-fg-color) 16%, transparent);
+}
+
+/* The sidebar's scroll box clips at its edge, so the outline moves right to leave the line room. */
+.md-nav--secondary.mmmj-rail-on {
+  position: relative;
+  padding-left: 0.5rem;
+}
+
+.mmmj-rail {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.mmmj-rail__track,
+.mmmj-rail__thumb {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.mmmj-rail__track {
+  stroke: var(--mmmj-rail-line);
+  stroke-width: 1;
+}
+
+.mmmj-rail__thumb {
+  stroke: var(--md-accent-fg-color);
+  stroke-width: 2;
+  transition: opacity 0.2s;
+}
+
+.md-nav--secondary.mmmj-rail-on .md-nav__link:not(:hover) {
+  color: var(--md-default-fg-color--light);
+  transition: color 0.25s;
+}
+
+.md-nav--secondary.mmmj-rail-on .md-nav__link.mmmj-visible:not(:hover) {
+  color: var(--md-default-fg-color);
+}
+
+.md-nav--secondary.mmmj-rail-on .md-nav__link.mmmj-current:not(:hover) {
+  color: var(--md-accent-fg-color);
+}
+
+.mmmj-ring {
+  width: 0.85em;
+  height: 0.85em;
+  margin-left: 0.5em;
+  vertical-align: -0.1em;
+}
+
+.mmmj-ring circle {
+  fill: none;
+  stroke-width: 1.75;
+}
+
+.mmmj-ring__track {
+  stroke: var(--mmmj-rail-line);
+}
+
+.mmmj-ring__arc {
+  stroke: var(--md-accent-fg-color);
+  stroke-linecap: round;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .md-nav--secondary.mmmj-rail-on .md-nav__link:not(:hover),
+  .mmmj-rail__thumb {
+    transition: none;
+  }
+}
+
 .highlight {
   background-color: var(--md-code-bg-color);
   border-radius: 4px;

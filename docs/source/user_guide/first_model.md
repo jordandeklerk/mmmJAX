@@ -454,8 +454,8 @@ Each argument belongs to one of the groups in
 :::{admonition} Supplied names and your names
 :class: important
 
-Supplied names such as `day_of_year` keep mmmJAX's spelling, and
-[Data and scaling](data.md#supplied-names) lists every one. `annual` and
+Supplied names such as `day_of_year` keep mmmJAX's spelling, and the
+[Data and scaling](data.md#supplied-names) section lists every one of these. `annual` and
 `trend`, like the keys of `parameters`, are your own names. You can rename one
 as long as every block that uses it changes too and the new name isn't a
 supplied one. If you rename a parameter, change its key in `priors` below as
@@ -472,7 +472,8 @@ week, so a forecast carries the trend on past the training weeks, as
 ## Expected revenue
 
 The model applies HillAdstock twice, to the training exposure and to the
-exposure it's evaluating, so you write the transformation once as a helper. A
+exposure it's evaluating, so you write the transformation once as a helper. One
+of the many awesome features of mmmJAX is that a
 block can call any Python function written with JAX operations, and
 [User-defined functions](functions) covers the rules.
 
