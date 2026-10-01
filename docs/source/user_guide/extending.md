@@ -1,7 +1,8 @@
 # Extending the model
 
-These pages change the model itself. They let its media effect vary over
-time, fit it region by region, and write functions of your own for its blocks.
+In this section you change the model itself by letting its media effect vary
+over time, fitting it region by region, and writing your own functions for its
+blocks.
 
 | Guide | Description |
 | --- | --- |

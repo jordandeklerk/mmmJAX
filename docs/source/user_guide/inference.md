@@ -7,17 +7,17 @@ kernelspec:
 
 # Inference
 
-{func}`~mmmjax.sample` isn't the only way to fit a model. A model exposes its
-log density and the transforms around it as plain JAX functions, so any
-sampler that works with a JAX log density can fit it, and the analysis and
-plotting functions accept the draws it returns. This page covers what the
-log density guarantees, runs BlackJAX and NumPyro directly on the ten-channel
-brand model from [A first model](first_model), and tries an approximation that
-skips MCMC.
+You don't have to fit a model with {func}`~mmmjax.sample`, because a model
+exposes its log density and the transforms around it as plain JAX functions.
+Any sampler that works with a JAX log density can fit it, and the analysis and
+plotting functions accept the draws it returns. After a look at what the log
+density guarantees, you'll run BlackJAX and NumPyro directly on the
+ten-channel brand model from [A first model](first_model) and try an
+approximation that skips MCMC.
 
-The page runs in 64-bit precision, which the Pathfinder section needs. The
-cell below turns it on before the model is built, because a model keeps the
-precision that was in effect when it was created, as
+The Pathfinder section needs 64-bit precision, so the whole page runs in it.
+The cell below turns it on before the model is built, because a model keeps
+the precision that was in effect when it was created, as
 [Installation](../getting_started/installation.md#choosing-float32-or-float64)
 explains.
 
@@ -39,7 +39,7 @@ results = first_model_results(model)
 ## The interface
 
 A model works on an unconstrained position, a dictionary with one array for
-each parameter under the name you declared in `parameters`, and it provides
+each parameter under the name you declared in `parameters`. It provides
 everything a gradient-based sampler needs to move around that space.
 
 ```{code-cell} ipython3
@@ -50,11 +50,11 @@ value, gradient = jax.value_and_grad(model.log_density)(position, model.data)
 model.constrain(position)["retention"]
 ```
 
-{meth}`~mmmjax.Model.initialize_random` draws a starting point,
-{meth}`~mmmjax.Model.log_density` evaluates the model at a position, and
-{meth}`~mmmjax.Model.constrain` maps a position back to the natural scale,
-where each of the ten retention rates lies between zero and one.
-{meth}`~mmmjax.Model.unconstrain` goes the other way.
+In the cell, {meth}`~mmmjax.Model.initialize_random` draws a starting point
+and {meth}`~mmmjax.Model.log_density` evaluates the model at a position.
+{meth}`~mmmjax.Model.constrain` maps a position back to the natural scale, and
+{meth}`~mmmjax.Model.unconstrain` goes the other way. On the natural scale, each
+of the ten retention rates in the output lies between zero and one.
 
 ## What the log density guarantees
 
@@ -68,19 +68,18 @@ $$
 $$
 
 and the declarations supply the second term, so a density written on the
-natural scale is correct on the unconstrained one. The rest depends on the
-blocks you write.
+natural scale is correct on the unconstrained one. The rest is up to the
+blocks you write, so the cell below checks that the value and every part of
+the gradient are finite at the starting point drawn above.
 
 ```{code-cell} ipython3
 finite_gradient = all(bool(jnp.all(jnp.isfinite(leaf))) for leaf in jax.tree.leaves(gradient))
 bool(jnp.isfinite(value)), finite_gradient
 ```
 
-Both checks pass for the brand model. The density doesn't have to be
-normalized, since samplers only use differences in the log density and its
-gradient, but mmmJAX's distributions keep their constants, so pointwise log
-likelihoods stay comparable across models. [User-defined functions](functions)
-covers the rules JAX sets for code that runs inside a block.
+Both come back `True`, so the brand model passes the check at that starting
+point. When you write your own blocks, [User-defined functions](functions)
+covers the rules JAX sets for code that runs inside one.
 
 :::{admonition} Keep the density pure
 :class: important
@@ -90,48 +89,11 @@ That rules out randomness and changing global state inside
 `transformed_parameters` and `log_density`.
 :::
 
-## BlackJAX
+## Labeling the draws
 
-BlackJAX is the library {func}`~mmmjax.sample` uses for NUTS, and it can run on
-the model directly. The function below tunes a NUTS kernel with window
-adaptation, then runs one chain and keeps each draw's position and whether its
-transition diverged.
-
-```{code-cell} ipython3
-import blackjax
-
-
-def logdensity(position):
-    return model.log_density(position, model.data)
-
-
-def run_chain(key, num_warmup=1000, num_draws=1000):
-    init_key, warmup_key, sample_key = jax.random.split(key, 3)
-    warmup = blackjax.window_adaptation(blackjax.nuts, logdensity)
-    (state, parameters), _ = warmup.run(
-        warmup_key, model.initialize_random(init_key), num_steps=num_warmup
-    )
-    kernel = blackjax.nuts(logdensity, **parameters)
-
-    def one_step(state, step_key):
-        state, info = kernel.step(step_key, state)
-        return state, (state.position, info.is_divergent)
-
-    _, (positions, diverging) = jax.lax.scan(
-        one_step, state, jax.random.split(sample_key, num_draws)
-    )
-    return positions, diverging
-```
-
-The draws come back on the unconstrained scale. `to_results` maps them to the
-natural scale and labels them the way mmmJAX labels its own results. It adds
-chain and draw axes and gives the `channel`, `organic_channel`, `control`, and
-`treatment` axes their labels from the data. Those axes are supplied names,
-listed in [Data and scaling](data.md#supplied-names), which is why the
-parameters' `dims` can use them. The four seasonal coefficients are declared
-as `mj.Real(4)` with no `dims`, so their axis takes the name
-{func}`~mmmjax.sample` gives it, `annual_coefficients_dim_0`, with the labels 0
-to 3.
+The samplers below return their draws on the unconstrained scale, so
+`to_results` maps them to the natural scale and labels them the way mmmJAX
+labels its own results.
 
 ```{code-cell} ipython3
 import xarray as xr
@@ -164,10 +126,47 @@ def to_results(draws, diverging=None):
 
 {func}`~mmmjax.media_metrics`, {func}`~mmmjax.generate_quantities`, and the
 other functions that evaluate the model on draws reject any other labels. A
-data axis named in `dims` needs the data's labels in the data's order, and each
-axis of a parameter declared without `dims` needs the parameter's name
-followed by `_dim_0`, `_dim_1`, and so on, with labels counting from zero.
+data axis named in `dims`, one of the [supplied names](data.md#supplied-names),
+needs the data's labels in the data's order. An axis of a parameter declared
+without `dims` needs labels counting from zero and the parameter's name
+followed by `_dim_0`, `_dim_1`, and so on.
 :::
+
+## BlackJAX
+
+BlackJAX is the library {func}`~mmmjax.sample` uses for NUTS, and it can run on
+the model directly. The function below tunes a NUTS kernel with window
+adaptation, runs one chain, and keeps each draw's position along with whether
+its transition diverged. Window adaptation's acceptance target of 0.8 and
+diagonal mass matrix, and the kernel's limit of 10 on tree depth, are the
+defaults {func}`~mmmjax.sample` uses too, so the two fits differ in their random
+numbers rather than their sampler settings.
+
+```{code-cell} ipython3
+import blackjax
+
+
+def logdensity(position):
+    return model.log_density(position, model.data)
+
+
+def run_chain(key, num_warmup=1000, num_draws=1000):
+    init_key, warmup_key, sample_key = jax.random.split(key, 3)
+    warmup = blackjax.window_adaptation(blackjax.nuts, logdensity)
+    (state, parameters), _ = warmup.run(
+        warmup_key, model.initialize_random(init_key), num_steps=num_warmup
+    )
+    kernel = blackjax.nuts(logdensity, **parameters)
+
+    def one_step(state, step_key):
+        state, info = kernel.step(step_key, state)
+        return state, (state.position, info.is_divergent)
+
+    _, (positions, diverging) = jax.lax.scan(
+        one_step, state, jax.random.split(sample_key, num_draws)
+    )
+    return positions, diverging
+```
 
 `jax.vmap` runs four chains at once, one for each key, and stacks them into
 one set of results.
@@ -196,8 +195,8 @@ blackjax_results = stored("blackjax", fit_blackjax, groups=["posterior", "sample
 int(blackjax_results["sample_stats"]["diverging"].sum())
 ```
 
-None of the 4,000 transitions diverged. The plots take these results as they
-are, so {func}`~mmmjax.plot_rhat` checks that the four chains agree.
+None of the 4,000 transitions diverged, so you can move on to
+{func}`~mmmjax.plot_rhat` and check that the four chains agree.
 
 ```{code-cell} ipython3
 mj.plot_rhat(blackjax_results)
@@ -206,13 +205,13 @@ mj.plot_rhat(blackjax_results)
 The subtitle confirms that all 45 values sit at or below ArviZ's limit of 1.01,
 and the other convergence checks in [Sampling and diagnostics](sampling), such
 as the rank plot, read these results the same way. The checks on predictions
-need predictive draws, which the last section adds.
+need predictive draws, and the last section adds them.
 
-The analysis functions take them as they are too.
+The next check is whether the two fits give the same answer.
 {func}`~mmmjax.media_metrics` computes each channel's return on investment from
-them and from `results`, the fit that {func}`~mmmjax.sample` produced in [A
-first model](first_model), and {func}`~mmmjax.plot_media_metrics` draws the two
-side by side.
+`blackjax_results` and from `results`, the fit that {func}`~mmmjax.sample`
+produced in [A first model](first_model). {func}`~mmmjax.plot_media_metrics`
+then draws the two side by side as one pair of bars for each channel.
 
 ```{code-cell} ipython3
 sample_returns = mj.media_metrics(model, results, quantity="mu")
@@ -221,8 +220,8 @@ mj.plot_media_metrics({"sample": sample_returns, "BlackJAX": blackjax_returns})
 ```
 
 Each pair of bars agrees in its mean and its interval, as two runs of the same
-sampler on the same model should. Meta returns \$3.49 on a dollar in the fit
-from `sample` and \$3.55 in the one from BlackJAX.
+sampler on the same model should. Meta, for example, returns \$3.49 on a
+dollar in the fit from `sample` and \$3.55 in the one from BlackJAX.
 
 ## NumPyro
 
@@ -274,26 +273,29 @@ def fit_numpyro():
 numpyro_results = stored("numpyro", fit_numpyro, groups=["posterior", "sample_stats"])
 ```
 
-NumPyro's samples come back grouped by chain and keyed by parameter name, so
-the same `to_results` labels them, and their returns go next to the ones from
-`sample`.
+The samples come back grouped by chain and keyed by parameter name, so the
+same [`to_results`](#labeling-the-draws) labels them, and their returns can go
+next to the ones from `sample`.
 
 ```{code-cell} ipython3
 numpyro_returns = mj.media_metrics(model, numpyro_results, quantity="mu")
 mj.plot_media_metrics({"sample": sample_returns, "NumPyro": numpyro_returns})
 ```
 
-NumPyro's NUTS is a separate implementation and still lands on the same
+Even though NumPyro's NUTS is a separate implementation, it lands on the same
 returns. The widest gap is YouTube's, \$4.15 from NumPyro against \$4.06 from
 `sample`, and Branded search differs by almost as much, \$3.56 against \$3.48.
-Both gaps are small next to intervals that span several dollars.
+Each mean carries Monte Carlo error, 0.026 for YouTube's in the summary on
+[Sampling and diagnostics](sampling.md#convergence), so two correct runs can
+differ by several cents, and both gaps are small next to intervals that span
+several dollars.
 
 ## Pathfinder
 
 Pathfinder, also part of BlackJAX, fits a variational approximation along the
-path of an optimizer instead of running a Markov chain, and then draws from
-that approximation. It keeps the approximation along the path with the highest
-ELBO, its estimate of how close each one comes to the posterior.
+path of an optimizer instead of running a Markov chain. Of the approximations
+along that path, it keeps the one with the highest ELBO, its estimate of how
+close each one comes to the posterior, and draws from it.
 
 ```{code-cell} ipython3
 :tags: [skip-execution]
@@ -323,27 +325,31 @@ def fit_pathfinder():
 pathfinder_results = stored("pathfinder", fit_pathfinder, groups=["posterior"])
 ```
 
-The default of 30 optimizer steps ends far from the posterior mode on this
-model, where the gradient is still large, so the call raises `maxiter` and the
-optimizer stops on its own well before the limit.
+On this model the default of 30 optimizer steps ends far from the posterior
+mode, while the gradient is still large, so the call raises `maxiter`. Given
+that room, the optimizer stops on its own well before the limit.
 
-The 64-bit switch at the top of the page is for this section. BlackJAX finds
-the log determinant of the approximation's covariance by taking the log of a
-product of 45 variances, one per unconstrained parameter, and in 32-bit that
-product rounds to zero. Every ELBO then comes out as minus infinity, and
-Pathfinder falls back to the approximation at its random starting point, so its
-draws carry nothing the optimizer learned. A finite `state.elbo` shows that a
-run avoided this.
+:::{admonition} Pathfinder in 32-bit
+:class: warning
+
+BlackJAX finds the log determinant of the approximation's covariance by taking
+the log of a product of 45 variances, one per unconstrained parameter, and in
+32-bit that product rounds to zero. Every ELBO then comes out as minus
+infinity, and Pathfinder falls back to the approximation at its random starting
+point, so its draws carry nothing the optimizer learned. To confirm a run
+avoided this, check that `state.elbo` is finite.
+:::
 
 ```{code-cell} ipython3
 pathfinder_returns = mj.media_metrics(model, pathfinder_results, quantity="mu")
 mj.plot_media_metrics({"sample": sample_returns, "Pathfinder": pathfinder_returns})
 ```
 
-Pathfinder's intervals are far narrower than the ones from NUTS, because an
-approximation chosen by its ELBO tends to understate how spread out a posterior
-is. Its means move as well. Nine of the ten fall, TikTok's the furthest, to
-\$2.63 from \$3.20, and Streaming's rises to \$4.36 from \$4.04.
+Pathfinder's orange intervals are far narrower than the blue ones from NUTS,
+because an approximation chosen by its ELBO tends to understate how spread out
+a posterior is. Its means move as well, and nine of the ten fall. TikTok's
+drops the furthest, from \$3.20 to \$2.63, and Streaming's is the one that
+rises, from \$4.04 to \$4.36.
 
 :::{admonition} What Pathfinder is for
 :class: warning
@@ -355,10 +361,9 @@ as the final fit.
 ## From draws to everything else
 
 Once the draws are labeled, the rest of mmmJAX treats them like its own.
-{func}`~mmmjax.generate_quantities` adds the predictions and pointwise log
-likelihoods that ArviZ uses for the checks in [Sampling and
-diagnostics](sampling), and {func}`~mmmjax.plot_fit` draws the predictions
-against observed revenue.
+{func}`~mmmjax.generate_quantities` adds the predictions that ArviZ uses for
+the checks in [Sampling and diagnostics](sampling), and
+{func}`~mmmjax.plot_fit` draws the predictions against observed revenue.
 
 ```{code-cell} ipython3
 :tags: [skip-execution]

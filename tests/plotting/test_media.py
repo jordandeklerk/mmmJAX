@@ -5,6 +5,7 @@ import numpy as np
 import plotnine as pn
 import pytest
 import xarray as xr
+from matplotlib.colors import to_rgb
 
 from mmmjax import (
     plot_frequency_curves,
@@ -305,6 +306,48 @@ def test_plot_media_metrics_gives_other_axes_panels_on_one_scale():
     assert estimates.loc[("reference", "TV")] == 3.0
     assert isinstance(plot.facet, pn.facet_wrap)
     assert plot.facet.free == {"x": False, "y": False}
+
+
+def _plan_returns():
+    spend = np.array([[100.0, 50.0, 20.0], [140.0, 10.0, 20.0]])
+    returns = np.broadcast_to(np.array([[3.0, 1.0, 2.0], [2.0, 2.0, 2.0]]), (2, 4, 2, 3))
+    plan = xr.Dataset(
+        {
+            "roi": (("chain", "draw", "allocation", "channel"), returns),
+            "incremental_response": (("chain", "draw", "allocation", "channel"), returns * spend),
+            "spend": (("allocation", "channel"), spend),
+        },
+        coords={
+            "chain": [0, 1],
+            "draw": np.arange(4),
+            "allocation": ["reference", "optimized"],
+            "channel": ["TV", "Search", "Radio"],
+        },
+    )
+    return plan
+
+
+def test_plot_media_metrics_colors_each_allocation_of_a_plan_and_pools_in_gray():
+    blue, orange, gray = to_rgb("#2a2eec"), to_rgb("#fa7c17"), to_rgb("#a6a6a6")
+
+    figure = plot_media_metrics(_plan_returns(), channels=["TV", "Search"]).draw()
+
+    panels = [
+        next(collection for collection in axes.collections if len(collection.get_paths()) == 3) for axes in figure.axes
+    ]
+    np.testing.assert_allclose(panels[0].get_edgecolor()[:, :3], [blue, blue, gray], rtol=0, atol=1 / 255)
+    np.testing.assert_allclose(panels[1].get_edgecolor()[:, :3], [orange, orange, gray], rtol=0, atol=1 / 255)
+    plt.close(figure)
+
+
+def test_plot_media_metrics_colors_compared_plans_by_their_labels():
+    plan = _plan_returns()
+
+    plot = plot_media_metrics({"Posterior": plan, "Prior": plan})
+
+    scale = next(scale for scale in plot.scales if "fill" in scale.aesthetics)
+    assert plot.mapping["fill"] == "result"
+    assert scale.palette(2) == {"Posterior": "#2a2eec", "Prior": "#fa7c17"}
 
 
 def _many_returns(count, *, increments=True):

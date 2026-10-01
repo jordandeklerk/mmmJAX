@@ -746,10 +746,10 @@ def plot_rhat(results: xr.DataTree, *, var_names: Sequence[str] | None = None) -
         + pn.annotate("text", x=len(names) + 0.45, y=1.01, label=" 1.01", ha="left", va="center", color="#262626")
         # Boxes fill 0.55 of each slot, the width every bar and box in the package takes.
         + pn.geom_boxplot(outlier_shape="", width=0.55, color="#545454", fill="#e9eafc", size=0.5)
-        # A fixed seed keeps the jittered points in place from one drawing to the next.
+        # plotnine treats a seed of 0 as unset, so a seeded generator holds the points in place between drawings.
         + pn.geom_point(
             pn.aes(fill="status"),
-            position=pn.position_jitter(width=0.18, height=0, random_state=0),
+            position=pn.position_jitter(width=0.18, height=0, random_state=np.random.RandomState(0)),
             color="white",
             stroke=0.4,
             size=2.6,
@@ -844,7 +844,8 @@ def _predictive_pair(
     # Only the prepared outcome carries the outcome transform, and results record whether it was applied.
     if var_name != "outcome" or results.attrs.get("data_scale") != "model" or scaling is None:
         return predicted, observed
-    # Population scaling keeps one factor per group, which broadcasts along the last axis.
+    # An outcome scaled per group, by population or a declared Scaling, has one factor per group.
+    # Those factors broadcast along the last axis.
     predicted = predicted.transpose(..., "group") if "group" in predicted.dims else predicted
     observed = observed.transpose(..., "group") if "group" in observed.dims else observed
     restored_predicted = predicted.copy(data=np.asarray(scaling.inverse_transform(predicted.values)))

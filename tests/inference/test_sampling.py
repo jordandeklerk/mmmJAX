@@ -25,6 +25,7 @@ from mmmjax import (
     Positive,
     Prior,
     Real,
+    Scaling,
     Simplex,
     beta,
     continue_sampling,
@@ -1343,6 +1344,35 @@ def test_collected_data_uses_model_scaling_and_does_not_rescale_draws_or_generat
     np.testing.assert_array_equal(results["posterior"]["location"], np.full((1, 2), 1.25))
     np.testing.assert_array_equal(results["generated_quantities"]["mean"], np.full((1, 2, 3), 1.25))
     assert results.attrs["data_scale"] == "model"
+
+
+@pytest.mark.parametrize("outcome_scaling", [False, True])
+def test_collected_data_keeps_declared_scalings_in_model_units(nuts_calls, outcome_scaling):
+    data = prepare_data(
+        pd.DataFrame({"time": [1, 2, 3], "sales": [100.0, 200.0, 300.0], "video": [0.0, 50.0, 200.0]}),
+        time="time",
+        outcome="sales",
+        media=["video"],
+    )
+    declared = {"media": Scaling(offset=0.0, scale=200.0)}
+    if outcome_scaling:
+        declared["outcome"] = Scaling(offset=200.0, scale=100.0)
+    expected_outcome = np.array([-1.0, 0.0, 1.0]) if outcome_scaling else data.arrays["outcome"]
+    expected_media = data.arrays["media"] / 200.0
+    tolerance = 2e-6 if jax.dtypes.canonicalize_dtype(float) == np.float32 else 1e-12
+
+    def density(outcome, media, location):
+        return normal(outcome, location + media[..., 0], 1.0) + normal(location, 0.0, 1.0)
+
+    model = Model(parameters={"location": Real()}, log_density=density, data=Data(data, scaling=declared))
+    results = sample(model, draws=2, warmup=3, chains=1, initial_values={"location": 0.25})
+
+    assert len(nuts_calls) == 1
+    assert results.attrs["data_scale"] == "model"
+    np.testing.assert_allclose(results["observed_data"]["outcome"], expected_outcome, rtol=0, atol=tolerance)
+    np.testing.assert_allclose(results["constant_data"]["media"], expected_media, rtol=tolerance, atol=0)
+    np.testing.assert_array_equal(results["observed_data"]["outcome"], model.data.values["outcome"])
+    np.testing.assert_array_equal(results["constant_data"]["media"], model.data.values["media"])
 
 
 @pytest.mark.parametrize(

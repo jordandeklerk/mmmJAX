@@ -22,7 +22,7 @@ from narwhals.typing import IntoDataFrameT
 from numpy.typing import NDArray
 
 if TYPE_CHECKING:
-    from mmmjax.data.scaling import DataScaling
+    from mmmjax.data.scaling import DataScaling, Scaling
 
 __all__ = ["Data", "ModelInput", "PreparedData", "Reference", "prepare_data", "select_channels"]
 
@@ -52,8 +52,9 @@ class ModelInput(NamedTuple):
         unchanged.
     axes : tuple of str
         Named axes of an array input, or ``("group",)`` for
-        ``outcome_scaling`` when a grouped outcome is scaled by population.
-        Empty for scalars and other kinds.
+        ``outcome_scaling`` when a grouped outcome is scaled by population or
+        by a ``Scaling`` with one value per group. Empty for scalars and other
+        kinds.
     source : str
         ``data`` for selected roles, ``time`` for positions computed from the
         observation labels, ``builtin`` for model-supplied values,
@@ -80,7 +81,8 @@ class Reference:
     These arrays never change for scenarios, forecasts, or response curves. A
     calculation that must stay anchored to the fitted data, such as a
     normalization that defines a parameter, reads them in place of the
-    current inputs.
+    current inputs. They hold the training values after the model's scaling,
+    so a statistic computed from them is in model units.
 
     The results label the time axis of a training array that a block returns
     unchanged as ``reference_time`` or ``reference_media_time``.
@@ -397,6 +399,26 @@ class Data:
     stays usable as a shape under ``jax.jit``. They stay the same in every
     scenario.
 
+    A mapping from role names to scalings you build with :class:`Scaling`
+    scales exactly those roles, and every other role keeps its original
+    units. It may name ``outcome``, ``media``, ``organic_media``, ``reach``,
+    ``organic_reach``, ``controls``, and ``treatments`` when ``data`` selects
+    them, and ``data`` must be unscaled. An empty mapping behaves like
+    omitting ``scaling``.
+
+    Each statistic holds one value, one per column, or one per group and
+    column, with no time axis, because new data covers other periods.
+    Exposure roles take a zero offset so that zero exposure stays zero, and
+    the outcome's statistics hold one value or one per group. Blocks receive
+    the outcome's scaling as ``outcome_scaling``, and every scaled role
+    arrives in model units, as do the training arrays in ``reference``.
+
+    The mapping is copied into a ``DataScaling`` that ``scaling`` returns, so
+    later edits to it change nothing. New data and scenarios reuse the
+    training statistics through that object. A nonlinear transform, such as
+    a log of media, belongs in ``transformed_data`` with any statistics read
+    from ``reference``.
+
     Parameters
     ----------
     data : PreparedData
@@ -409,10 +431,10 @@ class Data:
     constants : mapping of str to object, optional
         Hashable values that blocks request by name, such as a carryover
         length or a prepared HSGP approximation.
-    scaling : DataScaling or {"auto"}, optional
-        Transformations fitted by ``fit_data_scaling``, or ``"auto"`` to fit
-        them on ``data`` with the default settings. Omit to use ``data``
-        unchanged.
+    scaling : DataScaling, mapping of str to Scaling, or {"auto"}, optional
+        Transformations fitted by ``fit_data_scaling``, a mapping from role
+        names to scalings you build yourself, or ``"auto"`` to fit the
+        defaults on ``data``. Omit to use ``data`` unchanged.
     """
 
     _observations: PreparedData
@@ -428,10 +450,10 @@ class Data:
         variables: Mapping[str, str] | None = None,
         inputs: xr.Dataset | None = None,
         constants: Mapping[str, object] | None = None,
-        scaling: "DataScaling | Literal['auto'] | None" = None,
+        scaling: "DataScaling | Mapping[str, Scaling] | Literal['auto'] | None" = None,
     ) -> None:
-        """Validate the arguments and copy all but fitted scaling to preserve applied-scaling identity."""
-        from mmmjax.data.scaling import DataScaling
+        """Validate and copy the arguments while wrapping declared scalings and keeping fitted scaling by identity."""
+        from mmmjax.data.scaling import DataScaling, _as_data_scaling
 
         if not isinstance(data, PreparedData):
             raise TypeError("Data requires PreparedData returned by prepare_data")
@@ -459,17 +481,28 @@ class Data:
                         "Supply arrays through inputs or the prepared data"
                     ) from error
         if isinstance(scaling, str) and scaling != "auto":
-            raise ValueError("scaling must be DataScaling, 'auto', or None")
-        if scaling is not None and not isinstance(scaling, (DataScaling, str)):
-            raise TypeError("scaling must be DataScaling, 'auto', or None")
+            raise ValueError(
+                "scaling must be DataScaling, a mapping from role names to Scaling objects, 'auto', or None, "
+                f"got {scaling!r}. Use 'auto' for the default scaling or fit_data_scaling for other settings"
+            )
+        if scaling is not None and not isinstance(scaling, (DataScaling, Mapping, str)):
+            raise TypeError(
+                "scaling must be DataScaling, a mapping from role names to Scaling objects, 'auto', or None, "
+                f"got {type(scaling).__name__}. Fit one with fit_data_scaling or pass a mapping such as "
+                "{'media': Scaling(offset=0.0, scale=peak)}"
+            )
+        declared = None if isinstance(scaling, Mapping) else scaling
+        if isinstance(scaling, Mapping) and scaling:
+            # Wrapping the mapping once keeps later edits to it away from the model
+            declared = _as_data_scaling(scaling, data)
 
-        scaling_memo = {id(value): value for value in (data._scaling, scaling) if isinstance(value, DataScaling)}
+        scaling_memo = {id(value): value for value in (data._scaling, declared) if isinstance(value, DataScaling)}
         observations = deepcopy(data, scaling_memo)
         object.__setattr__(self, "_observations", observations)
         object.__setattr__(self, "_variables", None if variables is None else dict(variables))
         object.__setattr__(self, "_inputs", None if inputs is None else inputs.copy(deep=True))
         object.__setattr__(self, "_constants", {} if constants is None else dict(constants))
-        object.__setattr__(self, "_scaling", scaling)
+        object.__setattr__(self, "_scaling", declared)
 
     @property
     def observations(self) -> PreparedData:
@@ -497,7 +530,7 @@ class Data:
 
     @property
     def scaling(self) -> "DataScaling | Literal['auto'] | None":
-        """Return the fitted transformations or requested scaling mode."""
+        """Return the fitted or declared transformations or the requested scaling mode."""
         return self._scaling
 
     @property
@@ -600,7 +633,15 @@ def _model_inputs(data: PreparedData, scaling: "DataScaling | None") -> dict[str
 
 def _grouped_outcome_scale(data: PreparedData, scaling: "DataScaling | None") -> bool:
     """Report whether the outcome transform holds one scale and offset per group."""
-    grouped = scaling is not None and "outcome" in scaling._population_roles and bool(data.group_columns)
+    from mmmjax.data.scaling import Scaling
+
+    if scaling is None or not data.group_columns:
+        return False
+    transform = scaling.transformations.get("outcome")
+    statistics = (transform.offset, transform.scale) if isinstance(transform, Scaling) else ()
+    # Population scaling keeps its group axis even for one group, while any other Scaling
+    # holds one value per group only when one of its statistics has more than one value
+    grouped = "outcome" in scaling._population_roles or any(np.size(statistic) > 1 for statistic in statistics)
     return grouped
 
 

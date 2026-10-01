@@ -1,6 +1,6 @@
 ---
 name: writing-mmmjax-models
-description: Writes, extends, and debugs mmmJAX marketing mix models built from Stan-style blocks (parameters, transformed_data, transformed_parameters, log_density, generated_quantities). Use when the user asks to write or build a model, add a channel, control, parameter, prior, likelihood, trend, seasonality, HSGP, hierarchy, calibration or custom function, prepare or scale data for a model, or fix a model that raises a binding or tracing error, has a non-finite log density, samples with divergences, or gives wrong scenario, contribution or ROI results.
+description: Writes, extends, and debugs mmmJAX marketing mix models built from Stan-style blocks (parameters, transformed_data, transformed_parameters, log_density, generated_quantities). Use when the user asks to write or build a model, add a channel, control, parameter, prior, likelihood, trend, seasonality, HSGP, hierarchy, calibration or custom function, prepare, scale, or transform data for a model, or fix a model that raises a binding or tracing error, has a non-finite log density, samples with divergences, or gives wrong scenario, contribution or ROI results.
 ---
 
 # Writing mmmJAX models
@@ -93,13 +93,18 @@ comes from; the docs give that in each model's symbol tables.
    the user instead of choosing silently.
 2. Every model's `generated_quantities` returns both `predictive` and
    `log_likelihood`, not only docs fits. Draw with the likelihood's `_rng` form
-   and score with its `_logpdf` or `_logpmf` form. Key both `"outcome"` even
-   when `Data(variables=...)` renames the argument, because `observed_data`
-   always names it `outcome`.
-3. Priors describe the scaled data, which means media divided by its positive
-   median, standardized controls and treatments, and the outcome only when
-   `scale_outcome` is set. Multiply by
-   `scaling.transformations["outcome"].scale` to read one in outcome units.
+   and score with its `_logpdf` or `_logpmf` form. Return each as a plain
+   array, as in `{"predictive": prediction, "log_likelihood": pointwise}`, and
+   mmmJAX stores both as `outcome`, the name `observed_data` always uses, even
+   when `Data(variables=...)` renames the argument. A model without prepared
+   data names them in a mapping instead.
+3. Priors describe the data in model units. Under `fit_data_scaling` that is
+   media divided by its positive median, standardized controls and
+   treatments, and the outcome only when `scale_outcome` is set, and under a
+   scaling of your own (rule 12) it is the statistics you chose. Every
+   scaling is a linear `mj.Scaling`, so multiply by
+   `model.scaling.transformations["outcome"].scale` to read one in outcome
+   units.
    Write each prior in `log_density` as a direct distribution term, as in
    `target += mj.half_normal(sigma, 1.0)`, the way a Stan model block reads.
    When the user runs `sample_prior`, `psense_summary`, or `plot_psense`, state
@@ -139,14 +144,30 @@ comes from; the docs give that in each model's symbol tables.
    `(media_time, group, channel)`. A `(group, channel)` coefficient needs
    `(saturated * coefficient).sum(-1)` in place of `@`, while
    `controls @ control_coefficient` works in both layouts. Under
-   `scale_outcome="population"`, `outcome_scaling.scale` inside a block holds
-   one value per group, so pass it to `roi_coefficient` as it is.
+   `scale_outcome="population"`, or an outcome `mj.Scaling` of your own with
+   one value per group, `outcome_scaling.scale` inside a block holds one value
+   per group, so pass it to `roi_coefficient` as it is.
 10. For float64, call `jax.config.update("jax_enable_x64", True)` before
     `fit_data_scaling`, `mj.Prior`, or `mj.Model`, which keep the precision in
     effect when they are built.
 11. Count likelihoods need an unscaled outcome, which is the
     `fit_data_scaling` default. Build the predictor on the real line and use
     `negative_binomial_log` or `poisson_log`.
+12. `Data(scaling={"media": mj.Scaling(offset=0.0, scale=peak), "outcome": ...})`
+    scales exactly the roles it names with statistics you choose, out of
+    `outcome`, `media`, `organic_media`, `reach`, `organic_reach`, `controls`,
+    and `treatments`. Every value must be an exact `mj.Scaling`, because the
+    analysis functions and `roi_coefficient` need linear scaling. Spend,
+    population, frequency, and every other input keep their units. A statistic
+    holds one value, one per column, or one per group and column, never one
+    per week, and the exposure roles take a zero offset so zero exposure stays
+    zero. Blocks and `reference` hold scaled values, and new data and scenarios
+    reuse the same statistics, so a block never scales again. A nonlinear
+    transform, such as a log of media, goes in `transformed_data` with its
+    statistics read from `reference`. A mapping such as
+    `{**fitted.transformations, "media": custom}` keeps fitted statistics for
+    the other roles but drops the population check, so scenarios must keep the
+    training population.
 
 ## Debugging
 
@@ -169,6 +190,7 @@ comes from; the docs give that in each model's symbol tables.
   floating-point with the observation shape` points to rule 5.
 - `generated_quantities requires input 'outcome'` means new data without an
   outcome column reached a block that scores the outcome.
+- An error from `Data` whose message begins with `scaling` points to rule 12.
 - `New data must be an eager dataframe or PreparedData` most often means
   `new_data` received the output of `model.prepare_data`. Pass the frame
   itself.
@@ -180,7 +202,8 @@ comes from; the docs give that in each model's symbol tables.
 
 These User Guide pages in `docs/source/user_guide/` are executed examples.
 
-- `data.md` for roles, arrays, groups, and scaling
+- `data.md` for roles, arrays, groups, scaling, and scaling of your own
+- `checking_data.md` for `check_data` and correlated inputs
 - `distributions.md` for function forms, shapes, and support
 - `priors.md` for `Prior`, `sample_prior`, and `check_prior`
 - `changing.md` for a variant with a media effect that varies over time, an

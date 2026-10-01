@@ -106,7 +106,7 @@ def contributions(
         and a mapping sets named treatments to finite numbers or those words.
         Unnamed treatments use the minimum.
     new_data : dataframe-like or PreparedData, optional
-        Reference observations using the model's columns and fitted scales.
+        Reference observations using the model's columns and scaling.
         Omit to use stored observations. Supply ``PreparedData`` with
         ``media_history`` to include earlier exposures for new observations.
     periods : sequence, optional

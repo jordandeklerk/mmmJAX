@@ -241,9 +241,10 @@ class Model:
     Prepared data supplies the selected role names, such as ``outcome`` and
     ``media``, together with elapsed ``time`` and ``media_time``, the calendar
     ``day_of_year`` and ``media_day_of_year``, and the period count
-    ``n_periods``. The fitted outcome transform ``outcome_scaling`` carries its
-    ``scale``, ``offset``, and ``inverse_transform``. The ``reference``
-    namespace holds the training arrays, such as ``reference.spend``, for
+    ``n_periods``. The outcome's :class:`Scaling` arrives as
+    ``outcome_scaling`` with its ``scale``, ``offset``, and
+    ``inverse_transform``. The ``reference`` namespace holds the training
+    arrays as the blocks received them, such as ``reference.spend``, for
     evaluating new data. ``Data`` variables replace these names with declared
     ones.
 
@@ -256,10 +257,14 @@ class Model:
 
     The mappings ``generated_quantities`` returns under ``predictive``,
     ``log_likelihood``, and ``log_prior`` fill the matching result groups, and
-    every other entry is a generated quantity. With prepared data, name the
-    predictive draws and the pointwise log likelihood ``outcome``. Pointwise
-    log likelihoods exclude priors and adjustments, and log-prior terms count
-    each prior factor once without constraint adjustments.
+    every other entry is a generated quantity. Pointwise log likelihoods
+    exclude priors and adjustments, and log-prior terms count each prior
+    factor once without constraint adjustments.
+
+    With prepared data, an array returned directly under ``predictive`` or
+    ``log_likelihood`` is stored as ``outcome``, the name the observed data
+    carries, so ArviZ can pair the two. A mapping there names each output
+    instead, and models without prepared data always need one.
 
     Inspect derived quantities with ``evaluate`` and the constrained log
     density with ``log_prob`` before fitting. Samplers call ``log_density`` on
@@ -474,17 +479,20 @@ class Model:
 
     @property
     def scaling(self) -> DataScaling | None:
-        """Return the fitted input transformations or None for unscaled inputs.
+        """Return the input transformations or None for unscaled inputs.
 
-        When the outcome is scaled, its transformation restores predicted
-        levels to their original units. Contributions convert through its
-        scale alone, since the offset cancels in a difference.
+        The object holds the transformations that ``fit_data_scaling`` fitted
+        or that ``Data`` declared. New data and scenarios reuse them with their
+        training statistics.
+
+        When the outcome is scaled, its linear :class:`Scaling` restores
+        predicted levels to their original units. Contributions convert
+        through its scale alone, since the offset cancels in a difference.
 
         Returns
         -------
         DataScaling or None
-            Fitted transformations available by role through
-            ``transformations``.
+            Transformations available by role through ``transformations``.
         """
         return None if self._training is None else self._training.scaling
 
@@ -843,10 +851,11 @@ class Model:
         ordered = {name: constrained[name] for name in parameters}
         generated, arguments = self._blocks.evaluate_generated(key, ordered, data)
         reserved = frozenset() if self._data is None else self._data.reserved_names
-        return _collect_outputs(generated, reserved), arguments
+        outputs = _collect_outputs(generated, reserved, prepared=self._data is not None)
+        return outputs, arguments
 
 
-def _collect_outputs(generated: object, reserved: frozenset[str]) -> dict[_OutputKey, jax.Array]:
+def _collect_outputs(generated: object, reserved: frozenset[str], *, prepared: bool) -> dict[_OutputKey, jax.Array]:
     """Validate and flatten callback outputs into arrays keyed by result group and name."""
     if not isinstance(generated, Mapping):
         raise TypeError(
@@ -857,12 +866,7 @@ def _collect_outputs(generated: object, reserved: frozenset[str]) -> dict[_Outpu
     for group in _ResultGroup:
         if group not in generated:
             continue
-        grouped = generated[group]
-        if not isinstance(grouped, Mapping):
-            raise TypeError(
-                f"generated_quantities must return a mapping of named outputs under {group.value!r}, "
-                f"got {type(grouped).__name__}"
-            )
+        grouped = _named_outputs(generated[group], group, prepared=prepared)
         for output_name, output in grouped.items():
             _validate_output_name(output_name, reserved, label=f"{group} quantity")
             outputs[(group, output_name)] = output
@@ -881,6 +885,25 @@ def _collect_outputs(generated: object, reserved: frozenset[str]) -> dict[_Outpu
                 f"generated quantity {output_key[1]!r} must be array-like, got {type(value).__name__}"
             ) from exc
     return quantities
+
+
+def _named_outputs(grouped: object, group: _ResultGroup, *, prepared: bool) -> Mapping[str, object]:
+    """Name an array returned directly under a result group after the observed outcome."""
+    if isinstance(grouped, Mapping):
+        return grouped
+    # Prepared data observes only the outcome, and ArviZ pairs these groups with it by name.
+    if prepared and group != _ResultGroup.LOG_PRIOR:
+        named = {"outcome": grouped}
+        return named
+    remedy = (
+        "Key each log-prior term by its parameter's name"
+        if group == _ResultGroup.LOG_PRIOR
+        else "Only a model with prepared data stores an unnamed output as its outcome"
+    )
+    raise TypeError(
+        f"generated_quantities must return a mapping of named outputs under {group.value!r}, "
+        f"got {type(grouped).__name__}. {remedy}"
+    )
 
 
 def _validate_output_name(name: object, reserved: frozenset[str], *, label: str) -> None:
@@ -914,7 +937,7 @@ def _fit_scaling(
 ) -> tuple[PreparedData, DataScaling | None]:
     """Apply the requested scaling once and return the observations in fitted units."""
     fitted: DataScaling | None
-    if scaling == "auto":
+    if isinstance(scaling, str):
         fitted = fit_data_scaling(data)
     elif isinstance(scaling, DataScaling):
         fitted = scaling
@@ -930,19 +953,24 @@ def _fit_scaling(
 def _outcome_scaling(data: PreparedData, fitted: DataScaling | None, has_outcome: bool) -> tuple[Scaling | None, bool]:
     """Expose the outcome transform to blocks.
 
-    An outcome scaled by population across regions gets one factor per region. Any other outcome gets scalars.
+    An outcome scaled per group gets one factor per group. Any other outcome gets scalars.
     """
-    population_outcome = _grouped_outcome_scale(data, fitted)
+    grouped = _grouped_outcome_scale(data, fitted)
     if not has_outcome:
-        return None, population_outcome
+        return None, grouped
     transform = Scaling(offset=jnp.asarray(0.0), scale=jnp.asarray(1.0))
     if fitted is not None:
         transform = fitted.transformations.get("outcome", transform)
-    factor_shape = (-1,) if population_outcome else ()
-    outcome_scaling = Scaling(
-        offset=transform.offset.reshape(factor_shape), scale=transform.scale.reshape(factor_shape)
-    )
-    return outcome_scaling, population_outcome
+    factor_shape = (-1,) if grouped else ()
+    offset = transform.offset.reshape(factor_shape)
+    scale = transform.scale.reshape(factor_shape)
+    if grouped:
+        # A statistic that holds one value applies to every group
+        groups = (len(data.group_values),)
+        offset = jnp.broadcast_to(offset, groups)
+        scale = jnp.broadcast_to(scale, groups)
+    outcome_scaling = Scaling(offset=offset, scale=scale)
+    return outcome_scaling, grouped
 
 
 def _prepare_training(
@@ -978,7 +1006,7 @@ def _prepare_training(
     conflicts = reserved & set(parameter_names)
     if conflicts:
         raise ValueError(f"Parameter names {sorted(conflicts)} conflict with model-supplied inputs")
-    outcome_scaling, population_outcome = _outcome_scaling(data, fitted_scaling, "outcome" in values)
+    outcome_scaling, grouped = _outcome_scaling(data, fitted_scaling, "outcome" in values)
 
     axis_coordinates = coordinates.copy()
     prepared_coords, _ = _prepared_coordinates(data)
@@ -1000,7 +1028,7 @@ def _prepare_training(
         values,
         reference=reference,
         outcome_scaling=outcome_scaling,
-        outcome_group_scale=population_outcome,
+        outcome_group_scale=grouped,
         n_periods=len(data.time_values),
         reserved_names=reserved,
         constants=_FrozenMapping(constants),

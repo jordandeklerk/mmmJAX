@@ -1,6 +1,6 @@
 # Installation
 
-mmmJAX is in alpha and needs Python 3.12 or later. It isn't on PyPI yet, so
+mmmJAX is in alpha, needs Python 3.12 or later, and isn't on PyPI yet, so
 install the development version from GitHub.
 
 ::::{tab-set}
@@ -39,15 +39,16 @@ JAX along with mmmJAX.
 pip install "mmmjax[gpu] @ git+https://github.com/jordandeklerk/mmmJAX.git"
 ```
 
-For other accelerators or CUDA versions, install the matching JAX wheel first
-with the [JAX installation guide](https://docs.jax.dev/en/latest/installation.html),
-then install mmmJAX. It uses whichever device JAX finds.
+mmmJAX uses whichever device JAX finds, so for other accelerators or CUDA
+versions, install the matching JAX wheel from the
+[JAX installation guide](https://docs.jax.dev/en/latest/installation.html)
+before mmmJAX.
 
 :::{admonition} Sharing a GPU
 :class: tip
 
 JAX reserves three quarters of the GPU's memory the first time it runs a
-computation, which gets in the way when several notebooks or processes share
+computation. That gets in the way when several notebooks or processes share
 one card. Set `XLA_PYTHON_CLIENT_PREALLOCATE=false` in the environment before
 Python starts and JAX allocates memory as it needs it instead.
 :::
@@ -64,8 +65,8 @@ print(jax.devices())
 
 The device list shows `CpuDevice` entries on a CPU and `CudaDevice` entries
 when JAX can see a GPU. If you installed the CUDA build and still see only the
-CPU, JAX couldn't load the CUDA libraries. The JAX installation guide lists the
-usual causes.
+CPU, JAX couldn't load the CUDA libraries, so check the JAX installation guide
+for the usual causes.
 
 ## Choosing float32 or float64
 
@@ -107,7 +108,5 @@ import jax
 jax.config.update("jax_num_cpu_devices", 4)
 ```
 
-[Sampler settings](../user_guide/sampling.md#sampler-settings) explains when
-parallel chains pay off and how to ask for them. Once the installation works,
-[Introduction to MMM](intro_to_mmm) covers the math and methods behind the
-models mmmJAX fits.
+[Running the chains](../user_guide/sampling.md#running-the-chains) explains
+when parallel chains pay off and how to ask for them.

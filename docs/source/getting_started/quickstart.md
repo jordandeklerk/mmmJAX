@@ -8,9 +8,8 @@ kernelspec:
 # Quickstart
 
 This model runs end to end on simulated weekly data for a brand with ten paid
-channels. If you want something quick to iterate on and play with, copy it, run
-it, and change whatever you like. The [User Guide](../user_guide/index) goes
-through this model in much more detail.
+channels, so you can copy it, run it, and change whatever you like. The
+[User Guide](../user_guide/index) goes through this model in much more detail.
 
 ## Model
 
@@ -136,7 +135,7 @@ def transformed_parameters(
     control_effect = controls @ control_coefficient
     treatment_effect = treatments @ treatment_coefficient
 
-    # Expected revenue in each week, which the likelihood and every analysis read.
+    # The likelihood and every analysis read the expected revenue in each week.
     mu = baseline + media_effect + organic_effect + control_effect + treatment_effect
     return {"mu": mu}
 
@@ -210,11 +209,8 @@ def generated_quantities(key, outcome, mu, sigma):
     pointwise = mj.normal_logpdf(outcome, mu, sigma)
 
     # "predictive" and "log_likelihood" are supplied names that tell mmmJAX where to store
-    # the draws, and "outcome" matches the observed data because ArviZ pairs them by name.
-    return {
-        "predictive": {"outcome": prediction},
-        "log_likelihood": {"outcome": pointwise},
-    }
+    # the draws, and mmmJAX names both "outcome" so ArviZ pairs them with the observed data.
+    return {"predictive": prediction, "log_likelihood": pointwise}
 
 
 model = mj.Model(

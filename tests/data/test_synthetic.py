@@ -316,6 +316,70 @@ def test_roi_matches_channel_removal_including_history_and_model_window(grouped_
         np.testing.assert_allclose(truth.roi.sel(paid_channel=channel).values, incremental / spend, rtol=2e-5)
 
 
+@pytest.mark.parametrize("groups", [None, ("west", "east")])
+def test_synthetic_contributions_reproduce_the_recorded_truth(groups):
+    data = simulate_data(seed=37, n_periods=30, groups=groups)
+
+    result = data.contributions()
+
+    xr.testing.assert_identical(result, data.truth.contribution)
+
+
+@pytest.mark.parametrize("groups", [None, ("west", "east")])
+def test_synthetic_contributions_scale_only_the_named_channels_in_the_modeling_weeks(groups):
+    data = simulate_data(seed=37, n_periods=30, groups=groups)
+    exposure = data.truth.exposure.values.copy()
+    exposure[8:, ..., CHANNELS.index("linear_tv")] *= 2.0
+    exposure[8:, ..., CHANNELS.index("generic_search")] = 0.0
+    expected = _numpy_contribution(data.truth, exposure)
+    unchanged = [channel for channel in CHANNELS if channel not in ("linear_tv", "generic_search")]
+
+    result = data.contributions({"linear_tv": 2.0, "generic_search": 0.0})
+
+    np.testing.assert_allclose(result.values, expected, rtol=3e-6, atol=1e-7)
+    xr.testing.assert_identical(result.sel(channel=unchanged), data.truth.contribution.sel(channel=unchanged))
+    # Always-on search still carries its lead-in impressions into the first modeling week.
+    assert (result.sel(channel="generic_search").isel(time=0) > 0).all()
+
+
+def test_synthetic_contributions_leave_the_truth_unchanged():
+    data = simulate_data(seed=37, n_periods=30, groups=None)
+    before = data.truth.copy(deep=True)
+
+    data.contributions({"linear_tv": 2.0})
+    data.contributions(0.5)
+
+    xr.testing.assert_identical(data.truth, before)
+
+
+def test_synthetic_contributions_scale_every_channel_by_one_number():
+    data = simulate_data(seed=37, n_periods=30, groups=None)
+    exposure = data.truth.exposure.values.copy()
+    exposure[8:] *= 1.5
+    expected = _numpy_contribution(data.truth, exposure)
+
+    result = data.contributions(1.5)
+
+    np.testing.assert_allclose(result.values, expected, rtol=3e-6, atol=1e-7)
+
+
+@pytest.mark.parametrize(
+    ("multiplier", "error", "message"),
+    [
+        (-0.5, ValueError, "multiplier must be finite and nonnegative"),
+        (np.inf, ValueError, "multiplier must be finite and nonnegative"),
+        (True, TypeError, "multiplier must be a number or a mapping"),
+        ("2", TypeError, "multiplier must be a number or a mapping"),
+        ({"radio": 2.0}, ValueError, "unknown channel 'radio'"),
+        ({"meta": -1.0}, ValueError, r"multiplier\['meta'\] must be finite and nonnegative"),
+        ({"meta": "2"}, TypeError, r"multiplier\['meta'\] must be a number"),
+    ],
+)
+def test_synthetic_contributions_reject_invalid_multipliers(grouped_data, multiplier, error, message):
+    with pytest.raises(error, match=message):
+        grouped_data.contributions(multiplier)
+
+
 def test_catalog_activity_distinguishes_always_on_media_from_inactive_flights(grouped_data):
     truth = grouped_data.truth
     for channel in grouped_data.channels.to_dict(orient="records"):

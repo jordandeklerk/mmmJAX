@@ -10,7 +10,7 @@ import pandas as pd
 import polars as pl
 import pytest
 
-from mmmjax import DataScaling, PreparedData, fit_data_scaling, prepare_data
+from mmmjax import Data, DataScaling, PreparedData, Scaling, fit_data_scaling, prepare_data
 
 
 @pytest.fixture
@@ -477,4 +477,160 @@ def test_data_scaling_rejects_incompatible_prediction_labels(change, match):
         selection["controls"] = ["new"]
     prediction = prepare_data(pl.DataFrame(values), time="week", groups=["region"], **selection)
     with pytest.raises(ValueError, match=match):
+        fitted.transform(prediction)
+
+
+def test_declared_scalings_apply_their_statistics_on_training_and_new_data(training_data):
+    dtype = jax.dtypes.canonicalize_dtype(float)
+    maxima = {role: training_data.arrays[role].max(axis=0) for role in ("media", "organic_media")}
+    declared = {role: Scaling(offset=0.0, scale=maximum) for role, maximum in maxima.items()}
+    prediction = prepare_data(
+        pl.DataFrame(
+            {
+                "week": [3, 3, 4, 4],
+                "region": ["west", "east", "west", "east"],
+                "video": [60, 90, 0, 30],
+                "search": [10, 0, 50, 70],
+                "organic": [25, 5, 0, 40],
+            }
+        ),
+        time="week",
+        groups=["region"],
+        media=["video", "search"],
+        channels=["Video", "Search"],
+        organic_media=["organic"],
+    )
+    tolerance = 2e-6 if dtype == np.float32 else 1e-12
+
+    scaling = Data(training_data, scaling=declared).scaling
+    transformed = scaling.transform(training_data)
+    predicted = scaling.transform(prediction)
+    restored = scaling.inverse_transform(predicted)
+
+    assert isinstance(scaling, DataScaling)
+    assert list(scaling.transformations) == list(declared)
+    for role, maximum in maxima.items():
+        np.testing.assert_allclose(transformed.arrays[role], training_data.arrays[role] / maximum, rtol=tolerance)
+        np.testing.assert_allclose(predicted.arrays[role], prediction.arrays[role] / maximum, rtol=tolerance)
+        np.testing.assert_allclose(restored.arrays[role], prediction.arrays[role], rtol=tolerance, atol=1e-5)
+        assert transformed.arrays[role].dtype == dtype
+    for role in training_data.arrays.keys() - declared.keys():
+        np.testing.assert_array_equal(transformed.arrays[role], training_data.arrays[role])
+        assert transformed.arrays[role].dtype == training_data.arrays[role].dtype
+
+
+def test_declared_scalings_return_independent_writable_numpy_arrays(training_data):
+    declared = {
+        "media": Scaling(offset=0.0, scale=training_data.arrays["media"].max(axis=0)),
+        "controls": Scaling(offset=0.0, scale=1.0),
+    }
+    scaling = Data(training_data, scaling=declared).scaling
+
+    transformed = scaling.transform(training_data)
+    restored = scaling.inverse_transform(transformed)
+
+    for prepared in (transformed, restored):
+        for role in declared:
+            values = prepared.arrays[role]
+            assert type(values) is np.ndarray
+            assert values.flags.writeable
+            assert not np.shares_memory(values, training_data.arrays[role])
+    for role in declared:
+        assert not np.shares_memory(restored.arrays[role], transformed.arrays[role])
+    transformed.arrays["controls"][...] = -1.0
+    np.testing.assert_array_equal(restored.arrays["controls"], training_data.arrays["controls"])
+
+
+def test_declared_group_and_channel_statistics_follow_the_training_order(training_data):
+    tolerance = 2e-6 if jax.dtypes.canonicalize_dtype(float) == np.float32 else 1e-12
+    maximum = training_data.arrays["media"].max(axis=0)
+    prediction = prepare_data(
+        pd.DataFrame(
+            {
+                "week": [4, 3, 3, 4],
+                "region": ["east", "west", "east", "west"],
+                "search": [80, 20, 40, 40],
+                "video": [120, 30, 60, 60],
+            }
+        ),
+        time="week",
+        groups=["region"],
+        media=["search", "video"],
+        channels=["Search", "Video"],
+    )
+    # The prediction lists east before west and Search before Video, the reverse of training
+    canonical = prediction.arrays["media"][:, ::-1, ::-1]
+    expected = canonical / maximum
+
+    scaling = Data(training_data, scaling={"media": Scaling(offset=0.0, scale=maximum)}).scaling
+    transformed = scaling.transform(prediction)
+    restored = scaling.inverse_transform(transformed)
+
+    assert maximum.shape == (2, 2)
+    assert transformed.group_values == training_data.group_values
+    assert transformed.channels == ("Video", "Search")
+    np.testing.assert_allclose(transformed.arrays["media"], expected, rtol=tolerance, atol=0)
+    np.testing.assert_allclose(restored.arrays["media"], canonical, rtol=1e-5, atol=1e-5)
+
+
+def test_declared_input_scaling_with_integer_statistics_keeps_large_counts_exact():
+    data = prepare_data(
+        pl.DataFrame({"week": [1, 2], "impressions": [3_000_000_000, 5_000_000_000], "sales": [1, 3]}),
+        time="week",
+        media=["impressions"],
+        outcome="sales",
+    )
+    # Without x64 JAX would wrap these int64 statistics, and they would narrow the counts on the host
+    declared = Scaling(offset=np.array([0]), scale=np.array([1_000_000_000]))
+    expected = np.array([[3.0], [5.0]], dtype=np.float32)
+
+    with jax.enable_x64(False):
+        scaling = Data(data, scaling={"media": declared}).scaling
+        stored = scaling.transformations["media"]
+        transformed = scaling.transform(data)
+        traced = jax.jit(stored.transform)(jnp.asarray(data.arrays["media"].astype(np.float32)))
+        restored = scaling.inverse_transform(transformed)
+
+    assert stored.offset.dtype == stored.scale.dtype == np.float32
+    for result in (transformed.arrays["media"], traced):
+        assert result.dtype == np.float32
+        np.testing.assert_array_equal(result, expected)
+    np.testing.assert_array_equal(restored.arrays["media"], data.arrays["media"])
+
+
+def test_declared_scalings_tag_scaled_data_and_inversion_clears_the_tag(training_data):
+    declared = Scaling(offset=0.0, scale=training_data.arrays["media"].max(axis=0))
+    scaling = Data(training_data, scaling={"media": declared}).scaling
+    other = fit_data_scaling(training_data)
+
+    scaled = scaling.transform(training_data)
+    restored = scaling.inverse_transform(scaled)
+
+    assert scaled._scaling is scaling
+    assert restored._scaling is None
+    np.testing.assert_allclose(restored.arrays["media"], training_data.arrays["media"], rtol=1e-5, atol=1e-5)
+    with pytest.raises(ValueError, match="already been scaled"):
+        scaling.transform(scaled)
+    with pytest.raises(ValueError, match="different fitted scales"):
+        other.inverse_transform(scaled)
+    with pytest.raises(ValueError, match="already been scaled"):
+        Data(scaled, scaling={"media": declared})
+
+
+def test_mapping_of_fitted_transformations_matches_them_without_the_population_check(training_data):
+    fitted = fit_data_scaling(training_data, adjust_population=True)
+    prediction = deepcopy(training_data)
+    prediction.arrays["population"] *= 2
+    expected = fitted.transform(training_data)
+
+    mapped = Data(training_data, scaling={**fitted.transformations}).scaling
+    result = mapped.transform(training_data)
+    changed = mapped.transform(prediction)
+
+    assert mapped._population_roles == ()
+    for role, values in expected.arrays.items():
+        np.testing.assert_array_equal(result.arrays[role], values)
+        assert result.arrays[role].dtype == values.dtype
+    np.testing.assert_array_equal(changed.arrays["media"], expected.arrays["media"])
+    with pytest.raises(ValueError, match="population"):
         fitted.transform(prediction)

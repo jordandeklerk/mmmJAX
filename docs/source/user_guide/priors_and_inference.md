@@ -1,6 +1,6 @@
 # Priors and inference
 
-These pages check what the priors claim before the fit, sample the model and
+Next you'll check what the priors claim before the fit, sample the model and
 read its diagnostics, and fit it with other samplers and an approximation.
 
 | Guide | Description |

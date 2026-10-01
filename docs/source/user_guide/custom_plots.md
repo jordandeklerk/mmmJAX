@@ -8,14 +8,16 @@ kernelspec:
 # Customizing plots
 
 Every plot mmmJAX draws is an ordinary plotnine `ggplot` or ArviZ
-`PlotCollection`, and every analysis output is an xarray Dataset with a value
-for each draw. For example, adding a plotnine scale, label, or theme with `+` changes a
-plot, as `+ pn.labs(title="Returns")` retitles one, and `save` writes it to a
-file. We don't intend to delve deep into the mechanics of the customization provided by [plotnine](https://plotnine.org/) or
-[ArviZ](https://python.arviz.org/) here and would refer the reader to their specific documentation for a full treatment.
+`PlotCollection`. That means you can change a plotnine plot by adding a scale,
+label, or theme with `+`, as `+ pn.labs(title="Returns")` retitles one, and
+`save` writes it to a file. For anything past these basics, the
+[plotnine](https://plotnine.org/) and [ArviZ](https://python.arviz.org/) docs
+cover customization in full.
 
-Instead, we build three figures the built-in plots don't draw, each from one
-mmmJAX output for the ten-channel brand from [A first model](first_model).
+Because every analysis output is an xarray Dataset with a value for each draw,
+you can also build figures the built-in plots don't draw. The three below each
+start from one mmmJAX output for the ten-channel brand from
+[A first model](first_model).
 
 ```{code-cell} ipython3
 :tags: [remove-cell]
@@ -29,8 +31,9 @@ results = first_model_results(model)
 ## Every return in full
 
 {func}`~mmmjax.plot_media_metrics` reduces each channel's return on ad spend
-to a mean and an interval. A ridgeline draws the whole posterior instead, from
-the draws that {func}`~mmmjax.media_metrics` returns.
+to a mean and an interval. To see the shape of the whole posterior instead, you
+can build a ridgeline from the draws that {func}`~mmmjax.media_metrics`
+returns.
 
 ```{code-cell} ipython3
 returns = mj.media_metrics(model, results, quantity="mu")
@@ -96,17 +99,18 @@ labels = ridges.drop_duplicates("channel")
 )
 ```
 
-Every return leans right, with a long tail of draws well above its mean. The
-coral foot of each ridge holds the draws below break-even, at most 5 percent
-for any channel, and YouTube and Streaming pay for themselves in 99 percent of
-the draws.
+In the ridgeline, every return has a long right tail of draws well above its
+mean. The coral foot of each ridge holds the draws below break-even, and its
+label gives the share above it. No channel has more than 5 percent of its draws
+down there, and YouTube and Streaming pay for themselves in 99 percent of
+theirs.
 
 ## Where the optimizer moves money
 
 The [budget optimizer](budgets) moves money until every channel's next dollar
-returns the same. The left panel follows each channel's revenue from its next
-dollar, from today's spending to the optimized plan, and the right panel shows
-the budget the plan moves.
+returns the same. The left panel follows the revenue each channel's next
+dollar brings, from today's spending to the optimized plan, and the right
+panel shows how much budget the plan moves.
 
 ```{code-cell} ipython3
 :tags: [skip-execution]
@@ -195,10 +199,10 @@ losses = budget_panel[budget_panel["change"] < 0]
 )
 ```
 
-The channels whose next dollar returns the most gain budget, and their return
-on the next dollar falls as they grow. The rest give budget up, and theirs
-rises, until all ten meet at about \$1.67. Streaming gains the most,
-\$184,000, and Generic search gives up the most, \$145,000.
+The channels whose next dollar returns the most gain budget, and as they grow,
+the return on their next dollar falls. The rest give budget up, so theirs
+rises until all ten meet at about \$1.67 on the dashed line. Streaming gains
+the most, \$184,000, and Generic search gives up the most, \$145,000.
 
 ## When each channel earns
 
@@ -235,6 +239,9 @@ ranking = weekly.sum("time").to_series().sort_values().index.tolist()
 Meta, Display, and both search channels spend every week and earn every week.
 Streaming, Linear TV, TikTok, and Influencer run flights on one shared
 calendar, which Snapchat joins in July 2022, and each flight's revenue fades
-over the weeks after it ends as carryover runs out. That shared calendar is why
-[Media effects](media_effects) finds the total these channels bring firmer than
-its split among them. YouTube runs flights on a schedule of its own.
+over the weeks after it ends as carryover runs out. YouTube runs flights too,
+but on a schedule of its own.
+
+The shared calendar makes its channels hard to tell apart, so
+[Media effects](media_effects) finds the total they bring firmer than its split
+among them.

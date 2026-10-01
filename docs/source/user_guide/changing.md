@@ -7,16 +7,16 @@ kernelspec:
 
 # Changing the model
 
-The model is a set of functions you wrote, so changing it means editing those
-functions, and nothing else in the workflow has to move. This page makes one
+Because the model is a set of functions you wrote, changing it means editing
+those functions, and nothing else in the workflow has to move. You'll make one
 change to the ten-channel brand model from [A first model](first_model).
 
 That model gives each paid channel one coefficient for all 156 weeks, so an ad
-works as well in the last week as in the first. Real effects drift. Creative
-wears out, competitors come and go, and audiences change, and a constant
-coefficient then reports an average over weeks that differ
-([Ng, Wang, and Dai, 2021](https://arxiv.org/abs/2106.03322)). The change here
-lets the media effect move smoothly from week to week.
+works as well in the last week as in the first. In practice an ad's effect
+drifts as creative wears out, competitors come and go, and audiences change.
+When it does, a constant coefficient can only report an average over weeks that
+differ ([Ng, Wang, and Dai, 2021](https://arxiv.org/abs/2106.03322)). The change
+here lets the media effect move smoothly from week to week.
 
 ```{code-cell} ipython3
 :tags: [remove-cell]
@@ -42,16 +42,16 @@ plt.rcParams["figure.dpi"] = 100
 
 ## A brand whose ads wear out
 
-The simulated brand's media effects stay constant, so this page builds a copy
-whose effects fade. Its ten paid channels lose effect over the three years,
-slowly at first and last and fastest in 2023, from one and a half times their
-simulated effect in the first week to half of it in the last,
+The simulated brand's media effects never change, so this page builds a copy
+whose ads wear out. In the copy, the ten paid channels go from one and a half
+times their simulated effect in the first week to half of it in the last. They
+fade slowly at first, fastest in 2023, and slowly again at the end,
 
 $$
 \text{wear}_t = 1 + 0.5 \cos\frac{\pi t}{155}, \qquad t = 0, \dots, 155,
 $$
 
-and each week's revenue is rebuilt around that with the same noise.
+and each week's revenue is rebuilt around the faded effects with the same noise.
 
 ```{code-cell} ipython3
 :tags: [hide-input]
@@ -69,7 +69,7 @@ revenue = expected * truth["revenue"] / truth["expected_revenue"]
 worn = brand.frame.assign(revenue=revenue.values)
 ```
 
-The data is then prepared exactly as for the first model.
+From there you prepare the data exactly as you did for the first model.
 
 ```{code-cell} ipython3
 worn_data = mj.prepare_data(
@@ -90,9 +90,9 @@ worn_scaling = mj.fit_data_scaling(worn_data, scale_outcome=True)
 ## A multiplier on the media effect
 
 A multiplier $\zeta_t$ scales the paid channels' effect in week $t$, and a
-Gaussian process over the weeks lets it follow any smooth path. The
-Hilbert-space approximation writes the process as a fixed set of sine
-functions times coefficients, so the sampler works with ordinary parameters
+Gaussian process over the weeks lets it follow any smooth path. To keep the
+sampler working with ordinary parameters, the Hilbert-space approximation writes
+that process as a fixed set of sine functions times coefficients
 ([Riutort-Mayol et al., 2022](https://arxiv.org/abs/2004.11408)). Everything
 else stays as in [A first model](first_model),
 
@@ -112,30 +112,42 @@ where $e_t$ counts the days from the first training week to week $t$, as in
 the first model, $\psi_m$ is the $m$th of $M$ basis functions, $\bar{\psi}_m$
 its mean over the training weeks, $\omega_m$ its frequency, and $\mathcal{S}$
 the spectral density of the squared exponential covariance, `expquad` in the
-code. The length scale $\ell$ is in days, and its prior puts the median at
-about 245 days, so the effect turns over seasons rather than weeks. The
-amplitude $\eta$ sets how far $\log \zeta_t$ swings, and under its prior most
-paths stay within a factor of two from their lowest week to their highest.
+code.
 
-The model works on $\log \zeta_t$, so the multiplier stays positive. The
-multiplier also enters the sum in $\beta_c$, so $r_c$ stays the channel's return
-over the training weeks. Doubling every $\zeta_t$ then halves every $\beta_c$
-and leaves the revenue unchanged, so the data can't pin down the multiplier's
-level. Subtracting $\bar{\psi}_m$ fixes it by making $\log \zeta_t$ average zero
-over the training weeks, so $\zeta_t$ reads as the effect relative to that
-average. One multiplier serves all ten paid channels, and Email keeps a
-constant coefficient.
+The length scale $\ell$ is roughly how many days the effect takes to change, and its
+prior puts the median at about 245 days, so the effect turns over seasons
+rather than weeks. The amplitude $\eta$ sets how far $\log \zeta_t$ swings, and
+under its prior most paths stay within a factor of two from their lowest week to
+their highest.
 
-The tables below sort the new symbols by where each name comes from, and
-highlight each symbol in a formula that uses it.
+The model works on $\log \zeta_t$ so that the multiplier stays positive. The
+multiplier also enters the sum in $\beta_c$, so each channel's contribution over
+the training weeks comes to $r_c S_c$ dollars and $r_c$ stays its return.
+
+One multiplier serves all ten paid channels, so the model assumes they wear out
+together. Separate paths could show one creative tiring while another holds up,
+but they'd ask the data to split each flight's lift among channels it can't tell
+apart, as [Checking the data](checking_data) shows. Email keeps a constant
+coefficient, since the wear on this page touches only the paid channels.
+
+A Gaussian process suits an effect you believe changed gradually at times you
+can't name. If you know when it changed, such as at a creative swap, a step at
+that date says so more directly.
+
+:::{admonition} Center the basis
+:class: tip
+
+If you doubled every $\zeta_t$, every $\beta_c$ would halve and the revenue
+wouldn't change, so the data can't pin down the multiplier's level. Subtracting
+$\bar{\psi}_m$ fixes the level by making $\log \zeta_t$ average zero over the
+training weeks, so $\zeta_t$ reads as the effect relative to that average.
+:::
+
+## The code
 
 ::::{tab-set}
 
 :::{tab-item} Supplied by mmmJAX
-
-`reference.time` gives the days of the training weeks, which set the
-multiplier that $\beta_c$ divides by, and `time` gives those of the weeks
-being evaluated.
 
 | Symbol | In the math | Name in the code |
 | --- | --- | --- |
@@ -145,8 +157,9 @@ being evaluated.
 
 :::{tab-item} Declared in parameters
 
-Each unknown is one of your names. The basis functions have no data axis, so
-`mj.Real(approximation.n_basis)` gives the coefficients a plain shape.
+As in the first model, each unknown is one of your names. The basis functions
+have no data axis, though, so `mj.Real(approximation.n_basis)` gives the
+coefficients a plain shape.
 
 | Symbol | In the math | Name in the code |
 | --- | --- | --- |
@@ -157,9 +170,6 @@ Each unknown is one of your names. The basis functions have no data axis, so
 :::
 
 :::{tab-item} Computed in the blocks
-
-`trained` now holds the training exposure already multiplied by $\zeta_t$, so
-the first model's `roi_coefficient` call sets $\beta_c$ from the new sum.
 
 | Symbol | In the math | Name in the code | Where it's computed |
 | --- | --- | --- | --- |
@@ -174,8 +184,11 @@ the first model's `roi_coefficient` call sets $\beta_c$ from the new sum.
 
 ::::
 
-{func}`~mmmjax.prepare_hsgp` builds that object once, outside the model, from
-the training weeks.
+{func}`~mmmjax.prepare_hsgp` builds `approximation` once, outside the model,
+from the training weeks. You pass it `time_positions`, the days since the first
+week, and `length_scale_range`, here 90 days to two years. The range only sizes
+the approximation and puts no limit on the length scale the sampler draws, so
+pick one that holds nearly all of that parameter's prior, as this one does.
 
 ```{code-cell} ipython3
 approximation = mj.prepare_hsgp(
@@ -187,14 +200,17 @@ approximation = mj.prepare_hsgp(
 approximation.center, approximation.boundary, approximation.n_basis
 ```
 
-`time_positions` holds the days since the first week, and
-`length_scale_range` names the length scales the multiplier should be able to
-use, from 90 days to two years. The basis centers on day 542.5, the middle of
-the training weeks, and reaches 2,336 days to either side, since a process
-with a long length scale needs room past the data or it bends toward zero at
-the edges. Its 45 functions follow the sizing rule for the shortest length
-scale in the range, and `center_columns=True` subtracts each function's mean
-over the training weeks, the $\bar{\psi}_m$ above.
+In the output, the basis centers on day 542.5, the middle of the training weeks,
+and reaches 2,336 days to either side. Its 45 functions follow the sizing rule
+for the shortest length scale in the range, and `center_columns=True` subtracts
+each function's mean over the training weeks, the $\bar{\psi}_m$ above.
+
+The basis depends only on the dates, so it goes in `transformed_data`. The
+multiplier for the weeks being evaluated comes from `time`, while the one in
+$\beta_c$ comes from `reference.time`, the training weeks. That's the split
+between predictions and definitions that
+[Scenarios](scenarios.md#predictions-and-definitions) describes, and it keeps
+each $\beta_c$ where the fit put it when the data changes.
 
 ```{code-cell} ipython3
 import jax.numpy as jnp
@@ -225,8 +241,12 @@ def varying_transformed_data(day_of_year, time, reference):
         "multiplier_basis": multiplier_basis,
         "training_basis": training_basis,
     }
+```
 
+The weights depend on the length scale and the amplitude instead, so they go in
+`transformed_parameters`.
 
+```{code-cell} ipython3
 def varying_transformed_parameters(
     media,
     organic_media,
@@ -287,8 +307,12 @@ def varying_transformed_parameters(
     # Expected revenue, and the multiplier for the generated quantities to record.
     mu = baseline + media_effect + organic_effect + control_effect + treatment_effect
     return {"mu": mu, "multiplier": multiplier}
+```
 
+`varying_log_density` gets the first model's priors and likelihood by calling
+its density, and it adds the three new priors on top.
 
+```{code-cell} ipython3
 def varying_log_density(
     outcome,
     mu,
@@ -328,8 +352,7 @@ def varying_log_density(
         sigma,
     )
 
-    # The multiplier's priors. The length scale's median is about 245 days, so the effect
-    # turns over seasons rather than weeks.
+    # The multiplier's priors.
     target += mj.normal(multiplier_coefficients, 0.0, 1.0)
     target += mj.lognormal(length_scale, 5.5, 0.5)
     target += mj.half_normal(amplitude, 0.25)
@@ -343,8 +366,8 @@ def varying_generated_quantities(key, outcome, mu, multiplier, sigma):
 
     # multiplier is one of your names, so it lands in the results under that key.
     return {
-        "predictive": {"outcome": prediction},
-        "log_likelihood": {"outcome": pointwise},
+        "predictive": prediction,
+        "log_likelihood": pointwise,
         "multiplier": multiplier,
     }
 
@@ -360,33 +383,10 @@ varying_model = mj.Model(
 )
 ```
 
-The basis depends only on the dates, so it goes in `transformed_data`. The
-multiplier for the weeks being evaluated comes from `time`, while the one in
-$\beta_c$ comes from `reference.time`, the training weeks. That's the split
-between predictions and definitions that [Scenarios](scenarios) describes.
-
-The weights depend on the length scale and the amplitude, so they go in
-`transformed_parameters`. `varying_log_density` adds the three new priors to
-the first model's density. `varying_generated_quantities` returns the
-multiplier and `generated_dims` labels it by week, so every draw of it lands
-in the results.
-
-:::{admonition} Plan on recent weeks
-:class: tip
-
-Analyses such as {func}`~mmmjax.optimize_budget` rerun the blocks on the
-training weeks, so each week keeps its fitted multiplier, and a plan over all
-three years counts the stronger early weeks too. Pass recent weeks as
-`spend_periods` and `response_periods` for a plan that reflects today's
-effect. Weeks past the data get the process's forecast, which drifts back
-toward the training average and widens, so a plan for next year expects the
-ads to recover.
-:::
-
 ## Fitting both versions
 
-The first model, unchanged, fits the same data, so the two versions differ
-only in the multiplier.
+For comparison, you also fit the unchanged first model to the same data, so
+the two versions differ only in the multiplier.
 
 ```{code-cell} ipython3
 constant_model = mj.Model(
@@ -422,7 +422,8 @@ varying = stored(
 )
 ```
 
-Check a new kind of parameter before you trust its fit.
+The length scale and the amplitude are new kinds of parameters, so check how
+they sampled before you trust the fit.
 
 ```{code-cell} ipython3
 print(az.summary(varying, var_names=["length_scale", "amplitude"]))
@@ -432,15 +433,19 @@ print(az.summary(varying, var_names=["length_scale", "amplitude"]))
 int(varying["sample_stats"]["diverging"].sum())
 ```
 
-The length scale settles near 269 days, with an 89 percent interval from 180
-to 380. The amplitude settles near 0.449, in its prior's upper tail, since the
-simulated wear swings by a factor of three. Both have an `r_hat` of 1.00, and
-the sampler reports no divergences.
+In the summary, the length scale settles near 269 days, and its 89 percent
+interval runs from 180 to 380. The amplitude settles near 0.449, in its
+prior's upper tail, because the simulated wear swings by a factor of three and
+the prior keeps most paths within a factor of two. Both have an `r_hat` of
+1.00, and the divergence count is zero.
 
 ## What the multiplier finds
 
-The model pins the average of $\log \zeta_t$ at zero, so the plot divides the
-true wear by its geometric mean to put it on the same footing.
+To put the true wear on the same footing, the plot divides it by its geometric
+mean, because the model pins the average of $\log \zeta_t$ at zero. In the plot,
+the blue line and band are the fitted multiplier and its 90 percent interval,
+the dashed line is the true wear, and the gray line at one marks the training
+average.
 
 ```{code-cell} ipython3
 :tags: [hide-input]
@@ -464,13 +469,15 @@ band = band.assign(truth=true_multiplier.to_series()).reset_index()
 )
 ```
 
-The blue line and band are the fitted multiplier and its 90 percent interval,
-the dashed line is the true wear, and the gray line marks one, the training
-average. The fit finds the overall decline, from about one and a half early in
-2022 to about a half in 2024, and its band holds the truth at both ends. It
-gets the timing wrong in between. It keeps rising until late 2022, and the
-truth runs below its band from the autumn of 2022 to mid-2023 and above it
-from December 2023 to mid-2024.
+The fitted multiplier finds the overall decline, from about one and a half
+early in 2022 to about a half in 2024, and its band holds the truth at both
+ends.
+
+In between, though, it gets the timing wrong, and you can spot two stretches
+in the plot where the truth leaves its band. The fit keeps rising until late
+2022 while the true wear is already falling, so the truth runs below its band
+from the autumn of 2022 to mid-2023. The fit then falls too far, and the truth
+sits above its band from December 2023 to mid-2024.
 
 :::{admonition} A multiplier follows anything that changes over time
 :class: warning
@@ -484,7 +491,8 @@ launches or experiments, before you read it as the ads' effect.
 ## What a constant coefficient misses
 
 {func}`~mmmjax.contributions` gives each version's weekly revenue from paid
-media. The truth is each channel's simulated contribution times the wear.
+media, and the plot below draws each one as a line with a 90 percent band. The
+dashed line is the truth, each channel's simulated contribution times the wear.
 
 ```{code-cell} ipython3
 constant_effects = mj.contributions(constant_model, constant, quantity="mu", by="time")
@@ -522,14 +530,14 @@ colors = {"Constant coefficient": "#fa7c17", "Time-varying": "#2a2eec"}
 )
 ```
 
-Under the constant coefficient, paid media's revenue runs too low in the 2022
-flights and too high in the 2024 ones. The time-varying version comes closer
-but still runs low, most in the early 2022 flights and from late 2023 on,
-where its multiplier falls below the true wear. The bands are 90 percent
-intervals.
+The orange constant-coefficient line runs below the truth in the 2022 flights
+and above it in the 2024 ones, because a single coefficient averages over all
+three years. The blue time-varying line comes closer but still runs low, most in
+the early 2022 flights and from late 2023 on, where its multiplier falls below
+the true wear.
 
-Summed by year, each version's median revenue from paid media sits next to
-the truth, in millions of dollars.
+The table below sums the weeks by year and sets each version's median revenue
+from paid media next to the truth, in millions of dollars.
 
 ```{code-cell} ipython3
 :tags: [hide-input]
@@ -542,10 +550,22 @@ yearly["Truth"] = (wear * paid).sum("channel").groupby("time.year").sum().to_ser
 (pd.DataFrame(yearly) / 1e6).round(2)
 ```
 
-The constant coefficient gives every week the same return, so its yearly
+Since the constant coefficient gives every week the same return, its yearly
 credit follows the media alone. It credits paid media with \$3.96 million in
 2022, when the truth is \$6.53 million, and with \$3.27 million in 2024
 against \$2.31 million, about 40 percent too much. The time-varying version
 comes closer in every year, though it too falls short in 2024, at
-\$1.64 million. A plan built on the constant model would count on 2024's ads
-to work as well as 2022's.
+\$1.64 million. If you planned on the constant model, you'd be counting on
+2024's ads to work as well as 2022's.
+
+:::{admonition} Plan on recent weeks
+:class: tip
+
+When analyses such as {func}`~mmmjax.optimize_budget` rerun the blocks on the
+training weeks, each week keeps its fitted multiplier, so a plan over all three
+years counts the stronger early weeks too. If you want a plan that reflects
+today's effect, pass recent weeks as `spend_periods` and `response_periods`.
+Weeks past the data get the process's forecast instead, and because that
+forecast drifts back toward the training average and widens, a plan for next
+year expects the ads to recover.
+:::

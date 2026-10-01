@@ -1,5 +1,6 @@
 """Reusable centering and scaling for model inputs."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Literal
 
@@ -27,9 +28,15 @@ class Scaling:
         z = \frac{x - c}{s}, \qquad x = z s + c.
 
     :func:`fit_data_scaling` fits one for each scaled input role, and blocks
-    receive the outcome's as ``outcome_scaling``. Direct construction skips
-    validation. The object is registered as a JAX pytree, so it can pass
-    through JAX transformations and its methods work inside them.
+    receive the outcome's as ``outcome_scaling``. The object is registered as
+    a JAX pytree, so it can pass through JAX transformations and its methods
+    work inside them.
+
+    A scaling you build yourself goes to ``Data`` in a mapping from role
+    names, as in ``Data(scaling={"media": Scaling(offset=0.0, scale=peak)})``,
+    and sets that role's units in place of fitted statistics. Direct
+    construction skips validation, so ``Data`` checks the statistics when it
+    is built.
 
     Attributes
     ----------
@@ -110,12 +117,13 @@ class Scaling:
 class DataScaling:
     """Store training transformations together with their input labels.
 
-    :func:`fit_data_scaling` builds this object from training data. It keeps
-    one :class:`Scaling` for each scaled input role, and
+    :func:`fit_data_scaling` builds this object from training data and keeps
+    one :class:`Scaling` for each scaled input role. ``Data`` also builds one
+    from a mapping of roles to scalings you build yourself, and
     :attr:`transformations` returns them by role.
 
     ``transform`` and ``inverse_transform`` put new data in the training
-    group and column order before applying the fitted statistics. The data
+    group and column order before applying the training statistics. The data
     must hold exactly the training groups, and a changed channel-to-column
     assignment raises an error.
     """
@@ -127,7 +135,7 @@ class DataScaling:
 
     @property
     def transformations(self) -> dict[str, Scaling]:
-        """Return the fitted transformations for the selected inputs.
+        """Return the scaling of each selected input.
 
         Returns
         -------
@@ -251,6 +259,12 @@ def fit_data_scaling(
     prepared data, and its ``inverse_transform`` restores the original units.
     New data may omit population. Any population it supplies must match the
     training population when it also holds population-adjusted inputs.
+
+    The fitted statistics also combine with scalings you build yourself.
+    Passing ``{**scaling.transformations, "media": custom}`` to ``Data`` uses
+    ``custom`` for media and the fitted statistics for every other role. That
+    mapping carries no population record, so new data is not checked against
+    the training population and must keep the same estimates.
 
     Parameters
     ----------
@@ -377,6 +391,113 @@ def fit_data_scaling(
         _population=stored_population,
         _population_roles=tuple(population_roles),
     )
+    return result
+
+
+def _as_data_scaling(scalings: Mapping[str, Scaling], data: PreparedData) -> DataScaling:
+    """Check declared scalings against the training arrays and keep them in the declared order."""
+    if data._scaling is not None:
+        raise ValueError(
+            "scaling applies declared scalings to raw observations, but these inputs have already been scaled. "
+            "Pass the prepared data from prepare_data before any scaling"
+        )
+    accepted = ("outcome", "media", "organic_media", "reach", "organic_reach", "controls", "treatments")
+    roles = [role for role in accepted if role in data.arrays]
+    allowed = ", ".join(repr(role) for role in roles)
+    remedy = f"Declare scalings only for the selected roles {allowed}" if roles else "No selected role accepts one"
+    fitted: list[tuple[str, Scaling]] = []
+    for role, scaling in scalings.items():
+        if not isinstance(role, str):
+            raise TypeError(
+                f"scaling must be keyed by role names such as 'media', got {type(role).__name__}. "
+                "Key each Scaling by the name of the role it scales"
+            )
+        if role in accepted and role not in roles:
+            raise ValueError(f"scaling names {role!r}, which the data does not select. {remedy}")
+        if role not in roles:
+            raise ValueError(f"scaling cannot scale {role!r}. {remedy}")
+        # A subclass could override the methods, so only the exact type guarantees a linear scaling
+        if type(scaling) is not Scaling:
+            raise TypeError(
+                f"scaling for {role!r} must be a Scaling, got {type(scaling).__name__}. "
+                "Build it with mj.Scaling(offset=..., scale=...) and write a nonlinear transform in the model's blocks"
+            )
+        if role == "outcome":
+            declared = _as_outcome_scaling(scaling, data)
+        else:
+            declared = _as_input_scaling(role, scaling, data.arrays[role])
+        fitted.append((role, declared))
+
+    result = DataScaling(_fitted=tuple(fitted), _layout=data._layout(), _population=None, _population_roles=())
+    return result
+
+
+def _as_outcome_scaling(scaling: Scaling, data: PreparedData) -> Scaling:
+    """Keep one value or one value per group in each statistic of the outcome's scaling."""
+    groups = (len(data.group_values),) if data.group_columns else ()
+    shapes = {(), (1,), (1, 1), groups, (1, *groups)} if groups else {(), (1,)}
+    expected = f"() or {groups}" if groups else "()"
+    remedy = "Use one value or one value per group" if groups else "Use one value, since the outcome has no groups"
+    result = _as_floating_scaling("outcome", scaling)
+    for name, statistic in (("offset", result.offset), ("scale", result.scale)):
+        if statistic.shape not in shapes:
+            raise ValueError(
+                f"scaling for 'outcome' must hold its {name} with shape {expected} and no time axis, "
+                f"got shape {statistic.shape}. {remedy}"
+            )
+    return result
+
+
+def _as_input_scaling(role: str, scaling: Scaling, values: NDArray[np.generic]) -> Scaling:
+    """Keep an input's statistics free of a time axis and its exposure offsets at zero."""
+    result = _as_floating_scaling(role, scaling)
+    for name, statistic in (("offset", result.offset), ("scale", result.scale)):
+        try:
+            expanded = np.broadcast_shapes(statistic.shape, values.shape)
+        except ValueError:
+            expanded = None
+        # New data covers other periods, so a statistic may not vary along the leading time axis
+        timeless = statistic.ndim < values.ndim or statistic.shape[0] == 1
+        if expanded != values.shape or not timeless:
+            raise ValueError(
+                f"scaling for {role!r} must hold its {name} with shape {values.shape[1:]} or one that broadcasts "
+                f"to it, with no time axis, got shape {statistic.shape}. "
+                "Use one value, one per column, or one per group and column"
+            )
+    # Analyses remove a channel by setting its exposure to zero and find active periods by testing for
+    # positive exposure, so zero exposure must stay exactly zero
+    if role in ("media", "organic_media", "reach", "organic_reach") and np.any(np.asarray(result.offset) != 0):
+        raise ValueError(
+            f"scaling for {role!r} must have a zero offset so that zero exposure stays zero. "
+            "Divide the exposures by a scale alone"
+        )
+    return result
+
+
+def _as_floating_scaling(role: str, scaling: Scaling) -> Scaling:
+    """Store the statistics of a declared Scaling as finite arrays of one floating dtype with a positive scale."""
+    statistics = {"offset": np.asarray(scaling.offset), "scale": np.asarray(scaling.scale)}
+    for name, array in statistics.items():
+        if array.dtype.kind not in "iuf":
+            raise TypeError(
+                f"scaling for {role!r} must hold a real numeric {name}, got dtype {array.dtype}. "
+                "Build the Scaling from real numbers"
+            )
+
+    # Casting on the host keeps integer statistics from narrowing to int32 inside JAX
+    dtype = jnp.result_type(*statistics.values(), float)
+    with np.errstate(over="ignore", invalid="ignore"):
+        offset = statistics["offset"].astype(dtype)
+        scale = statistics["scale"].astype(dtype)
+    if not np.isfinite(offset).all():
+        raise ValueError(
+            f"scaling for {role!r} must hold a finite offset in {dtype}. Check the statistics used to build it"
+        )
+    if not np.isfinite(scale).all() or np.any(scale <= 0):
+        raise ValueError(
+            f"scaling for {role!r} must hold a positive finite scale in {dtype}. Check the statistics used to build it"
+        )
+    result = Scaling(offset=jnp.asarray(offset), scale=jnp.asarray(scale))
     return result
 
 

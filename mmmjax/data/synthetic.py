@@ -1,6 +1,7 @@
 """Synthetic marketing observations with a separate record of their generating process."""
 
-from collections.abc import Sequence
+import numbers
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Literal
@@ -28,6 +29,10 @@ class SyntheticData:
     can be checked against it. Its values are simulation truth, not posterior
     estimates or additional modeling inputs.
 
+    ``contributions`` reruns the simulation's media effects with more or less
+    media, so a fitted response curve or budget plan can be checked against
+    the truth as well.
+
     Attributes
     ----------
     frame : pandas.DataFrame
@@ -48,6 +53,76 @@ class SyntheticData:
     media_history: pd.DataFrame
     channels: pd.DataFrame
     truth: xr.Dataset
+
+    def contributions(self, multiplier: float | Mapping[str, float] = 1.0) -> xr.DataArray:
+        """Recompute each channel's true contribution with its media scaled.
+
+        The exposure in every modeling week is multiplied by ``multiplier``,
+        and the eight lead-in weeks keep theirs, the same way
+        ``response_curves`` scales spending. The simulation's own carryover and
+        Hill curves turn the scaled exposure into revenue, so the default of
+        one reproduces ``truth["contribution"]``.
+
+        A channel's contribution depends only on its own exposure, so one call
+        that scales several channels gives each channel's response to its own
+        change. A mapping from each channel to a budget plan's ratio of new to
+        current spending gives what the plan earns in the simulation.
+
+        A factor that is negative, infinite, or not a number raises an error,
+        and so does a channel that ``truth`` doesn't list.
+
+        Parameters
+        ----------
+        multiplier : float or mapping of str to float, default 1.0
+            Nonnegative factor for every channel's exposure, or a mapping from
+            channel names in ``truth`` to factors. Channels a mapping leaves
+            out keep their exposure.
+
+        Returns
+        -------
+        xarray.DataArray
+            Revenue contribution with the axes and labels of
+            ``truth["contribution"]``.
+
+        Examples
+        --------
+        Double linear TV's impressions in every modeling week.
+
+        .. ipython::
+
+            In [1]: from mmmjax import simulate_data
+
+            In [2]: brand = simulate_data(seed=7, groups=None)
+
+            In [3]: doubled = brand.contributions({"linear_tv": 2.0})
+
+        The change from the recorded contribution is the revenue the extra
+        impressions add over the three years.
+
+        .. ipython::
+
+            In [4]: added = doubled - brand.truth["contribution"]
+
+            In [5]: round(added.sum("time").sel(channel="linear_tv").item())
+        """
+        truth = self.truth
+        max_lag = int(truth.attrs["max_lag"])
+        labels = [str(label) for label in truth["channel"].values]
+        factors = _resolve_media_multipliers(multiplier, labels)
+        # The lead-in weeks have already happened, so only the modeling weeks change.
+        exposure = truth["exposure"].values.copy()
+        exposure[max_lag:] *= factors
+        population = truth["population"].values[..., None]
+        response = _media_response(
+            exposure,
+            population,
+            truth["retention"].values,
+            truth["half_saturation"].values,
+            truth["slope"].values,
+            max_lag,
+        )
+        contribution = truth["contribution"].copy(data=response * truth["coefficient"].values)
+        return contribution
 
 
 def simulate_data(
@@ -236,8 +311,7 @@ def simulate_data(
     slope = channels["slope"].to_numpy()
     coefficient = np.asarray(population[:, None] * channels["coefficient_per_person"].to_numpy(), dtype=np.float64)
     coefficient *= response_rng.lognormal(0, 0.15, size=(n_groups, n_channels))
-    carried = geometric_adstock(exposure / population[None, :, None], retention, max_lag=max_lag)
-    response = np.asarray(hill_saturation(carried, half_saturation, slope))[max_lag:]
+    response = _media_response(exposure, population[:, None], retention, half_saturation, slope, max_lag)
     contribution = response * coefficient
 
     regional_baseline = population * response_rng.uniform(0.8, 1.2, n_groups)
@@ -342,6 +416,48 @@ def simulate_data(
     if groups is None:
         truth = truth.squeeze("group", drop=True)
     return SyntheticData(frame, history, channels, truth)
+
+
+def _resolve_media_multipliers(multiplier: object, labels: list[str]) -> NDArray[np.float64]:
+    """Give each channel the factor its exposure is scaled by."""
+    if isinstance(multiplier, Mapping):
+        factors = np.ones(len(labels))
+        for name, value in multiplier.items():
+            if name not in labels:
+                known = ", ".join(repr(label) for label in labels)
+                raise ValueError(f"multiplier names unknown channel {name!r}. Channels are {known}")
+            factors[labels.index(name)] = _as_media_factor(value, f"multiplier[{name!r}]")
+        return factors
+    if isinstance(multiplier, (bool, np.bool_)) or not isinstance(multiplier, numbers.Real):
+        raise TypeError(
+            f"multiplier must be a number or a mapping of channel names to numbers, got {type(multiplier).__name__}"
+        )
+    factors = np.full(len(labels), _as_media_factor(multiplier, "multiplier"))
+    return factors
+
+
+def _as_media_factor(value: object, name: str) -> float:
+    """Check that a media factor is a finite nonnegative number."""
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, numbers.Real):
+        raise TypeError(f"{name} must be a number, got {type(value).__name__}")
+    factor = float(value)
+    if not np.isfinite(factor) or factor < 0:
+        raise ValueError(f"{name} must be finite and nonnegative, got {value!r}")
+    return factor
+
+
+def _media_response(
+    exposure: NDArray[np.float64],
+    population: NDArray[np.int64],
+    retention: NDArray[np.generic],
+    half_saturation: NDArray[np.generic],
+    slope: NDArray[np.generic],
+    max_lag: int,
+) -> NDArray[np.floating]:
+    """Carry and saturate exposure per person and keep only the modeling weeks."""
+    carried = geometric_adstock(exposure / population, retention, max_lag=max_lag)
+    response = np.asarray(hill_saturation(carried, half_saturation, slope))[max_lag:]
+    return response
 
 
 def _channel_catalog() -> pd.DataFrame:

@@ -10,16 +10,14 @@ kernelspec:
 mmmJAX draws the plots a marketing mix analysis needs for convergence, fit,
 priors, contributions, returns, media transformations, and budgets. Each
 function reads the results of a fit or the output of an analysis function, so
-no plot refits the model. Every plot below draws the ten-channel brand from
-[A first model](first_model), and each section links the page that explains
-what its plots measure.
+no plot refits the model. Apart from the last section, every plot below comes
+from the ten-channel brand that [A first model](first_model) fits.
 
-The functions are there for convenience, and nothing stops you from plotting
-another way. Results are ordinary xarray DataTree objects and every analysis
-output is an ordinary xarray Dataset, so ArviZ, plotnine, matplotlib, or any
-other plotting library can draw from them directly.
-[Customizing plots](custom_plots) builds three figures of its own from the
-same outputs.
+Results are ordinary xarray DataTree objects and every analysis output is an
+ordinary xarray Dataset, so ArviZ, plotnine, matplotlib, or any other plotting
+library can draw from them directly. When the built-in plots don't show what
+you need, [Customizing plots](custom_plots) builds three figures of its own
+from the same outputs.
 
 ```{code-cell} ipython3
 :tags: [remove-cell]
@@ -47,42 +45,48 @@ plt.rcParams["figure.dpi"] = 100
 
 ## Convergence
 
-{func}`~mmmjax.plot_rhat` draws every parameter's R-hat at once.
+Start with {func}`~mmmjax.plot_rhat`, since it draws every parameter's R-hat
+at once.
 
 ```{code-cell} ipython3
 mj.plot_rhat(results)
 ```
 
 Parameters run down the side, and each point is one element of a parameter,
-such as one channel's return. A value past ArviZ's limit of 1.01 would sit
-right of the dotted line in orange, and the subtitle confirms that all 45
+such as one channel's return. A value past ArviZ's limit of 1.01 would land
+right of the dotted line in orange, but the subtitle confirms that all 45
 values of the brand's fit sit at or below it. [Sampling and
 diagnostics](sampling) explains what R-hat measures, and `var_names` limits the
 plot to the parameters you name.
 
-{func}`~mmmjax.plot_rank` looks at the chains more closely.
+For a closer look at the chains themselves, turn to {func}`~mmmjax.plot_rank`.
 
 ```{code-cell} ipython3
 mj.plot_rank(results)
 plt.show()
 ```
 
-Each panel follows one element, and each line one chain's ranks among all the
-draws, so a line that bows away shows a chain that lingered in one part of the
-distribution. The brand has more parameters than ArviZ draws in one figure, so
-the plot keeps the 12 with the highest R-hat and says so in its title. Chain 3
-bows away furthest, for Snapchat's retention rate.
+A rank plot gives each element a panel and each chain a line that traces its
+ranks among all the draws. When a line bows away, its chain lingered in one
+part of the distribution.
 
-{func}`~mmmjax.plot_trace_dist` makes the same choice with six rows.
+The brand has more parameters than ArviZ draws in one figure, so the plot keeps
+the 12 with the highest R-hat. Among them, chain 3 on Snapchat's retention
+rate, in the bottom-right panel, bows away furthest, though its R-hat stays
+within the limit.
+
+{func}`~mmmjax.plot_trace_dist` picks its elements the same way, though it
+keeps only six rows.
 
 ```{code-cell} ipython3
 mj.plot_trace_dist(results)
 plt.show()
 ```
 
-Each row pairs an element's density on the left with its draws in sampling
-order on the right, with a line style for each chain. Even these six, the
-worst by R-hat, overlap in their densities and run as flat, even bands.
+The rows pair an element's density on the left with its draws in sampling
+order on the right, and each chain has its own line style. Even for these six,
+the worst by R-hat, the chains mix well, since their densities overlap and
+their draws run as flat, even bands.
 
 ## Fit
 
@@ -94,38 +98,35 @@ mj.plot_ppc_dist(model, results)
 plt.show()
 ```
 
-Each blue curve is the distribution of one draw's predicted weeks, and the
-black curve of the observed weeks stays inside their bundle down to the second
-hump of busy weeks. With the output of {func}`~mmmjax.sample_prior` and
-`group="prior"`, the same plot checks the priors before any fit, as
-[Priors](priors) shows.
+The blue curves each trace the distribution of one draw's predicted weeks, and
+the black curve of the observed weeks stays inside their bundle, second hump of
+busy weeks included. So the observed revenue looks like one more draw from the
+model.
 
-{func}`~mmmjax.plot_fit` keeps the weeks in order.
+If you pass the output of {func}`~mmmjax.sample_prior` with `group="prior"`
+instead, the same plot checks the priors before any fit, as [Priors](priors)
+shows.
+
+{func}`~mmmjax.plot_fit` keeps the weeks in order, so you can follow the fit
+through time.
 
 ```{code-cell} ipython3
 mj.plot_fit(model, results)
 ```
 
 The black line is observed revenue, and the blue line and band are the mean
-and 89 percent interval of the predictive draws, in dollars because the plot
-undoes the outcome scaling. The subtitle gives an $R^2$ of 0.91, a weighted
-mean absolute percentage error of 4.1 percent, and 93 percent of weeks inside
-the band, and [Sampling and diagnostics](sampling) reads the weeks outside it.
+and 89 percent interval of the predictive draws. Because the plot undoes the
+outcome scaling, both lines and the band are in dollars.
 
-:::{admonition} Intervals and point estimates
-:class: tip
+In the subtitle, an $R^2$ of 0.91 and a weighted mean absolute percentage error
+of 4.1 percent say the mean tracks revenue closely, and 93 percent of weeks
+fall inside the band. [Sampling and diagnostics](sampling) looks at the weeks
+outside it and why their timing matters.
 
-Every plot follows ArviZ's settings, which give 89 percent intervals around
-the mean unless you change them. `ci_prob` changes the interval for one call,
-and ArviZ's `rc_context`, as in
-`az.rc_context({"stats.ci_prob": 0.9, "stats.point_estimate": "median"})`,
-changes both for a block of code.
-:::
-
-`show_baseline=True` adds the baseline, the revenue the model expects with
-the paid channels and Email removed and with price and promotion at their
-baseline levels. {func}`~mmmjax.contributions` computes it from the same
-draws, and `quantity` names the expected revenue the blocks return.
+`show_baseline=True` adds the baseline, the revenue the model expects with the
+paid channels and Email removed and with price and promotion at their baseline
+levels. To get it, the plot runs {func}`~mmmjax.contributions` on the same
+draws.
 
 :::{admonition} `quantity` takes one of your names
 :class: important
@@ -133,7 +134,7 @@ draws, and `quantity` names the expected revenue the blocks return.
 `mu` is the key the brand's `transformed_parameters` returns, so it's one of
 your names rather than one mmmJAX supplies, as
 [What is mmmJAX](../getting_started/what_is_mmmjax.md#how-blocks-get-their-inputs)
-explains. A model that returns its expected revenue under another key passes
+explains. If your model returns its expected revenue under another key, pass
 that key here and in every analysis below.
 :::
 
@@ -146,41 +147,58 @@ and the two treatments add each week. It opens widest during the flights and
 promotions, while the baseline carries the trend, the seasons, and the two
 controls.
 
-{func}`~mmmjax.plot_residuals` shows what's left over after the predictions.
+:::{admonition} Intervals and point estimates
+:class: tip
+
+ArviZ's settings give every plot 89 percent intervals around the mean unless
+you change them. `ci_prob` changes the interval for one call, and ArviZ's
+`rc_context`, as in
+`az.rc_context({"stats.ci_prob": 0.9, "stats.point_estimate": "median"})`,
+changes both for a block of code.
+:::
+
+### Residuals and test statistics
+
+{func}`~mmmjax.plot_residuals` shows what's left over after the predictions,
+so you can look for patterns the model missed.
 
 ```{code-cell} ipython3
 mj.plot_residuals(model, results)
 ```
 
-Each week's residual is the observed revenue minus the prediction, and the
-band is its 89 percent interval across draws. The line wanders around zero
-without a trend or a season, though it sits above zero in all but one week of
-February and March 2023.
+A week's residual is the observed revenue minus the prediction, and the band
+is its 89 percent interval across draws. The line wanders around zero without a
+trend or a season, since the model accounts for both. In all but one week of
+February and March 2023, though, it sits above zero, so the predictions there
+ran below the observed revenue.
 
-{func}`~mmmjax.plot_ppc_tstat` turns checks like these into numbers.
+Rather than reading checks like these by eye, you can put numbers on them with
+{func}`~mmmjax.plot_ppc_tstat`.
 
 ```{code-cell} ipython3
 mj.plot_ppc_tstat(model, results, quantity="mu")
 plt.show()
 ```
 
-Each panel computes one statistic on every predictive draw, the black dot
-marks its value for the observed revenue, and the p in each title is the share
-of draws that reach it. The standard deviation and the largest week sit near
-the middle of their draws.
+The plot computes one statistic per panel on every predictive draw, and the
+black dot marks its value for the observed revenue. The p in each title is the
+share of draws that reach it. For the standard deviation and the largest week,
+the observed value lands near the middle of the draws, so the model reproduces
+both.
 
-Residual autocorrelation works a little differently. Its residuals come from
-each draw's expected revenue, which `quantity` names, so the observed values
-draw as a black curve instead of a dot. Its p rounds to zero, and
-[Sampling and diagnostics](sampling) reads the streaks in the residuals behind
-it. `statistics` takes other names, quantiles such as `0.9`, or any function
-from a series of weekly revenue to a number.
+Unlike those two, residual autocorrelation takes its residuals from each
+draw's expected revenue, which `quantity` names, so the observed values show
+up as a black curve instead of a dot. That curve sits well to the right of the
+blue one, so its p rounds to zero. [Sampling and diagnostics](sampling) traces
+that back to streaks in the residuals.
+
+Beyond these three, `statistics` takes other names, quantiles such as `0.9`,
+or any function that turns a series of weekly revenue into a number.
 
 ## Priors and posteriors
 
-The comparisons in this section need draws from the priors alone.
-{func}`~mmmjax.sample_prior` makes them from the `priors` mapping, which
-states the model's priors again for these tools.
+Before you compare priors with posteriors, you need draws from the priors
+alone, and {func}`~mmmjax.sample_prior` makes them from the `priors` mapping.
 
 ```{code-cell} ipython3
 :tags: [skip-execution]
@@ -194,22 +212,23 @@ prior_results = mj.sample_prior(model, priors, draws=500, seed=0)
 prior_results = first_model_prior_results(model, priors)
 ```
 
-{func}`~mmmjax.plot_prior_posterior` overlays each parameter's prior on its
-posterior.
+{func}`~mmmjax.plot_prior_posterior` takes both results and overlays each
+parameter's prior on its posterior.
 
 ```{code-cell} ipython3
 mj.plot_prior_posterior(results, prior_results)
 plt.show()
 ```
 
-Each panel draws a parameter's prior in blue and its posterior in orange, and
-the plot keeps the 12 of 45 that the data narrowed least. Eleven belong to
-paid channels and one is Email's half-saturation point. Most of their
-posteriors sit on their priors, so the priors carry most of what the model
-says about how these channels carry over and saturate. Snapchat's return and
-Branded search's retention rate are the exceptions, with posteriors that lean
-further right than their priors.
-[Priors](priors) reads what the data changed.
+The plot draws each parameter's prior in blue and its posterior in orange, and
+it keeps the 12 of 45 that the data narrowed least. Most of their posteriors
+sit on their priors, so the priors carry most of what the model says about how
+these channels carry over and saturate. In the panels for Snapchat's return and
+Branded search's retention rate, though, the orange posterior leans further
+right than the blue prior. [Priors](priors) goes through what the data did
+change for the returns and treatments.
+
+### Prior sensitivity
 
 {func}`~mmmjax.psense_summary` measures how much each posterior depends on the
 priors and how much on the data.
@@ -221,27 +240,29 @@ mj.psense_summary(results, priors=priors, var_names=["roi"])
 ```
 
 Raising the priors or the likelihood to a power a little above or below one
-reweights the draws without refitting, and each value measures how far that
-moves a channel's return. The results hold no log prior of their own, so
-`priors` provides it, the same terms the model's `log_density` writes. The
-diagnosis points to a possible conflict between prior and data for eight
-channels and to a strong prior with a weak likelihood for TikTok and Generic
-search. The columns after it show that the ROI prior moves each return the
-most.
+reweights the draws without refitting, and the prior and likelihood columns
+measure how far that moves a channel's return.
 
-{func}`~mmmjax.plot_psense` shows which way each posterior moves.
+Reading down the table, eight channels run high in both columns, and the
+diagnosis points to a possible conflict between prior and data. For TikTok and
+Generic search only the prior runs high, so the diagnosis points to a strong
+prior with a weak likelihood. The columns after the diagnosis scale each prior
+on its own, and the ROI prior moves every return the most.
+
+The table says how far each posterior moves, and {func}`~mmmjax.plot_psense`
+shows which way.
 
 ```{code-cell} ipython3
 mj.plot_psense(results, priors=priors)
 plt.show()
 ```
 
-Each row draws an element's distribution twice, with the priors raised to the
-powers in the legend on the left and the likelihood raised to them on the
-right. The lines below give the point estimate and 89 percent interval at each
-power. For Display's and Snapchat's returns a stronger prior pulls the
-interval down while a stronger likelihood pushes it up, which is what you see
-when a prior sits below what the data suggest.
+The left panel of each row draws an element's distribution with the priors
+raised to the powers in the legend, and the right panel does the same with the
+likelihood. The lines under the curves give the point estimate and 89 percent
+interval at each power. For Display's and Snapchat's returns a stronger prior
+pulls the interval down while a stronger likelihood pushes it up. That's what
+you see when a prior sits below what the data suggests.
 
 ## Contributions
 
@@ -254,40 +275,33 @@ effects = mj.contributions(model, results, quantity="mu", by="time")
 mj.plot_contributions(effects)
 ```
 
-Each bar starts where the one before it ends, so the bars walk from the
-baseline through every input to all of the revenue. Each label gives a share
-and its total in dollars, both posterior means. The baseline holds 79.8
-percent and Meta, the largest paid channel, 3.5 percent, about \$1.93 million
-over the three years. Promotion adds 3.0 percent, about \$1.61 million, while
-price's orange bar takes away 2.5 percent, about \$1.36 million, because it
-compares each week with the lowest price the brand charged.
-[Media effects](media_effects) explains how the contributions are computed.
+Because each bar starts where the one before it ends, the bars walk from the
+baseline through every input to all of the revenue. The label on each bar
+gives its share and its total in dollars, both posterior means, and
+[Media effects](media_effects) explains how they're computed.
 
-The waterfall treats three kinds of input differently, and
-[A first model](first_model) sets up the three roles.
+The baseline holds 79.8 percent of revenue, and Meta, the largest paid
+channel, brings in 3.5 percent, about \$1.93 million over the three years.
+Promotion adds 3.0 percent, about \$1.61 million, while price's orange bar
+takes away 2.5 percent, about \$1.36 million, because it compares each week
+with the lowest price the brand charged.
 
-- The paid channels and Email are removed outright, so each bar is all that
-  channel adds. Email has a bar here but no return below, because nothing was
-  spent on it.
-- Price and promotion are treatments, levers the brand sets, so their bars
-  measure the change from a baseline level, the lowest price in the data and a
-  week without a promotion. `treatment_baselines` sets other levels.
-- Demand and holiday are controls, which the model adjusts for without
-  reporting their effect, so they stay inside the baseline.
-
-`by="time"` keeps the weeks instead.
+Passing `by="time"` keeps the weeks instead of summing them, so the plot shows
+when each input contributes.
 
 ```{code-cell} ipython3
 mj.plot_contributions(effects, by="time")
 ```
 
-The light gray area is the baseline, the ten largest inputs stack on top of
-it, and the other three share the darker gray area, as the caption says. The
-black line is total revenue. Linear TV and Streaming arrive in flights and
-promotion swells in the weeks the brand runs one, while Generic search and
-Display run every week. `include_baseline=False` drops the baseline and stacks
-the inputs under a line that traces what removing them all at once would
-cost.
+The light gray area is the baseline and the black line is total revenue. The
+ten largest inputs stack on top of the baseline, and the other three share the
+darker gray area. Linear TV and Streaming arrive in flights and promotion
+swells in the weeks the brand runs one, while Generic search and Display run
+every week.
+
+If you'd rather see the inputs alone, `include_baseline=False` drops the
+baseline and stacks them under a line that traces what removing them all at
+once would cost.
 
 :::{admonition} The axis starts above zero
 :class: note
@@ -298,32 +312,34 @@ so the inputs stay visible.
 
 ## Returns
 
-The return plots read the output of {func}`~mmmjax.media_metrics`, which
-covers only the ten paid channels, since a return needs spending.
-{func}`~mmmjax.plot_media_metrics` draws the return on investment by default.
+The return plots read the output of {func}`~mmmjax.media_metrics`, and since a
+return needs spending, that output covers only the ten paid channels.
+{func}`~mmmjax.plot_media_metrics` draws the return on investment unless you ask
+for another metric.
 
 ```{code-cell} ipython3
 returns = mj.media_metrics(model, results, quantity="mu")
 mj.plot_media_metrics(returns)
 ```
 
-Each bar is a channel's mean return on a dollar with its 89 percent interval,
-and the dashed line marks break-even. Channels run from the most spending to
-the least, from Meta at \$3.49 to Snapchat at \$3.98. Snapchat's interval is
-the widest, because the smallest budget leaves the model the least to learn
-from. [Media effects](media_effects) defines the returns.
+The bars give each channel's mean return on a dollar with its 89 percent
+interval, and the dashed line marks break-even. The channels run from the most
+spending to the least, from Meta at \$3.49 to Snapchat at \$3.98. Snapchat's
+interval is the widest, because the smallest budget leaves the model the least
+to learn from. If you want the formula behind each return,
+[Media effects](media_effects) writes it out.
 
 :::{admonition} Comparing results
 :class: tip
 
-A mapping of labeled results, such as
-`{"Prior": prior_returns, "Posterior": returns}`, draws each channel's bars
-side by side in one color per result. `prior_returns` comes from
+If you pass a mapping of labeled results, such as
+`{"Prior": prior_returns, "Posterior": returns}`, the plot draws each channel's
+bars side by side in one color per result. To get `prior_returns`, run
 {func}`~mmmjax.media_metrics` with `group="prior"` on the output of
 {func}`~mmmjax.sample_prior`.
 :::
 
-`metric` switches the bars to any other metric with draws.
+The `metric` argument switches the bars to any other metric that has draws.
 
 ```{code-cell} ipython3
 mj.plot_media_metrics(returns, metric="marginal_roi")
@@ -331,8 +347,9 @@ mj.plot_media_metrics(returns, metric="marginal_roi")
 
 The average return says how well past spending paid off, and the marginal
 return says what the next dollar would earn. Here the marginal return runs
-from \$1.18 for Generic search to \$2.40 for Snapchat, and each channel's sits
-below its average return, since its curve flattens as it spends.
+from \$1.18 for Generic search to \$2.40 for Snapchat. Each channel's sits
+below its average return, because its curve flattens as it spends and each new
+dollar earns less than the last.
 
 {func}`~mmmjax.plot_psense` with `metrics` asks how much of that ranking comes
 from the priors, and `kind="quantities"` follows summaries across the powers.
@@ -349,26 +366,29 @@ mj.plot_psense(
 plt.show()
 ```
 
-Each panel follows the mean or standard deviation of a channel's marginal
+These panels follow the mean or standard deviation of a channel's marginal
 return as the priors (blue) or the likelihood (orange) are raised to a power.
 The dashed lines mark two Monte Carlo standard errors around the unscaled
-value. Snapchat's mean falls as the priors strengthen and rises as the
-likelihood does, so the priors pull it down, while Generic search stays the
-lowest of the three at every power.
+value, so a change between them could be noise in the draws. Snapchat's mean
+falls as the priors strengthen and rises as the likelihood does, so the priors
+pull it down. Generic search, though, stays the lowest of the three at every
+power, so the priors don't set its place at the bottom.
 
-{func}`~mmmjax.plot_roi_bubbles` sets each channel's average return against
-its marginal one.
+### Average and marginal returns
+
+{func}`~mmmjax.plot_roi_bubbles` lets you weigh each channel's average return
+against its marginal one.
 
 ```{code-cell} ipython3
 mj.plot_roi_bubbles(returns)
 ```
 
-Each bubble puts a channel's average return on the horizontal axis and its
-marginal return on the vertical one, with its area proportional to the
-channel's spending. Dashed lines mark break-even on both axes. Every channel
-sits above and to the right of break-even. Streaming and Snapchat sit highest,
-while Generic search, the second largest budget, has the lowest marginal
-return.
+The horizontal axis holds each channel's average return and the vertical axis
+its marginal return, and each bubble's area is proportional to the channel's
+spending. Every channel sits above and to the right of the dashed break-even
+lines, so on average and at the margin, each one brings in more than it costs.
+Streaming and Snapchat sit highest, while Generic search, the second largest
+budget, has the lowest marginal return.
 
 `metric="effectiveness"` puts the incremental revenue per impression on the
 vertical axis instead.
@@ -379,8 +399,11 @@ mj.plot_roi_bubbles(returns, metric="effectiveness")
 
 Effectiveness asks how much each impression does and the return asks how much
 each dollar does, so the two differ by what an impression costs. Branded
-search and Streaming earn the most on each impression, and Display pairs a
-middling return with the lowest effectiveness.
+search and Streaming earn the most on each impression, while Display pairs a
+middling return with the lowest effectiveness, so its impressions must come
+cheap.
+
+### Shares of spend and revenue
 
 {func}`~mmmjax.plot_spend_vs_contribution` compares each channel's share of
 the spending with its share of the incremental revenue.
@@ -389,19 +412,18 @@ the spending with its share of the incremental revenue.
 mj.plot_spend_vs_contribution(returns)
 ```
 
-Each channel gets a hatched bar for its share of the spending and a solid one
-for its share of the incremental revenue, with its return above. A solid bar
-taller than its hatched one means a return above the average of all ten.
-Streaming's and YouTube's solid bars stand well above their hatched ones,
-while Generic search's and Linear TV's fall short. The budget below still cuts
-Generic search the most and Linear TV hardly at all, because it follows the
-marginal returns above rather than these averages.
+When a channel's solid bar is taller than its hatched one, its return is above
+the average of all ten. Streaming's and YouTube's solid bars stand well above
+their hatched ones, while Generic search's and Linear TV's fall short. The
+budget below still cuts Generic search the most and Linear TV hardly at all,
+because it follows the marginal returns above rather than these averages.
 
 ## Media transformations
 
 {func}`~mmmjax.plot_adstock` passes one unit of exposure through the model's
-own adstock function for every draw and gives each channel a panel. `prior`
-adds the draws of {func}`~mmmjax.sample_prior` for comparison.
+own adstock function for every draw and gives each channel a panel. The
+`prior` argument adds the draws of {func}`~mmmjax.sample_prior` so you can
+compare them with the posterior.
 
 ```{code-cell} ipython3
 mj.plot_adstock(
@@ -413,25 +435,24 @@ mj.plot_adstock(
 )
 ```
 
+In each panel, the blue posterior and the orange prior show the share of an
+exposure's effect that lands in each later week. For most channels the
+posterior sits on the prior, so the data says little about how long their
+effects last. YouTube's posterior does move toward effects that fade faster,
+while Branded search's moves toward effects that last longer.
+
 :::{admonition} How the parameters reach the function
 :class: note
 
 The function receives each draw of a parameter through the argument of the
 same name, the way the model's blocks receive their inputs. `parameters` maps
 an argument to a parameter you named differently, as `alpha` to the brand's
-`retention` here, or fixes it at a number, as the slope below.
+`retention` here, or fixes it at a number, as the slope below. Swap in
+`organic_retention` for `retention` and the same call draws Email's carryover.
 :::
 
-Each panel shows the share of an exposure's effect that lands in each later
-week, with the posterior in blue and the prior in orange. For most channels
-the posterior sits on the prior, so the data say little about how long their
-effects last. YouTube's moves toward effects that fade faster and Branded
-search's toward effects that last longer.
-Without `prior`, `combine=True` draws several channels in one panel so you
-can compare their decay directly. The same call with `organic_retention` in
-place of `retention` draws Email's carryover.
-
-{func}`~mmmjax.plot_saturation` does the same for the saturation curve.
+{func}`~mmmjax.plot_saturation` does the same for the model's second
+transformation, the saturation curve.
 
 ```{code-cell} ipython3
 mj.plot_saturation(
@@ -443,14 +464,20 @@ mj.plot_saturation(
 )
 ```
 
-Each panel shows how much of its greatest effect a channel reaches at each
-level of carried media. `max_input` is in the units the function receives,
-here carried media on the scale the model fits. Linear TV's and
-Streaming's posterior curves climb furthest above their priors, while most of
-the others stay close to theirs. [A first model](first_model) defines both
-transformations.
+The panels show how much of its greatest effect a channel reaches at each level
+of carried media. `max_input` is in the units the function receives, here
+carried media on the scale the model fits.
 
-{func}`~mmmjax.plot_response_curves` shows what the curves mean in dollars.
+While most channels' posterior curves stay close to their priors, Linear TV's
+and Streaming's climb furthest above theirs, so the data says those two
+saturate at lower levels of media than their priors suggested. If you want
+the math behind both transformations, [A first model](first_model) writes it
+out.
+
+### Response curves
+
+Both transformations work on scaled media, and
+{func}`~mmmjax.plot_response_curves` shows what they mean in dollars.
 
 ```{code-cell} ipython3
 :tags: [skip-execution]
@@ -468,24 +495,29 @@ curves = first_model_curves(model, results)
 mj.plot_response_curves(curves, combine=True, channels=["Meta", "Streaming", "Generic search"])
 ```
 
-Each curve follows the incremental revenue as a channel's spending runs from
-zero to twice its current level, with a point at the current spending and a
-dashed stretch that extrapolates past it. `combine=True` draws the channels
-you name in one panel, and without `channels` it takes the five with the most
-spending. Overlaid bands blur together past a few channels, so the call names
-three. Meta sits furthest along its curve, where each extra dollar adds
-less, while Streaming's curve still climbs steeply past its point, which is
-why its marginal return above is the highest of these three.
-[Media effects](media_effects) reads the curves channel by channel.
+The curves follow the incremental revenue as each channel's spending runs from
+zero to twice its current level. A point marks the current spending, and a
+dashed stretch extrapolates past it. With `combine=True` the channels you name
+share one panel, and since overlaid bands blur together past a few channels,
+the call names only three.
+
+Meta sits furthest along its curve, where each extra dollar adds less, while
+Streaming's curve still climbs steeply past its point. That's why Streaming's
+marginal return above is the highest of these three.
+[Media effects](media_effects) walks through each channel's curve on a panel of
+its own.
+
+For channels you buy by reach and frequency,
+{func}`~mmmjax.plot_frequency_curves` draws the output of
+{func}`~mmmjax.frequency_curves`.
 
 ## Budgets
 
-The budget plots read the output of {func}`~mmmjax.optimize_budget`, here a
-plan that keeps each channel within 30 percent of its historical spending.
-[Budget optimization](budgets) explains how the optimizer finds it.
-`include_metrics=True` records the incremental revenue each channel brings
-under both splits, and {func}`~mmmjax.plot_budget_response` walks from
-the historical revenue to the optimized one.
+The budget plots read the output of {func}`~mmmjax.optimize_budget`, and
+[Budget optimization](budgets) explains how the optimizer finds its plan. The
+plan here keeps each channel within 30 percent of its historical spending, and
+with `include_metrics=True`, it records the incremental revenue each channel
+brings under both splits.
 
 ```{code-cell} ipython3
 :tags: [skip-execution]
@@ -506,26 +538,32 @@ plan = mj.optimize_budget(
 plan = first_model_limited_plan(model, results)
 ```
 
+{func}`~mmmjax.plot_budget_response` shows the plan's worth by walking from the
+historical revenue to the optimized one.
+
 ```{code-cell} ipython3
 mj.plot_budget_response(plan)
 ```
 
 The first bar is the incremental revenue of the historical split and the last
-is that of the optimized one. Each channel's change sits between them, with
-the cuts first. Cutting Generic search costs \$172,000 and Streaming's
-increase adds \$204,000. The subtitle puts the mean gain at \$134,000 with an
-89 percent interval from a loss of \$170,000 to a gain of \$426,000, and the
-plan gains in 77 percent of the draws.
+is that of the optimized one. Each channel's change sits between them, and the
+cuts come first. The biggest cut, to Generic search, costs \$172,000, and the
+biggest increase, to Streaming, adds \$204,000.
 
-{func}`~mmmjax.plot_budget_spend` shows the moves themselves.
+The subtitle puts the mean gain at \$134,000 and says the plan gains in 77
+percent of the draws. Its 89 percent interval still runs from a loss of
+\$170,000 to a gain of \$426,000, so the plan could lose revenue.
+
+Behind those revenue changes are moves in spending, and
+{func}`~mmmjax.plot_budget_spend` draws them.
 
 ```{code-cell} ipython3
 mj.plot_budget_spend(plan)
 ```
 
-Each bar is a channel's optimized spending minus its historical spending, in
-the same colors. Generic search gives up \$126,000 and Streaming gains
-\$94,100, which takes Streaming to its upper limit.
+This time each bar is a channel's optimized spending minus its historical
+spending, and the colors match the plot above. Generic search gives up
+\$126,000, while Streaming's gain of \$94,100 takes it to its upper limit.
 
 Passing the plan to {func}`~mmmjax.plot_response_curves` marks both splits
 on each channel's curve.
@@ -534,17 +572,18 @@ on each channel's curve.
 mj.plot_response_curves(curves, plan=plan)
 ```
 
-Each channel gets a panel with its own axes, a circle at the historical
-spending, and a triangle at the optimized one, and the line turns dashed
-outside the plan's limits. The optimizer moves spending from the flat
-stretches of the curves to the steep ones until the next dollar earns about
-the same everywhere or a channel reaches its limit. That's why Streaming's
-triangle sits at the end of its solid stretch.
+Without `combine=True`, every channel gets a panel with its own axes. A circle
+marks the historical spending and a triangle the optimized one, and the line
+turns dashed outside the plan's limits. The optimizer moves spending from the
+flat stretches of the curves to the steep ones until the next dollar earns
+about the same everywhere or a channel reaches its limit. That's why
+Streaming's triangle sits at the end of its solid stretch.
 
 ## Larger models
 
-The plots keep working as a model grows. The figures below draw made-up
-results for a brand with 60 channels, so their code is left out.
+To show that the plots keep working as a model grows, the figures below draw
+made-up results for a brand with 60 channels. Because those results aren't
+real, the page leaves out their code.
 
 ```{code-cell} ipython3
 :tags: [remove-input]
@@ -584,10 +623,10 @@ large_returns = xr.Dataset(
 mj.plot_media_metrics(large_returns)
 ```
 
-Bar charts show every channel and widen once they pass about a dozen. A
-notebook shows the wide chart at full size in a box that scrolls sideways, as
-this page does. Names longer than 27 characters are shortened so every label
-takes the same room.
+Bar charts show every channel, so past about a dozen they grow wider.
+In a notebook the wide chart appears at full size in a box that scrolls
+sideways, as on this page. Names longer than 27 characters are
+shortened so every label takes the same room.
 
 ```{code-cell} ipython3
 :tags: [remove-input]
@@ -634,7 +673,3 @@ The other plots trim what they draw as a model grows.
   need a look, as the brand's own plots above do.
 - A model fitted by group gives each of its largest groups a panel, and
   `coords` and `n_groups` choose which groups and how many.
-
-Channels bought by reach and frequency add
-{func}`~mmmjax.plot_frequency_curves`, which draws the output of
-{func}`~mmmjax.frequency_curves`.
