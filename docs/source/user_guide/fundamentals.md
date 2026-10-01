@@ -1,13 +1,14 @@
 # Fundamentals
 
-These pages come before any model. They introduce the simulated brand the
-guide fits, show how mmmJAX prepares and scales its data, and cover the
-probability distributions that priors and likelihoods are written with.
+Before you write a model, you'll meet the simulated brand the guide fits, see
+how mmmJAX prepares, checks, and scales its data, and walk through the
+distributions you write priors and likelihoods with.
 
 | Guide | Description |
 | --- | --- |
-| [The example data](example_data) | The simulated brand the guide fits, and how its data is made |
-| [Data and scaling](data.md) | Preparing, checking, and scaling data, and the names mmmJAX supplies to blocks |
+| [The example data](example_data) | The simulated brand the guide fits, how its data is made, and the true effects the model is checked against |
+| [Data and scaling](data.md) | Preparing and scaling data, and the names mmmJAX supplies to blocks |
+| [Checking the data](checking_data) | What the data can and can't tell apart, from correlated inputs to variance inflation |
 | [Distributions](distributions) | The distribution functions that priors and likelihoods are written with |
 
 ```{toctree}
@@ -16,6 +17,7 @@ probability distributions that priors and likelihoods are written with.
 
 example_data
 data
+checking_data
 distributions
 ```
 

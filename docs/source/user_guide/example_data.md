@@ -7,14 +7,15 @@ kernelspec:
 
 # The example data
 
-Every model in this guide fits the same simulated data, and because the data
-is simulated, you know the true effects. {func}`~mmmjax.simulate_data`
-generates weekly marketing data for a fictional consumer brand and keeps a
-record of how it was made. The brand advertises on ten paid channels and sends
-an email newsletter. Its revenue also moves with demand, the seasons, holidays,
-its own prices and promotions, and a baseline that drifts over time. Data with
-that much going on looks like a real brand's, and the record still lets you
-check every estimate the guide makes against the truth.
+Every model in this guide fits the same simulated data, so you know the true
+effects and can check each model against them.
+{func}`~mmmjax.simulate_data` generates weekly marketing data for a fictional
+consumer brand and keeps a record of how it was made.
+
+The brand advertises on ten paid channels and sends an email newsletter. Its
+revenue also moves with demand, the seasons, holidays, its own prices and
+promotions, and a baseline that drifts over time. With that much going on, the
+data looks a lot like a real brand's.
 
 ```{code-cell} ipython3
 :tags: [remove-cell]
@@ -51,24 +52,23 @@ brand.frame.head().round(2)
 :class: note
 
 {func}`~mmmjax.simulate_data` makes three regions unless told otherwise, so
-the call above passes `groups=None` to get one national series instead.
-[Geo-level models](geo) fits the three regions.
+the call above passes `groups=None` to get one national series instead. All
+three regions come back later in the guide, when [Geo-level models](geo) fits
+them together.
 :::
 
 The data runs weekly for three years, from January 2022 to December 2024.
 Each paid channel has an impressions column and a spend column, and email has
-only its sends, since the newsletter costs nothing to run. After them come the
-population, a demand index, the price, a flag for promotion weeks, a holiday
-index, and revenue. The record of how the data was made sits beside it in
-`brand.channels` and `brand.truth`.
+only its sends, since the newsletter costs nothing to run. The record of how the
+data was made sits beside it in `brand.channels` and `brand.truth`.
 
 :::{admonition} Blocks ask for roles, not columns
 :class: important
 
-A model's blocks never ask for a column such as `price` or
-`linear_tv_impressions`. [Data and scaling](data.md#supplied-names) gives each
-column a role, and a block asks for the role by its supplied name, such as
-`treatments` or `media`.
+When you write a model's blocks, you never ask for a column such as `price` or
+`linear_tv_impressions`. Instead, [Data and scaling](data.md#supplied-names)
+gives each column a role, and a block asks for the role by its supplied name,
+such as `treatments` or `media`.
 :::
 
 ## How the data is made
@@ -87,13 +87,14 @@ $$
 
 The first line holds the baseline $b_t$, the season $w_t$, demand $D_t$, the
 price $q_t$, promotions $m_t$, and holidays $H_t$, each scaled by the
-population $P$. Week $t$ counts from zero at the start of the data. The noise
-$\eta_t$ is lognormal with mean one and a standard deviation of 5 percent.
+population $P$. Here $t$ counts weeks from zero at the start of the data. The
+noise $\eta_t$ multiplies the whole sum, and it's lognormal with mean one and a
+standard deviation of 5 percent.
 
 The media sum runs over the ten paid channels and email. Each channel's
-exposures per person carry over eight weeks at retention $\rho_c$, its Hill
-curve has half saturation $\kappa_c$ and slope $s_c$, and $\beta_c$ is the most
-the channel can add in a week.
+exposures per person carry over eight weeks at retention $\rho_c$ and then pass
+through a Hill curve with half saturation $\kappa_c$ and slope $s_c$. Since that
+curve never passes one, $\beta_c$ is the most the channel can add in a week.
 
 ### The baseline and other drivers
 
@@ -121,8 +122,8 @@ and falls once over the three years.
 
 Demand adds a yearly swing to $\xi_t$, a persistent AR(1) series driven by
 standard normal draws $\varepsilon_t$. The holidays peak in late November and
-just before Christmas. The brand promotes during its flights $f_t$ and the
-holiday peaks, and each promotion cuts the list price by 15 percent.
+again shortly before Christmas. The brand runs promotions during those peaks
+and during its flights $f_t$, and each one cuts the list price by 15 percent.
 
 ```{code-cell} ipython3
 :tags: [hide-input]
@@ -153,16 +154,19 @@ terms = truth[["baseline", *drivers]].to_dataframe()
 terms.agg(["min", "max"]).T.round(-2)
 ```
 
-The baseline's drift outweighs its growth, so it climbs through 2022 and
-slides over 2023 and 2024. It stays between \$218,900 and \$302,600 a week. Of
-the other drivers, demand moves revenue the most, from \$23,700 below normal to
-\$37,600 above. The holidays add up to \$27,100, and a promotion adds \$13,300
-on top of what its lower price adds.
+In the top panel, the baseline's drift outweighs its growth, so it climbs
+through 2022 and slides over 2023 and 2024. Across those three years, the
+table puts its weekly level between \$218,900 and \$302,600.
+
+Of the other drivers in the bottom panel, demand moves revenue the most, from
+\$23,700 below normal to \$37,600 above. The holiday spikes at the end of each
+year add as much as \$27,100. A promotion adds a flat \$13,300 on top of what
+its lower price adds.
 
 ### The media
 
-Each channel's activity $a_{tc}$ becomes execution $e_{tc}$, then spend
-$S_{tc}$, then impressions $z_{tc}$.
+Each channel's activity $a_{tc}$ becomes execution $e_{tc}$, execution becomes
+spend $S_{tc}$, and spend buys impressions $z_{tc}$.
 
 $$
 \begin{aligned}
@@ -180,21 +184,23 @@ weeks, at a strength between 0.8 and 1.4, and is zero between them. Each
 channel's calendar $f^c_t$ copies it with probability 0.7 and is otherwise
 drawn the same way on its own. Meta, the two search channels, and Display have
 $\alpha_c = 0.5$, so their activity never drops below that level. Every other
-channel has $\alpha_c = 0$ and is off between flights, and Snapchat stays off
-until its launch in July 2022.
+channel has $\alpha_c = 0$ and is off between flights.
 
-Execution follows demand and holidays and drifts with a brand-wide budget and
-weekly noise, and each $\xi$ is its own AR(1) series. Search execution also
-scales with $D_t^{0.7}$, since people search more when demand is high. The draws
-$\lambda_c$ and $\epsilon_c$ jitter each channel's budget and effect by about
-15 percent.
+Execution follows demand and holidays, so the brand spends more when revenue
+would be up anyway. Search execution also scales with $D_t^{0.7}$, since people
+search more when demand is high.
 
-Email has no spend and sends $0.15\, P\, e_{tc}$ a week. The simulation starts
-eight weeks before the data, so carryover is already under way in January
-2022, and `brand.media_history` holds those eight weeks.
+Execution drifts too, with a brand-wide budget and weekly noise, and each $\xi$
+is its own AR(1) series. The draws $\lambda_c$ and $\epsilon_c$ jitter each
+channel's budget and effect by about 15 percent. Email has no spend, so it goes
+straight from execution to $0.15\, P\, e_{tc}$ sends a week.
 
-The channel table holds $\phi_c$, $k_c$, $\rho_c$, $\kappa_c$, $s_c$, and
-$\theta_c$ in its last six columns.
+The simulation starts eight weeks before the data, so carryover is already
+under way in January 2022, and `brand.media_history` holds those eight weeks.
+
+The last six columns of the channel table below hold each channel's spend per
+person $\phi_c$, cost per thousand impressions $k_c$, retention $\rho_c$, half
+saturation $\kappa_c$, slope $s_c$, and coefficient per person $\theta_c$.
 
 ```{code-cell} ipython3
 :tags: [hide-input]
@@ -211,8 +217,8 @@ columns = [
 brand.channels.set_index("channel")[columns]
 ```
 
-Linear TV airs in flights of a few weeks on the brand's calendar and goes
-dark between them. The other channels follow one of four schedules.
+Linear TV airs in flights on the brand's calendar and goes dark in between, and
+the other channels fall into four groups.
 
 - TikTok, Streaming, Influencer, and email share Linear TV's calendar, and
   Snapchat joins them after its launch in July 2022.
@@ -221,8 +227,11 @@ dark between them. The other channels follow one of four schedules.
 - Branded search also stays on every week but rises on a calendar of its own.
 - YouTube runs flights of its own.
 
-[Data and scaling](data.md) measures how closely the shared calendar ties the
-channels together.
+Channels that move together are hard to tell apart, and
+[Checking the data](checking_data) measures how closely the shared calendar
+ties them.
+
+### What each channel adds
 
 A channel's contribution follows its exposure with a lag, since carryover keeps
 each week's impressions working for several weeks.
@@ -260,10 +269,11 @@ plt.show()
 truth["contribution"].sel(channel=shown).to_pandas().agg(["min", "mean", "max"]).round(-2)
 ```
 
-Linear TV adds up to \$27,400 in a flight week and \$11,100 in an average
-week. YouTube reaches \$20,100 in its own flights. Generic search never goes
-dark, so it never adds less than \$3,700, and it peaks at \$16,500 in the
-brand's flights.
+Linear TV, in blue, adds up to \$27,400 in a flight week and \$11,100 in an
+average week, and after each flight it tails off over several weeks. YouTube,
+in orange, reaches \$20,100 in flights that run on a calendar of its own.
+Generic search never goes dark, so it never adds less than \$3,700, and it
+peaks at \$16,500 in the brand's flights.
 
 Before a channel adds anything, its carried exposure per person passes through
 its Hill curve.
@@ -288,17 +298,21 @@ axis.legend(frameon=False, ncols=2)
 plt.show()
 ```
 
-Branded search saturates first, at half its maximum by 0.3 impressions per
-person, and Meta last, at 1.2. Slopes above one, such as Linear TV's and
-Snapchat's 1.3, give a slightly S-shaped start, and Branded search's 0.9 makes
-its curve concave from the first impression. TikTok's curve hides under
-Streaming's, since both have a half saturation of 0.8 and a slope of 1.1.
-Email's curve, left out of the figure, reaches half its maximum at 0.08 sends
-per person, well below a newsletter week's sends.
+Branded search, in yellow, saturates first and reaches half its maximum by 0.3
+impressions per person, while Meta, in blue, is the slowest and needs 1.2.
+
+Slopes above one, such as Linear TV's and Snapchat's 1.3, give a slightly
+S-shaped start. Branded search's 0.9 makes its curve concave from the first
+impression, so each impression adds less than the one before.
+
+TikTok's curve hides under Streaming's, since both have a half saturation of 0.8
+and a slope of 1.1. Email's curve, left out of the figure, reaches half its
+maximum at 0.08 sends per person, well below a newsletter week's sends.
 
 ### Revenue
 
-The noise scatters observed revenue around its expected value.
+In the plot below, the noise scatters observed revenue around its expected
+value.
 
 ```{code-cell} ipython3
 :tags: [hide-input]
@@ -320,8 +334,8 @@ round(float(truth["noise"].std()), -2), round(float(relative_noise.std()), 3)
 ```
 
 The noise came out at 4.8 percent of expected revenue, about \$17,100 in a
-typical week. That is more than Linear TV, YouTube, or Generic search adds in
-an average week, so a model has to find their effects under it.
+typical week. That's more than Linear TV, YouTube, or Generic search adds in an
+average week, so a model has to find their effects under it.
 
 ## The truth to recover
 
@@ -336,31 +350,40 @@ truths = pd.DataFrame({"contribution_share": shares.to_series(), "roi": roi.to_s
 truths.round({"contribution_share": 3, "roi": 2})
 ```
 
-Over the three years Meta produced the most revenue, 4.3 percent of it, and
-Snapchat the least, 0.6 percent. Each dollar returned \$6.59 on YouTube, the
-best of the ten, and \$2.99 on Generic search, the worst. Email has no return
-on spend because it has no spend.
-[Recovering the truth](recovery) compares the first model's estimates with
-these values and with the rest of this record.
+Meta produced the most revenue over the three years, 4.3 percent of it, while
+Snapchat produced the least at 0.6 percent. Returns run from \$6.59 per dollar
+on YouTube, the best of the ten, down to \$2.99 on Generic search. Email's ROI
+shows up as NaN because the newsletter has no spend.
 
-The model in [A first model](first_model) matches parts of this process
-exactly. Demand and holidays move expected revenue in straight lines, as the
-model's controls do, and so do price and promotions, which the model takes as
-non-media treatments. Its media curve uses the same carryover over eight
-lagged weeks and the same Hill form. The model gives email that curve too, as
-organic media, and email's true slope of one is the slope the model fixes.
+[A first model](first_model.md#returns-against-the-truth) sets the fitted
+returns beside these values, and [Recovering the truth](recovery) checks the
+model's other estimates against the rest of this record.
 
-The model departs from the simulation in four ways.
+## Where the first model differs
+
+The model you'll fit in [A first model](first_model) matches parts of this
+process exactly. Demand and holidays move expected revenue in straight lines,
+as the model's controls do, and so do price and promotions, the model's
+non-media treatments. Its media curve uses the same carryover over eight lagged
+weeks and the same Hill form. Email gets that curve too, as organic media, and
+its true slope of one is the slope the model fixes.
+
+Still, the model departs from the simulation in four ways that are worth
+knowing before you compare its estimates with the truth.
 
 - It fixes every Hill slope at one, where the paid channels' true slopes run
-  from 0.9 to 1.3.
+  from 0.9 to 1.3, and [Recovering the truth](recovery.md#linear-tvs-curve)
+  shows what that costs Linear TV.
 - It treats the weeks before January 2022 as having no exposure, so it misses
   the carryover from the always-on channels and from a YouTube flight already
   under way when the data begins.
+  [Recovering the truth](recovery.md#missing-media-history) finds that this
+  explains little of where the returns fall short.
 - Its quadratic trend and two yearly Fourier pairs can only approximate a
-  baseline that drifts without a fixed shape and a seasonal wave whose
-  strength changes from year to year.
+  baseline that drifts without a fixed shape and a seasonal wave whose strength
+  changes from year to year, and [Scenarios](scenarios.md#a-forecast) shows the
+  quadratic's bend carrying on past the data.
 - Its noise adds to revenue, where the simulation's multiplies it.
 
-[Changing the model](changing) adds a media effect that varies over time and
-warns that they can leak into it.
+When [Changing the model](changing) adds a media effect that varies over time,
+it warns that gaps like these can leak into that effect.

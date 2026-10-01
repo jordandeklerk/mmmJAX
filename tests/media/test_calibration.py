@@ -12,6 +12,7 @@ from mmmjax import (
     Model,
     Positive,
     Real,
+    Scaling,
     contribution_coefficient,
     fit_data_scaling,
     geometric_adstock,
@@ -318,6 +319,56 @@ def test_roi_coefficient_in_a_model_reproduces_declared_returns_through_media_me
     np.testing.assert_array_equal(
         model.evaluate(parameters, scenario)["coefficient"], model.evaluate(parameters)["coefficient"]
     )
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_roi_coefficient_with_a_declared_outcome_scaling_reproduces_declared_returns(grouped):
+    rows = []
+    for week, (video, search) in enumerate([(4.0, 2.0), (1.0, 2.0), (3.0, 1.0), (2.0, 3.0)], start=1):
+        for region, multiplier in (("east", 1.0), ("west", 3.0))[: 2 if grouped else 1]:
+            rows.append(
+                {
+                    "week": week,
+                    "region": region,
+                    "sales": (8.0 + week) * multiplier,
+                    "video": video * multiplier,
+                    "search": search * multiplier,
+                    "video_cost": video * multiplier / 2,
+                    "search_cost": search * multiplier / 4,
+                }
+            )
+    data = prepare_data(
+        pl.DataFrame(rows),
+        time="week",
+        groups=["region"] if grouped else (),
+        outcome="sales",
+        media=["video", "search"],
+        spend=["video_cost", "search_cost"],
+        channels=["Video", "Search"],
+    )
+    # Grouped data gets one statistic per region and national data a single one
+    outcome = data.arrays["outcome"]
+    scaling = Scaling(offset=outcome.mean(axis=0), scale=outcome.max(axis=0))
+
+    def transformed(media, reference, outcome_scaling, roi, intercept):
+        coefficient = roi_coefficient(roi, reference.media, reference.spend, outcome_scale=outcome_scaling.scale)
+        return {"mu": intercept + media @ coefficient}
+
+    model = Model(
+        parameters={"roi": Positive(dims="channel"), "intercept": Real()},
+        log_density=lambda mu: 0.0,
+        data=Data(data, scaling={"outcome": scaling}),
+        transformed_parameters=transformed,
+    )
+    draws = np.array([[[0.5, 2.0], [1.5, 0.8]]], dtype=np.float32)
+    results = _collect_results(
+        {"roi": draws, "intercept": np.zeros((1, 2), dtype=np.float32)}, data=data, dims={"roi": ("channel",)}
+    )
+
+    metrics = media_metrics(model, results, quantity="mu")
+
+    assert model.data.outcome_scaling.scale.shape == ((2,) if grouped else ())
+    np.testing.assert_allclose(metrics["roi"].values, draws, rtol=1e-4)
 
 
 @pytest.mark.parametrize("window_only", [True, False])

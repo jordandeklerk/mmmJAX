@@ -8,9 +8,8 @@ kernelspec:
 # Quickstart
 
 This model runs end to end on simulated weekly data for a brand with ten paid
-channels. If you want something quick to iterate on and play with, copy it, run
-it, and change whatever you like. The [User Guide](../user_guide/index) goes
-through this model in much more detail.
+channels, so you can copy it, run it, and change whatever you like. The
+[User Guide](../user_guide/index) goes through this model in much more detail.
 
 ## Model
 
@@ -136,7 +135,7 @@ def transformed_parameters(
     control_effect = controls @ control_coefficient
     treatment_effect = treatments @ treatment_coefficient
 
-    # Expected revenue in each week, which the likelihood and every analysis read.
+    # The likelihood and every analysis read the expected revenue in each week.
     mu = baseline + media_effect + organic_effect + control_effect + treatment_effect
     return {"mu": mu}
 

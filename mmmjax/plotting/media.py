@@ -142,7 +142,9 @@ def plot_media_metrics(
     Pass several results in a mapping to compare them, as in
     ``{"Prior": prior_metrics, "Posterior": metrics}``, and each label gets its
     own color. Other axes, such as ``allocation`` in the output of
-    ``optimize_budget``, become panels on one scale.
+    ``optimize_budget``, become panels on one scale. A plan on its own also
+    gives each allocation its own color, so the optimized bars stand apart
+    from the reference ones.
 
     With many channels the figure widens so each bar keeps its width, and a
     notebook shows it at full size in a box that scrolls sideways. When
@@ -526,12 +528,16 @@ def _metric_bars(
     bars = [*ordered, *(["Other channels"] if (joined["channel"] == "Other channels").any() else [])]
     frame = _ordered(_ordered(joined, "channel", bars), "result", list(datasets))
     compared = len(datasets) > 1
+    # A plan on its own colors each allocation, so the optimized bars stand apart from the reference ones.
+    allocations = "allocation" in frame.columns and not compared
+    kinds = [str(label) for label in first["allocation"].values] if allocations else ["Channel"]
+    bar_kinds = frame["allocation"].astype(str) if allocations else "Channel"
     # Values sit just above each interval so they never collide with the error bars.
     offset = 0.015 * (max(frame["upper"].max(), 0.0) - min(frame["lower"].min(), 0.0))
     frame = frame.assign(
         value=[_bar_value(value) for value in frame["estimate"]],
         value_position=frame["upper"] + offset,
-        kind=np.where(frame["channel"] == "Other channels", "Other channels", "Channel"),
+        kind=np.where(frame["channel"] == "Other channels", "Other channels", bar_kinds),
     )
     # Bars fill 0.55 of each slot, the width every bar and box in the package takes, and compared results share it.
     dodge = pn.position_dodge(width=0.55)
@@ -539,7 +545,7 @@ def _metric_bars(
     colors = (
         dict(zip(datasets, _colors(len(datasets)), strict=True))
         if compared
-        else {"Channel": _colors(1)[0], "Other channels": "#a6a6a6"}
+        else dict(zip(kinds, _colors(len(kinds)), strict=True)) | {"Other channels": "#a6a6a6"}
     )
     lines: list[PlotAddable] = []
     if reference is not None:

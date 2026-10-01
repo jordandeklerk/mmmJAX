@@ -7,12 +7,11 @@ kernelspec:
 
 # User-defined functions
 
-Stan programs have a `functions` block for code a model reuses. mmmJAX doesn't
-need one, because the blocks are ordinary Python functions and can call any
-function you write. The model from [A first model](first_model) already calls
-one, a `hill_adstock` helper that its `transformed_parameters` applies to the
-paid channels and to email alike. This page writes its own response curve and
-distribution, swaps both into that model, and covers the rules JAX sets for
+Stan programs have a `functions` block for code a model reuses, but mmmJAX
+doesn't need one, because the blocks are ordinary Python functions and can call
+any function you write. The model from [A first model](first_model) already
+calls one, a `hill_adstock` helper. Here you'll write your own response curve
+and distribution, swap both into that model, and learn the rules JAX sets for
 code that runs inside a block.
 
 ```{code-cell} ipython3
@@ -20,35 +19,19 @@ code that runs inside a block.
 
 %run -m prerun.first_model
 %xmode minimal
-
-import arviz as az
-import matplotlib.pyplot as plt
-
-az.style.use("arviz-darkgrid")
-plt.rcParams["axes.grid"] = False
-plt.rcParams["axes.facecolor"] = "white"
-plt.rcParams["axes.edgecolor"] = ".33"
-plt.rcParams["axes.linewidth"] = 0.8
-plt.rcParams["axes.spines.top"] = False
-plt.rcParams["axes.spines.right"] = False
-plt.rcParams["xtick.major.size"] = 3.5
-plt.rcParams["ytick.major.size"] = 3.5
-plt.rcParams["figure.figsize"] = [12, 5]
-plt.rcParams["figure.dpi"] = 100
 ```
 
 ## A response curve of your own
 
-An exponential saturation curve levels off faster than the Hill curve, which
-keeps climbing slowly for a long time. With a rate $\nu > 0$ it takes exposure
-$u$ to
+The curve you'll write here, exponential saturation, levels off faster than the
+Hill curve. With a rate $\nu > 0$ it takes exposure $u$ to
 
 $$
-1 - e^{-\nu u},
+1 - e^{-\nu u}.
 $$
 
-which starts at zero and approaches one. Written with `jax.numpy`, it's an
-ordinary function that JAX can differentiate and compile.
+Write it with `jax.numpy` and it's an ordinary function that JAX can
+differentiate and compile.
 
 ```{code-cell} ipython3
 import jax
@@ -75,8 +58,8 @@ $$
 p(x \mid s) = \frac{2}{\pi s \big(1 + (x / s)^2\big)}, \qquad x \geq 0,
 $$
 
-with scale $s$, and it puts no mass below zero. A draw is $s$ times the absolute
-value of a standard Cauchy draw. The log of that density and the draw take two
+where $s$ is the scale. To draw from it, take $s$ times the absolute value of a
+standard Cauchy draw. You can write the log of that density and the draw as two
 short functions.
 
 ```{code-cell} ipython3
@@ -96,42 +79,54 @@ print(half_cauchy(jnp.array([0.5, 2.0]), 1.0))
 print(mj.Prior(half_cauchy, scale=1.0).sample(jax.random.key(0), sample_shape=(3,)))
 ```
 
-The new family sums the log density the way `mj.normal` does, and a
-{class}`~mmmjax.Prior` built from it draws and scores like any other, so it
-works with {func}`~mmmjax.sample_prior` as well.
+The first line of output is one number for both values, because the new family
+sums the log density the way `mj.normal` does. A {class}`~mmmjax.Prior` built
+from it draws and scores like any other.
 
 :::{admonition} Check the draws against the density
 :class: warning
 
-Nothing checks that the two functions describe the same distribution. A draw
-function that disagrees with its density gives a prior that draws from one
+Nothing checks that your draw function and your log density describe the same
+distribution. If they disagree, you get a prior that draws from one
 distribution and scores another, and the model still runs.
 :::
 
-A histogram of many draws laid over the density shows whether the two agree.
+To check them, lay a histogram of many draws over the density and see whether
+the two agree.
 
 ```{code-cell} ipython3
 :tags: [hide-input]
 
-draws = half_cauchy_rng(jax.random.key(0), 1.0, sample_shape=(10_000,))
-edges = jnp.linspace(0.0, 10.0, 51)
-counts, _ = jnp.histogram(draws, bins=edges)
-width = edges[1] - edges[0]
-grid = jnp.linspace(0.0, 10.0, 200)
+import numpy as np
+import pandas as pd
+import plotnine as pn
 
-fig, axis = plt.subplots(layout="constrained")
-axis.stairs(counts / (draws.size * width), edges, fill=True, alpha=0.4, label="10,000 draws")
-axis.plot(grid, jnp.exp(half_cauchy_logpdf(grid, 1.0)), color="black", label="Density")
-axis.set_title("Draws against the density")
-axis.legend(frameon=False)
-plt.show()
+draws = np.asarray(half_cauchy_rng(jax.random.key(0), 1.0, sample_shape=(10_000,)))
+edges = np.linspace(0.0, 10.0, 51)
+counts, _ = np.histogram(draws, bins=edges)
+# Dividing by every draw, not just those below 10, keeps the bars on the density's scale.
+heights = counts / (draws.size * np.diff(edges))
+bars = pd.DataFrame({"left": edges[:-1], "right": edges[1:], "density": heights})
+grid = jnp.linspace(0.0, 10.0, 200)
+curve = jnp.exp(half_cauchy_logpdf(grid, 1.0))
+density = pd.DataFrame({"value": np.asarray(grid), "density": np.asarray(curve)})
+(
+    pn.ggplot(bars)
+    + pn.geom_rect(
+        pn.aes(xmin="left", xmax="right", ymin=0, ymax="density"),
+        fill="#d2d3fb",
+        color="#2a2eec",
+        size=0.3,
+    )
+    + pn.geom_line(pn.aes("value", "density"), data=density, color="#262626", size=0.9)
+    + pn.labs(x="Value", y="Density")
+    + mj.theme_mmmjax()
+)
 ```
 
 The bars follow the curve, so the draw function samples the distribution the
-density describes. Dividing each count by all 10,000 draws, not just the ones
-below 10, keeps the bars on the density's scale even though some draws land
-past the right edge. Those draws are the heavy tail that sets the half-Cauchy
-apart.
+density describes. The draws past the right edge make up the heavy tail that
+sets the half-Cauchy apart.
 
 ```{code-cell} ipython3
 draws = half_cauchy_rng(jax.random.key(0), 1.0, sample_shape=(10_000,))
@@ -140,17 +135,21 @@ print(round(float(jnp.mean(draws > 10.0)), 3))
 print(round(float(jnp.mean(half_normal_draws > 10.0)), 3))
 ```
 
-Of the half-Cauchy draws, 6.7 percent are above 10, and none of 10,000
-half-normal draws with the same scale are.
+Of the half-Cauchy draws, 6.7 percent are above 10, while none of 10,000
+half-normal draws with the same scale are. As a prior, the half-Cauchy leaves
+far more room for large values. On the noise scale, that room barely matters
+once the model sees the data, because 156 weeks of residuals pin $\sigma$ down
+far more tightly than either prior does, as its narrow interval on
+[Sampling and diagnostics](sampling.md#convergence) shows.
 
 ## Both in a model
 
-The model from [A first model](first_model) can use both. Each paid channel's
-exposure is carried forward with the same adstock and then saturated by the
-exponential curve, with its own rate $\nu_c$ in place of the half-saturation
-point $\kappa_c$. Email's sends take the same path with a rate $\nu_o$ in place
-of $\kappa_o$, and the half-Cauchy with scale one becomes the prior on the
-noise scale $\sigma$. The pieces of the model that change are
+With both pieces written, you can swap them into the model from
+[A first model](first_model). Each paid channel's exposure still carries
+forward with the same adstock, but the exponential curve now saturates it. A
+rate $\nu_c$ takes the place of each channel's half-saturation point $\kappa_c$,
+and $\nu_o$ takes the place of email's $\kappa_o$. The pieces of the model that
+change are
 
 $$
 \begin{aligned}
@@ -160,12 +159,18 @@ h_{to} &= 1 - \exp\Big(-\nu_o \operatorname{Adstock}\big(\{x_{t-\ell,o}\}_{\ell=
 \end{aligned}
 $$
 
-with everything else as in [A first model](first_model). The formulas that
-turn each channel's ROI $r_c$ into $\beta_c$ and email's share $\phi_o$ into
-$\lambda_o$ stay the same, and they now sum the new curves over the training
-weeks.
+and everything else stays as in [A first model](first_model). The formulas
+that turn each channel's ROI $r_c$ into $\beta_c$ and email's share $\phi_o$
+into $\lambda_o$ don't change either, though they now sum the new curves over
+the training weeks.
 
-The new symbols and functions take these names in the code.
+The rate takes the half-saturation point's $\operatorname{LogNormal}(0, 0.5)$
+prior, and because that prior is symmetric about zero on the log scale,
+$1/\nu$, where the curve reaches about 63 percent of its ceiling, gets exactly
+the prior $\kappa$ had.
+
+The new symbols and functions take the names below in the code, and the rest
+keep their names from the first model.
 
 | Symbol | Name in the code | Where the name comes from |
 | --- | --- | --- |
@@ -180,8 +185,7 @@ after the adstock in place of `hill_adstock`.
 ```{code-cell} ipython3
 # A plain function rather than a block, so mmmJAX never fills its arguments.
 def exponential_adstock(media, retention, rate):
-    # The same carryover as hill_adstock. The eight-week lag sets an array shape, so it stays
-    # a fixed int rather than a parameter the sampler learns.
+    # The same carryover as hill_adstock.
     carried = mj.geometric_adstock(media, alpha=retention, max_lag=8)
 
     # The exponential curve takes the Hill curve's place. A larger rate makes it level off sooner.
@@ -194,7 +198,6 @@ exponential_parameters = {
     "intercept": mj.Real(),
     "growth": mj.Real(),
     "curvature": mj.Real(),
-    # No data axis runs over the four Fourier weights, and they need no labels, so a plain shape does.
     "annual_coefficients": mj.Real(4),
     # Each paid channel's return, carryover, and saturation rate.
     "roi": mj.Positive(dims="channel"),
@@ -211,11 +214,8 @@ exponential_parameters = {
 }
 ```
 
-All four calls in `transformed_parameters` switch to the new helper. The call
-on `reference.media` feeds {func}`~mmmjax.roi_coefficient`, which turns each
-channel's ROI into its coefficient through the curve over the training weeks.
-The call on `reference.organic_media` does the same for email's share through
-{func}`~mmmjax.contribution_coefficient`.
+All four calls in `transformed_parameters` switch to the new helper, the two on
+`reference` and the two on `media` and `organic_media`.
 
 :::{admonition} Swap all four calls
 :class: important
@@ -225,10 +225,6 @@ used the exponential one, $\beta_c$ would no longer make the channel's
 contribution over the training weeks $r_c S_c$ dollars, and $r_c$ would stop
 being its return.
 :::
-
-In the density, the lines for `rate`, `organic_rate`, and `sigma` change to
-match the priors above. The model reuses the first model's
-`transformed_data` and `generated_quantities`.
 
 ```{code-cell} ipython3
 def exponential_transformed_parameters(
@@ -259,8 +255,7 @@ def exponential_transformed_parameters(
     trained = exponential_adstock(reference.media, retention, rate)
     coefficient = mj.roi_coefficient(roi, trained, reference.spend, outcome_scale=outcome_scaling.scale)
 
-    # Email's coefficient comes from its share of revenue through its own exponential curve. The
-    # share is of dollars, since standardized revenue sums to zero over the training weeks.
+    # Email's coefficient comes from its share of revenue through its own exponential curve.
     organic_trained = exponential_adstock(reference.organic_media, organic_retention, organic_rate)
     total_revenue = outcome_scaling.inverse_transform(reference.outcome).sum()
     organic_contribution = organic_share * total_revenue
@@ -279,11 +274,17 @@ def exponential_transformed_parameters(
     control_effect = controls @ control_coefficient
     treatment_effect = treatments @ treatment_coefficient
 
-    # Expected revenue in each week, which the likelihood and every analysis read.
+    # The likelihood and every analysis read the expected revenue in each week.
     mu = baseline + media_effect + organic_effect + control_effect + treatment_effect
     return {"mu": mu}
+```
 
+In the density, the lines for `rate`, `organic_rate`, and `sigma` change to
+match the priors above. The model reuses the first model's `transformed_data`
+and `generated_quantities` as they are, because neither block calls the
+saturation curve or states a prior.
 
+```{code-cell} ipython3
 def exponential_log_density(
     outcome,
     mu,
@@ -301,8 +302,7 @@ def exponential_log_density(
     treatment_coefficient,
     sigma,
 ):
-    # The baseline's priors describe standardized revenue. The curvature's scale is smaller
-    # because trend**2 outgrows trend after the first year.
+    # The baseline's priors describe standardized revenue.
     target = mj.normal(intercept, 0.0, 1.0)
     target += mj.normal(growth, 0.0, 1.0)
     target += mj.normal(curvature, 0.0, 0.25)
@@ -318,8 +318,7 @@ def exponential_log_density(
     target += mj.beta(organic_retention, 2.0, 2.0)
     target += mj.lognormal(organic_rate, 0.0, 0.5)
 
-    # The treatments get a tighter prior than the controls. The price climbs with the trend,
-    # and a wider prior would let the fit credit price with growth.
+    # The treatments get a tighter prior than the controls.
     target += mj.normal(control_coefficient, 0.0, 1.0)
     target += mj.normal(treatment_coefficient, 0.0, 0.25)
 
@@ -340,15 +339,6 @@ exponential_model = mj.Model(
 )
 ```
 
-:::{admonition} Only your names change
-:class: note
-
-`rate` and `organic_rate` take the place of `half_saturation` and
-`organic_half_saturation` among the declared parameters. They're your names,
-so they only have to match across `exponential_parameters`, the blocks, and
-the priors below. The supplied names stay exactly as mmmJAX spells them.
-:::
-
 ```{code-cell} ipython3
 :tags: [skip-execution]
 
@@ -367,12 +357,16 @@ exponential = stored(
 )
 ```
 
+## The fitted curves
+
 {func}`~mmmjax.plot_saturation` draws the new curve the same way it draws the
-Hill curve. It passes each posterior draw of `rate` to the argument of the same
-name. To put prior draws beside the posterior, {func}`~mmmjax.sample_prior`
-needs the new density's priors as {class}`~mmmjax.Prior` objects.
-`exponential_priors` states them again, and `sample_prior` draws `sigma` with
-the half-Cauchy family's own draw function.
+Hill curve. It passes each posterior draw of `rate` to the curve's argument of
+the same name.
+
+To put prior draws beside the posterior, {func}`~mmmjax.sample_prior` needs the
+new density's priors as {class}`~mmmjax.Prior` objects. `exponential_priors`
+states them again, and `sample_prior` draws `sigma` with the half-Cauchy
+family's own draw function.
 
 ```{code-cell} ipython3
 exponential_priors = {
@@ -412,31 +406,29 @@ exponential_prior = stored(
 mj.plot_saturation(exponential, exponential_saturation, max_input=3.0, prior=exponential_prior)
 ```
 
-A media input of one is a typical on-air week, because each channel's
-impressions are divided by their median over the weeks it ran. For most
-channels the blue posterior curve sits on the orange prior, so the data say
-little about how fast they saturate and the rate's prior carries most of that
-answer. Linear TV's curve climbs furthest above its prior, with Streaming's and
-YouTube's next.
+On the horizontal axis, a media input of one is a typical on-air week, because
+each channel's impressions are divided by their median over the weeks it ran.
+Most of the blue posterior curves lie on their orange priors. The data adds
+little about how fast those channels saturate, so the rate's prior carries
+most of that answer. Linear TV's curve climbs furthest above its prior, and
+Streaming's and YouTube's come next, so for those three the data suggests
+faster saturation than the prior expects.
 
 :::{admonition} Email's curve
 :class: tip
 
 The panels cover the ten paid channels because `rate` has the `channel` axis.
-Passing `parameters={"rate": "organic_rate"}` to `plot_saturation` draws
-email's curve the same way.
+To see email's curve drawn the same way, pass
+`parameters={"rate": "organic_rate"}` to `plot_saturation`.
 :::
-
-Neither function is special to mmmJAX. They run inside the blocks because
-they're written with JAX, the one requirement the next section spells out.
 
 ## What JAX needs from a function
 
-mmmJAX compiles every block with JAX, which traces the function once with
-placeholder values and then runs the compiled version. Code inside a block,
-and every function it calls, has to work with those placeholders. A Python
-`if` on a parameter fails, because the value doesn't exist while the function
-is traced.
+mmmJAX compiles every block with JAX, and to compile a block, JAX first traces
+it once with placeholder values and only then runs the compiled version. That's
+why the code inside a block, and every function it calls, has to work with
+those placeholders. A Python `if` on a parameter fails, for example, because
+the value doesn't exist while the function is traced.
 
 ```{code-cell} ipython3
 :tags: [raises-exception]
@@ -461,12 +453,13 @@ def threshold_response(exposure, threshold):
 jax.jit(threshold_response)(jnp.array([0.5, 1.5, 2.5]), 1.0)
 ```
 
-NumPy functions fail on placeholders in the same way, which is why helpers use
+NumPy functions fail on placeholders in the same way, so write your helpers with
 `jax.numpy`. Anything that sets an array's shape, such as `max_lag=8` in
 `exponential_adstock` or `order=2` in the model's `transformed_data`, has to be
-a Python integer. Write it in the code or pass it through the `constants` of
-{class}`~mmmjax.Data`, which blocks request by name. Tracing also explains
-why `print` is the wrong tool for looking inside a block.
+a Python integer. Either write it in the code or pass it through the
+`constants` of {class}`~mmmjax.Data`.
+
+Tracing also explains why `print` is the wrong tool for looking inside a block.
 
 ```{code-cell} ipython3
 @jax.jit
@@ -480,7 +473,8 @@ first = doubled(jnp.array([1.0, 2.0]))
 second = doubled(jnp.array([3.0, 4.0]))
 ```
 
-`print` runs once, while JAX traces the function, and sees only the
-placeholder. `jax.debug.print` runs on every call with the real values. The
-same tracing is why the first evaluation of a model takes longer than every
-call after it, since that's when the blocks are compiled.
+In the output, `print` runs once, while JAX traces the function, so all it sees
+is the placeholder, `JitTracer(float32[2])`. `jax.debug.print` instead runs on
+every call and prints the real values each time. Tracing is also why the first
+evaluation of a model takes longer than every call after it, since that first
+call is when the blocks are compiled.

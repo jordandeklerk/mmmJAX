@@ -15,6 +15,7 @@ from mmmjax import (
     Model,
     Positive,
     Real,
+    Scaling,
     fit_data_scaling,
     fourier_features,
     generate_quantities,
@@ -421,6 +422,39 @@ def test_grouped_scenario_reuses_training_scaling_and_preserves_original_objects
     xr.testing.assert_identical(results, results_before)
     np.testing.assert_array_equal(model.data.values["media"], model_before["media"])
     np.testing.assert_array_equal(scenario.arrays["media"], scenario_before["media"])
+
+
+def test_scenario_constant_data_reuses_declared_scalings_with_training_statistics():
+    training = _data(_media(5))
+    maximum = training.arrays["media"].max(axis=0)
+    declared = {"media": Scaling(offset=0.0, scale=maximum), "outcome": Scaling(offset=100.0, scale=20.0)}
+    model = Model(
+        parameters={"intercept": Real()},
+        log_density=lambda outcome, intercept: normal(outcome, intercept, 1.0) + normal(intercept, 0.0, 1.0),
+        generated_quantities=lambda key, media, intercept: {"exposure": media},
+        data=Data(training, scaling=declared),
+    )
+    posterior = {"intercept": np.zeros((1, 2), dtype=jax.dtypes.canonicalize_dtype(float))}
+    results = _collect_results(posterior, data=model.scaling.transform(training))
+    scenario = _data(_media(6) * 4, start=10, reverse=True)
+    canonical = _data(_media(6) * 4, start=10)
+    expected = model.scaling.transform(scenario)
+    expected_media = canonical.arrays["media"] / maximum
+    refitted_media = canonical.arrays["media"] / canonical.arrays["media"].max(axis=0)
+    tolerance = 2e-6 if jax.dtypes.canonicalize_dtype(float) == np.float32 else 1e-12
+
+    generated = generate_quantities(model, results, new_data=scenario)
+
+    constant = generated["predictions_constant_data"]
+    assert generated.attrs["data_scale"] == "model"
+    assert set(constant.data_vars) == set(expected.arrays)
+    for name, values in expected.arrays.items():
+        np.testing.assert_allclose(constant[name], values, rtol=tolerance, atol=0)
+    np.testing.assert_array_equal(constant["media"], expected.arrays["media"])
+    np.testing.assert_allclose(constant["media"], expected_media, rtol=tolerance, atol=0)
+    np.testing.assert_allclose(constant["outcome"], (canonical.arrays["outcome"] - 100.0) / 20.0, rtol=tolerance)
+    assert not np.allclose(constant["media"], refitted_media)
+    np.testing.assert_array_equal(generated["generated_quantities"]["exposure"][0, 0], constant["media"])
 
 
 def test_explicit_scenario_history_changes_only_affected_periods_and_is_retained():

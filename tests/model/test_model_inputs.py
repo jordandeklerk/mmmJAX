@@ -10,8 +10,10 @@ import xarray as xr
 from mmmjax import (
     Data,
     Model,
+    ModelInput,
     Positive,
     Real,
+    Scaling,
     fit_data_scaling,
     fourier_features,
     generate_quantities,
@@ -636,6 +638,77 @@ def test_aliased_population_unit_conversions_preserve_the_group_axis(groups):
     assert outputs["scale"].shape == (groups,)
     assert outputs["offset"].shape == (groups,)
     np.testing.assert_allclose(outputs["original_units"], data.arrays["outcome"], rtol=4e-6, atol=3e-6)
+
+
+def _regional_sales(groups):
+    rows = [
+        {"time": time, "region": f"region_{group}", "sales": (group + 1) * (time + 2)}
+        for time in range(3)
+        for group in range(groups)
+    ]
+    return prepare_data(pl.DataFrame(rows), time="time", groups=["region"], outcome="sales")
+
+
+def _outcome_scaling_outputs(key, sales, units):
+    outputs = {"original_units": units.inverse_transform(sales), "scale": units.scale, "offset": units.offset}
+    return outputs
+
+
+@pytest.mark.parametrize("shape", [(2,), (1, 2)])
+@pytest.mark.parametrize("offset", [0.0, [1.0, -1.0]])
+def test_declared_per_group_outcome_scaling_reaches_jitted_blocks_with_the_group_axis(shape, offset):
+    data = _regional_sales(2)
+    maximum = data.arrays["outcome"].max(axis=0)
+    expected_offset = np.broadcast_to(offset, (2,))
+    tolerance = 2e-6 if jax.dtypes.canonicalize_dtype(float) == np.float32 else 1e-12
+    declaration = Data(
+        data,
+        scaling={"outcome": Scaling(offset=offset, scale=maximum.reshape(shape))},
+        variables={"sales": "outcome", "units": "outcome_scaling"},
+    )
+
+    model = Model(
+        parameters={},
+        log_density=lambda sales: jnp.sum(sales),
+        generated_quantities=_outcome_scaling_outputs,
+        data=declaration,
+    )
+    outputs = jax.jit(model.generate_quantities)(jax.random.key(0), {}, model.data)
+
+    assert declaration.model_inputs["outcome_scaling"] == ModelInput(kind="object", axes=("group",), source="builtin")
+    assert model.data.outcome_group_scale
+    assert outputs["scale"].shape == outputs["offset"].shape == (2,)
+    np.testing.assert_allclose(outputs["scale"], maximum, rtol=tolerance, atol=0)
+    np.testing.assert_allclose(outputs["offset"], expected_offset, rtol=tolerance, atol=0)
+    np.testing.assert_allclose(
+        model.data.values["outcome"], (data.arrays["outcome"] - expected_offset) / maximum, rtol=tolerance, atol=0
+    )
+    np.testing.assert_allclose(outputs["original_units"], data.arrays["outcome"], rtol=tolerance, atol=0)
+
+
+@pytest.mark.parametrize("groups, shape", [(2, ()), (2, (1,)), (2, (1, 1)), (1, (1,)), (1, (1, 1))])
+def test_declared_outcome_scaling_with_one_value_reaches_blocks_as_scalars(groups, shape):
+    data = _regional_sales(groups)
+    maximum = np.max(data.arrays["outcome"])
+    declaration = Data(
+        data,
+        scaling={"outcome": Scaling(offset=np.zeros(shape), scale=np.full(shape, maximum))},
+        variables={"sales": "outcome", "units": "outcome_scaling"},
+    )
+
+    model = Model(
+        parameters={},
+        log_density=lambda sales: jnp.sum(sales),
+        generated_quantities=_outcome_scaling_outputs,
+        data=declaration,
+    )
+    outputs = jax.jit(model.generate_quantities)(jax.random.key(0), {}, model.data)
+
+    assert declaration.model_inputs["outcome_scaling"] == ModelInput(kind="object", axes=(), source="builtin")
+    assert not model.data.outcome_group_scale
+    assert outputs["scale"].shape == outputs["offset"].shape == ()
+    np.testing.assert_array_equal(outputs["scale"], maximum)
+    np.testing.assert_allclose(outputs["original_units"], data.arrays["outcome"], rtol=2e-6, atol=0)
 
 
 def test_declared_current_inputs_update_for_scenarios_while_references_remain_fixed():

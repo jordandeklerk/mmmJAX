@@ -1207,7 +1207,7 @@ def _output_dimensions(
         inherited = {axes for argument, axes in input_dimensions.items() if value is arguments.get(argument)}
         input_axes = {input_dimensions[argument] for argument in auxiliary_inputs if value is arguments.get(argument)}
         # Unchanged members of the reference namespace keep their training axes, and the
-        # outcome transform's factors keep the group axis under population scaling.
+        # outcome transform's factors keep the group axis when the outcome is scaled per group.
         member_axes: set[tuple[str, ...]] = set()
         for argument in reference_namespaces:
             namespace = arguments.get(argument)

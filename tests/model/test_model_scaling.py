@@ -9,7 +9,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from mmmjax import Data, Model, Real, fit_data_scaling, generate_quantities, normal, prepare_data
+from mmmjax import Data, Model, Real, Scaling, fit_data_scaling, generate_quantities, normal, prepare_data
 from mmmjax.data._results import _collect_results
 
 
@@ -458,10 +458,137 @@ def test_scaling_does_not_change_log_density_or_gradients_relative_to_manual_pre
     np.testing.assert_allclose(actual_grad["intercept"], expected_grad["intercept"], rtol=1e-6)
 
 
-@pytest.mark.parametrize("scaling,error", [(False, TypeError), ({}, TypeError), ("unknown", ValueError)])
+@pytest.mark.parametrize("scaling,error", [(False, TypeError), ({"spend": None}, ValueError), ("unknown", ValueError)])
 def test_invalid_scaling_options_fail_at_construction(scaling, error):
     with pytest.raises(error, match="scaling"):
         _model(_data(), scaling=scaling)
+
+
+def test_empty_transform_mapping_leaves_model_inputs_unscaled():
+    data = _data()
+
+    model = _model(data, scaling={})
+
+    assert model.scaling is None
+    for role, values in data.arrays.items():
+        np.testing.assert_array_equal(model.data.values[role], values)
+
+
+def test_declared_input_scalings_reach_blocks_and_reference_with_an_identity_outcome_scale():
+    raw = _data()
+    maximum = raw.arrays["media"].max(axis=0)
+    expected = (raw.arrays["media"] / maximum).astype(jax.dtypes.canonicalize_dtype(float))
+    tolerance = 2e-6 if jax.dtypes.canonicalize_dtype(float) == np.float32 else 1e-12
+
+    def generate(key, media, spend, outcome, reference, outcome_scaling):
+        return {
+            "media": media,
+            "spend": spend,
+            "outcome": outcome,
+            "training_media": reference.media,
+            "offset": outcome_scaling.offset,
+            "scale": outcome_scaling.scale,
+        }
+
+    model = Model(
+        parameters={},
+        log_density=lambda media: jnp.sum(media),
+        generated_quantities=generate,
+        data=Data(raw, scaling={"media": Scaling(offset=0.0, scale=maximum)}),
+    )
+    result = jax.jit(model.generate_quantities)(jax.random.key(0), {}, model.data)
+
+    assert list(model.scaling.transformations) == ["media"]
+    np.testing.assert_allclose(result["media"], expected, rtol=tolerance, atol=0)
+    np.testing.assert_array_equal(result["training_media"], result["media"])
+    np.testing.assert_array_equal(result["spend"], raw.arrays["spend"])
+    np.testing.assert_array_equal(result["outcome"], raw.arrays["outcome"])
+    assert result["offset"].shape == result["scale"].shape == ()
+    np.testing.assert_array_equal(result["offset"], 0.0)
+    np.testing.assert_array_equal(result["scale"], 1.0)
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_declared_outcome_scaling_reaches_jitted_blocks_with_scalar_statistics(grouped):
+    raw = _reference_data(grouped=grouped)
+    outcome = raw.arrays["outcome"]
+    offset, scale = outcome.mean(keepdims=True), outcome.std(keepdims=True)
+    tolerance = 2e-6 if jax.dtypes.canonicalize_dtype(float) == np.float32 else 1e-12
+    standardized = (outcome - outcome.mean()) / outcome.std()
+
+    def generate(key, outcome, outcome_scaling):
+        return {
+            "restored": outcome_scaling.inverse_transform(outcome),
+            "offset": outcome_scaling.offset,
+            "scale": outcome_scaling.scale,
+        }
+
+    model = Model(
+        parameters={},
+        log_density=lambda outcome, outcome_scaling: jnp.sum(outcome_scaling.inverse_transform(outcome)),
+        generated_quantities=generate,
+        data=Data(raw, scaling={"outcome": Scaling(offset=offset, scale=scale)}),
+    )
+    result = jax.jit(model.generate_quantities)(jax.random.key(0), {}, model.data)
+    density = jax.jit(model.log_density)({}, model.data)
+
+    assert offset.shape == scale.shape == ((1, 1) if grouped else (1,))
+    assert type(model.data.outcome_scaling) is Scaling
+    assert result["offset"].shape == result["scale"].shape == ()
+    np.testing.assert_allclose(result["offset"], outcome.mean(), rtol=tolerance, atol=0)
+    np.testing.assert_allclose(result["scale"], outcome.std(), rtol=tolerance, atol=0)
+    np.testing.assert_allclose(model.data.values["outcome"], standardized, rtol=tolerance, atol=tolerance)
+    np.testing.assert_allclose(result["restored"], outcome, rtol=tolerance, atol=0)
+    np.testing.assert_allclose(density, outcome.sum(), rtol=tolerance, atol=0)
+
+
+def test_new_data_reuses_the_training_statistics_of_declared_scalings():
+    original = _data()
+    maximum = original.arrays["media"].max(axis=0)
+    doubled = 2.0 * original.arrays["media"]
+    expected = doubled / maximum
+    refitted = doubled / doubled.max(axis=0)
+    tolerance = 2e-6 if jax.dtypes.canonicalize_dtype(float) == np.float32 else 1e-12
+
+    model = _model(original, scaling={"media": Scaling(offset=0.0, scale=maximum)})
+    prepared = model.prepare_data(_data(multiplier=2.0, reverse=True, outcome=False))
+    result = jax.jit(model.generate_quantities)(jax.random.key(0), {"intercept": jnp.array(0.0)}, prepared)
+
+    np.testing.assert_allclose(result["media"], expected, rtol=tolerance, atol=0)
+    assert not np.allclose(result["media"], refitted)
+    np.testing.assert_array_equal(result["spend"], original.arrays["spend"])
+    np.testing.assert_allclose(model.data.values["media"], original.arrays["media"] / maximum, rtol=tolerance, atol=0)
+
+
+@pytest.mark.parametrize("mode", [True, "population"])
+def test_mapping_of_fitted_transformations_gives_blocks_the_same_inputs(mode):
+    raw = _reference_data()
+    fitted = fit_data_scaling(raw, scale_outcome=mode, adjust_population=True)
+
+    def generate(key, outcome_scaling, reference):
+        return {"offset": outcome_scaling.offset, "scale": outcome_scaling.scale, "training_media": reference.media}
+
+    def build(scaling):
+        return Model(
+            parameters={},
+            log_density=lambda outcome: jnp.sum(outcome),
+            generated_quantities=generate,
+            data=Data(raw, scaling=scaling),
+        )
+
+    expected_model = build(fitted)
+    expected = jax.jit(expected_model.generate_quantities)(jax.random.key(0), {}, expected_model.data)
+
+    model = build({**fitted.transformations})
+    result = jax.jit(model.generate_quantities)(jax.random.key(0), {}, model.data)
+
+    for role, values in expected_model.data.values.items():
+        np.testing.assert_array_equal(model.data.values[role], values)
+    for name, values in expected.items():
+        assert result[name].dtype == values.dtype
+        np.testing.assert_array_equal(result[name], values)
+    assert result["scale"].shape == ((2,) if mode == "population" else ())
+    assert model.data.outcome_group_scale is expected_model.data.outcome_group_scale
 
 
 def test_scaling_requires_a_prepared_model():

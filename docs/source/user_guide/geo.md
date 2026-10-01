@@ -7,14 +7,15 @@ kernelspec:
 
 # Geo-level models
 
-The national data behind [A first model](first_model) runs several channels on
-one campaign calendar. The fit can't tell how a flight's lift splits among
-them, so it leaves the split to the ROI prior, as
-[Recovering the truth](recovery) shows. Many brands also keep their data by
-region, and a region that runs a channel off the brand's calendar shows that
-channel's effect apart from the rest. This page fits the ten-channel brand by
-region, letting each channel's return vary by region around a shared one, and
-asks what the regional data buys.
+In the national data behind [A first model](first_model), several channels run
+on one campaign calendar. Because they go on air together, the fit can't tell
+how a flight's lift splits among them, and it leaves that split to the ROI prior
+instead, as [Recovering the truth](recovery) shows.
+
+Many brands also keep their data by region, and a region that runs a channel off
+the brand's calendar shows that channel's effect apart from the rest. On this
+page you'll fit the ten-channel brand by region and see what the regional data
+buys.
 
 ```{code-cell} ipython3
 :tags: [remove-cell]
@@ -53,10 +54,11 @@ truth.
 
 ## The regional data
 
-{func}`~mmmjax.simulate_data` makes three regions unless `groups=None` asks for
-one series. Preparing it works as it did nationally, with two additions.
-`groups` adds the region axis that [Data and scaling](data.md#groups)
-describes, and `population` records each region's size for the scaling below.
+This time the call below leaves out `groups=None`, so
+{func}`~mmmjax.simulate_data` makes its default three regions rather than one
+series. Passing `groups` to {func}`~mmmjax.prepare_data` adds the region axis
+that [Data and scaling](data.md#groups) describes, and `population` records
+each region's size for the scaling below.
 
 ```{code-cell} ipython3
 import pandas as pd
@@ -80,14 +82,41 @@ regions = [label for (label,) in geo_data.group_values]
 pd.Series(geo_data.arrays["population"], index=regions, name="population")
 ```
 
+## Scaling by population
+
+The regions vary widely in size, from 419,144 people in the south to 181,559
+in the west, and a region's impressions and revenue grow with its size. To make
+the regions comparable, `adjust_population=True` divides each region's
+exposure by its population before taking each channel's median, and
+`scale_outcome="population"` standardizes revenue per person.
+
+```{code-cell} ipython3
+geo_scaling = mj.fit_data_scaling(geo_data, scale_outcome="population", adjust_population=True)
+revenue_scale = geo_scaling.transformations["outcome"].scale
+pd.Series(revenue_scale[0], index=regions, name="dollars per unit").round().astype(int)
+```
+
+Each value in the output is the standard deviation of weekly revenue per
+person, pooled over the weeks and the regions, times the region's population.
+One unit of scaled revenue is therefore \$119,004 a week in the south but
+\$51,549 in the west.
+
+Once exposure and revenue are both per person, a half-saturation point or a
+coefficient means the same thing in every region, and that's what lets the
+regions share them. The simulation works per person too, as
+[The example data](example_data) shows.
+
+## Calendars by region
+
 As [The example data](example_data) describes, a channel usually copies the
 brand's campaign calendar and otherwise runs flights of its own. The regional
 data makes that draw once per region, so each region gets its own calendar for
-every channel. The promotions follow the brand's calendar everywhere, so a
-channel's correlation with the promotion weeks shows which calendar it follows.
-The table below gives that correlation for five of the paid channels that air
-in flights, for Email, and for the price, in each region and in the national
-series from [A first model](first_model).
+every channel.
+
+Because the promotions follow the brand's calendar everywhere, a channel's
+correlation with the promotion weeks tells you which calendar it follows. The
+table below gives that correlation for five of the paid channels that air in
+flights, for Email, and for the price.
 
 ```{code-cell} ipython3
 :tags: [hide-input]
@@ -112,41 +141,22 @@ calendars.index = [*flighted.values(), "Email", "Price"]
 calendars.round(2)
 ```
 
-Nationally, TikTok, Streaming, Linear TV, Influencer, and Email correlate with
-the promotions at 0.78 or 0.79, since all five follow the shared calendar that
-[Data and scaling](data.md) found. YouTube runs on a calendar of its own, at
-0.02. Each region breaks the tie for some channels. TikTok and Influencer leave
-the brand's calendar in the south, Streaming in the north, and Linear TV and
-Email in the west, where their correlations fall to between 0.08 and 0.31. Those
-regions show a channel's lift in weeks when the others are quiet, and a model
-that shares what it learns across regions can use that everywhere. YouTube goes
-the other way in this draw and follows the brand's calendar in all three
-regions.
+In the national column, TikTok, Streaming, Linear TV, Influencer, and Email
+correlate with the promotions at 0.78 or 0.79, since all five follow the shared
+calendar that [Checking the data](checking_data) found. YouTube sits at only
+0.02, because it runs on a calendar of its own.
 
-The price correlates with the promotions at -0.92 in every region, as it does
-nationally, because the brand cuts its price in every promotion week
-everywhere. No region breaks that tie.
+In each region, though, some of those channels break the tie. TikTok and
+Influencer leave the brand's calendar in the south, Streaming in the north, and
+Linear TV and Email in the west, where their correlations fall to between 0.08
+and 0.31. Those regions show a channel's lift in weeks when the others are
+quiet, and a model that shares what it learns across regions can use that
+everywhere. YouTube goes the other way in this draw and follows the brand's
+calendar in all three regions.
 
-## Scaling by population
-
-The south has 419,144 people and the west 181,559, and a region's impressions
-and revenue grow with its size. `adjust_population=True` divides each
-region's exposure by its population before taking each channel's median, and
-`scale_outcome="population"` standardizes revenue per person.
-
-```{code-cell} ipython3
-geo_scaling = mj.fit_data_scaling(geo_data, scale_outcome="population", adjust_population=True)
-revenue_scale = geo_scaling.transformations["outcome"].scale
-pd.Series(revenue_scale[0], index=regions, name="dollars per unit").round().astype(int)
-```
-
-Each value is the standard deviation of weekly revenue per person, pooled over
-the weeks and the regions, times the region's population. One unit of scaled
-revenue is \$119,004 a week in the south and \$51,549 in the west. Once
-exposure and revenue are both per person, a half-saturation point or a
-coefficient means the same thing in every region, and that's what lets the
-regions share them. The simulation works per person too, as
-[The example data](example_data) shows.
+The price row never moves, because the brand cuts its price in every promotion
+week everywhere. Its correlation with the promotions is -0.92 in every region,
+as it is nationally, and no region breaks that tie.
 
 ## The model
 
@@ -163,12 +173,21 @@ three changes.
 - Exposure and revenue are scaled by population, as above, so every other
   parameter can stay shared.
 
-Carryover and saturation stay shared across regions. Sun et al. expected
-region-level curves to make the model hard to identify, and three years of
-weekly data from three regions leave little to pin down 30 of them. The trend,
-the season, the controls, the treatments, Email, and the noise stay shared as
-well. Region $g$ runs over north, south, and west, with population $P_g$. The
-specification below covers what changes, and everything else stays as in
+The model keeps carryover and saturation shared across regions, because
+Sun et al. expected curves for each region to make the model hard to identify,
+and three years of weekly data from three regions leave little to pin down 30
+of them. The trend, the season, the controls, the treatments, Email, and the
+noise stay shared as well, though Sun et al., who count price and promotions
+among the controls, let each region's control coefficients vary too.
+
+Once revenue is per person, a shared season or control coefficient means the
+same thing in every region. If your regions follow different seasons or trends,
+give the Fourier weights or the growth a `group` axis the way `intercept` has
+one, and declaring `sigma` with `dims="group"` would let each region scatter by
+its own amount.
+
+Region $g$ runs over north, south, and west, and $P_g$ is its population. The
+specification below covers only what changes, and everything else stays as in
 [A first model](first_model).
 
 ### Data transformations
@@ -186,10 +205,12 @@ $$
 The median $m_c$ is now taken over impressions per person in every region and
 week with any exposure. Here $\bar{R}$ and $s_R$ are the mean and standard
 deviation of weekly revenue per person over all weeks and regions. The controls
-and the treatments pool the weeks and the regions the same way. The scaled
-treatment is written $\tilde{w}_{tgi}$ here, since $g$ now counts regions. The
-trend $\tau_t$ and the day of the year $d_t$ are the same in every region.
-Channel $c$'s spending $S_c = \sum_t \sum_g v_{tgc}$ now totals every region.
+and the treatments pool the weeks and the regions the same way.
+
+The scaled treatment is written $\tilde{w}_{tgi}$ here, since $g$ now counts
+regions. The trend $\tau_t$ and the day of the year $d_t$ are the same in every
+region, while channel $c$'s spending $S_c = \sum_t \sum_g v_{tgc}$ now totals
+every region.
 
 ### Model equation
 
@@ -206,7 +227,7 @@ h_{tgo} &= \operatorname{HillAdstock}\big(\{x_{t-\ell,go}\}_{\ell=0}^{8};\, \rho
 $$
 
 The intercept $\alpha_g$ and the channel coefficients $\beta_{gc}$ carry the
-region. Every other term has the meaning it has in the first model.
+region, and every other term keeps the meaning it has in the first model.
 
 ### Regional returns
 
@@ -219,12 +240,12 @@ $$
 {\sum_{g'} s_R P_{g'}\, e^{\eta_c u_{g'c}} \sum_t h_{tg'c}},
 $$
 
-with $h_{tgc}$ computed from the training exposure. The regions' contributions
+where $h_{tgc}$ comes from the training exposure. The regions' contributions
 then add up to $\sum_g s_R P_g \beta_{gc} \sum_t h_{tgc} = r_c S_c$, so $r_c$
 keeps its meaning from the first model as the return on every dollar the
 brand spent on channel $c$. The factor $e^{\eta_c u_{gc}}$ sets how the
-regions' coefficients compare. A region's own return also depends on how far
-its spending pushes it along the saturation curve.
+regions' coefficients compare, but a region's own return also depends on how
+far its spending pushes it along the saturation curve.
 
 Email's coefficient stays shared, and its share $\phi_o$ now covers the
 revenue of every region,
@@ -233,10 +254,16 @@ $$
 \lambda_o = \frac{\phi_o \sum_t \sum_g R_{tg}}{\sum_g s_R P_g \sum_t h_{tgo}}.
 $$
 
+Keeping Email's coefficient shared lets the west's off-calendar sends inform
+Email in every region, as
+[Price, promotions, and Email](#price-promotions-and-email) shows.
+{func}`~mmmjax.contribution_coefficient` takes `deviations` as well, so Email
+could vary by region the way the paid channels do.
+
 ### Priors
 
-The region intercepts replace the single intercept, and the spread and the
-offsets are new.
+The region intercepts replace the single intercept, the spread and the offsets
+are new, and every other prior stays as in [A first model](first_model).
 
 $$
 \begin{aligned}
@@ -246,16 +273,20 @@ u_{gc} &\sim \operatorname{Normal}(0, 1)
 \end{aligned}
 $$
 
-The other priors are those of [A first model](first_model). A spread of 0.2
-lets a region's coefficient sit about 20 percent above or below the center,
-since $e^{0.2}$ is about 1.2. The half-normal favors smaller spreads over
-larger ones.
+A spread of 0.2 lets a region's coefficient sit about 20 percent above or below
+the center, since $e^{0.2}$ is about 1.2. The half-normal favors smaller
+spreads, so the prior expects a channel to work about as well in one region as
+in another. Three regions give the data little to check that belief with, and
+[Pooling toward the shared return](#pooling-toward-the-shared-return) shows the
+prior deciding how far the regions' returns part. A heavier-tailed prior such as
+the half-Cauchy from [User-defined functions](functions) would let them part
+further.
 
 :::{admonition} Write the offsets noncentered
 :class: tip
 
-Drawing each region's log coefficient around the center with standard
-deviation $\eta_c$ would make the offsets shrink with $\eta_c$. As $\eta_c$
+If you drew each region's log coefficient around the center with standard
+deviation $\eta_c$, the offsets would shrink with $\eta_c$. As $\eta_c$
 nears zero, the posterior then narrows into a funnel the sampler can enter only
 with steps too small for the rest of the model, and that shows up as
 divergences. Standard normal offsets multiplied by $\eta_c$, as here, give the
@@ -265,7 +296,9 @@ sampler the same geometry whatever the spread.
 ## The code
 
 The region index $g$ becomes the `group` axis that `groups` added to the data,
-and each new symbol takes a name in the code.
+and each new symbol takes a name in the code. No block needs the population
+$P_g$ itself, because the supplied `outcome_scaling` already holds $s_R P_g$ for
+each region.
 
 | Symbol | Name in the code | Where the name comes from |
 | --- | --- | --- |
@@ -275,11 +308,6 @@ and each new symbol takes a name in the code.
 | $\eta_c u_{gc}$ | `deviations` | Local to `transformed_parameters` |
 | $\beta_{gc}$ | `coefficient` | Local to `transformed_parameters` |
 | $s_R P_g$ | `outcome_scaling.scale` | Supplied by mmmJAX, now one value per region |
-
-`transformed_parameters` passes `deviations` to {func}`~mmmjax.roi_coefficient`,
-which returns `coefficient` with one value for each region and channel. The
-supplied `outcome_scaling` already holds $s_R P_g$ for each region, so no block
-needs the population $P_g$ itself.
 
 `geo_parameters` starts from the first model's declarations, redeclares
 `intercept`, and adds the spread and the offsets.
@@ -304,7 +332,8 @@ observation arrays gain that axis after time, while `time` and `day_of_year`
 keep only their time axis.
 :::
 
-`transformed_parameters` changes in a few lines.
+Only a few lines of the first model's `transformed_parameters` need to change,
+and the comments in the cell below explain each one.
 
 ```{code-cell} ipython3
 import jax.numpy as jnp
@@ -375,27 +404,29 @@ def geo_transformed_parameters(
     control_effect = controls @ control_coefficient
     treatment_effect = treatments @ treatment_coefficient
 
-    # Expected revenue in each week and region, which the likelihood and every analysis read.
+    # The likelihood and every analysis read the expected revenue in each week and region.
     mu = baseline + media_effect + organic_effect + control_effect + treatment_effect
     return {"mu": mu}
 ```
 
 {func}`~mmmjax.roi_coefficient` applies the formula for $\beta_{gc}$ above, and
-its default `effects="lognormal"` keeps every coefficient positive. With the
-region axis, `hill_adstock` returns weeks by regions by channels. `jnp.einsum`
-multiplies it by the region-by-channel coefficients and sums over channels,
-which `@` can't express because each region has coefficients of its own.
+its default `effects="lognormal"` keeps every coefficient positive. It also
+makes the spread a share of the coefficient, so one prior on $\eta_c$ means
+about 20 percent for a large channel and a small one alike. Sun et al.'s form,
+which `effects="normal"` gives, adds the deviations in the coefficient's own
+units and lets a region's coefficient fall below zero.
+
 `shared` holds the trend and the season, and `[:, None]` spreads it over the
-regions before the intercepts are added. Email, the controls, and the
-treatments work unchanged.
+regions before the intercepts are added.
 
 :::{admonition} One scale per region
 :class: warning
 
 Outside the model, `geo_scaling.transformations["outcome"].scale` keeps a
-leading time axis of length one, as the cell above shows. Inside a block, pass
-`outcome_scaling.scale` to both calibration functions as it is, since taking
-its first element would hand every region the north's scale.
+leading time axis of length one, as
+[Scaling by population](#scaling-by-population) shows. Inside a block, pass
+`outcome_scaling.scale` to both calibration functions as it is, since taking its
+first element would hand every region the north's scale.
 :::
 
 The density adds a prior for the spread and one for the offsets to the first
@@ -470,13 +501,14 @@ geo_model = mj.Model(
 
 `mj.normal(intercept, 0.0, 1.0)` sums the log density over the three
 intercepts, as every distribution function sums over its first argument. The
-first model's `transformed_data` and `generated_quantities` work as they are.
-`transformed_data` depends only on the dates, and `generated_quantities` draws
-and scores `mu` whatever its shape.
+first model's `transformed_data` and `generated_quantities` work as they are,
+because `transformed_data` depends only on the dates and `generated_quantities`
+draws and scores `mu` whatever its shape.
 
 ## Fitting
 
-The fit uses the same settings as the first model.
+You fit it with the same settings as the first model, four chains that each
+keep 1,000 draws after 1,000 warmup steps.
 
 ```{code-cell} ipython3
 :tags: [skip-execution]
@@ -501,9 +533,10 @@ first.
 int(geo["sample_stats"]["diverging"].sum())
 ```
 
-One of the 4,000 transitions diverged. A funnel would crowd its divergences
-where a spread nears zero, so the output below gives where each spread at
-the divergent draw falls within its own posterior.
+The count shows one divergent transition out of 4,000, and if it came from a
+funnel, it would sit where a spread nears zero. The output below checks for that
+by showing where each spread at the divergent draw falls within its own
+posterior.
 
 ```{code-cell} ipython3
 :tags: [hide-input]
@@ -516,8 +549,10 @@ divergent = spreads.isel(chain=chain, draw=draw, drop=True)
 (spreads < divergent).mean(("chain", "draw")).to_series().round(2)
 ```
 
-They fall between the 14th and 86th percentiles, none in the lowest tenth, so
-this divergence points to no funnel. The summary covers the parameters the
+At that draw every spread sits between the 14th and 86th percentiles, and none
+is in the lowest tenth, so this divergence doesn't point to a funnel.
+
+With that divergence set aside, the summary below covers the parameters the
 rest of the page reads.
 
 ```{code-cell} ipython3
@@ -529,29 +564,31 @@ print(
 )
 ```
 
-Every `r_hat` is 1.00, and the lowest bulk ESS is 1,188, for the north's
-intercept. {func}`~mmmjax.plot_rank` then keeps the 12 elements with the
-highest `r_hat` in the whole model.
+Every `r_hat` in the summary is 1.00, and the lowest bulk ESS is 1,188, for the
+north's intercept. To check the whole model, {func}`~mmmjax.plot_rank` picks out
+the 12 elements with the highest `r_hat` in it.
 
 ```{code-cell} ipython3
 mj.plot_rank(geo)
 plt.show()
 ```
 
-Snapchat's spread fails the test with a p that rounds to 0.00. Black dots mark
-the stretch below its 20th percentile, where chain 1 holds too few draws and
-chain 2 too many. Every other panel's p sits above the 1 percent level, the
-lowest at 0.02 for YouTube's half-saturation, and none of the ten returns is
-among the twelve, so the comparisons below can use these draws. Before you
-report from a fit like this one, run it longer, as
+Snapchat's spread fails the test with a p that rounds to 0.00. The black dots
+mark the stretch below its 20th percentile, where chain 1 holds too few draws and
+chain 2 too many. Every other panel's p is above the 1 percent level, and the
+lowest, 0.02, belongs to YouTube's half-saturation.
+
+None of the ten returns is among the twelve, so the comparisons below can use
+these draws. Before you report from a fit like this one, run it longer, as
 [Sampling and diagnostics](sampling.md#more-draws) does, and check that
 divergences stay rare and every panel passes.
 
 ## Returns
 
-{func}`~mmmjax.media_metrics` measures each channel's return in both fits.
-`by="group"` keeps each region's response, which the last section reads, and
-the returns themselves still pool every region.
+{func}`~mmmjax.media_metrics` measures each channel's return in both fits, and
+comparing them is the first test of what the regional data buys. `by="group"`
+keeps each region's response, while the returns themselves still pool every
+region.
 
 ```{code-cell} ipython3
 returns = mj.media_metrics(model, results, quantity="mu")
@@ -559,7 +596,8 @@ geo_returns = mj.media_metrics(geo_model, geo, quantity="mu", by="group")
 mj.plot_media_metrics({"National": returns, "Regional": geo_returns})
 ```
 
-The table below sets each fit's 89 percent interval beside its own truth.
+The plot sets the two fits side by side, but each has its own truth, so the
+table below puts each fit's 89 percent interval beside that truth.
 
 ```{code-cell} ipython3
 :tags: [hide-input]
@@ -578,32 +616,35 @@ comparison["regional_truth"] = regional_added.sum("group").values / regional_spe
 comparison.round(2)
 ```
 
-The regional intervals are shorter for six of the ten channels. Streaming's
-and Linear TV's shrink to less than half their national length, and
-Streaming's regional mean of \$3.42 sits on its true \$3.42. YouTube's
-interval grows to about twice its national length, since YouTube follows the
-brand's calendar in every region of this draw and the data rarely sees it
-alone.
+Six of the ten regional intervals are shorter than their national ones.
+Streaming's and Linear TV's shrink to less than half their national length,
+and Streaming's regional mean of \$3.42 sits on its true \$3.42. YouTube's
+interval instead grows to about twice its national length, because YouTube
+follows the brand's calendar in every region of this draw and the data rarely
+sees it alone.
+
+Eight of the ten national means sit below their truth, as
+[A first model](first_model.md#returns-against-the-truth) found, and
+[Priors](priors.md#why-the-returns-lean-low) traces that lean to the ROI prior.
+The regional means lose that lean and split about evenly around their truth. Meta,
+TikTok, YouTube, and Branded search sit above it, Streaming sits on it, and the
+other five fall below.
+
+### Where the regional fit misses
 
 The national fit holds all ten of its truths, and the regional fit holds nine.
-It misses only Linear TV, whose interval runs from 1.48 to 3.61, below its
-true 3.82. TikTok's interval, from 5.98 to 13.29, holds its true 6.51, though
-its mean of \$9.53 sits well above it. Both channels share the brand's
-calendar in the north and leave it in one other region, so the regional data
-holds weeks of each on its own. Even so, the fit gives TikTok too much and
-Linear TV too little.
+It misses only Linear TV, whose interval runs from 1.48 to 3.61, below its true
+3.82. TikTok's interval, from 5.98 to 13.29, does hold its true 6.51, though
+its mean of \$9.53 sits well above it.
 
-The national means lean low, with eight of the ten below their truth where
-the ROI prior pulls them, as [Recovering the truth](recovery) found. The
-regional means split evenly. Meta, TikTok, YouTube, and Branded search sit
-above their truth, Streaming sits on it, and the other five fall below.
-
-Linear TV's regional interval is about half as long as its national one and
-still misses the truth. The model differs from the simulation in the ways
-[The example data](example_data) lists, such as the Hill slopes the simulation
-varies and the model fixes at one. Each region adds weeks to learn from, and
-more data makes a fit more confident in whatever answer those differences
-favor.
+Both channels share the brand's calendar in the north and leave it in one other
+region, so the regional data holds weeks of each on its own. Even so, the fit
+gives TikTok too much and Linear TV too little. The model differs from the
+simulation in the ways
+[The example data](example_data.md#where-the-first-model-differs) lists, such as
+the Hill slopes the simulation varies and the model fixes at one. Each region
+adds weeks to learn from, and more data makes a fit more confident in whatever
+answer those differences favor.
 
 :::{admonition} Narrower is not always closer
 :class: warning
@@ -615,22 +656,24 @@ carefully as a national one.
 ## Price, promotions, and Email
 
 [Priors](priors) found that the national fit repeats Email's prior and can't
-say whether the price's effect is negative. The two models state the same priors
-for Email's share and the treatment coefficients, so the prior draws from
-[A first model](first_model) serve the regional fit too.
+say whether the price's effect is negative. Since the two models state the same
+priors for Email's share and the treatment coefficients, you can reuse the prior
+draws from [A first model](first_model) for the regional fit.
 
 ```{code-cell} ipython3
 mj.plot_prior_posterior(geo, prior_results, var_names=["organic_share", "treatment_coefficient"])
 plt.show()
 ```
 
-Email's orange curve is now much narrower than its blue prior, around the mean
-of 0.0109 in the summary above. The price's curve moves left, toward higher
-prices losing revenue, and the promotion's settles just above zero. Both are
-narrower than their priors but still wide. {func}`~mmmjax.contributions` turns
-these into shares of revenue. The table below sets their 5th, 50th, and 95th
-percentiles, in percent, beside the truth of each simulation. The simulation's
-price term takes \$0.015 of revenue per person for each dollar of price.
+Email's orange posterior is now much narrower than its blue prior and sits
+around the mean of 0.0109 from the summary above. The price's and the
+promotion's posteriors narrow too, though both are still wide. The price's
+shifts left, toward higher prices losing revenue, and the promotion's settles
+slightly above zero.
+
+{func}`~mmmjax.contributions` turns these into shares of revenue, and the table
+below sets their 5th, 50th, and 95th percentiles, in percent, beside the truth
+of each simulation.
 
 ```{code-cell} ipython3
 :tags: [hide-input]
@@ -664,27 +707,27 @@ to 2.05 percent in the regional one, and its median of 1.03 percent sits
 closer to the true 0.77. The west sends Email off the brand's calendar, so
 the data sees its lift apart from the flights there.
 
-The national fit's price interval, from -11.56 to 6.22 percent, holds the true
--2.73 but can't say whether the higher prices cost revenue. The regional one,
-from -15.67 to 3.29 percent around a true -3.10, can't say either, and its
-median of -6.04 puts the loss at about twice the truth. The promotions go the
-other way. Their national interval, from -1.33 to 7.09 percent, holds the true
-1.56, and the regional one runs from -3.92 to 5.03 percent around a true 1.81,
-with its median of 0.60 well below it.
+Neither fit can say whether the higher prices cost revenue, because the
+national price interval holds the true -2.73 but spans zero, and the regional
+one holds its true -3.10 and spans zero too. The regional median of -6.04 also
+puts the loss at about twice the truth.
+
+For the promotions, both intervals hold their truth, 1.56 nationally and 1.81
+regionally, but the regional median errs the other way and falls well short of
+it at 0.60.
 
 Regional data separates two inputs only where some region moves one without
-the other. The price and the promotions move together in every region, so the
-regional fit still can't tell a promotion week's lift from its price cut. It
-gives the price cut more of that lift than the simulation did and the flag
-less.
+the other. The price and the promotions move together in every region, as the
+calendar table showed, so the regional fit still can't tell a promotion week's
+lift from its price cut. It gives the price cut more of that lift than the
+simulation did and the flag less.
 
 ## Pooling toward the shared return
 
-A region's return is its own incremental revenue over its own spending. To
-get it, divide the regional responses that `by="group"` kept by each region's
-spending. {func}`~mmmjax.plot_media_metrics` draws a panel for each region, and
-`channels` picks TikTok and Linear TV from above, along with Snapchat and
-YouTube.
+So far the regional fit's returns pool every region, but a region's own return
+is its incremental revenue over its own spending.
+{func}`~mmmjax.plot_media_metrics` draws a panel for each region, and `channels`
+picks TikTok and Linear TV from above, along with Snapchat and YouTube.
 
 ```{code-cell} ipython3
 :tags: [hide-input]
@@ -700,17 +743,21 @@ shown = ["TikTok", "Snapchat", "YouTube", "Linear TV"]
 mj.plot_media_metrics({"Model": region_returns, "Truth": true_region}, channels=shown, n_groups=None)
 ```
 
-The true returns differ a lot between regions. Snapchat's is \$8.75 in the
-west and \$4.44 in the south, and TikTok's runs from \$4.99 in the west to
-\$7.09 in the south. The model's regional means differ far less. Snapchat's run
+In the plot, the orange truth bars differ a lot between regions. Snapchat's
+true return is \$8.75 in the west but \$4.44 in the south, and TikTok's runs
+from \$4.99 in the west to \$7.09 in the south. The blue model bars, by
+contrast, differ far less from one region to the next. Snapchat's means run
 from \$3.79 to \$5.47 around its shared \$4.16, and TikTok's from \$9.08 to
-\$10.22 around its shared \$9.53. Nine of the twelve intervals hold their
-truth. The three that miss are Linear TV's in the south and the west, below
-the truth, and TikTok's in the west, where its true \$4.99 falls below the
-interval.
+\$10.22 around its shared \$9.53.
 
-The spread $\eta_c$ decides how far the regions may part. The table below sets
-its posterior percentiles beside its prior's.
+Even with each channel's regions pulled that close together, nine of the twelve
+intervals hold their truth. The three that miss are Linear TV's in the south
+and the west, where the truth sits above the interval, and TikTok's in the
+west, where its true \$4.99 falls below it.
+
+Since the spread $\eta_c$ decides how far the regions may part, the table below
+sets its posterior percentiles beside its prior's, so you can see whether the
+data moved it.
 
 ```{code-cell} ipython3
 :tags: [hide-input]
@@ -726,11 +773,11 @@ spread.round(3)
 
 Every channel's percentiles sit close to the prior's 0.014, 0.135, and 0.390, so
 the data says almost nothing about how far the regions differ. Three regions
-give each channel only three offsets to learn a spread from, which leaves the
-spread to the prior, and the model pools each region's return close to the
-shared one. That pooling is what lets the regional data sharpen
-most of the brand-wide returns without splitting the fit three ways.
+give each channel only three offsets to learn a spread from, so the half-normal
+prior keeps the spreads small and the model pools each region's return close to
+the shared one. That pooling is what lets the regional data sharpen most of the
+brand-wide returns without splitting the fit three ways.
 
-A brand with dozens of regions would learn the spread from the data. With few
-regions, one spread shared by every channel gives the data thirty offsets to
-learn it from instead of three.
+With dozens of regions, the model would learn the spread from the data. With
+only a few, you can share one spread across every channel instead, so the data
+has thirty offsets to learn it from rather than three.

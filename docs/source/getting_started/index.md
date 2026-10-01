@@ -44,8 +44,9 @@ The four pages build on each other, so read them in order.
 | [What is mmmJAX](what_is_mmmjax) | How a model goes from its math to a program of blocks, and how mmmJAX runs it |
 | [Quickstart](quickstart) | A complete model to copy and run on simulated data |
 
-The [User Guide](../user_guide/index) then builds one model and works through
-each part of it.
+The [User Guide](../user_guide/index) then builds one model on simulated data,
+works through each part of it, and checks its answers against the effects the
+simulation used.
 
 <p class="mmmj-footer-logo">
   <img src="../_static/mmmjax-logo.svg" alt="mmmJAX logo">

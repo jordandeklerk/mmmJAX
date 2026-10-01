@@ -15,6 +15,7 @@ from mmmjax import (
     Positive,
     Prior,
     Real,
+    Scaling,
     Simplex,
     dirichlet,
     fit_data_scaling,
@@ -670,6 +671,50 @@ def test_generated_population_outcome_scale_retains_group_axis_even_for_one_grou
     assert generated["outcome_divisor"].dims == ("chain", "draw", "group")
     np.testing.assert_array_equal(generated["group"], [str(group) for group in range(groups)])
     np.testing.assert_array_equal(generated["outcome_divisor"][0, 0], scaling.transformations["outcome"].scale[0])
+
+
+@pytest.mark.parametrize("groups, per_group", [(2, True), (2, False), (1, True)])
+def test_generated_declared_outcome_scale_has_a_group_axis_only_with_one_value_per_group(groups, per_group):
+    frame = pl.DataFrame(
+        [
+            {"week": week, "region": str(group), "sales": 50.0 * week + 10.0 * group}
+            for week in (1, 2, 3)
+            for group in range(groups)
+        ]
+    )
+    data = prepare_data(frame, time="week", groups=["region"], outcome="sales")
+    maximum = data.arrays["outcome"].max(axis=0) if per_group else data.arrays["outcome"].max()
+    grouped = groups > 1 and per_group
+    scenario = pl.DataFrame(
+        [
+            {"week": week, "region": str(group), "sales": 40.0 * week}
+            for week in (4, 5)
+            for group in reversed(range(groups))
+        ]
+    )
+    model = Model(
+        parameters={"level": Real()},
+        log_density=lambda level: -jnp.square(level),
+        generated_quantities=lambda key, outcome_scaling: {
+            "outcome_divisor": outcome_scaling.scale,
+            "outcome_offset": outcome_scaling.offset,
+        },
+        data=Data(data, scaling={"outcome": Scaling(offset=0.0, scale=maximum)}),
+    )
+    results = _collect_results({"level": np.zeros((1, 2), dtype=np.float32)}, data=data)
+    expected_dims = ("chain", "draw", "group") if grouped else ("chain", "draw")
+    expected_divisor = np.reshape(maximum, (groups,) if grouped else ())
+
+    training = generate_quantities(model, results)["generated_quantities"]
+    scenario_quantities = generate_quantities(model, results, new_data=scenario)["generated_quantities"]
+
+    for generated in (training, scenario_quantities):
+        assert generated["outcome_divisor"].dims == expected_dims
+        assert generated["outcome_offset"].dims == expected_dims
+        np.testing.assert_array_equal(generated["outcome_divisor"][0, 0], expected_divisor)
+        np.testing.assert_array_equal(generated["outcome_offset"][0, 0], np.zeros_like(expected_divisor))
+        if grouped:
+            np.testing.assert_array_equal(generated["group"], ["0", "1"])
 
 
 @pytest.mark.parametrize("prior", [False, True])

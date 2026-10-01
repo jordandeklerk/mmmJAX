@@ -8,6 +8,7 @@ import plotnine as pn
 import polars as pl
 import pytest
 import xarray as xr
+from matplotlib.collections import PathCollection
 
 from mmmjax import (
     Data,
@@ -663,6 +664,23 @@ def test_plot_rhat_draws():
 
     assert figure.axes
     plt.close(figure)
+
+
+def test_plot_rhat_draws_its_points_in_the_same_places_every_time():
+    results = _large(12, drifting=(0,))
+    plot = plot_rhat(results)
+
+    figures = [plot.draw(), plot.draw(), plot_rhat(results).draw()]
+
+    points = [
+        next(collection for collection in figure.axes[0].collections if isinstance(collection, PathCollection))
+        for figure in figures
+    ]
+    positions = [collection.get_offsets() for collection in points]
+    assert positions[0].shape == (12, 2)
+    np.testing.assert_array_equal(positions[1], positions[0])
+    np.testing.assert_array_equal(positions[2], positions[0])
+    plt.close("all")
 
 
 def test_arviz_diagnostics_wrap_long_names_in_panel_titles():

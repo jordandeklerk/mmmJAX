@@ -94,7 +94,7 @@ def response_curves(
         them, ordinary media first. Names must be unique, and each needs
         positive reference spending during ``spend_periods``.
     new_data : dataframe-like or PreparedData, optional
-        Reference observations using the model's columns and fitted scales.
+        Reference observations using the model's columns and scaling.
         Omit to use stored observations. Supply ``PreparedData`` with
         ``media_history`` to include earlier exposures for new observations.
     spend_periods : sequence, optional
@@ -251,7 +251,7 @@ def frequency_curves(
         Names must be unique, and each needs positive spending and impressions
         during ``periods``.
     new_data : dataframe-like or PreparedData, optional
-        Reference observations using the model's columns and fitted scales.
+        Reference observations using the model's columns and scaling.
         Omit to use stored observations. Supply ``PreparedData`` with
         ``media_history`` to include earlier exposures for new observations.
     periods : sequence, optional
@@ -500,7 +500,7 @@ def media_metrics(
         them, ordinary media first. Names must be unique, and each needs
         positive reference spending during ``spend_periods``.
     new_data : dataframe-like or PreparedData, optional
-        Reference observations using the model's columns and fitted scales.
+        Reference observations using the model's columns and scaling.
         Omit to use stored observations. Supply ``PreparedData`` with
         ``media_history`` to include earlier exposures for new observations.
     spend_periods : sequence, optional

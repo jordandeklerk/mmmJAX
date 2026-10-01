@@ -241,9 +241,10 @@ class Model:
     Prepared data supplies the selected role names, such as ``outcome`` and
     ``media``, together with elapsed ``time`` and ``media_time``, the calendar
     ``day_of_year`` and ``media_day_of_year``, and the period count
-    ``n_periods``. The fitted outcome transform ``outcome_scaling`` carries its
-    ``scale``, ``offset``, and ``inverse_transform``. The ``reference``
-    namespace holds the training arrays, such as ``reference.spend``, for
+    ``n_periods``. The outcome's :class:`Scaling` arrives as
+    ``outcome_scaling`` with its ``scale``, ``offset``, and
+    ``inverse_transform``. The ``reference`` namespace holds the training
+    arrays as the blocks received them, such as ``reference.spend``, for
     evaluating new data. ``Data`` variables replace these names with declared
     ones.
 
@@ -474,17 +475,20 @@ class Model:
 
     @property
     def scaling(self) -> DataScaling | None:
-        """Return the fitted input transformations or None for unscaled inputs.
+        """Return the input transformations or None for unscaled inputs.
 
-        When the outcome is scaled, its transformation restores predicted
-        levels to their original units. Contributions convert through its
-        scale alone, since the offset cancels in a difference.
+        The object holds the transformations that ``fit_data_scaling`` fitted
+        or that ``Data`` declared. New data and scenarios reuse them with their
+        training statistics.
+
+        When the outcome is scaled, its linear :class:`Scaling` restores
+        predicted levels to their original units. Contributions convert
+        through its scale alone, since the offset cancels in a difference.
 
         Returns
         -------
         DataScaling or None
-            Fitted transformations available by role through
-            ``transformations``.
+            Transformations available by role through ``transformations``.
         """
         return None if self._training is None else self._training.scaling
 
@@ -914,7 +918,7 @@ def _fit_scaling(
 ) -> tuple[PreparedData, DataScaling | None]:
     """Apply the requested scaling once and return the observations in fitted units."""
     fitted: DataScaling | None
-    if scaling == "auto":
+    if isinstance(scaling, str):
         fitted = fit_data_scaling(data)
     elif isinstance(scaling, DataScaling):
         fitted = scaling
@@ -930,19 +934,24 @@ def _fit_scaling(
 def _outcome_scaling(data: PreparedData, fitted: DataScaling | None, has_outcome: bool) -> tuple[Scaling | None, bool]:
     """Expose the outcome transform to blocks.
 
-    An outcome scaled by population across regions gets one factor per region. Any other outcome gets scalars.
+    An outcome scaled per group gets one factor per group. Any other outcome gets scalars.
     """
-    population_outcome = _grouped_outcome_scale(data, fitted)
+    grouped = _grouped_outcome_scale(data, fitted)
     if not has_outcome:
-        return None, population_outcome
+        return None, grouped
     transform = Scaling(offset=jnp.asarray(0.0), scale=jnp.asarray(1.0))
     if fitted is not None:
         transform = fitted.transformations.get("outcome", transform)
-    factor_shape = (-1,) if population_outcome else ()
-    outcome_scaling = Scaling(
-        offset=transform.offset.reshape(factor_shape), scale=transform.scale.reshape(factor_shape)
-    )
-    return outcome_scaling, population_outcome
+    factor_shape = (-1,) if grouped else ()
+    offset = transform.offset.reshape(factor_shape)
+    scale = transform.scale.reshape(factor_shape)
+    if grouped:
+        # A statistic that holds one value applies to every group
+        groups = (len(data.group_values),)
+        offset = jnp.broadcast_to(offset, groups)
+        scale = jnp.broadcast_to(scale, groups)
+    outcome_scaling = Scaling(offset=offset, scale=scale)
+    return outcome_scaling, grouped
 
 
 def _prepare_training(
@@ -978,7 +987,7 @@ def _prepare_training(
     conflicts = reserved & set(parameter_names)
     if conflicts:
         raise ValueError(f"Parameter names {sorted(conflicts)} conflict with model-supplied inputs")
-    outcome_scaling, population_outcome = _outcome_scaling(data, fitted_scaling, "outcome" in values)
+    outcome_scaling, grouped = _outcome_scaling(data, fitted_scaling, "outcome" in values)
 
     axis_coordinates = coordinates.copy()
     prepared_coords, _ = _prepared_coordinates(data)
@@ -1000,7 +1009,7 @@ def _prepare_training(
         values,
         reference=reference,
         outcome_scaling=outcome_scaling,
-        outcome_group_scale=population_outcome,
+        outcome_group_scale=grouped,
         n_periods=len(data.time_values),
         reserved_names=reserved,
         constants=_FrozenMapping(constants),

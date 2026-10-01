@@ -1,6 +1,7 @@
 """Tests for dataframe input preparation."""
 
 from datetime import UTC, date, datetime
+from types import SimpleNamespace
 
 import jax
 import jax.numpy as jnp
@@ -15,10 +16,12 @@ import xarray as xr
 import mmmjax
 from mmmjax import (
     Data,
+    DataScaling,
     Model,
     ModelInput,
     PreparedData,
     Real,
+    Scaling,
     fit_data_scaling,
     geometric_adstock,
     normal,
@@ -154,13 +157,299 @@ def test_data_block_requires_prepared_observations(data):
         ({"variables": {"revenue": ""}}, TypeError, "nonempty string"),
         ({"variables": {"revenue": 1}}, TypeError, "nonempty string"),
         ({"inputs": {"lift": [1.0]}}, TypeError, "inputs must be an xarray.Dataset"),
-        ({"scaling": "standardize"}, ValueError, "scaling must be DataScaling"),
-        ({"scaling": True}, TypeError, "scaling must be DataScaling"),
+        (
+            {"scaling": "standardize"},
+            ValueError,
+            r"scaling must be DataScaling, a mapping from role names.*'standardize'\. Use 'auto' for the default",
+        ),
+        (
+            {"scaling": True},
+            TypeError,
+            r"scaling must be DataScaling, a mapping from role names.*got bool\. Fit one with fit_data_scaling",
+        ),
+        ({"scaling": ["media"]}, TypeError, "scaling must be DataScaling, a mapping from role names.*got list"),
     ],
 )
 def test_data_block_validates_declarations(block_observations, option, error, message):
     with pytest.raises(error, match=message):
         Data(block_observations, **option)
+
+
+def _media_observations(video, search=None):
+    columns = {"week": list(range(1, len(video) + 1)), "sales": [2.0 + index for index in range(len(video))]}
+    columns["video"] = video
+    if search is not None:
+        columns["search"] = search
+    media = ["video"] if search is None else ["video", "search"]
+    return prepare_data(pl.DataFrame(columns), time="week", outcome="sales", media=media)
+
+
+def _all_role_observations():
+    frame = pl.DataFrame(
+        {
+            "week": [1, 2, 3, 4],
+            "sales": [2.0, 4.0, 8.0, 6.0],
+            "unit_revenue": [1.0, 1.5, 2.0, 1.0],
+            "residents": [100, 100, 100, 100],
+            "video": [10.0, 0.0, 20.0, 5.0],
+            "video_cost": [1.0, 0.0, 2.0, 0.5],
+            "email": [3.0, 1.0, 0.0, 2.0],
+            "audience": [50.0, 60.0, 0.0, 40.0],
+            "frequency": [2.0, 1.5, 1.0, 2.5],
+            "audience_cost": [3.0, 4.0, 0.0, 2.0],
+            "followers": [5.0, 0.0, 7.0, 6.0],
+            "posts": [1.0, 2.0, 1.0, 3.0],
+            "temperature": [12.0, 15.0, 9.0, 20.0],
+            "price": [9.0, 8.0, 9.5, 7.0],
+        }
+    )
+    return prepare_data(
+        frame,
+        time="week",
+        outcome="sales",
+        revenue_per_outcome="unit_revenue",
+        population="residents",
+        media=["video"],
+        spend=["video_cost"],
+        organic_media=["email"],
+        reach=["audience"],
+        media_frequency=["frequency"],
+        rf_spend=["audience_cost"],
+        organic_reach=["followers"],
+        organic_frequency=["posts"],
+        controls=["temperature"],
+        treatments=["price"],
+    )
+
+
+def _outcome_observations(groups):
+    rows = [
+        {"week": week, "region": f"region_{group}", "sales": 10.0 * (group + 1) + week}
+        for week in (1, 2, 3)
+        for group in range(max(groups, 1))
+    ]
+    return prepare_data(pl.DataFrame(rows), time="week", groups=["region"] if groups else (), outcome="sales")
+
+
+def test_data_block_wraps_declared_scalings_in_one_data_scaling(block_observations):
+    declared = {"media": Scaling(offset=0.0, scale=20.0), "outcome": Scaling(offset=4, scale=2)}
+    dtype = jax.dtypes.canonicalize_dtype(float)
+
+    block = Data(block_observations, scaling=declared)
+    declared["media"] = Scaling(offset=0.0, scale=1.0)
+    declared.pop("outcome")
+    observations, _, _, _, snapshot = block._snapshot()
+
+    assert isinstance(block.scaling, DataScaling)
+    assert snapshot is block.scaling
+    assert list(block.scaling.transformations) == ["media", "outcome"]
+    assert block.scaling._layout.columns == block_observations.columns
+    assert block.scaling._population is None
+    assert observations._scaling is None
+    for role, offset, scale in (("media", 0.0, 20.0), ("outcome", 4.0, 2.0)):
+        stored = block.scaling.transformations[role]
+        assert type(stored) is Scaling
+        assert stored.offset.dtype == stored.scale.dtype == dtype
+        np.testing.assert_array_equal(stored.offset, offset)
+        np.testing.assert_array_equal(stored.scale, scale)
+    assert block.model_inputs["outcome_scaling"] == ModelInput(kind="object", axes=(), source="builtin")
+
+
+def test_data_block_treats_an_empty_scaling_mapping_like_omitted_scaling(block_observations):
+    applied = fit_data_scaling(block_observations)
+    scaled = applied.transform(block_observations)
+
+    empty = Data(block_observations, scaling={})
+    prepared = Data(scaled, scaling={})
+
+    assert empty.scaling is None
+    assert empty.model_inputs == Data(block_observations).model_inputs
+    assert prepared.scaling is None
+    assert prepared._snapshot()[0]._scaling is applied
+
+
+@pytest.mark.parametrize(
+    "role",
+    [
+        "spend",
+        "rf_spend",
+        "population",
+        "revenue_per_outcome",
+        "media_frequency",
+        "organic_frequency",
+        "time",
+        "media_time",
+        "day_of_year",
+        "n_periods",
+        "reference",
+        "outcome_scaling",
+        "revenue",
+        "lift",
+        "sales",
+    ],
+)
+def test_data_block_rejects_scalings_for_roles_that_accept_none(role):
+    data = _all_role_observations()
+    inputs = xr.Dataset({"lift": ("experiment", [1.0, 2.0])})
+    allowed = "'outcome', 'media', 'organic_media', 'reach', 'organic_reach', 'controls', 'treatments'"
+
+    with pytest.raises(ValueError, match=rf"scaling cannot scale '{role}'\. .*selected roles {allowed}$"):
+        Data(data, variables={"revenue": "outcome"}, inputs=inputs, scaling={role: Scaling(offset=0.0, scale=2.0)})
+
+
+@pytest.mark.parametrize("role", ["organic_media", "reach", "organic_reach", "controls", "treatments"])
+def test_data_block_rejects_scalings_for_roles_the_data_does_not_select(block_observations, role):
+    with pytest.raises(
+        ValueError, match=rf"scaling names '{role}', which the data does not select\. .*'outcome', 'media'$"
+    ):
+        Data(block_observations, scaling={role: Scaling(offset=0.0, scale=2.0)})
+
+
+def test_data_block_rejects_scalings_when_no_selected_role_accepts_one():
+    data = prepare_data(
+        pl.DataFrame({"week": [1, 2], "unit_revenue": [1.0, 2.0]}), time="week", revenue_per_outcome="unit_revenue"
+    )
+
+    with pytest.raises(ValueError, match=r"scaling cannot scale 'revenue_per_outcome'\. No selected role accepts"):
+        Data(data, scaling={"revenue_per_outcome": Scaling(offset=0.0, scale=2.0)})
+
+
+def test_data_block_requires_role_names_as_scaling_keys(block_observations):
+    with pytest.raises(
+        TypeError, match=r"scaling must be keyed by role names such as 'media', got int\. Key each Scaling by"
+    ):
+        Data(block_observations, scaling={1: Scaling(offset=0.0, scale=2.0)})
+
+
+@pytest.mark.parametrize("role", ["outcome", "media", "controls"])
+@pytest.mark.parametrize("kind", ["methods", "subclass"])
+def test_data_block_requires_an_exact_scaling_for_every_role(role, kind):
+    class LogScaling(Scaling):
+        def inverse_transform(self, values):
+            return jnp.exp(super().inverse_transform(values))
+
+    data = _all_role_observations()
+    methods = SimpleNamespace(transform=jnp.log1p, inverse_transform=jnp.expm1)
+    declared = methods if kind == "methods" else LogScaling(offset=0.0, scale=1.0)
+    name = type(declared).__name__
+    message = (
+        rf"scaling for '{role}' must be a Scaling, got {name}\. Build it with mj\.Scaling\(offset=\.\.\., "
+        r"scale=\.\.\.\) and write a nonlinear transform in the model's blocks"
+    )
+
+    with pytest.raises(TypeError, match=message):
+        Data(data, scaling={role: declared})
+
+
+@pytest.mark.parametrize(
+    "groups, offset, scale, error, message",
+    [
+        (0, 0.0, np.ones(2), ValueError, r"must hold its scale with shape \(\) and no time axis, got shape \(2,\)"),
+        (0, np.zeros((1, 1)), 1.0, ValueError, r"must hold its offset with shape \(\) and no time axis, got shape"),
+        (2, 0.0, np.ones(3), ValueError, r"must hold its scale with shape \(\) or \(2,\) and no time axis, got"),
+        (2, np.zeros((3, 2)), 1.0, ValueError, r"must hold its offset with shape \(\) or \(2,\) .*got shape \(3, 2\)"),
+        (2, 0.0, np.ones((2, 1)), ValueError, r"must hold its scale with shape \(\) or \(2,\) .*got shape \(2, 1\)"),
+        (0, np.nan, 1.0, ValueError, "must hold a finite offset"),
+        (0, -np.inf, 1.0, ValueError, "must hold a finite offset"),
+        (0, 0.0, 0.0, ValueError, "must hold a positive finite scale"),
+        (0, 0.0, -2.0, ValueError, "must hold a positive finite scale"),
+        (0, 0.0, np.inf, ValueError, "must hold a positive finite scale"),
+        (2, 0.0, np.array([1.0, np.nan]), ValueError, "must hold a positive finite scale"),
+        (0, 0.0, "one", TypeError, "must hold a real numeric scale, got dtype <U3"),
+        (0, True, 1.0, TypeError, r"must hold a real numeric offset, got dtype bool\. Build the Scaling from real"),
+    ],
+)
+def test_data_block_validates_declared_outcome_statistics(groups, offset, scale, error, message):
+    data = _outcome_observations(groups)
+
+    with pytest.raises(error, match=rf"scaling for 'outcome' {message}"):
+        Data(data, scaling={"outcome": Scaling(offset=offset, scale=scale)})
+
+
+@pytest.mark.parametrize(
+    "offset, scale",
+    [(0.0, 20.0), (0, 20), ([0.0], [20.0]), (np.zeros(1), np.full(1, 20)), (jnp.zeros(()), jnp.full((1, 1), 20.0))],
+    ids=["floats", "integers", "lists", "numpy", "jax"],
+)
+def test_data_block_stores_input_scaling_statistics_as_floating_arrays(offset, scale):
+    data = _media_observations([10.0, 0.0, 20.0, 5.0])
+    dtype = jax.dtypes.canonicalize_dtype(float)
+    expected = np.array([[0.5], [0.0], [1.0], [0.25]], dtype=dtype)
+
+    scaling = Data(data, scaling={"media": Scaling(offset=offset, scale=scale)}).scaling
+    stored = scaling.transformations["media"]
+    transformed = scaling.transform(data)
+
+    assert type(stored) is Scaling
+    assert stored.offset.dtype == stored.scale.dtype == dtype
+    assert transformed.arrays["media"].dtype == dtype
+    np.testing.assert_array_equal(transformed.arrays["media"], expected)
+
+
+@pytest.mark.parametrize(
+    "offset, scale, error, message",
+    [
+        (True, 1.0, TypeError, r"must hold a real numeric offset, got dtype bool\. Build the Scaling from real"),
+        (0.0, "one", TypeError, "must hold a real numeric scale, got dtype <U3"),
+        (np.nan, 1.0, ValueError, "must hold a finite offset"),
+        (0.0, 0.0, ValueError, "must hold a positive finite scale"),
+        (0.0, -2.0, ValueError, "must hold a positive finite scale"),
+    ],
+)
+def test_data_block_validates_declared_input_scaling_statistics(offset, scale, error, message):
+    data = _all_role_observations()
+
+    with pytest.raises(error, match=rf"scaling for 'controls' {message}"):
+        Data(data, scaling={"controls": Scaling(offset=offset, scale=scale)})
+
+
+@pytest.mark.parametrize(
+    "role, offset, scale, message",
+    [
+        ("media", 0.0, np.ones((4, 1)), r"scale with shape \(1,\) or one that broadcasts to it, with no time axis"),
+        ("media", 0.0, np.ones(3), r"scale with shape \(1,\) or one that broadcasts to it, .*got shape \(3,\)"),
+        ("controls", np.zeros((4, 1)), 1.0, r"offset with shape \(1,\) .*no time axis, got shape \(4, 1\)"),
+        ("media", 1.0, 20.0, "must have a zero offset so that zero exposure stays zero"),
+        ("organic_reach", -2.0, 5.0, "must have a zero offset so that zero exposure stays zero"),
+    ],
+    ids=["time_axis", "broadcast", "control_time_axis", "media_offset", "organic_reach_offset"],
+)
+def test_data_block_validates_input_scaling_shapes_and_exposure_offsets(role, offset, scale, message):
+    data = _all_role_observations()
+
+    with pytest.raises(ValueError, match=rf"scaling for '{role}' .*{message}"):
+        Data(data, scaling={role: Scaling(offset=offset, scale=scale)})
+
+
+def test_data_block_scales_every_input_role_with_its_declared_statistics():
+    data = _all_role_observations()
+    declared = {
+        "media": Scaling(offset=0.0, scale=data.arrays["media"].max(axis=0)),
+        "organic_media": Scaling(offset=0.0, scale=4.0),
+        "reach": Scaling(offset=0.0, scale=data.arrays["reach"].max(axis=0)),
+        "organic_reach": Scaling(offset=0.0, scale=np.array([7.0])),
+        "controls": Scaling(offset=14.0, scale=5.0),
+        "treatments": Scaling(offset=np.array([[8.0]]), scale=2.0),
+    }
+    expected = {
+        role: (data.arrays[role] - np.asarray(scaling.offset)) / np.asarray(scaling.scale)
+        for role, scaling in declared.items()
+    }
+
+    scaled = Data(data, scaling=declared).scaling.transform(data)
+
+    assert list(Data(data, scaling=declared).scaling.transformations) == list(declared)
+    for role, values in expected.items():
+        np.testing.assert_allclose(scaled.arrays[role], values, rtol=1e-6, atol=0)
+    np.testing.assert_array_equal(scaled.arrays["spend"], data.arrays["spend"])
+    np.testing.assert_array_equal(scaled.arrays["population"], data.arrays["population"])
+
+
+def test_data_block_requires_raw_observations_for_declared_scalings(block_observations):
+    scaled = fit_data_scaling(block_observations).transform(block_observations)
+
+    with pytest.raises(ValueError, match=r"already been scaled\. Pass the prepared data from prepare_data before"):
+        Data(scaled, scaling={"media": Scaling(offset=0.0, scale=20.0)})
 
 
 @pytest.fixture(params=["pandas", "pandas_nullable", "pandas_arrow", "polars", "pyarrow"])
@@ -3221,9 +3510,21 @@ def test_model_inputs_give_outcome_scaling_the_group_axis_the_model_supplies():
     ]
     data = prepare_data(pl.DataFrame(rows), time="time", groups=["region"], outcome="sales", population="population")
     population = fit_data_scaling(data, scale_outcome="population")
+    per_group = Data(data, scaling={"outcome": Scaling(offset=0.0, scale=data.arrays["outcome"].max(axis=0))})
     declarations = {
-        ("group",): [Data(data, scaling=population), population.transform(data)],
-        (): [data, Data(data, scaling="auto"), Data(data, scaling=fit_data_scaling(data, scale_outcome=True))],
+        ("group",): [
+            Data(data, scaling=population),
+            population.transform(data),
+            per_group,
+            per_group.scaling.transform(data),
+            Data(data, scaling={**population.transformations}),
+        ],
+        (): [
+            data,
+            Data(data, scaling="auto"),
+            Data(data, scaling=fit_data_scaling(data, scale_outcome=True)),
+            Data(data, scaling={"outcome": Scaling(offset=[[1.0]], scale=4.0)}),
+        ],
     }
 
     for axes, cases in declarations.items():

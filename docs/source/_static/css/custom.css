@@ -8,6 +8,7 @@ body[data-md-color-scheme="default"] {
   --mmmj-search-placeholder: rgba(0, 0, 0, 0.6);
   --mmmj-symbol: #d9432a;
   --mmmj-code-parameter: #b04f00;
+  --mmmj-error-name: #c62828;
 }
 
 body[data-md-color-scheme="slate"] {
@@ -18,6 +19,7 @@ body[data-md-color-scheme="slate"] {
   --mmmj-search-placeholder: rgba(255, 255, 255, 0.7);
   --mmmj-symbol: #ff7a5c;
   --mmmj-code-parameter: #ffa657;
+  --mmmj-error-name: #ff8a80;
 }
 
 /* Both schemes take the sea green of the logo's contours for the accent instead of the theme's teal. */
@@ -94,6 +96,38 @@ header.md-header,
 .highlight .nv,
 .highlight .na {
   color: var(--mmmj-code-parameter);
+}
+
+/*
+Errors sit in a red box with the exception's name in bold. A written-out ipythontb block and an executed cell's
+error share the box, and on an output it replaces MyST-NB's frame. The lexer reads a message's later lines as
+Python, so their token colors are cleared.
+*/
+.md-typeset .highlight-ipythontb pre {
+  border: 0.05rem solid color-mix(in srgb, #ff1744 35%, transparent);
+  border-left: 4px solid #ff1744;
+  border-radius: 4px;
+  background-color: color-mix(in srgb, #ff1744 7%, var(--md-code-bg-color));
+}
+
+.md-typeset .highlight-ipythontb .highlight,
+.md-typeset .highlight-ipythontb pre > code {
+  background-color: transparent;
+}
+
+.md-typeset .cell_output .output.traceback {
+  border: none;
+  background: none;
+}
+
+.md-typeset .highlight-ipythontb code span {
+  color: inherit;
+  font-style: inherit;
+}
+
+.md-typeset .highlight-ipythontb code .ne {
+  color: var(--mmmj-error-name);
+  font-weight: 700;
 }
 
 .admonition {
