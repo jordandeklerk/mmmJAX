@@ -76,3 +76,4 @@ docs/source/**/generated/
 /numpy
 /scipy
 /marimo
+.agents/
