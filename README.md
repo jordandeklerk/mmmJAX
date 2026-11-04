@@ -1,5 +1,5 @@
 <div align="center">
-<img src="docs/source/_static/mmmjax-logo.png" alt="mmmJAX" width="375">
+<img src="docs/source/_static/mmmjax-logo.png" alt="mmmJAX" width="400">
 <!-- Switch to the absolute URL before publishing so PyPI renders it:
 <img src="https://raw.githubusercontent.com/jordandeklerk/mmmJAX/main/docs/source/_static/mmmjax-logo.png" alt="mmmJAX" width="350">
 -->
@@ -92,7 +92,7 @@ gradient = jax.grad(mj.gamma)(values, shape=2.0, rate=0.5)
 draws = mj.gamma_rng(jax.random.key(0), shape=2.0, rate=0.5, sample_shape=(1000,))
 ```
 
-## Inference is separate from the model
+## Inference
 
 A `Model` does not know how it will be fit. It exposes `log_density` for an unconstrained position, `initialize_random` for a starting point, and `constrain` to map draws back to the parameter scale, and that is the whole interface a sampler needs.
 
