@@ -8,6 +8,7 @@ body[data-md-color-scheme="default"] {
   --mmmj-search-placeholder: rgba(0, 0, 0, 0.6);
   --mmmj-symbol: #d9432a;
   --mmmj-code-parameter: #b04f00;
+  --mmmj-code-type: #2f7a61;
   --mmmj-error-name: #c62828;
 }
 
@@ -19,6 +20,7 @@ body[data-md-color-scheme="slate"] {
   --mmmj-search-placeholder: rgba(255, 255, 255, 0.7);
   --mmmj-symbol: #ff7a5c;
   --mmmj-code-parameter: #ffa657;
+  --mmmj-code-type: #7fc8ad;
   --mmmj-error-name: #ff8a80;
 }
 
@@ -233,19 +235,64 @@ Python, so their token colors are cleared.
 }
 
 /*
-The theme pads object signatures but paints each parameter, return, and
-attribute entry with a bare code background that hugs the name. Give those
-entries the same breathing room as the signature block.
+The theme paints each parameter list as one code block, which blurs into the gray signature above it. Flat rows
+parted by hairlines read apart from the signature, and each name and type keeps a code color of its own.
 */
+.md-typeset dl.field-list > dd:has(> dl.api-field) {
+  margin-inline-start: 0;
+}
+
+.md-typeset dl.api-field.highlight {
+  margin: 0.6rem 0 1.2rem;
+  background: transparent;
+  border-radius: 0;
+}
+
 .md-typeset dl.api-field > dt {
-  padding: 0.35em 0.6em;
-  border-radius: 0.1rem;
-  margin-top: 0.75em;
+  display: block;
+  margin: 0;
+  padding: 0.75rem 1rem 0.25rem;
+  background: transparent;
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+.md-typeset dl.api-field > dt:not(:first-child) {
+  border-top: 1px solid var(--md-default-fg-color--lightest);
+}
+
+.md-typeset dl.api-field > dt .sig-name:not(.sig-name-nonprimary) {
+  color: var(--mmmj-code-parameter);
+}
+
+.md-typeset dl.api-field > dt .desctype,
+.md-typeset dl.api-field > dt .desctype a.reference {
+  color: var(--mmmj-code-type);
+  font-weight: 400;
+}
+
+.md-typeset dl.api-field > dt code {
+  background: transparent;
+  font-size: inherit;
+}
+
+.md-typeset dl.api-field > dt a.headerlink {
+  left: 0;
+  width: auto;
+  margin-left: 0.5em;
 }
 
 .md-typeset dl.api-field > dd {
-  margin-top: 0.5em;
-  margin-bottom: 1em;
+  margin: 0;
+  padding: 0 1rem 0.75rem;
+}
+
+.md-typeset dl.api-field > dd > :first-child {
+  margin-top: 0;
+}
+
+.md-typeset dl.api-field > dd > :last-child {
+  margin-bottom: 0;
 }
 
 /*
