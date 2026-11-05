@@ -59,27 +59,19 @@ def contributions(
 ) -> xr.Dataset:
     """Decompose the expected response into a baseline and channel contributions.
 
-    Each input's contribution is the reference response minus the response
-    with that input removed on its own. Removing every input at once gives the
+    Each input's contribution is the reference response minus the response with
+    that input removed on its own. Removing every input at once gives the
     baseline. When inputs interact, their contributions need not add up to the
     joint effect of removing them all.
 
     Paid and organic exposures are set to zero during ``periods``, only reach
     is set to zero for reach and frequency families while frequency stays
     fixed, and treatments are set to baseline levels. Controls, seasonality,
-    earlier history, and every other input stay fixed. Each scenario rewrites
-    only the input it removes. The baseline necessarily rewrites every
-    removable input at once.
+    earlier history, and every other input stay fixed.
 
-    ``quantity`` is recomputed for each scenario and draw, and the fitted
-    outcome scaling restores original outcome units before anything is summed.
-    Differences are taken within draws, so the returned draws support credible
-    intervals. Shares and effectiveness divide totals over periods and groups
-    within each draw.
-
-    A nonfinite response in any scenario raises ``ValueError``. Any
-    normalization inside the blocks should read the training arrays from
-    ``reference`` so that removing an input cannot zero it.
+    ``quantity`` is recomputed for each scenario and draw in original outcome
+    units. Differences are taken within draws, so the returned draws support
+    credible intervals.
 
     Parameters
     ----------
@@ -90,12 +82,10 @@ def contributions(
         Results containing the model's constrained draws in the selected group.
     quantity : str
         Key returned by ``transformed_parameters`` holding the expected outcome
-        for every observation on the scale the likelihood uses, such as
-        ``"mu"``.
+        on the scale the likelihood uses, such as ``"mu"``.
     group : {"prior", "posterior"}, default "posterior"
         Parameter draws to use. Choose ``"prior"`` with results from
         ``sample_prior`` to inspect contributions implied by the priors.
-        No sampling is performed. Compare groups using separate calls.
     channels : sequence of str, optional
         Channels and treatment columns to report, in the desired order.
         Defaults to all of them, paid media first and treatments last. Names
@@ -106,9 +96,9 @@ def contributions(
         and a mapping sets named treatments to finite numbers or those words.
         Unnamed treatments use the minimum.
     new_data : dataframe-like or PreparedData, optional
-        Reference observations using the model's columns and scaling.
-        Omit to use stored observations. Supply ``PreparedData`` with
-        ``media_history`` to include earlier exposures for new observations.
+        Reference observations using the model's columns and scaling. Omit to
+        use stored observations. Supply ``PreparedData`` with ``media_history``
+        to include earlier exposures for new observations.
     periods : sequence, optional
         Time labels during which inputs are removed. Defaults to all supplied
         modeling periods.
@@ -117,8 +107,7 @@ def contributions(
         periods. Include later dates to count carryover.
     by : str or sequence of str, optional
         Observation axes to keep in the responses, as ``"time"``, ``"group"``,
-        or both. Keeping ``"group"`` requires grouped data. Omit to sum over
-        both.
+        or both. Omit to sum over both.
     batch_size : int, default 64
         Maximum parameter draws evaluated together. Scenarios run sequentially.
 
@@ -141,6 +130,21 @@ def contributions(
         - **treatment_baseline** — Treatment counterfactual levels
         - **channel_type**, **period**, **response_period** — Input families
           and selected dates
+
+    See Also
+    --------
+    media_metrics : Calculate response and ROI metrics by channel.
+    plot_contributions : Plot the baseline and each channel's contribution.
+
+    Notes
+    -----
+    Shares and effectiveness divide totals over periods and groups within each
+    draw.
+
+    A nonfinite response in any scenario raises ``ValueError``. Any
+    normalization inside the blocks should read the training arrays from
+    ``reference`` so that removing an input cannot zero it, as
+    :doc:`/user_guide/scenarios` explains.
     """
     inputs, prepared, samples, coordinates = _response_inputs(
         model, results, quantity, new_data, batch_size, group=group

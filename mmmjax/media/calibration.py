@@ -22,30 +22,20 @@ def contribution_coefficient(
 ) -> jax.Array:
     r"""Return the coefficients that give each channel a chosen total contribution.
 
-    Stan-style models place priors on quantities with business meaning, such
-    as the revenue a channel added over the training window, and derive the
-    coefficient that produces it. For transformed exposures :math:`h_{tgm}`
-    over periods :math:`t`, optional groups :math:`g`, and channels :math:`m`,
-    with outcome scale :math:`\sigma_g` and target contribution :math:`C_m`,
-    the weighted exposure totals are
+    Stan-style models place priors on quantities with business meaning, such as
+    the revenue a channel added over the training window, and derive the
+    coefficient that produces it. For transformed exposures :math:`h_{tgm}`,
+    outcome scale :math:`\sigma_g`, and target contribution :math:`C_m`, the
+    coefficients satisfy
 
     .. math::
 
+        \sum_g A_{gm} \beta_{gm} = C_m,
+        \qquad
         A_{gm} = \sigma_g \sum_t h_{tgm}.
 
-    Without deviations one coefficient per channel satisfies
-    :math:`\beta_m = C_m / \sum_g A_{gm}`. With deviations
-    :math:`\delta_{gm}` the coefficients vary by group around a shared center
-    :math:`\beta_m` that the function solves for.
-
-    Log-normal effects use :math:`\beta_{gm} = \exp(\beta_m + \delta_{gm})`
-    with :math:`\beta_m = \log C_m - \log \sum_g A_{gm} e^{\delta_{gm}}`, and
-    normal effects use :math:`\beta_{gm} = \beta_m + \delta_{gm}` with
-    :math:`\beta_m = (C_m - \sum_g A_{gm} \delta_{gm}) / \sum_g A_{gm}`. In
-    every case :math:`\sum_g A_{gm} \beta_{gm} = C_m`.
-
-    Call this inside ``transformed_parameters`` with the training exposures
-    and spending read from ``reference``, so scenario analyses that change the
+    Call this inside ``transformed_parameters`` with the training exposures and
+    spending read from ``reference``, so scenario analyses that change the
     current inputs leave the coefficients fixed. The coefficients are derived,
     so they receive no prior and no change of variables adjustment.
 
@@ -57,35 +47,50 @@ def contribution_coefficient(
     response : array_like
         Transformed exposures with time first, an optional group axis, and
         channels last, on the scale the model multiplies by the coefficients.
-        Cover the periods the contribution refers to, and subtract carryover
-        from earlier history when the contribution should exclude it. For a
-        marginal identity pass the difference between two exposure scenarios
-        instead.
+        Cover the periods the contribution refers to, without carryover from
+        earlier history when the contribution excludes it.
     outcome_scale : array_like, default 1.0
         Factor that restores the model's outcome scale to outcome units, as a
-        scalar or one value per group. Pass ``outcome_scaling.scale`` when the
-        outcome is scaled.
+        scalar or one value per group, such as ``outcome_scaling.scale``.
     deviations : array_like, optional
         Centered random effects with shape ``(groups, channels)``, already
-        multiplied by their dispersion, such as ``eta * dev`` for a
-        noncentered hierarchy. Requires a group axis in ``response``. Omit to
-        return one coefficient per channel.
+        multiplied by their dispersion. Requires a group axis in ``response``.
+        Omit to return one coefficient per channel.
     effects : {"lognormal", "normal"}, default "lognormal"
         How deviations enter. Log-normal effects keep every coefficient
-        positive and normal effects leave the sign free. Ignored without
-        deviations.
+        positive and normal effects leave the sign free.
 
     Returns
     -------
     jax.Array
         Coefficients with one value per channel, or one per group and channel
-        when deviations are supplied. A channel whose weighted exposure total is
-        zero has no finite coefficient.
+        when deviations are supplied.
+
+    See Also
+    --------
+    roi_coefficient : Derive coefficients from target returns.
+
+    Notes
+    -----
+    Without deviations one coefficient per channel satisfies
+    :math:`\beta_m = C_m / \sum_g A_{gm}`. With deviations :math:`\delta_{gm}`
+    the coefficients vary by group around a shared center :math:`\beta_m` that
+    the function solves for.
+
+    Log-normal effects use :math:`\beta_{gm} = \exp(\beta_m + \delta_{gm})`
+    with :math:`\beta_m = \log C_m - \log \sum_g A_{gm} e^{\delta_{gm}}`, and
+    normal effects use :math:`\beta_{gm} = \beta_m + \delta_{gm}` with
+    :math:`\beta_m = (C_m - \sum_g A_{gm} \delta_{gm}) / \sum_g A_{gm}`.
+
+    For a marginal identity, pass the difference between two exposure scenarios
+    as ``response``. A channel whose weighted exposure total is zero has no
+    finite coefficient.
 
     Examples
     --------
     Two channels are observed over three weeks in two regions, and each
-    region's coefficient is a log-normal deviation from a shared center.
+    region's coefficient is a log-normal deviation from a shared center. The
+    weighted contributions recover the targets.
 
     .. ipython::
 
@@ -100,10 +105,6 @@ def contribution_coefficient(
            ...:     outcome_scale=jnp.array([120.0, 80.0]), deviations=deviations,
            ...: )
            ...: coefficient
-
-    The weighted contributions recover the targets.
-
-    .. ipython::
 
         In [2]: jnp.einsum("tgm,g,gm->m", response, jnp.array([120.0, 80.0]), coefficient)
     """
@@ -157,19 +158,13 @@ def roi_coefficient(
     deviations: ArrayLike | None = None,
     effects: _Effects = "lognormal",
 ) -> jax.Array:
-    r"""Return the coefficients that give each channel a chosen return on spending.
+    """Return the coefficients that give each channel a chosen return on spending.
 
     Return on investment :math:`r_m` is the total contribution of a channel
     divided by its total spending :math:`S_m`, so the target contribution is
     :math:`C_m = r_m S_m` and the coefficients follow from
-    :func:`contribution_coefficient`. A marginal return uses the same
-    identity with the response difference between reference and increased
-    exposures and the spending increment as ``spend``.
-
-    When the exposures include earlier history, ``response`` should hold only
-    the response to exposure inside the window. It equals the full response
-    minus the response with the window's exposure removed, so carryover from
-    earlier periods is not credited to the channel.
+    :func:`contribution_coefficient`. The exposures and spending should come
+    from ``reference``, as :doc:`/user_guide/scenarios` explains.
 
     Parameters
     ----------
@@ -181,8 +176,8 @@ def roi_coefficient(
         channels last, on the scale the model multiplies by the coefficients.
         Cover the same periods as ``spend``.
     spend : array_like
-        Spending in original units, either totaled per channel or with time
-        and optional group axes that are summed here.
+        Spending in original units, either totaled per channel or with time and
+        optional group axes that are summed here.
     outcome_scale : array_like, default 1.0
         Factor that restores the model's outcome scale to outcome units, as a
         scalar or one value per group.
@@ -199,10 +194,26 @@ def roi_coefficient(
         Coefficients with one value per channel, or one per group and channel
         when deviations are supplied.
 
+    See Also
+    --------
+    contribution_coefficient : Derive coefficients from target contributions.
+
+    Notes
+    -----
+    A marginal return uses the same identity with the response difference
+    between reference and increased exposures and the spending increment as
+    ``spend``.
+
+    When the exposures include earlier history, ``response`` should hold only
+    the response to exposure inside the window. It equals the full response
+    minus the response with the window's exposure removed, so carryover from
+    earlier periods is not credited to the channel.
+
     Examples
     --------
-    A national model has two channels with three weeks of transformed
-    exposures and spending, and its outcome is standardized with scale 40.
+    A national model has two channels and an outcome standardized with scale
+    40. Each channel's contribution over the window equals its ROI times its
+    total spending.
 
     .. ipython::
 
@@ -212,11 +223,6 @@ def roi_coefficient(
            ...: spend = jnp.array([[100.0, 50.0], [120.0, 40.0], [80.0, 60.0]])
            ...: coefficient = roi_coefficient(jnp.array([2.0, 0.5]), response, spend, outcome_scale=40.0)
            ...: coefficient
-
-    Each channel's contribution over the window equals its ROI times its
-    total spending.
-
-    .. ipython::
 
         In [2]: 40.0 * response.sum(axis=0) * coefficient / spend.sum(axis=0)
     """

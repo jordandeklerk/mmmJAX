@@ -115,6 +115,11 @@ def plot_fit(
     -------
     plotnine.ggplot
         Observed and predicted outcomes by period.
+
+    See Also
+    --------
+    plot_residuals : Plot residuals over time.
+    plot_ppc_dist : Compare the observed distribution with predictive draws.
     """
     predicted, observed = _predictive_pair(model, results, group, var_name)
     _require_count(n_groups, "n_groups")
@@ -204,6 +209,11 @@ def plot_ppc_dist(
     -------
     arviz_plots.PlotCollection
         ArviZ's plot, which methods such as ``add_legend`` extend.
+
+    See Also
+    --------
+    plot_ppc_tstat : Compare statistics of the series with predictive draws.
+    plot_fit : Plot observed outcomes against predictions over time.
     """
     predicted, observed = _predictive_pair(model, results, group, var_name)
     from arviz_plots import plot_ppc_dist as arviz_plot_ppc_dist
@@ -239,14 +249,6 @@ def plot_ppc_tstat(
     observations. The p in the title is the share of draws whose statistic is
     at least the observed one. A share near zero or one means the model
     rarely reproduces that feature of the data.
-
-    Residual autocorrelation measures how strongly each period's residual
-    follows the one before. It takes the residuals from each draw's own
-    expected outcome, which ``contributions`` computes from ``quantity``, so
-    the observed value changes from draw to draw and appears as a black curve
-    in place of the dot. A model that misses seasonality, a trend, or a driver
-    of demand leaves residuals that run in streaks, and this check catches
-    them when checks that pool the periods do not.
 
     Groups are summed into one series per draw unless ``by`` keeps them apart,
     and then the most populous groups get a row of panels each. The title
@@ -292,6 +294,21 @@ def plot_ppc_tstat(
     -------
     arviz_plots.PlotCollection
         ArviZ's plot, which methods such as ``add_title`` extend.
+
+    See Also
+    --------
+    plot_ppc_dist : Compare the observed distribution with predictive draws.
+    plot_residuals : Plot residuals over time.
+
+    Notes
+    -----
+    Residual autocorrelation measures how strongly each period's residual
+    follows the one before. It takes the residuals from each draw's own
+    expected outcome, which ``contributions`` computes from ``quantity``, so
+    the observed value changes from draw to draw and appears as a black curve
+    in place of the dot. A model that misses seasonality, a trend, or a driver
+    of demand leaves residuals that run in streaks, and this check catches
+    them when checks that pool the periods do not.
     """
     predicted, observed = _predictive_pair(model, results, group, var_name)
     _require_count(n_groups, "n_groups")
@@ -383,16 +400,6 @@ def plot_prior_posterior(
     ``time`` axis show the first periods. ArviZ's ``coords`` picks other labels
     instead.
 
-    Extreme draws are pulled in so that a heavy-tailed prior cannot squash the
-    posterior into a spike. The figure grows taller with its rows of panels
-    unless ``figure_kwargs`` sets its size.
-
-    When the parameters still need more panels than ArviZ's
-    ``plot.max_subplots`` setting allows, the plot keeps the 12 elements the
-    data narrowed least and says so in its title. Narrowing is measured by
-    where the posterior draws fall among the prior draws, so it reads the same
-    on a log or logit scale as on the parameter's own.
-
     Parameters
     ----------
     results : xarray.DataTree
@@ -418,6 +425,23 @@ def plot_prior_posterior(
     -------
     arviz_plots.PlotCollection
         ArviZ's plot, which methods such as ``add_legend`` extend.
+
+    See Also
+    --------
+    sample_prior : Draw priors and their implied outcomes before fitting.
+    plot_psense : Plot sensitivity to the priors and the likelihood.
+
+    Notes
+    -----
+    Extreme draws are pulled in so that a heavy-tailed prior cannot squash the
+    posterior into a spike. The figure grows taller with its rows of panels
+    unless ``figure_kwargs`` sets its size.
+
+    When the parameters still need more panels than ArviZ's
+    ``plot.max_subplots`` setting allows, the plot keeps the 12 elements the
+    data narrowed least and says so in its title. Narrowing is measured by
+    where the posterior draws fall among the prior draws, so it reads the same
+    on a log or logit scale as on the parameter's own.
     """
     _require_group(results, "results", "posterior")
     _require_group(prior, "prior", "prior")
@@ -489,11 +513,6 @@ def plot_psense(
     across the powers, and dashed lines mark two Monte Carlo standard errors
     around its unscaled value.
 
-    When the elements need more panels than ArviZ's ``plot.max_subplots``
-    setting allows, the plot keeps the six most sensitive to the priors and
-    says so in its title. The figure grows taller with its rows unless
-    ``figure_kwargs`` sets its size.
-
     Parameters
     ----------
     results : xarray.DataTree
@@ -519,6 +538,18 @@ def plot_psense(
     -------
     arviz_plots.PlotCollection
         ArviZ's plot, which methods such as ``add_title`` extend.
+
+    See Also
+    --------
+    psense_summary : Measure sensitivity to the priors and the likelihood.
+    plot_prior_posterior : Overlay each parameter's prior and posterior.
+
+    Notes
+    -----
+    When the elements need more panels than ArviZ's ``plot.max_subplots``
+    setting allows, the plot keeps the six most sensitive to the priors and
+    says so in its title. The figure grows taller with its rows unless
+    ``figure_kwargs`` sets its size.
     """
     if kind not in ("dist", "quantities"):
         raise ValueError(f"kind must be 'dist' or 'quantities', got {kind!r}")
@@ -572,12 +603,6 @@ def plot_rank(
     every chain's line stays within its envelope, and ArviZ marks stretches
     that leave it.
 
-    When the parameters need more panels than ArviZ's ``plot.max_subplots``
-    setting allows, the plot keeps the 12 elements with the highest R-hat, the
-    ones most likely to have mixed poorly, and says so in its title. The figure
-    grows taller with its rows of panels unless ``figure_kwargs`` sets its
-    size.
-
     Parameters
     ----------
     results : xarray.DataTree
@@ -592,6 +617,19 @@ def plot_rank(
     -------
     arviz_plots.PlotCollection
         ArviZ's plot, which methods such as ``add_title`` extend.
+
+    See Also
+    --------
+    plot_rhat : Show the R-hat of every parameter.
+    plot_trace_dist : Draw each parameter's density beside its draws.
+
+    Notes
+    -----
+    When the parameters need more panels than ArviZ's ``plot.max_subplots``
+    setting allows, the plot keeps the 12 elements with the highest R-hat, the
+    ones most likely to have mixed poorly, and says so in its title. The figure
+    grows taller with its rows of panels unless ``figure_kwargs`` sets its
+    size.
     """
     data, names, title = _convergence_panels(results, var_names, kwargs, _subplot_limit(), 12)
     from arviz_plots import plot_rank as arviz_plot_rank
@@ -660,6 +698,11 @@ def plot_residuals(
     -------
     plotnine.ggplot
         Residuals by period.
+
+    See Also
+    --------
+    plot_fit : Plot observed outcomes against predictions over time.
+    plot_ppc_tstat : Compare statistics of the series with predictive draws.
     """
     predicted, observed = _predictive_pair(model, results, group, var_name)
     _require_count(n_groups, "n_groups")
@@ -707,6 +750,11 @@ def plot_rhat(results: xr.DataTree, *, var_names: Sequence[str] | None = None) -
     -------
     plotnine.ggplot
         R-hat values by parameter.
+
+    See Also
+    --------
+    plot_rank : Draw rank plots of the chains.
+    plot_trace_dist : Draw each parameter's density beside its draws.
     """
     _require_group(results, "results", "posterior")
     names = _variables(_names(results, "posterior"), var_names, "posterior")
@@ -778,12 +826,6 @@ def plot_trace_dist(
     style. Converged chains overlap in the densities and show flat, well mixed
     traces without drift.
 
-    When the parameters have more elements than half of ArviZ's
-    ``plot.max_subplots`` setting, the plot keeps the six elements with the
-    highest R-hat, each in its own row, and says so in its title. Each row's
-    name sits under its density, and the figure grows taller with its rows
-    unless ``figure_kwargs`` sets its size.
-
     Parameters
     ----------
     results : xarray.DataTree
@@ -798,6 +840,19 @@ def plot_trace_dist(
     -------
     arviz_plots.PlotCollection
         ArviZ's plot, which methods such as ``add_legend`` extend.
+
+    See Also
+    --------
+    plot_rank : Draw rank plots of the chains.
+    plot_rhat : Show the R-hat of every parameter.
+
+    Notes
+    -----
+    When the parameters have more elements than half of ArviZ's
+    ``plot.max_subplots`` setting, the plot keeps the six elements with the
+    highest R-hat, each in its own row, and says so in its title. Each row's
+    name sits under its density, and the figure grows taller with its rows
+    unless ``figure_kwargs`` sets its size.
     """
     # Each trace row takes a density panel and a trace panel.
     data, names, title = _convergence_panels(results, var_names, kwargs, _subplot_limit() // 2, 6)

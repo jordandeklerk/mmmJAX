@@ -45,6 +45,11 @@ class Scaling:
         so the offsets broadcast across new observations.
     scale : jax.Array
         Positive divisors with the same shape as ``offset``.
+
+    See Also
+    --------
+    fit_data_scaling : Fit reusable transformations for model inputs.
+    Data : Declare model data and its fixed preprocessing.
     """
 
     offset: jax.Array
@@ -126,6 +131,11 @@ class DataScaling:
     group and column order before applying the training statistics. The data
     must hold exactly the training groups, and a changed channel-to-column
     assignment raises an error.
+
+    See Also
+    --------
+    fit_data_scaling : Fit reusable transformations for model inputs.
+    Scaling : Store an offset and scale for one input role.
     """
 
     _fitted: tuple[tuple[str, Scaling], ...]
@@ -251,20 +261,8 @@ def fit_data_scaling(
     Spend, population, revenue per outcome, and both frequency inputs are
     always left unchanged.
 
-    Statistics pool periods and groups per feature. Exposure statistics
-    include the media history, and the others use only the modeling periods.
-    The data itself is not modified.
-
     The returned ``DataScaling`` applies the training statistics to new
     prepared data, and its ``inverse_transform`` restores the original units.
-    New data may omit population. Any population it supplies must match the
-    training population when it also holds population-adjusted inputs.
-
-    The fitted statistics also combine with scalings you build yourself.
-    Passing ``{**scaling.transformations, "media": custom}`` to ``Data`` uses
-    ``custom`` for media and the fitted statistics for every other role. That
-    mapping carries no population record, so new data is not checked against
-    the training population and must keep the same estimates.
 
     Parameters
     ----------
@@ -272,29 +270,46 @@ def fit_data_scaling(
         Unscaled inputs from :func:`prepare_data`.
     media_method : {"median", "mean", "max"} or None, default "median"
         Statistic for paid and organic impressions and reach. The median
-        excludes zeros and the mean includes them. Each channel needs positive
-        exposure. ``None`` leaves them in their original units.
+        excludes zeros and the mean includes them. ``None`` leaves them in
+        their original units.
     scale_outcome : bool or {"population"}, default False
-        ``True`` standardizes the outcome and ``"population"`` first divides
-        it by population. Requires an outcome and, for ``"population"``,
-        population estimates. Leave disabled for count likelihoods.
+        ``True`` standardizes the outcome and ``"population"`` first divides it
+        by population. Leave disabled for count likelihoods.
     scale_controls : bool, default True
-        Standardize each supplied control using its mean and standard deviation.
+        Standardize each supplied control using its mean and standard
+        deviation.
     scale_treatments : bool, default True
         Standardize each supplied non-media treatment using its mean and
         standard deviation.
     adjust_population : bool, default False
         Divide exposures by population before fitting channel statistics.
-        Requires population and affects exposures only.
+        Requires population.
 
     Returns
     -------
     DataScaling
         Fitted transformations by input role with their training labels.
 
+    See Also
+    --------
+    Scaling : Store an offset and scale for one input role.
+    DataScaling : Store training transformations with their labels.
+    Data : Declare model data and its fixed preprocessing.
+
+    Notes
+    -----
+    Statistics pool periods and groups per feature. Exposure statistics include
+    the media history, and the others use only the modeling periods.
+
+    New data may omit population. Any population it supplies must match the
+    training population when it also holds population-adjusted inputs. See
+    :doc:`/user_guide/data` for mixing fitted statistics with scalings you
+    build yourself.
+
     Examples
     --------
-    Prepare impressions, costs, and a control from a dataframe.
+    Fit the scaling once on the training data. A later week with no observed
+    outcome is scaled with the same statistics.
 
     .. ipython::
 
@@ -305,30 +320,15 @@ def fit_data_scaling(
            ...:     "week": [1, 2, 3],
            ...:     "sales": [100, 120, 140],
            ...:     "impressions": [0, 1_000, 3_000],
-           ...:     "cost": [0.0, 20.0, 60.0],
            ...:     "temperature": [10.0, 12.0, 14.0],
            ...: })
-
-        In [3]: data = prepare_data(
+           ...: data = prepare_data(
            ...:     frame, time="week", outcome="sales",
-           ...:     media=["impressions"], spend=["cost"],
-           ...:     controls=["temperature"],
+           ...:     media=["impressions"], controls=["temperature"],
            ...: )
+           ...: scaling = fit_data_scaling(data)
 
-    Fit the scaling once on the training data. Each role gets the
-    transformation suited to it.
-
-    .. ipython::
-
-        In [4]: scaling = fit_data_scaling(data)
-           ...: scaled = scaling.transform(data)
-
-    A later week with no observed outcome is scaled with the same fitted
-    statistics.
-
-    .. ipython::
-
-        In [5]: future = prepare_data(
+        In [3]: future = prepare_data(
            ...:     pl.DataFrame({"week": [4], "impressions": [4_000]}),
            ...:     time="week", media=["impressions"],
            ...: )

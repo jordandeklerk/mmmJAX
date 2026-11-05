@@ -42,9 +42,6 @@ def plot_budget_response(
     change in total response with its credible interval and the share of draws
     in which the plan gains.
 
-    With many channels the figure widens so each bar keeps its width, and a
-    notebook shows it at full size in a box that scrolls sideways.
-
     Parameters
     ----------
     plan : xarray.Dataset
@@ -60,6 +57,16 @@ def plot_budget_response(
     -------
     plotnine.ggplot
         Waterfall from the reference to the optimized incremental response.
+
+    See Also
+    --------
+    optimize_budget : Allocate a fixed budget across channels.
+    plot_budget_spend : Plot the plan's change in spending by channel.
+
+    Notes
+    -----
+    With many channels the figure widens so each bar keeps its width, and a
+    notebook shows it at full size in a box that scrolls sideways.
     """
     _plan_spend(plan)
     if "incremental_response" not in plan.data_vars:
@@ -114,9 +121,6 @@ def plot_budget_spend(plan: xr.Dataset, *, channels: Sequence[str] | None = None
     labeled with the change. Cuts come first in pale red with diagonal lines
     and increases after in light green, each from largest to smallest.
 
-    With many channels the figure widens so each bar keeps its width, and a
-    notebook shows it at full size in a box that scrolls sideways.
-
     Parameters
     ----------
     plan : xarray.Dataset
@@ -128,6 +132,16 @@ def plot_budget_spend(plan: xr.Dataset, *, channels: Sequence[str] | None = None
     -------
     plotnine.ggplot
         Changes in spending by channel.
+
+    See Also
+    --------
+    optimize_budget : Allocate a fixed budget across channels.
+    plot_budget_response : Plot the plan's change in response by channel.
+
+    Notes
+    -----
+    With many channels the figure widens so each bar keeps its width, and a
+    notebook shows it at full size in a box that scrolls sideways.
     """
     spend = _plan_spend(plan)
     changes = (spend.sel(allocation="optimized") - spend.sel(allocation="reference")).to_series()

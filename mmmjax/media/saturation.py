@@ -16,51 +16,54 @@ def hill_saturation(
 ) -> jax.Array:
     r"""Apply a Hill response curve to nonnegative media inputs.
 
-    For exposure :math:`x \geq 0`, half-saturation point :math:`k > 0`,
-    and slope :math:`s > 0`, the response is
+    For exposure :math:`x \geq 0`, half-saturation point :math:`k > 0`, and
+    slope :math:`s > 0`, the response is
 
     .. math::
 
         h(x; k, s) = \frac{x^s}{x^s + k^s}.
 
     Zero exposure gives zero response, exposure equal to ``half_saturation``
-    gives one half, and the curve approaches one as exposure increases.
-    Slopes at most one give a concave curve, and slopes below one make its
-    exposure gradient infinite at zero. Larger slopes give an S-shaped curve
-    with an initial period of increasing marginal response.
+    gives one half, and the curve approaches one as exposure increases. Slopes
+    at most one give a concave curve and larger slopes an S-shaped one.
 
-    The function acts elementwise and does not mix periods, groups, or
-    channels. Its inputs must broadcast together, so a scalar parameter is
-    shared across every input and an array such as ``(channel,)`` or
-    ``(group, channel)`` gives separate curves. Use ``jax.vmap`` to evaluate
-    additional parameter draws.
-
-    Multiply the response by a separate model coefficient to express its
-    contribution in outcome units.
+    The function acts elementwise, so a scalar parameter is shared across every
+    input and an array such as ``(channel,)`` or ``(group, channel)`` gives
+    separate curves. Use ``jax.vmap`` to evaluate additional parameter draws.
 
     Parameters
     ----------
     media : array_like
-        Finite, nonnegative exposures, either raw or transformed. Scalars
-        and arrays are accepted. For grouped data, use the prepared layout
-        ``(time, group, channel)``.
+        Finite, nonnegative exposures, either raw or transformed.
     half_saturation : array_like
-        Positive, finite exposure at which the response is one half.
-        Use the same units as ``media``, including any scaling applied
-        beforehand.
+        Positive, finite exposure at which the response is one half, in the
+        units of ``media``.
     slope : array_like
         Positive, finite parameter controlling the curve's shape.
 
     Returns
     -------
     jax.Array
-        Responses between zero and one with the broadcast shape of the
-        inputs. Floating dtype is at least float32. Invalid numeric inputs
-        give ``nan`` at the affected positions.
+        Responses between zero and one with the broadcast shape of the inputs.
+        Floating dtype is at least float32. Invalid numeric inputs give ``nan``
+        at the affected positions.
+
+    See Also
+    --------
+    logistic_saturation : Apply a logistic response curve.
+    root_saturation : Apply a root response curve.
+    log_saturation : Apply a logarithmic response curve.
+    media_response : Apply carryover and saturation together.
+
+    Notes
+    -----
+    Slopes below one make the exposure gradient infinite at zero.
 
     Examples
     --------
-    Start with weekly impressions for two channels.
+    Give each channel its own half-saturation point and slope, in the order of
+    the selected columns. Each response reaches one half at its channel's
+    half-saturation point.
 
     .. ipython::
 
@@ -74,20 +77,11 @@ def hill_saturation(
            ...:     "video": [1_000.0, 2_000.0, 4_000.0],
            ...: })
 
-    Give each channel its own half-saturation point and slope, in the same
-    order as the selected columns.
-
-    .. ipython::
-
         In [3]: response = hill_saturation(
            ...:     frame.select("search", "video").to_numpy(),
            ...:     half_saturation=np.array([1_000.0, 2_000.0]),
            ...:     slope=np.array([1.0, 2.0]),
            ...: )
-
-    Each response reaches one half at its channel's half-saturation point.
-
-    .. ipython::
 
         In [4]: frame.with_columns(
            ...:     pl.Series("search_response", np.asarray(response[:, 0])),
@@ -121,8 +115,8 @@ def hill_saturation(
 def logistic_saturation(media: ArrayLike, half_saturation: ArrayLike) -> jax.Array:
     r"""Apply a logistic response curve to nonnegative media inputs.
 
-    For exposure :math:`x \geq 0` and half-saturation point :math:`k > 0`,
-    the response is
+    For exposure :math:`x \geq 0` and half-saturation point :math:`k > 0`, the
+    response is
 
     .. math::
 
@@ -131,39 +125,39 @@ def logistic_saturation(media: ArrayLike, half_saturation: ArrayLike) -> jax.Arr
 
     Zero exposure gives zero response, exposure equal to ``half_saturation``
     gives one half, and the curve approaches one as exposure increases.
-    Marginal response decreases with increasing exposure. The
-    half-saturation point has the same meaning as in :func:`hill_saturation`.
+    Marginal response decreases with increasing exposure.
 
-    The function acts elementwise and does not mix periods, groups, or
-    channels. Its inputs must broadcast together, so a scalar
-    ``half_saturation`` is shared across every input and an array such as
-    ``(channel,)`` or ``(group, channel)`` gives separate curves. Use
-    ``jax.vmap`` to evaluate additional parameter draws.
-
-    Multiply the response by a separate model coefficient to express its
-    contribution in outcome units.
+    The function acts elementwise, so a scalar ``half_saturation`` is shared
+    across every input and an array such as ``(channel,)`` or
+    ``(group, channel)`` gives separate curves. Use ``jax.vmap`` to evaluate
+    additional parameter draws.
 
     Parameters
     ----------
     media : array_like
-        Finite, nonnegative exposures, either raw or transformed. Scalars
-        and arrays are accepted. For grouped data, use the prepared layout
-        ``(time, group, channel)``.
+        Finite, nonnegative exposures, either raw or transformed.
     half_saturation : array_like
-        Positive, finite exposure at which the response is one half.
-        Use the same units as ``media``, including any scaling applied
-        beforehand.
+        Positive, finite exposure at which the response is one half, in the
+        units of ``media``.
 
     Returns
     -------
     jax.Array
-        Responses between zero and one with the broadcast shape of the
-        inputs. Floating dtype is at least float32. Invalid numeric inputs
-        give ``nan`` at the affected positions.
+        Responses between zero and one with the broadcast shape of the inputs.
+        Floating dtype is at least float32. Invalid numeric inputs give ``nan``
+        at the affected positions.
+
+    See Also
+    --------
+    hill_saturation : Apply a Hill response curve.
+    root_saturation : Apply a root response curve.
+    log_saturation : Apply a logarithmic response curve.
+    media_response : Apply carryover and saturation together.
 
     Examples
     --------
-    Start with weekly impressions for two channels.
+    Give each channel its own half-saturation point, in the order of the
+    selected columns.
 
     .. ipython::
 
@@ -177,19 +171,10 @@ def logistic_saturation(media: ArrayLike, half_saturation: ArrayLike) -> jax.Arr
            ...:     "video": [1_000.0, 2_000.0, 4_000.0],
            ...: })
 
-    Give each channel its own half-saturation point, in the same order as
-    the selected columns.
-
-    .. ipython::
-
         In [3]: response = logistic_saturation(
            ...:     frame.select("search", "video").to_numpy(),
            ...:     half_saturation=np.array([1_000.0, 2_000.0]),
            ...: )
-
-    The responses sit beside the impressions that produced them.
-
-    .. ipython::
 
         In [4]: frame.with_columns(
            ...:     pl.Series("search_response", np.asarray(response[:, 0])),
@@ -210,46 +195,48 @@ def logistic_saturation(media: ArrayLike, half_saturation: ArrayLike) -> jax.Arr
 def root_saturation(media: ArrayLike, exponent: ArrayLike) -> jax.Array:
     r"""Apply a root response curve to nonnegative media inputs.
 
-    For exposure :math:`x \geq 0` and exponent :math:`0 < a \leq 1`,
-    the response is
+    For exposure :math:`x \geq 0` and exponent :math:`0 < a \leq 1`, the
+    response is
 
     .. math::
 
         f(x; a) = x^a.
 
-    An exponent of one half gives a square-root response. Smaller
-    exponents give stronger diminishing returns. An exponent of one leaves
-    the input values unchanged. Unlike Hill and logistic curves, root curves
-    have no fixed upper limit and their responses can exceed one.
+    An exponent of one half gives a square-root response, smaller exponents
+    give stronger diminishing returns, and an exponent of one leaves the input
+    unchanged. Unlike Hill and logistic curves, root curves have no fixed upper
+    limit and their responses can exceed one.
 
-    The function acts elementwise and does not mix periods, groups, or
-    channels. Its inputs must broadcast together, so a scalar ``exponent``
-    is shared across every input and an array such as ``(channel,)`` or
-    ``(group, channel)`` gives separate curves. Use ``jax.vmap`` to evaluate
-    additional parameter draws.
-
-    Input scaling remains a separate step. Multiply the response by a
-    separate model coefficient to express its contribution in outcome units.
+    The function acts elementwise, so a scalar ``exponent`` is shared across
+    every input and an array such as ``(channel,)`` or ``(group, channel)``
+    gives separate curves. Use ``jax.vmap`` to evaluate additional parameter
+    draws.
 
     Parameters
     ----------
     media : array_like
-        Finite, nonnegative exposures, either raw or transformed. Scalars
-        and arrays are accepted. For grouped data, use the prepared layout
-        ``(time, group, channel)``.
+        Finite, nonnegative exposures, either raw or transformed.
     exponent : array_like
         Finite exponent greater than zero and at most one.
 
     Returns
     -------
     jax.Array
-        Nonnegative responses with the broadcast shape of the inputs.
-        Floating dtype is at least float32. Invalid numeric inputs give
-        ``nan`` at the affected positions.
+        Nonnegative responses with the broadcast shape of the inputs. Floating
+        dtype is at least float32. Invalid numeric inputs give ``nan`` at the
+        affected positions.
+
+    See Also
+    --------
+    hill_saturation : Apply a Hill response curve.
+    logistic_saturation : Apply a logistic response curve.
+    log_saturation : Apply a logarithmic response curve.
+    media_response : Apply carryover and saturation together.
 
     Examples
     --------
-    Start with three weeks of video impressions.
+    An exponent of one half gives a square-root response, so quadrupling the
+    impressions doubles the effect.
 
     .. ipython::
 
@@ -262,14 +249,7 @@ def root_saturation(media: ArrayLike, exponent: ArrayLike) -> jax.Array:
            ...:     "video": [0.0, 100.0, 400.0],
            ...: })
 
-    An exponent of one half gives a square-root response, so quadrupling the
-    impressions doubles the effect.
-
-    .. ipython::
-
-        In [3]: response = root_saturation(
-           ...:     frame["video"].to_numpy(), exponent=0.5,
-           ...: )
+        In [3]: response = root_saturation(frame["video"].to_numpy(), exponent=0.5)
 
         In [4]: frame.with_columns(
            ...:     pl.Series("video_response", np.asarray(response)),
@@ -304,32 +284,35 @@ def log_saturation(media: ArrayLike) -> jax.Array:
 
         f(x) = \log(1 + x).
 
-    Zero exposure gives zero response. The response increases with
-    diminishing marginal returns but has no fixed upper limit. Unlike
-    Hill and logistic curves, its values can exceed one.
-
-    Rescaling the inputs changes the response, so choose the input units
-    before applying this function. Multiply the response by a separate model
-    coefficient to express its contribution in outcome units.
+    Zero exposure gives zero response, and the response increases with
+    diminishing marginal returns. Unlike Hill and logistic curves, it has no
+    fixed upper limit and its values can exceed one. Rescaling the inputs
+    changes the response, so choose the input units before applying this
+    function.
 
     Parameters
     ----------
     media : array_like
-        Finite, nonnegative exposures, either raw or transformed. Scalars
-        and arrays are accepted. For grouped data, use the prepared layout
-        ``(time, group, channel)``.
+        Finite, nonnegative exposures, either raw or transformed.
 
     Returns
     -------
     jax.Array
-        Nonnegative responses with the same shape as ``media``. Floating
-        dtype is at least float32. Invalid numeric inputs give ``nan`` at the
+        Nonnegative responses with the same shape as ``media``. Floating dtype
+        is at least float32. Invalid numeric inputs give ``nan`` at the
         affected positions.
+
+    See Also
+    --------
+    hill_saturation : Apply a Hill response curve.
+    logistic_saturation : Apply a logistic response curve.
+    root_saturation : Apply a root response curve.
+    media_response : Apply carryover and saturation together.
 
     Examples
     --------
-    Start with three weeks of video impressions, including a week with no
-    exposure.
+    The logarithmic response is zero where there was no exposure and grows
+    slowly at high impression counts.
 
     .. ipython::
 
@@ -341,11 +324,6 @@ def log_saturation(media: ArrayLike) -> jax.Array:
            ...:     "week": [1, 2, 3],
            ...:     "video": [0.0, 100.0, 400.0],
            ...: })
-
-    The logarithmic response is zero where there was no exposure and grows
-    slowly at high impression counts.
-
-    .. ipython::
 
         In [3]: response = log_saturation(frame["video"].to_numpy())
 

@@ -17,8 +17,8 @@ def geometric_adstock(
 ) -> jax.Array:
     r"""Apply finite geometric carryover along a time axis.
 
-    For a series :math:`x_t`, retention :math:`0 \leq \alpha \leq 1`,
-    and maximum lag :math:`L`, the transformed series is
+    For a series :math:`x_t`, retention :math:`0 \leq \alpha \leq 1`, and
+    maximum lag :math:`L`, the transformed series is
 
     .. math::
 
@@ -29,32 +29,23 @@ def geometric_adstock(
             1 & \text{otherwise}.
         \end{cases}
 
-    The lag-zero weight is one, including when :math:`\alpha = 0`, so zero
-    retention leaves the input values unchanged. A retention of one gives
-    every lag in the window the same weight.
-
-    Media before the supplied series is assumed to be zero. When
-    normalization is enabled, weights are normalized over the full lag
-    window, even for short series.
-
-    For ``(time, group, channel)`` inputs, channel-level retention has shape
-    ``(channel,)`` and group-channel retention has shape
-    ``(group, channel)``. Use ``jax.vmap`` to evaluate additional parameter
-    draws.
+    The lag-zero weight is one even when :math:`\alpha = 0`, so zero retention
+    leaves the input unchanged. Media before the supplied series is assumed to
+    be zero, and normalization uses the full lag window even for short series.
+    Use ``jax.vmap`` to evaluate additional parameter draws.
 
     Parameters
     ----------
     media : array_like
-        Real-valued array with at least one dimension. Observations along
-        ``axis`` must represent equally spaced periods. Other axes identify
-        independent series, such as channels and groups.
+        Real-valued array with equally spaced periods along ``axis``. Other
+        axes identify independent series, such as channels and groups.
     alpha : array_like
-        Finite retention parameter between zero and one, inclusive. Its
-        shape must broadcast to the non-time shape of ``media``.
+        Finite retention between zero and one, inclusive. Its shape must
+        broadcast to the non-time shape of ``media``, such as ``(channel,)`` or
+        ``(group, channel)``.
     max_lag : int
-        Nonnegative number of previous periods to include. The window has
-        ``max_lag + 1`` weights, including the current period. Keep this
-        argument static when using ``jax.jit``.
+        Nonnegative number of previous periods to include. Keep this argument
+        static when using ``jax.jit``.
     axis : int, default 0
         Time axis in ``media``. Keep this argument static when using
         ``jax.jit``.
@@ -65,14 +56,22 @@ def geometric_adstock(
     Returns
     -------
     jax.Array
-        Transformed values with the same shape as ``media``. Floating dtype
-        is at least float32. Invalid retention parameters give ``nan`` for
-        their series.
+        Transformed values with the same shape as ``media``. Floating dtype is
+        at least float32. Invalid retention parameters give ``nan`` for their
+        series.
+
+    See Also
+    --------
+    delayed_adstock : Apply carryover with a delayed peak.
+    weibull_pdf_adstock : Apply carryover with Weibull density weights.
+    weibull_cdf_adstock : Apply carryover with Weibull survival weights.
+    media_response : Apply carryover and saturation together.
 
     Examples
     --------
-    Start with weekly spending for two channels, one row per week in time
-    order.
+    Give each channel its own retention rate, in the order of the selected
+    columns. The transformed columns show the carryover into weeks with no
+    spending.
 
     .. ipython::
 
@@ -86,23 +85,10 @@ def geometric_adstock(
            ...:     "social": [60.0, 0.0, 40.0, 80.0],
            ...: })
 
-    Give each channel its own retention rate, in the same order as the
-    selected columns. Search keeps half of its effect from one week to the
-    next and social keeps less.
-
-    .. ipython::
-
-        In [3]: media = spend.select("search", "social").to_numpy()
-           ...: carried = geometric_adstock(
-           ...:     media,
-           ...:     alpha=np.array([0.5, 0.3]),
-           ...:     max_lag=2,
+        In [3]: carried = geometric_adstock(
+           ...:     spend.select("search", "social").to_numpy(),
+           ...:     alpha=np.array([0.5, 0.3]), max_lag=2,
            ...: )
-
-    The transformed columns sit beside the originals, so the carryover into
-    weeks with no spending is easy to see.
-
-    .. ipython::
 
         In [4]: spend.with_columns(
            ...:     pl.Series("search_adstock", np.asarray(carried[:, 0])),
@@ -140,9 +126,9 @@ def delayed_adstock(
 ) -> jax.Array:
     r"""Apply finite carryover with a delayed peak along a time axis.
 
-    For a series :math:`x_t`, retention :math:`0 < \alpha \leq 1`,
-    peak delay :math:`0 \leq \theta \leq L`, and maximum lag :math:`L`,
-    the transformed series is
+    For a series :math:`x_t`, retention :math:`0 < \alpha \leq 1`, peak delay
+    :math:`0 \leq \theta \leq L`, and maximum lag :math:`L`, the transformed
+    series is
 
     .. math::
 
@@ -154,38 +140,29 @@ def delayed_adstock(
             1 & \text{otherwise}.
         \end{cases}
 
-    The delay can be fractional. For :math:`\alpha < 1`, the sampled
-    weights are largest at the lag or lags nearest :math:`\theta`, and
-    :math:`\alpha = 1` gives equal weights throughout the window.
-    Unlike geometric adstock, setting :math:`\theta = 0` gives weights
-    :math:`\alpha^{\ell^2}`, not :math:`\alpha^\ell`.
+    The delay can be fractional. Unlike geometric adstock, setting
+    :math:`\theta = 0` gives weights :math:`\alpha^{\ell^2}`, not
+    :math:`\alpha^\ell`.
 
-    Media before the supplied series is assumed to be zero. When
-    normalization is enabled, weights are normalized over the full lag
-    window, even for short series.
-
-    For ``(time, group, channel)`` inputs, each parameter can have shape
-    ``(channel,)``, ``(group, 1)``, or ``(group, channel)`` independently
-    of the other. Use ``jax.vmap`` to evaluate additional parameter draws.
+    Media before the supplied series is assumed to be zero, and normalization
+    uses the full lag window even for short series. For
+    ``(time, group, channel)`` inputs, each parameter can have shape
+    ``(channel,)``, ``(group, 1)``, or ``(group, channel)`` independently of
+    the other. Use ``jax.vmap`` to evaluate additional parameter draws.
 
     Parameters
     ----------
     media : array_like
-        Real-valued array with at least one dimension. Observations along
-        ``axis`` must represent equally spaced periods. Other axes identify
-        independent series, such as channels and groups.
+        Real-valued array with equally spaced periods along ``axis``. Other
+        axes identify independent series, such as channels and groups.
     alpha : array_like
-        Finite retention parameter greater than zero and at most one.
-        Smaller values concentrate the effect around ``theta``. Its shape
-        must broadcast to the non-time shape of ``media``.
+        Finite retention greater than zero and at most one. Smaller values
+        concentrate the effect around ``theta``.
     theta : array_like
-        Finite peak delay between zero and ``max_lag``, inclusive, measured
-        in periods. Its shape must broadcast to the non-time shape of
-        ``media``.
+        Finite peak delay in periods, between zero and ``max_lag``, inclusive.
     max_lag : int
-        Nonnegative number of previous periods to include. The window has
-        ``max_lag + 1`` weights, including the current period. Keep this
-        argument static when using ``jax.jit``.
+        Nonnegative number of previous periods to include. Keep this argument
+        static when using ``jax.jit``.
     axis : int, default 0
         Time axis in ``media``. Keep this argument static when using
         ``jax.jit``.
@@ -196,14 +173,21 @@ def delayed_adstock(
     Returns
     -------
     jax.Array
-        Transformed values with the same shape as ``media``. Floating dtype
-        is at least float32. Invalid retention or delay parameters give
-        ``nan`` for their series.
+        Transformed values with the same shape as ``media``. Floating dtype is
+        at least float32. Invalid retention or delay parameters give ``nan``
+        for their series.
+
+    See Also
+    --------
+    geometric_adstock : Apply finite geometric carryover.
+    weibull_pdf_adstock : Apply carryover with Weibull density weights.
+    weibull_cdf_adstock : Apply carryover with Weibull survival weights.
+    media_response : Apply carryover and saturation together.
 
     Examples
     --------
-    Suppose a video campaign runs in the first of four consecutive weeks and
-    nothing is spent afterwards.
+    A video campaign runs in the first of four weeks. With a two-week delay and
+    a retention of one half, the transformed column peaks in week three.
 
     .. ipython::
 
@@ -216,22 +200,9 @@ def delayed_adstock(
            ...:     "video": [100.0, 0.0, 0.0, 0.0],
            ...: })
 
-    Let the effect build for two weeks before it peaks. It then fades with a
-    retention of one half.
-
-    .. ipython::
-
         In [3]: carried = delayed_adstock(
-           ...:     spend["video"].to_numpy(),
-           ...:     alpha=0.5,
-           ...:     theta=2.0,
-           ...:     max_lag=3,
+           ...:     spend["video"].to_numpy(), alpha=0.5, theta=2.0, max_lag=3,
            ...: )
-
-    Placed next to the original spending, the transformed column shows the
-    delayed peak in week three.
-
-    .. ipython::
 
         In [4]: spend.with_columns(
            ...:     pl.Series("video_adstock", np.asarray(carried)),
@@ -272,8 +243,8 @@ def weibull_pdf_adstock(
     r"""Apply finite carryover using rescaled Weibull density weights.
 
     For shape :math:`k > 0`, scale :math:`\lambda > 0`, and lags
-    :math:`\ell = 0, \ldots, L`, sample the Weibull density at
-    :math:`\ell + 1` and rescale it over the full lag window,
+    :math:`\ell = 0, \ldots, L`, the weights rescale the Weibull density
+    sampled at :math:`\ell + 1` over the full lag window,
 
     .. math::
 
@@ -284,54 +255,28 @@ def weibull_pdf_adstock(
         w_\ell = \frac{q_\ell - \min_j q_j}{\max_j q_j - \min_j q_j}.
 
     The transformed series is
+    :math:`a_t = \sum_{\ell=0}^{L} w_\ell x_{t-\ell} / Z`, where :math:`Z` is
+    the sum of the weights if normalized and one otherwise.
 
-    .. math::
-
-        a_t = \frac{\sum_{\ell=0}^{L} w_\ell x_{t-\ell}}{Z},
-        \qquad
-        Z = \begin{cases}
-            \sum_{\ell=0}^{L} w_\ell & \text{if normalized}, \\
-            1 & \text{otherwise}.
-        \end{cases}
-
-    Sampling starts at one to avoid a singular density at zero for shapes
-    below one. The min/max rescaling is applied even with
-    ``normalize=False``, so the weights are not raw density values. The
-    rescaling is piecewise differentiable and can have kinks where the
-    sampled minimum or maximum changes.
-
-    Rescaling works from differences of log densities, so it stays accurate
-    when the scale far exceeds ``max_lag``. At shape one the rescaled weights
-    then approach a linear decline from one to zero. A scale within a small
-    factor of the largest finite float loses those differences, so its
-    weights are unreliable.
-
-    Media before the supplied series is assumed to be zero. When
-    normalization is enabled, weights are normalized over the full lag
-    window, even for short series. Setting ``max_lag=0`` retains only the
-    current period.
-
-    For ``(time, group, channel)`` inputs, each parameter can have shape
-    ``(channel,)``, ``(group, 1)``, or ``(group, channel)`` independently
-    of the other. Use ``jax.vmap`` to evaluate additional parameter draws.
+    Media before the supplied series is assumed to be zero, and normalization
+    uses the full lag window even for short series. For
+    ``(time, group, channel)`` inputs, each parameter can have shape
+    ``(channel,)``, ``(group, 1)``, or ``(group, channel)`` independently of
+    the other. Use ``jax.vmap`` to evaluate additional parameter draws.
 
     Parameters
     ----------
     media : array_like
-        Real-valued array with at least one dimension. Observations along
-        ``axis`` must represent equally spaced periods. Other axes identify
-        independent series, such as channels and groups.
+        Real-valued array with equally spaced periods along ``axis``. Other
+        axes identify independent series, such as channels and groups.
     shape : array_like
         Finite positive Weibull shape. Shapes at most one give decreasing
-        density weights, and larger shapes can give a delayed peak. Its shape
-        must broadcast to the non-time shape of ``media``.
+        density weights, and larger shapes can give a delayed peak.
     scale : array_like
-        Finite positive Weibull scale, measured in periods. Its shape must
-        broadcast to the non-time shape of ``media``.
+        Finite positive Weibull scale, measured in periods.
     max_lag : int
-        Nonnegative number of previous periods to include. The window has
-        ``max_lag + 1`` weights, including the current period. Keep this
-        argument static when using ``jax.jit``.
+        Nonnegative number of previous periods to include. Zero retains only
+        the current period. Keep this argument static when using ``jax.jit``.
     axis : int, default 0
         Time axis in ``media``. Keep this argument static when using
         ``jax.jit``.
@@ -342,14 +287,32 @@ def weibull_pdf_adstock(
     Returns
     -------
     jax.Array
-        Transformed values with the same shape as ``media``. Floating dtype
-        is at least float32. Invalid shape or scale parameters give ``nan``
-        for their series.
+        Transformed values with the same shape as ``media``. Floating dtype is
+        at least float32. Invalid shape or scale parameters give ``nan`` for
+        their series.
+
+    See Also
+    --------
+    weibull_cdf_adstock : Apply carryover with Weibull survival weights.
+    geometric_adstock : Apply finite geometric carryover.
+    delayed_adstock : Apply carryover with a delayed peak.
+    media_response : Apply carryover and saturation together.
+
+    Notes
+    -----
+    Sampling starts at one to avoid a singular density at zero for shapes below
+    one. The rescaling applies even with ``normalize=False``, so the weights
+    are not raw density values. It is piecewise differentiable and can have
+    kinks where the sampled minimum or maximum changes.
+
+    Rescaling works from differences of log densities, so it stays accurate
+    when the scale far exceeds ``max_lag``. At shape one the rescaled weights
+    then approach a linear decline from one to zero.
 
     Examples
     --------
-    Start with four consecutive weeks of video spending, including a week
-    with none.
+    Weight the carryover with a Weibull density so the effect rises after
+    exposure and then tails off.
 
     .. ipython::
 
@@ -362,21 +325,9 @@ def weibull_pdf_adstock(
            ...:     "video": [100.0, 0.0, 80.0, 40.0],
            ...: })
 
-    Weight the carryover with a Weibull density, so the effect rises after
-    exposure and then tails off.
-
-    .. ipython::
-
         In [3]: carried = weibull_pdf_adstock(
-           ...:     spend["video"].to_numpy(),
-           ...:     shape=2.0,
-           ...:     scale=3.0,
-           ...:     max_lag=3,
+           ...:     spend["video"].to_numpy(), shape=2.0, scale=3.0, max_lag=3,
            ...: )
-
-    Keep the original spending beside the transformed values for comparison.
-
-    .. ipython::
 
         In [4]: spend.with_columns(
            ...:     pl.Series("video_adstock", np.asarray(carried)),
@@ -430,7 +381,8 @@ def weibull_cdf_adstock(
     r"""Apply finite carryover using cumulative Weibull survival weights.
 
     For the Weibull CDF :math:`F`, shape :math:`k > 0`, scale
-    :math:`\lambda > 0`, and maximum lag :math:`L`, define
+    :math:`\lambda > 0`, and maximum lag :math:`L`, the weights are cumulative
+    products of survival probabilities,
 
     .. math::
 
@@ -441,46 +393,30 @@ def weibull_cdf_adstock(
         \qquad \ell = 1, \ldots, L.
 
     The transformed series is
+    :math:`a_t = \sum_{\ell=0}^{L} w_\ell x_{t-\ell} / Z`, where :math:`Z` is
+    the sum of the weights if normalized and one otherwise. The largest weight
+    is at lag zero.
 
-    .. math::
-
-        a_t = \frac{\sum_{\ell=0}^{L} w_\ell x_{t-\ell}}{Z},
-        \qquad
-        Z = \begin{cases}
-            \sum_{\ell=0}^{L} w_\ell & \text{if normalized}, \\
-            1 & \text{otherwise}.
-        \end{cases}
-
-    The largest weight is at lag zero. These weights are cumulative products
-    of survival probabilities, not individual CDF or survival values.
-    Setting ``max_lag=0`` retains only the current period.
-
-    Media before the supplied series is assumed to be zero. When
-    normalization is enabled, weights are normalized over the full lag
-    window, even for short series.
-
-    For ``(time, group, channel)`` inputs, each parameter can have shape
-    ``(channel,)``, ``(group, 1)``, or ``(group, channel)`` independently
-    of the other. Use ``jax.vmap`` to evaluate additional parameter draws.
+    Media before the supplied series is assumed to be zero, and normalization
+    uses the full lag window even for short series. For
+    ``(time, group, channel)`` inputs, each parameter can have shape
+    ``(channel,)``, ``(group, 1)``, or ``(group, channel)`` independently of
+    the other. Use ``jax.vmap`` to evaluate additional parameter draws.
 
     Parameters
     ----------
     media : array_like
-        Real-valued array with at least one dimension. Observations along
-        ``axis`` must represent equally spaced periods. Other axes identify
-        independent series, such as channels and groups.
+        Real-valued array with equally spaced periods along ``axis``. Other
+        axes identify independent series, such as channels and groups.
     shape : array_like
         Finite positive Weibull shape that controls how retention changes
-        across lags. Its shape must broadcast to the non-time shape of
-        ``media``.
+        across lags.
     scale : array_like
         Finite positive Weibull scale, measured in periods. Larger values
-        retain more of earlier inputs. Its shape must broadcast to the
-        non-time shape of ``media``.
+        retain more of earlier inputs.
     max_lag : int
-        Nonnegative number of previous periods to include. The window has
-        ``max_lag + 1`` weights, including the current period. Keep this
-        argument static when using ``jax.jit``.
+        Nonnegative number of previous periods to include. Zero retains only
+        the current period. Keep this argument static when using ``jax.jit``.
     axis : int, default 0
         Time axis in ``media``. Keep this argument static when using
         ``jax.jit``.
@@ -491,14 +427,21 @@ def weibull_cdf_adstock(
     Returns
     -------
     jax.Array
-        Transformed values with the same shape as ``media``. Floating dtype
-        is at least float32. Invalid shape or scale parameters give ``nan``
-        for their series.
+        Transformed values with the same shape as ``media``. Floating dtype is
+        at least float32. Invalid shape or scale parameters give ``nan`` for
+        their series.
+
+    See Also
+    --------
+    weibull_pdf_adstock : Apply carryover with Weibull density weights.
+    geometric_adstock : Apply finite geometric carryover.
+    delayed_adstock : Apply carryover with a delayed peak.
+    media_response : Apply carryover and saturation together.
 
     Examples
     --------
-    Start with four consecutive weeks of video spending, including a week
-    with none.
+    Weight the carryover with a Weibull survival curve so the effect is
+    strongest at exposure and decreases from there.
 
     .. ipython::
 
@@ -511,21 +454,9 @@ def weibull_cdf_adstock(
            ...:     "video": [100.0, 0.0, 80.0, 40.0],
            ...: })
 
-    Weight the carryover with a Weibull survival curve, so the effect is
-    strongest at exposure and decreases from there.
-
-    .. ipython::
-
         In [3]: carried = weibull_cdf_adstock(
-           ...:     spend["video"].to_numpy(),
-           ...:     shape=2.0,
-           ...:     scale=3.0,
-           ...:     max_lag=3,
+           ...:     spend["video"].to_numpy(), shape=2.0, scale=3.0, max_lag=3,
            ...: )
-
-    Keep the original spending beside the transformed values for comparison.
-
-    .. ipython::
 
         In [4]: spend.with_columns(
            ...:     pl.Series("video_adstock", np.asarray(carried)),

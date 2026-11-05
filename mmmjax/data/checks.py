@@ -31,10 +31,6 @@ def check_prior(
     geography, or channel gets its own probabilities. To check a total
     instead, sum within each draw before the call.
 
-    Only finite draws count toward the probabilities, and
-    ``nonfinite_fraction`` reports the fraction left out. Where no draw is
-    finite, the probabilities are NaN.
-
     Parameters
     ----------
     draws : xarray.DataArray
@@ -55,6 +51,17 @@ def check_prior(
           each supplied limit
         - **probability_outside** — Probability outside either limit
         - **lower**, **upper** — Supplied limits aligned to the draws
+
+    See Also
+    --------
+    check_data : Inspect marketing inputs for measurement issues.
+    sample_prior : Draw priors and their implied outcomes before fitting.
+
+    Notes
+    -----
+    Only finite draws count toward the probabilities, and
+    ``nonfinite_fraction`` reports the fraction left out. Where no draw is
+    finite, the probabilities are NaN.
     """
     if not isinstance(draws, xr.DataArray):
         raise TypeError("draws must be an xarray.DataArray selected from prior results")
@@ -156,30 +163,10 @@ def check_data(
 ) -> xr.DataTree:
     """Inspect marketing inputs for measurement issues and overlapping signals.
 
-    Every check reads the raw modeling periods and leaves the data unchanged.
-    Earlier media history appears only in the coverage, and correlations
-    describe the raw inputs rather than their adstock or saturation
-    transforms. A flag marks a pattern to review, not an invalid input or
-    proof of causal identification.
-
-    Series statistics and cost checks run over time within each feature and
-    group. An outlier lies more than 1.5 interquartile ranges beyond the
-    quartiles. Cost per exposure divides spending by reach times frequency for
-    reach and frequency channels, and it is NaN in a period without exposure.
-
-    Pairs and predictors leave out the outcome and spending. Correlations pool
-    every period and group, a constant input gives NaN, and with groups
-    ``within_group_correlation`` first removes each group's mean over time.
-    Between two media or reach inputs, ``activity_overlap`` is the
-    intersection over union of their active observations, and
-    ``matching_activity`` flags an identical on and off pattern that changes
-    over time. Every other pair holds a NaN overlap and -1 active observation
-    counts.
-
-    A variance inflation factor is NaN for a constant predictor and infinite
-    for a linearly dependent one. With groups, the report adds the unadjusted
-    fraction of each predictor's variation that group indicators, time
-    indicators, and both together explain.
+    Every check reads the raw modeling periods and leaves the data unchanged. A
+    flag marks a pattern to review, not an invalid input or proof of causal
+    identification. See :doc:`/user_guide/checking_data` for reading the
+    report.
 
     Parameters
     ----------
@@ -207,6 +194,34 @@ def check_data(
           cost outliers
         - **predictors** — Variance inflation factors and variation explained
           by group and time
+
+    See Also
+    --------
+    check_prior : Inspect prior probability outside a meaningful range.
+    prepare_data : Prepare a dataframe for modeling.
+
+    Notes
+    -----
+    Earlier media history appears only in the coverage, and correlations
+    describe the raw inputs rather than their adstock or saturation transforms.
+
+    Series statistics and cost checks run over time within each feature and
+    group. An outlier lies more than 1.5 interquartile ranges beyond the
+    quartiles. Cost per exposure divides spending by reach times frequency for
+    reach and frequency channels, and it is NaN in a period without exposure.
+
+    Pairs and predictors leave out the outcome and spending. Correlations pool
+    every period and group, a constant input gives NaN, and with groups
+    ``within_group_correlation`` first removes each group's mean over time.
+    Between two media or reach inputs, ``activity_overlap`` is the intersection
+    over union of their active observations, and ``matching_activity`` flags an
+    identical on and off pattern that changes over time. Every other pair holds
+    a NaN overlap and -1 active observation counts.
+
+    A variance inflation factor is NaN for a constant predictor and infinite
+    for a linearly dependent one. With groups, the report adds the unadjusted
+    fraction of each predictor's variation that group indicators, time
+    indicators, and both together explain.
     """
     if not isinstance(data, PreparedData):
         raise TypeError("data must be PreparedData returned by prepare_data")

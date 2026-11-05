@@ -47,18 +47,10 @@ def response_curves(
     reference split across ``spend_periods`` and groups, and spending and
     exposures outside those periods stay fixed.
 
-    ``quantity`` is recomputed for each scenario and draw, and the fitted
-    outcome scaling restores original outcome units before anything is summed.
-    Increments are taken within draws, so the returned draws support credible
-    intervals.
-
-    Responses are summed over ``response_periods`` and groups unless ``by``
-    keeps them apart. Only supplied periods count, so carryover past the end of
-    the data needs ``new_data`` with later periods.
-
-    A nonfinite response in any scenario raises ``ValueError``. Any
-    normalization by exposures or spending inside the blocks should read the
-    training arrays from ``reference`` so that a scenario cannot zero it.
+    ``quantity`` is recomputed for each scenario and draw in original outcome
+    units. Increments are taken within draws, so the returned draws support
+    credible intervals. Responses are summed over ``response_periods`` and
+    groups unless ``by`` keeps them apart.
 
     Parameters
     ----------
@@ -69,21 +61,19 @@ def response_curves(
         Results containing the model's constrained draws in the selected group.
     quantity : str
         Key returned by ``transformed_parameters`` holding the expected outcome
-        for every observation on the scale the likelihood uses, such as
-        ``"mu"``.
+        on the scale the likelihood uses, such as ``"mu"``.
     multipliers : array_like, optional
         Distinct nonnegative spending multipliers. One retains reference
-        spending and zero removes the channel's spending during ``spend_periods``.
-        Defaults to 21 evenly spaced multipliers from 0 to 2.
+        spending and zero removes the channel's spending during
+        ``spend_periods``. Defaults to 21 evenly spaced multipliers from 0 to
+        2.
     group : {"prior", "posterior"}, default "posterior"
         Parameter draws to use. Choose ``"prior"`` with results from
         ``sample_prior`` to inspect responses implied by the priors.
-        No sampling is performed. Compare groups using separate calls.
     spend_to_media : {"proportional"} or callable, default "proportional"
-        ``"proportional"`` scales exposure with spending in each period and
-        group. A JAX-compatible callable instead maps ordinary media spending
-        to nonnegative exposures of the same shape, both in original units and
-        the model's channel order.
+        ``"proportional"`` scales exposure with spending. A JAX-compatible
+        callable instead maps media spending to nonnegative exposures of the
+        same shape, both in original units and the model's channel order.
     spend_to_rf : {"reach", "frequency"} or callable, default "reach"
         ``"reach"`` scales reach at fixed frequency and ``"frequency"`` scales
         frequency at fixed reach. A JAX-compatible callable instead maps RF
@@ -94,9 +84,9 @@ def response_curves(
         them, ordinary media first. Names must be unique, and each needs
         positive reference spending during ``spend_periods``.
     new_data : dataframe-like or PreparedData, optional
-        Reference observations using the model's columns and scaling.
-        Omit to use stored observations. Supply ``PreparedData`` with
-        ``media_history`` to include earlier exposures for new observations.
+        Reference observations using the model's columns and scaling. Omit to
+        use stored observations. Supply ``PreparedData`` with ``media_history``
+        to include earlier exposures for new observations.
     spend_periods : sequence, optional
         Time labels whose spending changes. Defaults to all supplied modeling
         periods.
@@ -105,8 +95,7 @@ def response_curves(
         periods. Include later dates to count carryover.
     by : str or sequence of str, optional
         Observation axes to keep in the responses, as ``"time"``, ``"group"``,
-        or both. Keeping ``"group"`` requires grouped data. Omit to sum over
-        both.
+        or both. Omit to sum over both.
     batch_size : int, default 64
         Maximum parameter draws evaluated together. Scenarios run sequentially.
 
@@ -126,6 +115,23 @@ def response_curves(
         - **spend_period**, **response_period** — Selected dates
         - **channel_type** — Whether each channel is ordinary media or
           reach/frequency
+
+    See Also
+    --------
+    media_metrics : Calculate response and ROI metrics by channel.
+    frequency_curves : Compare advertising frequencies by channel.
+    optimize_budget : Allocate a fixed budget across channels.
+    plot_response_curves : Plot incremental response against spending.
+
+    Notes
+    -----
+    Only supplied periods count, so carryover past the end of the data needs
+    ``new_data`` with later periods.
+
+    A nonfinite response in any scenario raises ``ValueError``. Any
+    normalization inside the blocks should read the training arrays from
+    ``reference`` so that a scenario cannot zero it, as
+    :doc:`/user_guide/scenarios` explains.
     """
     # Steps of a tenth from no spending to twice the reference trace each curve past its current level.
     grid = np.linspace(0.0, 2.0, 21) if multipliers is None else np.asarray(multipliers)
@@ -210,24 +216,13 @@ def frequency_curves(
 
     Each scenario sets one RF channel to a candidate frequency during
     ``periods``. For candidate frequency :math:`f`, reach becomes
-    :math:`r' = r f_{\mathrm{reference}} / f`. Other channels, earlier
-    history, and cells without impressions stay unchanged. This assumes
-    constant cost per impression.
+    :math:`r' = r f_{\mathrm{reference}} / f`. Other channels, earlier history,
+    and cells without impressions stay unchanged. This assumes constant cost
+    per impression.
 
-    ``quantity`` is recomputed for each scenario and draw, and the fitted
-    outcome scaling restores original outcome units before anything is summed.
-    Responses are summed over ``response_periods`` and groups, and each change
-    from the reference is taken within its draw.
-
-    Each channel's best frequency is the tested value with the highest mean
-    change across draws. These choices are conditional on the other channels'
-    reference inputs, not a jointly optimized plan when channels interact. No
-    audience cap is inferred, so the frequencies tested should be feasible for
-    the audience.
-
-    A nonfinite response in any scenario raises ``ValueError``. Any
-    normalization by reach or frequency inside the blocks should read the
-    training arrays from ``reference`` so that a scenario cannot change it.
+    ``quantity`` is recomputed for each scenario and draw in original outcome
+    units. Responses are summed over ``response_periods`` and groups, and each
+    change from the reference is taken within its draw.
 
     Parameters
     ----------
@@ -237,23 +232,21 @@ def frequency_curves(
         Results containing the model's constrained draws in the selected group.
     quantity : str
         Key returned by ``transformed_parameters`` holding the expected outcome
-        for every observation on the scale the likelihood uses, such as
-        ``"mu"``.
+        on the scale the likelihood uses, such as ``"mu"``.
     frequencies : array_like
         Distinct finite positive average exposures per reached person to test.
         These are levels, not multipliers.
     group : {"prior", "posterior"}, default "posterior"
         Parameter draws to use. Choose ``"prior"`` with results from
         ``sample_prior`` to inspect responses implied by the priors.
-        No sampling is performed. Compare groups using separate calls.
     channels : sequence of str, optional
         RF channels to evaluate, in the desired order. Defaults to all of them.
         Names must be unique, and each needs positive spending and impressions
         during ``periods``.
     new_data : dataframe-like or PreparedData, optional
-        Reference observations using the model's columns and scaling.
-        Omit to use stored observations. Supply ``PreparedData`` with
-        ``media_history`` to include earlier exposures for new observations.
+        Reference observations using the model's columns and scaling. Omit to
+        use stored observations. Supply ``PreparedData`` with ``media_history``
+        to include earlier exposures for new observations.
     periods : sequence, optional
         Time labels whose frequency changes. Defaults to all supplied modeling
         periods.
@@ -275,6 +268,24 @@ def frequency_curves(
         - **reference_spend** — Fixed spending in original spend units
         - **best_frequency** — Tested frequency with the highest mean change
         - **frequency_period**, **response_period** — Selected dates
+
+    See Also
+    --------
+    response_curves : Evaluate spending curves by channel.
+    plot_frequency_curves : Plot response against average frequency.
+
+    Notes
+    -----
+    Each channel's best frequency is the tested value with the highest mean
+    change across draws. These choices are conditional on the other channels'
+    reference inputs, not a jointly optimized plan when channels interact. No
+    audience cap is inferred, so the frequencies tested should be feasible for
+    the audience.
+
+    A nonfinite response in any scenario raises ``ValueError``. Any
+    normalization inside the blocks should read the training arrays from
+    ``reference`` so that a scenario cannot change it, as
+    :doc:`/user_guide/scenarios` explains.
     """
     grid = np.asarray(frequencies)
     if grid.ndim != 1 or grid.size == 0 or grid.dtype.kind not in "fiu":
@@ -452,20 +463,10 @@ def media_metrics(
     earlier history stay fixed, and channel effects need not add up when
     channels interact.
 
-    ``quantity`` is recomputed for each scenario and draw, and the fitted
-    outcome scaling restores original outcome units before anything is summed.
-    Effects are taken within draws, so the returned draws support credible
-    intervals. Responses are summed over ``response_periods`` and groups unless
-    ``by`` keeps them apart.
-
-    ROI divides a channel's total incremental response by its spending during
-    ``spend_periods``, and spending is not subtracted to calculate profit.
-    Every ratio uses totals over periods and groups and is ``nan`` where its
-    denominator is zero.
-
-    A nonfinite response in any scenario raises ``ValueError``. Any
-    normalization by exposures or spending inside the blocks should read the
-    training arrays from ``reference`` so that a scenario cannot zero it.
+    ``quantity`` is recomputed for each scenario and draw in original outcome
+    units. Effects are taken within draws, so the returned draws support
+    credible intervals. Responses are summed over ``response_periods`` and
+    groups unless ``by`` keeps them apart.
 
     Parameters
     ----------
@@ -476,33 +477,29 @@ def media_metrics(
         Results containing the model's constrained draws in the selected group.
     quantity : str
         Key returned by ``transformed_parameters`` holding the expected outcome
-        for every observation on the scale the likelihood uses, such as
-        ``"mu"``.
+        on the scale the likelihood uses, such as ``"mu"``.
     group : {"prior", "posterior"}, default "posterior"
         Parameter draws to use. Choose ``"prior"`` with results from
         ``sample_prior`` to inspect returns implied by the priors.
-        No sampling is performed. Compare groups using separate calls.
     incremental_increase : float, default 0.01
-        Positive fractional spending increase for marginal ROI. The default
-        measures return on a 1% increase, not an exact derivative.
+        Positive fractional spending increase for marginal ROI.
     spend_to_media : {"proportional"} or callable, default "proportional"
-        ``"proportional"`` scales exposure with spending in each period and
-        group. A JAX-compatible callable instead maps ordinary media spending
-        to nonnegative exposures of the same shape, both in original units and
-        the model's channel order.
+        ``"proportional"`` scales exposure with spending. A JAX-compatible
+        callable instead maps media spending to nonnegative exposures of the
+        same shape, both in original units and the model's channel order.
     spend_to_rf : {"reach", "frequency"} or callable, default "reach"
         ``"reach"`` scales reach at fixed frequency and ``"frequency"`` scales
         frequency at fixed reach. A JAX-compatible callable instead maps RF
         spending to a ``(reach, frequency)`` pair of the same shape, all in
         original units and ``rf_channels`` order.
     channels : sequence of str, optional
-        Paid channels to report, in the desired order. Defaults to all of
-        them, ordinary media first. Names must be unique, and each needs
-        positive reference spending during ``spend_periods``.
+        Paid channels to report, in the desired order. Defaults to all of them,
+        ordinary media first. Names must be unique, and each needs positive
+        reference spending during ``spend_periods``.
     new_data : dataframe-like or PreparedData, optional
-        Reference observations using the model's columns and scaling.
-        Omit to use stored observations. Supply ``PreparedData`` with
-        ``media_history`` to include earlier exposures for new observations.
+        Reference observations using the model's columns and scaling. Omit to
+        use stored observations. Supply ``PreparedData`` with ``media_history``
+        to include earlier exposures for new observations.
     spend_periods : sequence, optional
         Time labels whose spending changes. Defaults to all supplied modeling
         periods.
@@ -511,8 +508,7 @@ def media_metrics(
         periods. Include later dates to count carryover.
     by : str or sequence of str, optional
         Observation axes to keep in the responses, as ``"time"``, ``"group"``,
-        or both. Keeping ``"group"`` requires grouped data. Omit to sum over
-        both.
+        or both. Omit to sum over both.
     batch_size : int, default 64
         Maximum parameter draws evaluated together. Scenarios run sequentially.
 
@@ -520,7 +516,8 @@ def media_metrics(
     -------
     xarray.Dataset
         Channel metrics with chain and draw labels and a ``group`` attribute
-        identifying the parameter draws. Responses and spend use original units.
+        identifying the parameter draws. Responses and spend use original
+        units.
 
         - **incremental_response** — Reference response minus each channel's
           zero-spend response during ``spend_periods``
@@ -539,6 +536,22 @@ def media_metrics(
         - **spend_period**, **response_period** — Selected dates
         - **channel_type** — Whether each channel is ordinary media or
           reach/frequency
+
+    See Also
+    --------
+    contributions : Decompose the response into a baseline and contributions.
+    response_curves : Evaluate spending curves by channel.
+    plot_media_metrics : Plot a channel metric with its credible interval.
+
+    Notes
+    -----
+    ROI does not subtract spending to calculate profit. Every ratio uses totals
+    over periods and groups and is ``nan`` where its denominator is zero.
+
+    A nonfinite response in any scenario raises ``ValueError``. Any
+    normalization inside the blocks should read the training arrays from
+    ``reference`` so that a scenario cannot zero it, as
+    :doc:`/user_guide/scenarios` explains.
     """
     if (
         isinstance(incremental_increase, bool)

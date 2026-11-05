@@ -86,6 +86,11 @@ def plot_frequency_curves(
     -------
     plotnine.ggplot
         Response changes by frequency, with one line and band per channel.
+
+    See Also
+    --------
+    frequency_curves : Compare advertising frequencies by channel.
+    plot_response_curves : Plot incremental response against spending.
     """
     curves = _require_dataset(curves, "curves", ["response_change", "best_frequency"])
     changes = curves["response_change"]
@@ -136,21 +141,12 @@ def plot_media_metrics(
     most spending to the least. For ROI and marginal ROI, a dashed line marks
     ``break_even``, where a channel returns what it costs.
 
-    Cost per incremental response is drawn at its posterior median, because a
-    ratio's mean is unstable when increments come near zero.
-
     Pass several results in a mapping to compare them, as in
     ``{"Prior": prior_metrics, "Posterior": metrics}``, and each label gets its
     own color. Other axes, such as ``allocation`` in the output of
     ``optimize_budget``, become panels on one scale. A plan on its own also
     gives each allocation its own color, so the optimized bars stand apart
     from the reference ones.
-
-    With many channels the figure widens so each bar keeps its width, and a
-    notebook shows it at full size in a box that scrolls sideways. When
-    ``channels`` leaves some out and the results record what the metric is
-    built from, as ``media_metrics`` does for its responses and ratios, one
-    more bar pools them.
 
     Parameters
     ----------
@@ -178,6 +174,23 @@ def plot_media_metrics(
     -------
     plotnine.ggplot
         Metric bars with credible intervals by channel.
+
+    See Also
+    --------
+    media_metrics : Calculate response and ROI metrics by channel.
+    plot_roi_bubbles : Plot a channel metric against ROI.
+    plot_spend_vs_contribution : Compare shares of spending and response.
+
+    Notes
+    -----
+    Cost per incremental response is drawn at its posterior median, because a
+    ratio's mean is unstable when increments come near zero.
+
+    With many channels the figure widens so each bar keeps its width, and a
+    notebook shows it at full size in a box that scrolls sideways. When
+    ``channels`` leaves some out and the results record what the metric is
+    built from, as ``media_metrics`` does for its responses and ratios, one
+    more bar pools them.
     """
     if not isinstance(metric, str):
         raise TypeError(f"metric must be a string, got {type(metric).__name__}")
@@ -240,6 +253,11 @@ def plot_response_curves(
     -------
     plotnine.ggplot
         Incremental responses by spending, with one line and band per channel.
+
+    See Also
+    --------
+    response_curves : Evaluate spending curves by channel.
+    plot_frequency_curves : Plot response against average frequency.
     """
     if not isinstance(combine, bool):
         raise TypeError(f"combine must be a bool, got {type(combine).__name__}")
@@ -346,6 +364,11 @@ def plot_roi_bubbles(
     -------
     plotnine.ggplot
         The metric against ROI by channel, sized by spending.
+
+    See Also
+    --------
+    media_metrics : Calculate response and ROI metrics by channel.
+    plot_media_metrics : Plot a channel metric with its credible interval.
     """
     _validate_break_even(break_even)
     if not isinstance(metric, str):
@@ -417,10 +440,6 @@ def plot_spend_vs_contribution(
     to the least, and ``allocation`` in the output of ``optimize_budget`` gives
     each allocation a panel.
 
-    With many channels the figure widens so each pair keeps its width, and a
-    notebook shows it at full size in a box that scrolls sideways. When
-    ``channels`` leaves some out, one more pair pools them.
-
     Parameters
     ----------
     metrics : xarray.Dataset
@@ -433,6 +452,17 @@ def plot_spend_vs_contribution(
     -------
     plotnine.ggplot
         Paired share bars by channel labeled with ROI.
+
+    See Also
+    --------
+    media_metrics : Calculate response and ROI metrics by channel.
+    plot_media_metrics : Plot a channel metric with its credible interval.
+
+    Notes
+    -----
+    With many channels the figure widens so each pair keeps its width, and a
+    notebook shows it at full size in a box that scrolls sideways. When
+    ``channels`` leaves some out, one more pair pools them.
     """
     dataset = _require_dataset(metrics, "metrics", ["incremental_response"])
     increments = dataset["incremental_response"].reset_coords(drop=True)

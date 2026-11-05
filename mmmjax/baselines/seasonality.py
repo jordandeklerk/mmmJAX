@@ -19,9 +19,8 @@ def fourier_features(time: ArrayLike, *, period: ArrayLike, order: int) -> jax.A
         \cos\left(\frac{2\pi kt}{P}\right).
 
     Multiplying the features by model coefficients gives a seasonal
-    contribution. The coefficients and their priors are specified separately,
-    and the features include no intercept. Higher orders allow more detailed
-    patterns within a cycle.
+    contribution, and the features include no intercept. Higher orders allow
+    more detailed patterns within a cycle.
 
     Dated observations enter as elapsed time from a fixed reference date.
     Predictions must keep that reference date and the time units so their
@@ -31,15 +30,13 @@ def fourier_features(time: ArrayLike, *, period: ArrayLike, order: int) -> jax.A
     ----------
     time : array_like
         One-dimensional, finite numeric positions for the modeling periods,
-        such as elapsed days from a fixed reference date. Negative and
-        fractional positions are accepted.
+        such as elapsed days from a fixed reference date.
     period : array_like
-        Positive, finite scalar giving the cycle length in the same units as
-        ``time``, such as 7 for weekly seasonality or 365.25 for an annual
-        cycle when time is in days.
+        Positive, finite scalar giving the cycle length in the units of
+        ``time``, such as 365.25 for an annual cycle in days.
     order : int
-        Positive number of harmonics. Each adds a sine and a cosine term.
-        Keep this argument static when using ``jax.jit``.
+        Positive number of harmonics. Each adds a sine and a cosine term. Keep
+        this argument static when using ``jax.jit``.
 
     Returns
     -------
@@ -50,42 +47,25 @@ def fourier_features(time: ArrayLike, *, period: ArrayLike, order: int) -> jax.A
 
     Examples
     --------
-    Start with three weekly dates.
+    Measure each date in days from a fixed origin and build annual features of
+    order two. Coefficients then give the seasonal component for each week.
 
     .. ipython::
 
         In [1]: from datetime import date
-           ...: import jax.numpy as jnp
            ...: import numpy as np
            ...: import polars as pl
            ...: from mmmjax import fourier_features
 
         In [2]: frame = pl.DataFrame({
-           ...:     "week": [date(2026, 1, 1), date(2026, 1, 8),
-           ...:              date(2026, 1, 15)],
-           ...:     "sales": [100.0, 120.0, 110.0],
+           ...:     "week": [date(2026, 1, 1), date(2026, 1, 8), date(2026, 1, 15)],
            ...: })
+           ...: days = (frame["week"] - date(2026, 1, 1)).dt.total_days().to_numpy()
 
-    Measure each date in days from a fixed origin and build annual features
-    of order two. Reuse the same origin when preparing later dates for
-    prediction.
+        In [3]: features = fourier_features(days, period=365.25, order=2)
+           ...: seasonal = features @ np.array([0.2, -0.1, 0.3, 0.1])
 
-    .. ipython::
-
-        In [3]: origin = date(2026, 1, 1)
-           ...: days = (frame["week"] - origin).dt.total_days().to_numpy()
-
-        In [4]: features = fourier_features(days, period=365.25, order=2)
-
-    Combining the features with coefficients gives the seasonal component
-    for each week.
-
-    .. ipython::
-
-        In [5]: coefficients = jnp.array([0.2, -0.1, 0.3, 0.1])
-           ...: seasonal = features @ coefficients
-
-        In [6]: frame.with_columns(
+        In [4]: frame.with_columns(
            ...:     pl.Series("seasonality", np.asarray(seasonal)),
            ...: )
     """

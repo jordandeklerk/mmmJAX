@@ -103,10 +103,11 @@ napoleon_use_ivar = True
 # Examples sections become admonitions so the theme can style them as example boxes
 napoleon_use_admonition_for_examples = True
 
-# Recolor the theme's example admonition to the brand forest green. The theme gives important boxes
-# no style of their own, so they take a purple that no other box uses.
+# Recolor the theme's example and See also admonitions to the brand forest green. The theme gives
+# important boxes no style of their own, so they take a purple that no other box uses.
 sphinx_immaterial_custom_admonitions = [
     {"name": "example", "override": True, "icon": "material/code-braces", "color": (7, 66, 48)},
+    {"name": "seealso", "override": True, "title": "See also", "icon": "material/link-variant", "color": (7, 66, 48)},
     {"name": "important", "override": True, "icon": "material/alert-decagram", "color": (124, 77, 255)},
 ]
 
