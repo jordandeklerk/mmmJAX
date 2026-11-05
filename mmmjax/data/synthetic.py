@@ -59,17 +59,13 @@ class SyntheticData:
 
         The exposure in every modeling week is multiplied by ``multiplier``,
         and the eight lead-in weeks keep theirs, the same way
-        ``response_curves`` scales spending. The simulation's own carryover and
-        Hill curves turn the scaled exposure into revenue, so the default of
-        one reproduces ``truth["contribution"]``.
+        ``response_curves`` scales spending. The default of one reproduces
+        ``truth["contribution"]``.
 
         A channel's contribution depends only on its own exposure, so one call
         that scales several channels gives each channel's response to its own
         change. A mapping from each channel to a budget plan's ratio of new to
         current spending gives what the plan earns in the simulation.
-
-        A factor that is negative, infinite, or not a number raises an error,
-        and so does a channel that ``truth`` doesn't list.
 
         Parameters
         ----------
@@ -86,24 +82,19 @@ class SyntheticData:
 
         Examples
         --------
-        Double linear TV's impressions in every modeling week.
+        Double linear TV's impressions in every modeling week. The change from
+        the recorded contribution is the revenue the extra impressions add over
+        the three years.
 
         .. ipython::
 
             In [1]: from mmmjax import simulate_data
 
             In [2]: brand = simulate_data(seed=7, groups=None)
+               ...: doubled = brand.contributions({"linear_tv": 2.0})
+               ...: added = doubled - brand.truth["contribution"]
 
-            In [3]: doubled = brand.contributions({"linear_tv": 2.0})
-
-        The change from the recorded contribution is the revenue the extra
-        impressions add over the three years.
-
-        .. ipython::
-
-            In [4]: added = doubled - brand.truth["contribution"]
-
-            In [5]: round(added.sum("time").sel(channel="linear_tv").item())
+            In [3]: round(added.sum("time").sel(channel="linear_tv").item())
         """
         truth = self.truth
         max_lag = int(truth.attrs["max_lag"])
@@ -140,33 +131,8 @@ def simulate_data(
     Ten paid channels and owned email combine always-on activity, campaign
     flights, and a later channel launch. Demand and holidays raise both media
     execution and revenue, and promotions run during campaign flights and
-    holidays. Baseline revenue drifts smoothly over time, alongside changing
-    costs and seasonal patterns. Defaults are illustrative, not platform
-    benchmarks.
-
-    Revenue has conditional mean :math:`\mu` equal to baseline, seasonal,
-    demand, price, promotion, holiday, and channel contributions. Each channel
-    applies normalized geometric carryover and Hill saturation to exposures
-    per person. Observation noise is mean-one lognormal multiplicative noise
-    with standard deviation ``noise_scale`` relative to :math:`\mu`.
-
-    The frame has no missing values, and its exposures and spending are
-    nonnegative. A zero exposure means the channel was inactive, not that a
-    report is missing. Measurement error changes only the reported exposures,
-    so the true effects and revenue stay the same.
-
-    The simple setting keeps only linear TV and generic search, and its shared
-    campaign calendar matches the one in the full setting. Revenue there is a
-    constant regional baseline plus a price effect and the two channels. Price
-    moves independently of the media, and there are no demand, seasonal,
-    promotion, or holiday effects. The frame holds every input that a
-    regression on the two channels and price needs, so the true effects are
-    recoverable.
-
-    The ROI in ``truth`` divides a paid channel's revenue contribution over
-    the modeling weeks by its spending over those weeks. That contribution
-    counts carryover from the lead-in, and a channel without spending has a
-    NaN ROI.
+    holidays. Defaults are illustrative, not platform benchmarks. See
+    :doc:`/user_guide/example_data` for how the data is made.
 
     Parameters
     ----------
@@ -180,16 +146,16 @@ def simulate_data(
         column or group dimension.
     start : str or datetime.date, default "2022-01-03"
         First modeling date as a ``YYYY-MM-DD`` string or a date without a
-        time. Later observations are spaced seven days apart.
+        time.
     campaign_overlap : float, default 0.7
         Probability that a channel in a region follows the shared campaign
         calendar. Zero uses independent calendars and one uses shared timing.
     noise_scale : float, default 0.05
-        Nonnegative observation noise relative to expected revenue.
-        Zero returns the conditional mean without observation noise.
+        Nonnegative observation noise relative to expected revenue. Zero
+        returns the conditional mean without observation noise.
     measurement_error : float, default 0.0
         Nonnegative relative noise in reported exposures. True zero activity
-        remains zero.
+        remains zero, and the true effects and revenue stay the same.
     complexity : {"full", "simple"}, default "full"
         ``"full"`` for every channel and revenue driver, or ``"simple"`` for
         two channels and a price effect.
@@ -204,43 +170,41 @@ def simulate_data(
         - **channels** — Channel labels, columns, and settings
         - **truth** — Parameters, effects, and paid-channel revenue ROI
 
+    See Also
+    --------
+    prepare_data : Prepare a dataframe for modeling.
+
+    Notes
+    -----
+    Revenue has conditional mean :math:`\mu` equal to baseline, seasonal,
+    demand, price, promotion, holiday, and channel contributions. Each channel
+    applies normalized geometric carryover and Hill saturation to exposures per
+    person. Observation noise is mean-one lognormal multiplicative noise with
+    standard deviation ``noise_scale`` relative to :math:`\mu`.
+
+    The simple setting keeps only linear TV and generic search, and revenue
+    there is a constant regional baseline plus a price effect and the two
+    channels. The frame holds every input that a regression on the two channels
+    and price needs, so the true effects are recoverable.
+
+    The ROI in ``truth`` divides a paid channel's revenue contribution over the
+    modeling weeks by its spending over those weeks. That contribution counts
+    carryover from the lead-in, and a channel without spending has a NaN ROI.
+
     Examples
     --------
-    Generate two years of weekly observations.
+    Generate two years of weekly observations. The channel table describes each
+    column, so columns can be selected by kind rather than by name.
 
     .. ipython::
 
-        In [1]: from mmmjax import prepare_data, simulate_data
+        In [1]: from mmmjax import simulate_data
 
         In [2]: example = simulate_data(seed=7, n_periods=104)
 
-    The channel table describes each column, so paid and organic exposure
-    can be selected by kind rather than by name.
+        In [3]: example.frame[["week", "region", "revenue"]].head()
 
-    .. ipython::
-
-        In [3]: paid = example.channels.query("kind == 'paid'")
-           ...: organic = example.channels.query("kind == 'organic'")
-
-    Prepare model inputs from the frame and keep the true effects aside for
-    comparison with the fit later.
-
-    .. ipython::
-
-        In [4]: data = prepare_data(
-           ...:     example.frame, time="week", groups=["region"],
-           ...:     outcome="revenue", population="population",
-           ...:     media=paid["exposure_column"].to_list(),
-           ...:     spend=paid["spend_column"].to_list(),
-           ...:     channels=paid["channel"].to_list(),
-           ...:     organic_media=organic["exposure_column"].to_list(),
-           ...:     organic_channels=organic["channel"].to_list(),
-           ...:     controls=["demand", "holiday"],
-           ...:     treatments=["price", "promotion"],
-           ...:     media_history=example.media_history,
-           ...: )
-
-        In [5]: example.frame[["week", "region", "revenue"]].head()
+        In [4]: example.channels[["channel", "kind", "exposure_column"]].head()
     """
     first_date, group_names = _validate_inputs(
         seed, n_periods, groups, start, campaign_overlap, noise_scale, measurement_error, complexity

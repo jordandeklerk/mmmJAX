@@ -49,6 +49,10 @@ class SpendConstraint:
         of the selected budget. With ``"share"``, ``upper=0.3`` caps the group
         at 30% of that budget.
 
+    See Also
+    --------
+    optimize_budget : Allocate a fixed budget across channels.
+
     Examples
     --------
     Cap combined social spending while allowing redistribution between channels.
@@ -133,23 +137,9 @@ def optimize_budget(
     history stay fixed. The result is a local constrained solution and can
     depend on the starting allocation.
 
-    ``quantity`` is recomputed for each allocation and draw, and the fitted
-    outcome scaling restores original outcome units before anything is summed.
-    By default the solver maximizes the posterior mean response and compares
-    allocations through paired changes. A custom ``utility_function`` scores
-    absolute totals instead, so in float32 it can lose precision.
-
-    The solver works on totals over periods and groups, and ``by`` only splits
-    the reported responses of the one joint allocation. The scenarios behind
-    ``include_metrics`` remove or raise one channel's spending at a time
-    without regard to the bounds.
-
-    ``ValueError`` is raised for invalid inputs, infeasible constraints, and
-    model evaluations that produce invalid responses, utility values, or
-    gradients. ``RuntimeError`` is raised when the solver fails to converge or
-    returns an infeasible allocation. Any normalization by exposures or
-    spending inside the blocks should read the training arrays from
-    ``reference`` so that an allocation cannot zero it.
+    ``quantity`` is recomputed for each allocation and draw in original outcome
+    units. By default the solver maximizes the posterior mean response and
+    compares allocations through paired changes.
 
     Parameters
     ----------
@@ -163,48 +153,43 @@ def optimize_budget(
         ``spend_periods`` in original units. Defaults to their reference total.
     quantity : str
         Key returned by ``transformed_parameters`` holding the expected outcome
-        for every observation on the scale the likelihood uses, such as
-        ``"mu"``.
+        on the scale the likelihood uses, such as ``"mu"``.
     utility_function : callable, optional
         Differentiable JAX function mapping total expected responses in
         original outcome units, shaped ``(chain, draw)``, to a floating-point
         scalar to maximize. Defaults to the posterior mean.
     spend_to_media : {"proportional"} or callable, default "proportional"
-        ``"proportional"`` scales exposure with spending in each period and
-        group. A differentiable JAX callable instead maps ordinary media
-        spending to nonnegative exposures of the same shape, both in original
-        units and the model's channel order.
+        ``"proportional"`` scales exposure with spending. A differentiable JAX
+        callable instead maps media spending to nonnegative exposures of the
+        same shape, both in original units and the model's channel order.
     spend_to_rf : {"reach", "frequency"} or callable, default "reach"
         ``"reach"`` scales reach at fixed frequency and ``"frequency"`` scales
         frequency at fixed reach. A differentiable JAX callable instead maps RF
         spending to a ``(reach, frequency)`` pair of the same shape, all in
         original units and ``rf_channels`` order.
     bounds : tuple of float or mapping of str to tuple of float, optional
-        Finite nonnegative spending limits in original units, as one
-        ``(lower, upper)`` pair for all selected channels or a mapping with a
-        pair for each. Cannot be combined with ``spend_constraint_lower`` or
-        ``spend_constraint_upper``. Defaults to zero through ``budget``.
+        Spending limits in original units, as one ``(lower, upper)`` pair or a
+        mapping with a pair for each channel. Cannot be combined with
+        ``spend_constraint_lower`` or ``spend_constraint_upper``. Defaults to
+        zero through ``budget``.
     spend_constraint_lower : float or sequence of float, optional
         Allowed fractional decrease from each channel's reference share of
-        ``budget``, as one value or one per selected channel in ``channels``
-        order. Values must lie between zero and one. Omit to keep the lower
-        limits of ``bounds``.
+        ``budget``, between zero and one, as one value or one per selected
+        channel. Omit to keep the lower limits of ``bounds``.
     spend_constraint_upper : float or sequence of float, optional
         Allowed fractional increase from each channel's reference share of
-        ``budget``, as one value or one per selected channel in ``channels``
-        order. Values must be finite and nonnegative. Omit to keep the upper
-        limits of ``bounds``.
+        ``budget``, as one value or one per selected channel. Omit to keep the
+        upper limits of ``bounds``.
     constraints : sequence of SpendConstraint, optional
-        Limits on combined spending across named channel groups. They apply
-        alongside the budget and each channel's limits, and groups may overlap.
+        Limits on combined spending across named channel groups.
     channels : sequence of str, optional
         Paid channels to optimize, in the desired order. Defaults to all of
         them, ordinary media first. Names must be unique, and each needs
         positive reference spending during ``spend_periods``.
     new_data : dataframe-like or PreparedData, optional
-        Reference observations using the model's columns and scaling.
-        Omit to use stored observations. Supply ``PreparedData`` with
-        ``media_history`` to include earlier exposures for new observations.
+        Reference observations using the model's columns and scaling. Omit to
+        use stored observations. Supply ``PreparedData`` with ``media_history``
+        to include earlier exposures for new observations.
     spend_periods : sequence, optional
         Time labels whose spending changes. Defaults to all supplied modeling
         periods.
@@ -213,18 +198,16 @@ def optimize_budget(
         periods. Include later dates to count carryover.
     by : str or sequence of str, optional
         Observation axes to keep in the responses, as ``"time"``, ``"group"``,
-        or both. Keeping ``"group"`` requires grouped data. Omit to sum over
-        both.
+        or both. Omit to sum over both.
     initial_spend : mapping of str to float, optional
         Feasible starting spend for each selected channel. Defaults to
         reference proportions adjusted to the budget, bounds, and constraints.
     include_metrics : bool, default False
-        Also report channel incremental response, ROI, and marginal ROI at
-        both allocations. Requires additional evaluations after optimization.
+        Also report channel incremental response, ROI, and marginal ROI at both
+        allocations.
     incremental_increase : float, default 0.01
         Positive fractional spending increase for marginal ROI when
-        ``include_metrics=True``. The default measures return on a 1%
-        increase, not an exact derivative.
+        ``include_metrics=True``.
     batch_size : int, default 64
         Maximum posterior draws evaluated together.
     maxiter : int, default 200
@@ -254,6 +237,30 @@ def optimize_budget(
           **cost_per_incremental_response**, **spend_share**, **exposure**,
           **effectiveness** — Channel metrics of :func:`media_metrics` at each
           allocation with ``include_metrics=True``
+
+    See Also
+    --------
+    SpendConstraint : Limit combined spending across channels.
+    media_metrics : Calculate response and ROI metrics by channel.
+    response_curves : Evaluate spending curves by channel.
+    plot_budget_response : Plot the plan's change in response by channel.
+
+    Notes
+    -----
+    A custom ``utility_function`` scores absolute totals instead of paired
+    changes, so in float32 it can lose precision. The solver works on totals
+    over periods and groups, and ``by`` only splits the reported responses of
+    the one joint allocation. The scenarios behind ``include_metrics`` remove
+    or raise one channel's spending at a time without regard to the bounds.
+
+    ``ValueError`` is raised for invalid inputs, infeasible constraints, and
+    model evaluations that produce invalid responses, utility values, or
+    gradients. ``RuntimeError`` is raised when the solver fails to converge or
+    returns an infeasible allocation.
+
+    Any normalization inside the blocks should read the training arrays from
+    ``reference`` so that an allocation cannot zero it, as
+    :doc:`/user_guide/scenarios` explains.
     """
     tolerance = _positive_number(tolerance, "tolerance")
     if tolerance >= 1:

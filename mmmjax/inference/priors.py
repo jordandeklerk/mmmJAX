@@ -26,10 +26,6 @@ class Prior:
     independent prior draws in each parameter's declared shape. Their
     ``logpdf`` gives pointwise log-prior terms for ``generated_quantities``.
 
-    Like any other JAX array, each setting is copied at the precision in
-    effect when the prior is built. A prior built before 64-bit mode is
-    enabled keeps 32-bit settings.
-
     Parameters
     ----------
     distribution : callable
@@ -42,9 +38,22 @@ class Prior:
         ``dimension`` only for direct ``sample`` calls, since a model's
         parameter declaration supplies it otherwise.
 
+    See Also
+    --------
+    sample_prior : Draw priors and their implied outcomes before fitting.
+    custom_distribution : Make a distribution from plain functions.
+
+    Notes
+    -----
+    Like any other JAX array, each setting is copied at the precision in effect
+    when the prior is built. A prior built before 64-bit mode is enabled keeps
+    32-bit settings.
+
     Examples
     --------
-    Bind the settings of a Normal prior once.
+    Calling the prior returns the summed log density to add to a model density,
+    ``logpdf`` returns one term per value, and draws put the sample shape
+    first.
 
     .. ipython::
 
@@ -55,16 +64,7 @@ class Prior:
         In [2]: prior = Prior(normal, location=0.0, scale=1.0)
            ...: values = jnp.array([-0.5, 0.0, 0.5])
 
-    Calling the prior returns the summed log density to add to a model
-    density, and ``logpdf`` returns one term per value.
-
-    .. ipython::
-
         In [3]: prior(values), prior.logpdf(values)
-
-    Draws put the sample shape first.
-
-    .. ipython::
 
         In [4]: prior.sample(jax.random.key(0), sample_shape=(4,))
     """

@@ -50,21 +50,12 @@ def plot_contributions(
     total in the outcome's units. Shares are ratios of posterior means, so they
     add up.
 
-    When channel effects interact, the separate shares need not add up to
-    removing every channel at once, and a last bar carries that difference when
-    it reaches half a percent. Without the baseline, the bars split the joint
-    increment of every channel instead.
-
     With ``by="time"``, each channel's contribution stacks by period on the
     baseline under a line that traces the whole response, and the axis starts
     near the lowest baseline unless groups give panels. Without the baseline,
     the channels stack under a line that traces the joint increment of removing
     every channel at once. The ten channels with the largest total increments
     stack separately and the rest share one area.
-
-    Axes that ``by`` leaves out are summed within each draw, and ``by="group"``
-    gives each group a panel. Many channels make the waterfall taller, and a
-    notebook shows it at full size.
 
     Parameters
     ----------
@@ -91,6 +82,22 @@ def plot_contributions(
     -------
     plotnine.ggplot
         Waterfall of shares, or contributions stacked by period.
+
+    See Also
+    --------
+    contributions : Decompose the response into a baseline and contributions.
+    plot_spend_vs_contribution : Compare shares of spending and response.
+
+    Notes
+    -----
+    When channel effects interact, the separate shares need not add up to
+    removing every channel at once, and a last bar carries that difference when
+    it reaches half a percent. Without the baseline, the bars split the joint
+    increment of every channel instead.
+
+    Axes that ``by`` leaves out are summed within each draw, and ``by="group"``
+    gives each group a panel. Many channels make the waterfall taller, and a
+    notebook shows it at full size.
     """
     effects = _require_contributions(effects)
     if not isinstance(include_baseline, bool):

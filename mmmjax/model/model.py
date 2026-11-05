@@ -235,51 +235,23 @@ class Model:
     ``transformed_data`` through ``parameters``, ``transformed_parameters``,
     and ``log_density`` to ``generated_quantities``. Each function requests the
     inputs it needs by argument name from data inputs, the outputs of earlier
-    blocks, and parameters. Models without prepared data receive the data as
-    a leading positional argument instead.
-
-    Prepared data supplies the selected role names, such as ``outcome`` and
-    ``media``, together with elapsed ``time`` and ``media_time``, the calendar
-    ``day_of_year`` and ``media_day_of_year``, and the period count
-    ``n_periods``. The outcome's :class:`Scaling` arrives as
-    ``outcome_scaling`` with its ``scale``, ``offset``, and
-    ``inverse_transform``. The ``reference`` namespace holds the training
-    arrays as the blocks received them, such as ``reference.spend``, for
-    evaluating new data. ``Data`` variables replace these names with declared
-    ones.
-
-    ``transformed_data`` runs once at construction and again for new data
-    rather than per parameter draw. Python integers it returns stay static, so
-    later blocks can use them as array shapes. ``transformed_parameters`` runs
-    at every density or generated-quantities evaluation, so new data must
-    supply every data input it requests. Results keep its outputs only when
-    ``generated_quantities`` returns them.
-
-    The mappings ``generated_quantities`` returns under ``predictive``,
-    ``log_likelihood``, and ``log_prior`` fill the matching result groups, and
-    every other entry is a generated quantity. Pointwise log likelihoods
-    exclude priors and adjustments, and log-prior terms count each prior
-    factor once without constraint adjustments.
-
-    With prepared data, an array returned directly under ``predictive`` or
-    ``log_likelihood`` is stored as ``outcome``, the name the observed data
-    carries, so ArviZ can pair the two. A mapping there names each output
-    instead, and models without prepared data always need one.
+    blocks, and parameters. Models without prepared data receive the data as a
+    leading positional argument instead.
 
     Inspect derived quantities with ``evaluate`` and the constrained log
-    density with ``log_prob`` before fitting. Samplers call ``log_density`` on
-    unconstrained positions, and it adds the parameterization adjustments.
+    density with ``log_prob`` before fitting. See :doc:`/user_guide/data` for
+    the names prepared data supplies and :doc:`/user_guide/sampling` for the
+    result groups.
 
     Parameters
     ----------
     data : Data or PreparedData, optional
-        Fixed model inputs and their declarations. Use ``Data`` for custom
-        names, auxiliary observations, constants, or scaling. Omit to pass the
-        data at each evaluation instead.
+        Fixed model inputs and their declarations. Omit to pass the data at
+        each evaluation instead.
     transformed_data : callable, optional
         Pure JAX-compatible function of data inputs returning named fixed
-        values. Values must be finite real arrays or scalars. Names must not
-        shadow declared inputs or parameters. Requires prepared data.
+        values. Names must not shadow declared inputs or parameters. Requires
+        prepared data.
     parameters : mapping of str to Parameterization
         Required. All named parameter declarations and constraints. Use
         declaration dimensions, such as ``Real(dims="control")``, to infer
@@ -291,29 +263,54 @@ class Model:
     log_density : callable
         Required. Scalar log density for constrained parameters. Every
         user-declared parameter must be requested here or by
-        ``transformed_parameters``. Only parameterization adjustments are
-        added automatically.
+        ``transformed_parameters``. Only parameterization adjustments are added
+        automatically.
     generated_quantities : callable, optional
         Function returning named reporting quantities or simulated
-        observations. Receives a JAX random key first and then the model
-        inputs it needs.
+        observations. Receives a JAX random key first and then the model inputs
+        it needs.
     dims : mapping of str to str or sequence of str, optional
         Named axes of each constrained parameter, apart from chain and draw,
-        for custom parameterizations or explicit-shape declarations. A single
-        string names one axis. Must agree with any dimensions set on a
-        declaration.
+        for custom parameterizations or explicit-shape declarations. Must agree
+        with any dimensions set on a declaration.
     coords : mapping of str to array_like, optional
-        One-dimensional labels for named axes. Labels are copied at
-        construction.
+        One-dimensional labels for named axes.
     generated_dims : mapping of str to str or sequence of str, optional
-        Named axes for each output of ``generated_quantities`` apart from
-        chain and draw. A single string names one axis. Overrides labels
-        inherited from unchanged inputs and from outcome-shaped predictive and
-        log-likelihood outputs.
+        Named axes for each output of ``generated_quantities`` apart from chain
+        and draw. Overrides labels inherited from unchanged inputs and from
+        outcome-shaped predictive and log-likelihood outputs.
+
+    See Also
+    --------
+    Data : Declare model data and its fixed preprocessing.
+    sample : Sample a model with NUTS.
+    sample_prior : Draw priors and their implied outcomes before fitting.
+
+    Notes
+    -----
+    ``transformed_data`` runs once at construction and again for new data
+    rather than per parameter draw. Python integers it returns stay static, so
+    later blocks can use them as array shapes. ``transformed_parameters`` runs
+    at every density or generated-quantities evaluation, so new data must
+    supply every data input it requests. Results keep its outputs only when
+    ``generated_quantities`` returns them.
+
+    The mappings ``generated_quantities`` returns under ``predictive``,
+    ``log_likelihood``, and ``log_prior`` fill the matching result groups, and
+    every other entry is a generated quantity. Pointwise log likelihoods
+    exclude priors and adjustments, and log-prior terms count each prior factor
+    once without constraint adjustments.
+
+    With prepared data, an array returned directly under ``predictive`` or
+    ``log_likelihood`` is stored as ``outcome``, the name the observed data
+    carries, so ArviZ can pair the two. A mapping there names each output
+    instead, and models without prepared data always need one.
 
     Examples
     --------
-    Prepare four weeks of sales and video impressions.
+    The density requests the prepared ``outcome`` and ``media`` arrays and each
+    parameter by argument name, and ``log_prob`` checks the model before
+    sampling.
 
     .. ipython::
 
@@ -331,12 +328,6 @@ class Model:
            ...:     frame, time="week", outcome="sales", media=["video"],
            ...: )
 
-    The density requests the prepared ``outcome`` and ``media`` arrays and
-    each parameter by argument name. A coefficient declared on the
-    ``channel`` axis holds one value per prepared channel.
-
-    .. ipython::
-
         In [3]: def log_density(outcome, media, intercept, coefficient, sigma):
            ...:     mu = intercept + media @ coefficient
            ...:     target = normal(intercept, 0.0, 1.0)
@@ -345,24 +336,14 @@ class Model:
            ...:     target += normal(outcome, mu, sigma)
            ...:     return target
 
-        In [4]: model = Model(
-           ...:     parameters={
-           ...:         "intercept": Real(),
-           ...:         "coefficient": Positive(dims="channel"),
-           ...:         "sigma": Positive(),
-           ...:     },
-           ...:     log_density=log_density,
-           ...:     data=data,
-           ...: )
+        In [4]: parameters = {
+           ...:     "intercept": Real(),
+           ...:     "coefficient": Positive(dims="channel"),
+           ...:     "sigma": Positive(),
+           ...: }
+           ...: model = Model(parameters=parameters, log_density=log_density, data=data)
 
-    Evaluate the log density at chosen values to check the model before
-    sampling.
-
-    .. ipython::
-
-        In [5]: model.log_prob({
-           ...:     "intercept": 1.0, "coefficient": [0.6], "sigma": 0.3,
-           ...: })
+        In [5]: model.log_prob({"intercept": 1.0, "coefficient": [0.6], "sigma": 0.3})
     """
 
     _parameterizations: _Parameterizations

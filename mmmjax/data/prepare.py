@@ -384,57 +384,52 @@ class Data:
     """Declare model data together with its variable names and fixed preprocessing.
 
     ``Model(data=...)`` takes this object in place of bare prepared data when
-    the blocks need renamed inputs, extra fixed inputs, constants, or
-    scaling. The observations, variable names, inputs, and constants are
-    copied when it is built. A fitted scaling object is kept rather than
-    copied, so data it has already transformed is not scaled twice.
+    the blocks need renamed inputs, extra fixed inputs, constants, or scaling.
 
     Blocks request inputs by their standard names, such as ``media`` or
     ``reference``, unless ``variables`` declares new ones. A declaration makes
     only the declared data inputs available, so even the model-supplied
-    ``reference``, ``outcome_scaling``, and ``n_periods`` need an entry such
-    as ``{"training": "reference"}``.
-
-    Constants reach the blocks unchanged rather than as arrays, so an integer
-    stays usable as a shape under ``jax.jit``. They stay the same in every
-    scenario.
-
-    A mapping from role names to scalings you build with :class:`Scaling`
-    scales exactly those roles, and every other role keeps its original
-    units. It may name ``outcome``, ``media``, ``organic_media``, ``reach``,
-    ``organic_reach``, ``controls``, and ``treatments`` when ``data`` selects
-    them, and ``data`` must be unscaled. An empty mapping behaves like
-    omitting ``scaling``.
-
-    Each statistic holds one value, one per column, or one per group and
-    column, with no time axis, because new data covers other periods.
-    Exposure roles take a zero offset so that zero exposure stays zero, and
-    the outcome's statistics hold one value or one per group. Blocks receive
-    the outcome's scaling as ``outcome_scaling``, and every scaled role
-    arrives in model units, as do the training arrays in ``reference``.
-
-    The mapping is copied into a ``DataScaling`` that ``scaling`` returns, so
-    later edits to it change nothing. New data and scenarios reuse the
-    training statistics through that object. A nonlinear transform, such as
-    a log of media, belongs in ``transformed_data`` with any statistics read
-    from ``reference``.
+    ``reference``, ``outcome_scaling``, and ``n_periods`` need an entry such as
+    ``{"training": "reference"}``.
 
     Parameters
     ----------
     data : PreparedData
         Observations and labels returned by :func:`prepare_data`.
     variables : mapping of str to str, optional
-        Block argument names mapped to input names from ``model_inputs``.
-        Omit to use the standard input names.
+        Block argument names mapped to input names from ``model_inputs``. Omit
+        to use the standard input names.
     inputs : xarray.Dataset, optional
         Additional fixed inputs, such as experiment measurements.
     constants : mapping of str to object, optional
-        Hashable values that blocks request by name, such as a carryover
-        length or a prepared HSGP approximation.
+        Hashable values that blocks request by name, such as a carryover length
+        or a prepared HSGP approximation.
     scaling : DataScaling, mapping of str to Scaling, or {"auto"}, optional
         Transformations fitted by ``fit_data_scaling``, a mapping from role
-        names to scalings you build yourself, or ``"auto"`` to fit the
-        defaults on ``data``. Omit to use ``data`` unchanged.
+        names to scalings you build yourself, or ``"auto"`` to fit the defaults
+        on ``data``. Omit to use ``data`` unchanged.
+
+    See Also
+    --------
+    prepare_data : Prepare a dataframe for modeling.
+    fit_data_scaling : Fit reusable transformations for model inputs.
+    Model : Compose parameters and program blocks into one model.
+
+    Notes
+    -----
+    Constants reach the blocks unchanged rather than as arrays, so an integer
+    stays usable as a shape under ``jax.jit``. They stay the same in every
+    scenario.
+
+    A mapping from role names to scalings you build with :class:`Scaling`
+    scales exactly those roles of unscaled ``data``, and every other role keeps
+    its original units. Each statistic holds one value, one per column, or one
+    per group and column, with no time axis because new data covers other
+    periods. Exposure roles take a zero offset so that zero exposure stays
+    zero.
+
+    New data and scenarios reuse the training statistics. See
+    :doc:`/user_guide/data` for the roles a mapping may name.
     """
 
     _observations: PreparedData
@@ -733,30 +728,10 @@ def prepare_data(
     """Prepare a dataframe for modeling while keeping its observation labels.
 
     Each selected role becomes a NumPy array that runs over time, group when
-    there are groups, and its columns in that order. Outcome and revenue per
-    outcome have no column axis, and population holds one value per group, or
-    a scalar without groups. Periods are sorted, groups keep the order in
-    which they first appear, and every axis keeps its labels. An integer
-    outcome or population keeps its integer dtype.
-
-    Every role is optional, and a role that accepts several columns takes a
-    list and keeps a column axis even for one. Columns selected for a role
-    must be integer, floating-point, or boolean, and no selected column may
-    hold missing, NaN, or infinite values. Each combination of time and group
-    labels must appear once, and every group must cover the same periods.
-    Exposures and spending must be nonnegative, while the outcome, controls,
-    and treatments may take any sign.
-
-    ``media_history`` adds earlier periods to the exposure arrays so that
-    carryover reaches the first modeling periods. Every other role covers only
-    the modeling periods. Preparation applies no scaling or adstock. It never
-    modifies either dataframe, and the arrays share no memory with them.
-
-    Date and string labels, history included, are checked against the
-    declared ``frequency`` or, by default, a spacing inferred from three or
-    more dates. A missing or irregular period raises ``ValueError``, and
-    ``frequency=None`` skips the checks. Monthly and longer periods follow the
-    day of the first date, or the month end when it falls on one.
+    there are groups, and its columns in that order, and every axis keeps its
+    labels. A role that accepts several columns keeps a column axis even for
+    one. Periods are sorted and groups keep the order in which they first
+    appear. Preparation applies no scaling or adstock.
 
     Parameters
     ----------
@@ -768,92 +743,93 @@ def prepare_data(
         Calendar checks accept dates, timezone-naive datetimes, or strings
         written as ``YYYY-MM-DD``.
     outcome : str, optional
-        Column containing the response, such as sales or conversions. Omit
-        for new data without observed outcomes.
+        Column containing the response, such as sales or conversions. An
+        integer column keeps its dtype. Omit for new data without observed
+        outcomes.
     revenue_per_outcome : str, optional
-        Column of nonnegative revenue per sale or conversion for each period
-        and group. Boolean values are not accepted, and the outcome keeps its
-        own units.
+        Column of nonnegative revenue per sale or conversion.
     population : str, optional
-        Column of positive population estimates, constant over time within
-        each series. Boolean values are not accepted.
+        Column of positive population estimates, constant over time within each
+        series.
     media : sequence of str, optional
-        Columns of paid media inputs, such as impressions or spending. Their
-        order sets the channel axis.
+        Columns of paid media inputs, such as impressions or spending.
     organic_media : sequence of str, optional
-        Columns of unpaid exposures, such as email clicks or organic social
-        impressions. Their order sets a separate channel axis.
+        Columns of unpaid exposures, such as email clicks.
     reach : sequence of str, optional
-        Columns of audience reached per paid channel and period, on a separate
-        channel axis. Requires ``media_frequency`` in matching order.
+        Columns of audience reached per paid channel and period. Requires
+        ``media_frequency``.
     media_frequency : sequence of str, optional
         Columns of average exposures per person reached, one per ``reach``
         channel in matching order. This is advertising frequency, not calendar
         spacing.
     organic_reach : sequence of str, optional
-        Columns of audience reached by unpaid channels, on a separate channel
-        axis. Requires ``organic_frequency`` in matching order.
+        Columns of audience reached by unpaid channels. Requires
+        ``organic_frequency``.
     organic_frequency : sequence of str, optional
         Columns of average organic exposures per person reached, one per
         ``organic_reach`` channel in matching order.
     media_history : dataframe-like, optional
-        Earlier exposures in the time, group, and selected exposure columns of
-        ``frame``. It must hold the same groups and only periods before those
-        of ``frame``. Requires an exposure selection.
+        Earlier exposures, so that carryover reaches the first modeling
+        periods. It must hold the time, group, and selected exposure columns of
+        ``frame``, the same groups, and only earlier periods.
     spend : sequence of str, optional
-        Spending columns, one per ``media`` channel in matching order. The
-        same columns may be selected for media and spend.
+        Spending columns, one per ``media`` channel in matching order.
     rf_spend : sequence of str, optional
         Spending columns, one per ``reach`` channel in matching order.
     controls : sequence of str, optional
         Columns of adjustment variables, such as temperature or economic
-        indicators. Their order sets the control axis.
+        indicators.
     treatments : sequence of str, optional
         Columns of non-media inputs whose effects the model estimates, such as
-        product prices or promotions. Their order sets the treatment axis.
+        product prices or promotions.
     channels : sequence of str, optional
-        Unique labels shared by media and spend, in column order.
-        Defaults to the ``media`` column names. Requires ``media``.
+        Unique labels shared by media and spend, in column order. Defaults to
+        the ``media`` column names.
     organic_channels : sequence of str, optional
         Unique labels in ``organic_media`` column order. Defaults to those
-        column names. Requires ``organic_media``.
+        column names.
     rf_channels : sequence of str, optional
         Unique labels shared by reach, media frequency, and their spend, in
-        column order. Defaults to the ``reach`` column names. Requires
-        ``reach``.
+        column order. Defaults to the ``reach`` column names.
     organic_rf_channels : sequence of str, optional
         Unique labels shared by organic reach and frequency, in column order.
-        Defaults to the ``organic_reach`` column names. Requires
-        ``organic_reach``.
+        Defaults to the ``organic_reach`` column names.
     groups : sequence of str, default ()
         Columns whose observed combinations identify each series, such as
         ``["region"]``. Empty for a single series.
     frequency : str or None, default "auto"
         Calendar spacing of the periods, one of ``"daily"``, ``"weekly"``,
-        ``"monthly"``, ``"quarterly"``, or ``"yearly"``. A declared spacing
-        needs date labels, ``"auto"`` infers one, and None skips the calendar
-        checks.
+        ``"monthly"``, ``"quarterly"``, or ``"yearly"``. ``"auto"`` infers one
+        from three or more dates, and None skips the calendar checks.
 
     Returns
     -------
     PreparedData
-        Prepared inputs with the following fields.
+        Prepared arrays by role with the labels of every axis.
 
-        - **arrays** — NumPy arrays by selected role
-        - **time_column**, **time_values** — Source time column and sorted
-          periods
-        - **media_time_values** — Exposure periods including history
-        - **group_columns**, **group_values** — Group columns and observed
-          label tuples in array order
-        - **columns** — Source columns by role in selected order
-        - **channels**, **organic_channels** — Paid and organic media labels
-        - **rf_channels**, **organic_rf_channels** — Paid and organic reach and
-          frequency labels
-        - **frequency** — Inferred or declared calendar spacing, or None
+    See Also
+    --------
+    check_data : Inspect marketing inputs for measurement issues.
+    fit_data_scaling : Fit reusable transformations for model inputs.
+    Data : Declare model data and its fixed preprocessing.
+
+    Notes
+    -----
+    Columns selected for a role must be integer, floating-point, or boolean,
+    and none may hold missing, NaN, or infinite values. ``revenue_per_outcome``
+    and ``population`` also reject booleans. Each combination of time and group
+    labels must appear once, every group must cover the same periods, and
+    exposures and spending must be nonnegative.
+
+    Date and string labels, history included, are checked against
+    ``frequency``, and a missing or irregular period raises ``ValueError``.
+    Monthly and longer periods follow the day of the first date, or the month
+    end when it falls on one.
 
     Examples
     --------
-    Start with a long frame that holds one row per week and region.
+    Name the columns that fill each role. Each array runs over time, region,
+    and its channels or controls in that order.
 
     .. ipython::
 
@@ -869,24 +845,12 @@ def prepare_data(
            ...:     "price": [9.5, 9.5, 8.0, 9.0, 9.0, 8.5],
            ...: })
 
-    Name the columns that fill each role. Spend columns follow the order of
-    the media columns.
-
-    .. ipython::
-
         In [3]: data = prepare_data(
            ...:     frame, time="week", groups=["region"], outcome="sales",
            ...:     media=["video"], spend=["video_cost"], controls=["price"],
            ...: )
 
-    Each array runs over time, region, and its channels or controls in that
-    order, and the prepared data keeps the labels of every axis.
-
-    .. ipython::
-
         In [4]: {name: array.shape for name, array in data.arrays.items()}
-
-        In [5]: data.time_values, data.group_values, data.channels
     """
     selections = {
         "outcome": outcome,
@@ -1114,8 +1078,8 @@ def select_channels(
         Unique channel labels in the array's current order, such as
         ``data.channels``. Keep this argument static when using ``jax.jit``.
     select : str or sequence of str
-        One channel name or a nonempty sequence of unique names to retain,
-        in the desired output order. Keep this argument static when using
+        One channel name or a nonempty sequence of unique names to retain, in
+        the desired output order. Keep this argument static when using
         ``jax.jit``.
 
     Returns
@@ -1125,7 +1089,8 @@ def select_channels(
 
     Examples
     --------
-    Start with one coefficient per channel.
+    Select each channel's coefficient by name so that the two can take
+    different prior families in a log density.
 
     .. ipython::
 
@@ -1134,26 +1099,10 @@ def select_channels(
 
         In [2]: channels = ("video", "search")
            ...: coefficient = jnp.array([0.6, 0.4])
+           ...: video = select_channels(coefficient, channels=channels, select="video")
+           ...: search = select_channels(coefficient, channels=channels, select="search")
 
-    Select each channel's entry by name. For group-specific coefficients,
-    the same calls select the channel across every group.
-
-    .. ipython::
-
-        In [3]: video = select_channels(
-           ...:     coefficient, channels=channels, select="video",
-           ...: )
-           ...: search = select_channels(
-           ...:     coefficient, channels=channels, select="search",
-           ...: )
-
-    The two entries can then take different prior families in a log density.
-
-    .. ipython::
-
-        In [4]: target = half_normal(video, scale=1.0)
-           ...: target += lognormal(search, location=0.0, scale=0.5)
-           ...: target
+        In [3]: half_normal(video, scale=1.0) + lognormal(search, location=0.0, scale=0.5)
     """
     channel_names = _channel_names(channels, argument="channels")
     selected_names = _channel_names((select,) if isinstance(select, str) else select, argument="select")

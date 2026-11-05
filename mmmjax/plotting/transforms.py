@@ -56,11 +56,6 @@ def plot_adstock(
     lag. The line follows the point estimate across draws and the band its
     credible interval.
 
-    The function takes the media first and its other arguments by name, as the
-    model's blocks do. An argument receives the draws of the result variable
-    with the same name unless ``parameters`` maps it to another variable or
-    fixes it at a number, and ``max_lag`` reaches a function that asks for it.
-
     Each label of the last axis of the parameters, usually ``channel``, gets
     its own panel on shared axes, and any other axis adds panels. With
     ``combine=True``, the channels share one panel in their own colors
@@ -106,6 +101,18 @@ def plot_adstock(
     -------
     plotnine.ggplot
         Weights by lag, with one line and band per channel or distribution.
+
+    See Also
+    --------
+    plot_saturation : Plot the saturation curve of each draw.
+    geometric_adstock : Apply finite geometric carryover.
+
+    Notes
+    -----
+    The function takes the media first and its other arguments by name, as the
+    model's blocks do. An argument receives the draws of the result variable
+    with the same name unless ``parameters`` maps it to another variable or
+    fixes it at a number, and ``max_lag`` reaches a function that asks for it.
     """
     if not callable(adstock):
         raise TypeError(f"adstock must be callable, got {type(adstock).__name__}")
@@ -162,11 +169,6 @@ def plot_saturation(
     how quickly each channel's effect levels off. The line follows the point
     estimate across draws and the band its credible interval.
 
-    The function takes the media first and its other arguments by name, as the
-    model's blocks do. An argument receives the draws of the result variable
-    with the same name unless ``parameters`` maps it to another variable or
-    fixes it at a number, as a model with a known ``slope`` would.
-
     Each label of the last axis of the parameters, usually ``channel``, gets
     its own panel on shared axes, and any other axis adds panels. With
     ``combine=True``, the channels share one panel in their own colors
@@ -213,6 +215,18 @@ def plot_saturation(
     plotnine.ggplot
         Saturated media by media input, with one line and band per channel or
         distribution.
+
+    See Also
+    --------
+    plot_adstock : Plot the weight of each lag.
+    hill_saturation : Apply a Hill response curve.
+
+    Notes
+    -----
+    The function takes the media first and its other arguments by name, as the
+    model's blocks do. An argument receives the draws of the result variable
+    with the same name unless ``parameters`` maps it to another variable or
+    fixes it at a number, as a model with a known ``slope`` would.
     """
     if not callable(saturation):
         raise TypeError(f"saturation must be callable, got {type(saturation).__name__}")

@@ -22,32 +22,23 @@ def media_response(
 
     Both transformations run over the full exposure history, so earlier
     exposure carries into the first modeling periods. The result then keeps
-    only the final ``n_periods`` periods along the first axis. Scaling,
-    coefficient multiplication, and channel summation remain separate.
-
-    Carryover comes first unless ``adstock_first`` is False. For learned
-    parameters, define both callbacks inside ``transformed_parameters`` or
-    the log density using current values. Each callback must keep the shape
-    of ``media``, and one that changes it raises ``ValueError``.
+    only the final ``n_periods`` periods along the first axis.
 
     Parameters
     ----------
     media : array_like
-        Exposure values with time on the first axis. Prepared inputs use
-        ``(time, channel)`` or ``(time, group, channel)``. Include any earlier
-        exposure history needed by the carryover transformation.
+        Exposure values with time on the first axis, including any earlier
+        history needed by the carryover transformation.
     adstock : callable
         Function applying carryover along axis zero while preserving shape.
-        Supply parameters with a function or ``functools.partial``. Keep this
-        argument static when using ``jax.jit``.
+        Keep this argument static when using ``jax.jit``.
     saturation : callable
-        Shape-preserving response curve with parameters supplied as for
-        ``adstock``. Keep this argument static when using ``jax.jit``.
+        Shape-preserving response curve. Keep this argument static when using
+        ``jax.jit``.
     n_periods : int, optional
         Number of final periods to return, such as ``len(data.time_values)``.
-        Must be positive and not exceed the exposure window. Omit to return
-        all periods, including history. Keep this argument static when using
-        ``jax.jit``.
+        Omit to return all periods, including history. Keep this argument
+        static when using ``jax.jit``.
     adstock_first : bool, default True
         Apply carryover before saturation, or reverse the order with ``False``.
         Keep this argument static when using ``jax.jit``.
@@ -56,13 +47,25 @@ def media_response(
     -------
     jax.Array
         Media responses over the selected periods with all other axes
-        unchanged. Precision and numeric domain behavior follow the supplied
-        transformations.
+        unchanged.
+
+    See Also
+    --------
+    reach_frequency_response : Apply carryover to reach-weighted frequency.
+    geometric_adstock : Apply finite geometric carryover.
+    hill_saturation : Apply a Hill response curve.
+
+    Notes
+    -----
+    For learned parameters, define both callbacks inside
+    ``transformed_parameters`` or the log density using current values. Each
+    callback must keep the shape of ``media``, and one that changes it raises
+    ``ValueError``.
 
     Examples
     --------
-    Start with three modeling weeks and one earlier week of impressions
-    that should count towards carryover.
+    One earlier week of impressions counts towards carryover, and the result
+    keeps one response for each modeling week.
 
     .. ipython::
 
@@ -70,10 +73,7 @@ def media_response(
            ...: import numpy as np
            ...: import polars as pl
            ...: from mmmjax import (
-           ...:     geometric_adstock,
-           ...:     hill_saturation,
-           ...:     media_response,
-           ...:     prepare_data,
+           ...:     geometric_adstock, hill_saturation, media_response, prepare_data,
            ...: )
 
         In [2]: frame = pl.DataFrame({
@@ -81,28 +81,19 @@ def media_response(
            ...:     "sales": [120.0, 140.0, 110.0],
            ...:     "video": [200.0, 400.0, 100.0],
            ...: })
-           ...: history = pl.DataFrame({"week": [1], "video": [100.0]})
-
-        In [3]: data = prepare_data(
+           ...: data = prepare_data(
            ...:     frame, time="week", outcome="sales", media=["video"],
-           ...:     media_history=history,
+           ...:     media_history=pl.DataFrame({"week": [1], "video": [100.0]}),
            ...: )
 
-    Apply adstock and then saturation over the full media history and keep
-    one response for each modeling period.
-
-    .. ipython::
-
-        In [4]: response = media_response(
+        In [3]: response = media_response(
            ...:     data.arrays["media"],
            ...:     adstock=partial(geometric_adstock, alpha=0.5, max_lag=2),
-           ...:     saturation=partial(
-           ...:         hill_saturation, half_saturation=200.0, slope=1.0,
-           ...:     ),
+           ...:     saturation=partial(hill_saturation, half_saturation=200.0, slope=1.0),
            ...:     n_periods=len(data.time_values),
            ...: )
 
-        In [5]: frame.with_columns(
+        In [4]: frame.with_columns(
            ...:     pl.Series("video_response", np.asarray(response[:, 0])),
            ...: )
     """
@@ -161,52 +152,50 @@ def reach_frequency_response(
 
         \operatorname{Adstock}\bigl(r \odot S(f)\bigr),
 
-    where :math:`S` is the supplied saturation function and
-    :math:`\odot` denotes elementwise multiplication. Earlier reach and
-    frequency contribute to carryover before the modeling periods are
-    selected. The same calculation supports paid and organic channels.
-    Scaling, coefficient multiplication, and channel summation remain
-    separate.
-
-    For learned parameters, define both callbacks inside
-    ``transformed_parameters`` or the log density using current values.
-    Each callback must keep the shape of ``reach``, and one that changes it
-    raises ``ValueError``.
+    where :math:`S` is the supplied saturation function and :math:`\odot`
+    denotes elementwise multiplication. Earlier reach and frequency contribute
+    to carryover before the modeling periods are selected. The same calculation
+    supports paid and organic channels.
 
     Parameters
     ----------
     reach : array_like
         Finite, nonnegative audience reached, including earlier history.
-        Prepared shapes are ``(time, channel)`` or ``(time, group, channel)``.
-        Supply raw reach or reach transformed using fitted scales.
     frequency : array_like
-        Finite, nonnegative average exposures per person. Must match the shape
-        and order of ``reach``. Keep its original units when scaling inputs.
-        Use :func:`prepare_data` to validate and order reach and frequency.
+        Finite, nonnegative average exposures per person in original units.
+        Must match the shape and order of ``reach``.
     adstock : callable
-        Function applying carryover along axis zero without changing the
-        input shape. It receives reach multiplied by saturated frequency.
-        Keep this argument static when using ``jax.jit``.
+        Function applying carryover along axis zero without changing the input
+        shape. Keep this argument static when using ``jax.jit``.
     saturation : callable
         Shape-preserving response curve with thresholds in frequency units.
-        Supply parameters with a function or ``functools.partial``. Keep this
-        argument static when using ``jax.jit``.
+        Keep this argument static when using ``jax.jit``.
     n_periods : int, optional
         Number of final periods to return, such as ``len(data.time_values)``.
-        Must be positive and not exceed the exposure window. Omit to return
-        all periods, including history. Keep this argument static when using
-        ``jax.jit``.
+        Omit to return all periods, including history. Keep this argument
+        static when using ``jax.jit``.
 
     Returns
     -------
     jax.Array
-        Reach-weighted responses over the selected periods with the other
-        axes unchanged.
+        Reach-weighted responses over the selected periods with the other axes
+        unchanged.
+
+    See Also
+    --------
+    media_response : Apply carryover and saturation together.
+
+    Notes
+    -----
+    For learned parameters, define both callbacks inside
+    ``transformed_parameters`` or the log density using current values. Each
+    callback must keep the shape of ``reach``, and one that changes it raises
+    ``ValueError``.
 
     Examples
     --------
-    Start with reach and frequency for three modeling weeks, the last with
-    no new exposure, plus one earlier week of history.
+    Saturation applies to frequency and the result is weighted by reach.
+    Adstock carries earlier exposure into the week with none.
 
     .. ipython::
 
@@ -214,9 +203,7 @@ def reach_frequency_response(
            ...: import numpy as np
            ...: import polars as pl
            ...: from mmmjax import (
-           ...:     geometric_adstock,
-           ...:     hill_saturation,
-           ...:     prepare_data,
+           ...:     geometric_adstock, hill_saturation, prepare_data,
            ...:     reach_frequency_response,
            ...: )
 
@@ -226,30 +213,21 @@ def reach_frequency_response(
            ...:     "video_frequency": [2.0, 3.0, 0.0],
            ...: })
            ...: history = pl.DataFrame({
-           ...:     "week": [1], "video_reach": [800],
-           ...:     "video_frequency": [1.5],
+           ...:     "week": [1], "video_reach": [800], "video_frequency": [1.5],
            ...: })
-
-        In [3]: data = prepare_data(
+           ...: data = prepare_data(
            ...:     frame, time="week", reach=["video_reach"],
            ...:     media_frequency=["video_frequency"], media_history=history,
            ...: )
 
-    Saturation applies to frequency and the result is weighted by reach.
-    Adstock carries earlier exposure into the week with none.
-
-    .. ipython::
-
-        In [4]: response = reach_frequency_response(
+        In [3]: response = reach_frequency_response(
            ...:     data.arrays["reach"], data.arrays["media_frequency"],
            ...:     adstock=partial(geometric_adstock, alpha=0.5, max_lag=2),
-           ...:     saturation=partial(
-           ...:         hill_saturation, half_saturation=2.0, slope=1.0,
-           ...:     ),
+           ...:     saturation=partial(hill_saturation, half_saturation=2.0, slope=1.0),
            ...:     n_periods=len(data.time_values),
            ...: )
 
-        In [5]: frame.with_columns(
+        In [4]: frame.with_columns(
            ...:     pl.Series("video_response", np.asarray(response[:, 0])),
            ...: )
     """

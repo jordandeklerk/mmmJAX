@@ -37,10 +37,9 @@ def custom_distribution(
     """Make a distribution written as plain functions usable like the built-in families.
 
     The pointwise log density is written as ``logpdf(value, *settings)`` and
-    the draw function as ``rng(key, *settings, sample_shape=())``. These
-    signatures follow the conventions of the built-in families. Both functions
-    must name the same settings in the same order and be pure JAX code whose
-    settings broadcast against the values.
+    the draw function as ``rng(key, *settings, sample_shape=())``. Both
+    functions must name the same settings in the same order and be pure JAX
+    code whose settings broadcast against the values.
 
     The returned function sums the log density over every axis, so it adds to
     the target in ``log_density`` the way ``normal`` or ``gamma`` does.
@@ -50,20 +49,18 @@ def custom_distribution(
     Parameters
     ----------
     logpdf : callable
-        Pointwise log density or log mass. Its first argument is the value
-        and the remaining arguments name the distribution settings.
+        Pointwise log density or log mass. Its first argument is the value and
+        the remaining arguments name the distribution settings.
     rng : callable
-        Random draws. Its first argument is a JAX random key and the
-        ``logpdf`` settings follow it. Its ``sample_shape`` keyword defaults
-        to ``()`` and prepends independent sample axes to the broadcast
-        setting shape.
+        Random draws. Its first argument is a JAX random key and the ``logpdf``
+        settings follow it. Its ``sample_shape`` keyword prepends independent
+        sample axes.
     name : str, optional
-        Name of the returned function. Defaults to the ``logpdf`` name
-        without its ``_logpdf`` or ``_logpmf`` suffix.
+        Name of the returned function. Defaults to the ``logpdf`` name without
+        its ``_logpdf`` or ``_logpmf`` suffix.
     event_ndims : int, default 0
-        Trailing value axes that form one event. Zero marks a scalar family
-        and one a vector family such as a Dirichlet. A vector family needs a
-        setting with an event axis in ``parameter_event_ndims``.
+        Trailing value axes that form one event, zero for a scalar family and
+        one for a vector family such as a Dirichlet.
     parameter_event_ndims : mapping of str to int, optional
         Trailing event axes of any setting that is a vector per batch entry,
         such as ``{"concentration": 1}``. Unlisted settings are scalars.
@@ -74,10 +71,15 @@ def custom_distribution(
         Summed log density with the ``logpdf`` signature. It carries the
         metadata that ``Prior`` needs.
 
+    See Also
+    --------
+    Prior : Bind fixed distribution settings.
+
     Examples
     --------
-    A half-Cauchy prior for a scale parameter is written from its pointwise
-    log density and a draw function.
+    A half-Cauchy prior for a scale parameter is written from its pointwise log
+    density and a draw function. The returned function sums the log density,
+    and a prior binds its setting for draws and pointwise terms.
 
     .. ipython::
 
@@ -95,11 +97,6 @@ def custom_distribution(
            ...:     return jnp.abs(scale * jax.random.cauchy(key, shape))
            ...:
            ...: half_cauchy = custom_distribution(half_cauchy_logpdf, half_cauchy_rng)
-
-    The returned function sums the log density, and a prior binds its setting
-    for draws and pointwise terms.
-
-    .. ipython::
 
         In [2]: half_cauchy(jnp.array([0.5, 2.0]), 1.0)
 

@@ -59,28 +59,17 @@ def sample(
     ``generate`` is false, the model's ``generated_quantities`` callback runs
     once for every retained draw.
 
-    Parameters keep their declared axes and labels in the results. Predictive
-    and log-likelihood outputs shaped like the outcome take its labels, and
-    log-prior terms named after a parameter take its axes. Custom axes use the
-    model's ``dims``, ``generated_dims``, and ``coords``.
-
-    The results carry each chain's final position, tuning, and random
-    stream, so :func:`continue_sampling` can add draws later without
-    repeating warmup, even after the results are saved to disk.
-
-    A ``ValueError`` is raised before warmup when a starting position has a
-    nonfinite log density or gradient, and a ``RuntimeError`` when a retained
-    draw has a nonfinite log density. Divergent transitions and draws that
-    reach ``max_tree_depth`` trigger a ``RuntimeWarning`` and are recorded in
-    ``sample_stats``.
+    The results carry each chain's final position, tuning, and random stream,
+    so :func:`continue_sampling` can add draws later without repeating warmup,
+    even after the results are saved to disk.
 
     Parameters
     ----------
     model : Model
         Model defining parameter constraints, priors, and likelihood.
     data : object, optional
-        Inputs for a model without prepared data. Omit it for prepared
-        models, since they use their stored observations and fitted scaling.
+        Inputs for a model without prepared data. Omit it for prepared models,
+        since they use their stored observations and fitted scaling.
     draws : int, default 1000
         Retained draws per chain, excluding warmup.
     warmup : int, default 1000
@@ -88,9 +77,8 @@ def sample(
     chains : int, default 4
         Number of independently adapted chains.
     chain_method : {"sequential", "vectorized", "parallel"}, default "sequential"
-        Run chains one at a time, together on one device, or one per local
-        JAX device. Parallel sampling requires at least ``chains`` devices.
-        Vectorized chains use more memory and are not always faster.
+        Run chains one at a time, together on one device, or one per local JAX
+        device. Parallel sampling requires at least ``chains`` devices.
     seed : int, default 0
         Random seed for initialization, sampling, and generated quantities,
         from 0 to ``2**32 - 1``.
@@ -98,29 +86,25 @@ def sample(
         Target acceptance probability during adaptation, between zero and one.
     mass_matrix : {"diagonal", "dense"}, default "diagonal"
         Adapt one scale per unconstrained parameter value, or also their
-        correlations in a dense matrix. The dense matrix costs more
-        computation and grows quadratically with the number of values.
+        correlations in a dense matrix.
     max_tree_depth : int, default 10
         Maximum trajectory expansion depth for each NUTS step.
     initial_values : mapping of str to array_like, optional
-        Complete constrained parameter values used to start every chain.
-        Omit to start each chain from its own random unconstrained position.
+        Complete constrained parameter values used to start every chain. Omit
+        to start each chain from its own random unconstrained position.
     generate : bool, default True
         Evaluate outputs from the ``generated_quantities`` callback.
     save_unconstrained : bool, default True
         Also store the retained draws in the sampler's unconstrained space as
         an ``unconstrained_posterior`` group.
     chunk_size : int, default 100
-        Maximum retained draws per chain in a sampling chunk before transfer
-        to host memory. Smaller chunks reduce device memory use without
-        restarting warmup or thinning draws.
+        Maximum retained draws per chain in a sampling chunk before transfer to
+        host memory.
     batch_size : int, default 64
         Maximum draws evaluated together across chains when constraining
-        parameters and generating quantities. Smaller batches reduce working
-        memory without changing NUTS or the number of retained draws.
+        parameters and generating quantities.
     progress : bool, default True
-        Show progress bars for warmup and for each sampling chunk. Parallel
-        counters follow individual devices rather than all chains.
+        Show progress bars for warmup and for each sampling chunk.
 
     Returns
     -------
@@ -138,6 +122,25 @@ def sample(
         - **unconstrained_posterior** — Draws in the sampler's unconstrained
           space
         - **sampling_state** — Final sampler state for ``continue_sampling``
+
+    See Also
+    --------
+    continue_sampling : Add posterior draws without repeating warmup.
+    sample_prior : Draw priors and their implied outcomes before fitting.
+    generate_quantities : Evaluate generated quantities from existing draws.
+
+    Notes
+    -----
+    A ``ValueError`` is raised before warmup when a starting position has a
+    nonfinite log density or gradient, and a ``RuntimeError`` when a retained
+    draw has a nonfinite log density. Divergent transitions and draws that
+    reach ``max_tree_depth`` trigger a ``RuntimeWarning`` and are recorded in
+    ``sample_stats``.
+
+    Vectorized chains use more memory and are not always faster, and a dense
+    mass matrix grows quadratically with the number of values. Smaller
+    ``chunk_size`` and ``batch_size`` values reduce memory use without changing
+    the retained draws.
     """
     if not isinstance(model, Model):
         raise TypeError("model must be a Model")
@@ -287,14 +290,6 @@ def continue_sampling(
     advances with them, so the combined results can be continued again. The
     supplied results are not modified.
 
-    A ``ValueError`` is raised when the JAX precision setting differs from
-    the original run's, or when a parallel run has fewer local devices than
-    chains. A different model or dataset needs a new run with :func:`sample`.
-
-    A new draw with a nonfinite log density raises a ``RuntimeError`` and
-    leaves ``results`` unchanged. Divergent transitions and draws that reach
-    the maximum tree depth trigger a ``RuntimeWarning``, as in :func:`sample`.
-
     Parameters
     ----------
     model : Model
@@ -319,6 +314,20 @@ def continue_sampling(
     -------
     xarray.DataTree
         Original and additional draws in every sampled group.
+
+    See Also
+    --------
+    sample : Sample a model with NUTS.
+
+    Notes
+    -----
+    A ``ValueError`` is raised when the JAX precision setting differs from
+    the original run's, or when a parallel run has fewer local devices than
+    chains. A different model or dataset needs a new run with :func:`sample`.
+
+    A new draw with a nonfinite log density raises a ``RuntimeError`` and
+    leaves ``results`` unchanged. Divergent transitions and draws that reach
+    the maximum tree depth trigger a ``RuntimeWarning``, as in :func:`sample`.
     """
     if not isinstance(model, Model):
         raise TypeError("model must be a Model")
@@ -677,17 +686,15 @@ def sample_prior(
     """Draw explicit priors and inspect their implied outcomes before fitting.
 
     Every parameter is drawn from ``prior``, and neither the ``log_density``
-    callback nor the sampler runs. A ``ValueError`` is raised when a draw has
-    the wrong shape, is not finite, or falls outside its parameter's
-    constraints.
+    callback nor the sampler runs.
 
-    Unless ``generate`` is false, the model's ``generated_quantities``
-    callback runs at each draw with any transformed quantities it requests.
-    Its predictive outputs show the outcomes the priors imply before any
-    fitting, and its log-likelihood and log-prior outputs are left out.
+    Unless ``generate`` is false, the model's ``generated_quantities`` callback
+    runs at each draw with any transformed quantities it requests. Its
+    predictive outputs show the outcomes the priors imply before any fitting,
+    and its log-likelihood and log-prior outputs are left out.
 
-    Because ``log_density`` never runs, the draws describe the model only
-    when ``prior`` states the same distributions as the priors written in it.
+    Because ``log_density`` never runs, the draws describe the model only when
+    ``prior`` states the same distributions as the priors written in it.
 
     Parameters
     ----------
@@ -720,6 +727,17 @@ def sample_prior(
         - **prior_predictive** — Outputs returned under ``predictive``
         - **prior_generated_quantities** — Other generated outputs
         - **observed_data**, **constant_data** — Inputs in model units
+
+    See Also
+    --------
+    sample : Sample a model with NUTS.
+    check_prior : Inspect prior probability outside a meaningful range.
+    plot_prior_posterior : Overlay each parameter's prior and posterior.
+
+    Notes
+    -----
+    A ``ValueError`` is raised when a draw has the wrong shape, is not finite,
+    or falls outside its parameter's constraints.
     """
     if not isinstance(model, Model):
         raise TypeError("model must be a Model")
@@ -893,12 +911,6 @@ def generate_quantities(
     ``media_history``, since none carry over from training. A model without
     prepared data receives ``new_data`` as is.
 
-    With ``new_data`` on a prepared model, predictive draws go to
-    ``predictions``, pointwise log likelihoods to
-    ``predictions_log_likelihood``, and the new inputs and outcome to
-    ``predictions_constant_data``. ArviZ's checks on the fit never read these
-    groups.
-
     Parameters
     ----------
     model : Model
@@ -927,6 +939,19 @@ def generate_quantities(
         - **posterior_predictive**, **log_likelihood**, **log_prior**,
           **generated_quantities** — Newly evaluated model outputs
         - **observed_data**, **constant_data** — Inputs in model units
+
+    See Also
+    --------
+    sample : Sample a model with NUTS.
+    sample_prior : Draw priors and their implied outcomes before fitting.
+
+    Notes
+    -----
+    With ``new_data`` on a prepared model, predictive draws go to
+    ``predictions``, pointwise log likelihoods to
+    ``predictions_log_likelihood``, and the new inputs and outcome to
+    ``predictions_constant_data``. ArviZ's checks on the fit never read these
+    groups.
     """
     if not isinstance(model, Model):
         raise TypeError("model must be a Model")

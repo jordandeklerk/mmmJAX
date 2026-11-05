@@ -40,6 +40,10 @@ class HSGPApproximation:
     column_means : tuple of float or None
         Basis column means over the preparation positions. :meth:`basis`
         subtracts them when the approximation was prepared with centering.
+
+    See Also
+    --------
+    prepare_hsgp : Choose a fixed domain and basis count.
     """
 
     center: float
@@ -128,93 +132,76 @@ def prepare_hsgp(
 ) -> HSGPApproximation:
     """Choose a fixed domain and basis count for a time-varying process.
 
-    The longest expected length scale sets how far the domain reaches past
-    the time range, and the shortest sets how many basis functions it takes
-    to follow faster changes. The recommended half-width is never less than
-    1.2 times half the time span.
+    The longest expected length scale sets how far the domain reaches past the
+    time range, and the shortest sets how many basis functions it takes to
+    follow faster changes.
 
-    These recommendations for each covariance family follow
-    Riutort-Mayol et al. (2022) and can understate variation near the ends of
-    the time range. Refitting with a wider ``boundary`` and a larger
-    ``n_basis`` shows whether results depend on the approximation. More basis
-    functions alone cannot make up for too little padding.
-
-    The approximation is prepared once on the host, outside ``jax.jit``,
-    before the model is defined. It fits no curve and sets no priors, and the
-    length scale range places no limit on the model's length scales.
-
-    Later predictions reuse the approximation and must measure time from the
-    same origin. With ``center_columns``, any curve built on the basis
-    averages zero over the observed positions, so an intercept keeps the
-    level.
+    The approximation is prepared once on the host, outside ``jax.jit``, before
+    the model is defined. It sets no priors, and later predictions reuse it and
+    must measure time from the same origin. See :doc:`/user_guide/changing` for
+    a trend built on it.
 
     Parameters
     ----------
     time_range : array_like
         Two finite numeric endpoints in increasing order that cover the
-        training periods and planned forecasts, as in ``(0, 116)`` for weeks
-        0 through 104 and forecasts through week 116. Observed positions such
-        as ``data.time_positions`` reduce to their smallest and largest values.
+        training periods and planned forecasts, as in ``(0, 116)``. Observed
+        positions such as ``data.time_positions`` reduce to their smallest and
+        largest values.
     length_scale_range : array_like
         Two positive, finite endpoints in increasing order, in the units of
-        ``time_range``. The range should hold most of the prior probability
-        of the model's length scales.
+        ``time_range``. The range should hold most of the prior probability of
+        the model's length scales.
     covariance : {"expquad", "matern32", "matern52"}, default "matern52"
         Covariance family.
     boundary : float, optional
-        Domain half-width in the units of ``time_range``. It must be finite
-        and greater than half the time span. Defaults to the recommended
-        half-width.
+        Domain half-width in the units of ``time_range``, greater than half the
+        time span. Defaults to the recommended half-width.
     n_basis : int, optional
         Positive number of basis functions. Defaults to the recommended count
         for the domain half-width and the shortest length scale.
     center_columns : bool, default False
         Subtract each basis column's mean over the observed positions from
-        every later evaluation. Requires observed positions in ``time_range``
-        rather than two endpoints.
+        every later evaluation, so that an intercept keeps the level. Requires
+        observed positions in ``time_range``.
 
     Returns
     -------
     HSGPApproximation
-        Reusable approximation with the following fields.
+        Reusable approximation for training and prediction.
 
-        - **center** — Time range midpoint
-        - **boundary** — Padded domain half-width
-        - **n_basis** — Basis count
-        - **covariance** — Covariance family for coefficient weights
+    See Also
+    --------
+    HSGPApproximation : Retain one approximation for training and prediction.
+    hsgp_basis : Build a fixed time basis.
+    hsgp_weights : Compute coefficient standard deviations.
+
+    Notes
+    -----
+    The recommended half-width is never less than 1.2 times half the time span.
+    These recommendations for each covariance family follow Riutort-Mayol et
+    al. (2022) and can understate variation near the ends of the time range.
+
+    Refitting with a wider ``boundary`` and a larger ``n_basis`` shows whether
+    results depend on the approximation. More basis functions alone cannot make
+    up for too little padding, and the length scale range places no limit on
+    the model's length scales.
 
     Examples
     --------
-    Start with observations at four points in time and a domain that
-    leaves room for four forecast weeks.
+    Leave room for four forecast weeks. Future weeks reuse the definition, so
+    their basis has the same columns and pairs with the same weights.
 
     .. ipython::
 
-        In [1]: import polars as pl
-           ...: from mmmjax import prepare_hsgp
+        In [1]: from mmmjax import prepare_hsgp
 
-        In [2]: frame = pl.DataFrame({
-           ...:     "week": [0, 4, 8, 12],
-           ...:     "sales": [100.0, 120.0, 110.0, 130.0],
-           ...: })
-
-        In [3]: approximation = prepare_hsgp((0, 16), length_scale_range=(2, 8))
-
-    The basis for the training weeks and the spectral weights for a chosen
-    length scale come from the same approximation.
-
-    .. ipython::
-
-        In [4]: basis = approximation.basis(frame["week"].to_numpy())
+        In [2]: approximation = prepare_hsgp((0, 16), length_scale_range=(2, 8))
+           ...: basis = approximation.basis([0.0, 4.0, 8.0, 12.0])
+           ...: future_basis = approximation.basis([13.0, 14.0, 15.0, 16.0])
            ...: weights = approximation.weights(length_scale=4.0)
 
-    Future weeks reuse the definition, so their basis has the same number of
-    columns and pairs with the same weights.
-
-    .. ipython::
-
-        In [5]: future_basis = approximation.basis([13.0, 14.0, 15.0, 16.0])
-           ...: basis.shape, weights.shape, future_basis.shape
+        In [3]: basis.shape, future_basis.shape, weights.shape
     """
     if covariance not in ("expquad", "matern32", "matern52"):
         raise ValueError(f"covariance must be 'expquad', 'matern32', or 'matern52', got {covariance!r}")
@@ -315,17 +302,7 @@ def hsgp_basis(
     The basis depends only on time, so one basis serves every group and
     channel. The frequencies go to :func:`hsgp_weights`, and multiplying the
     basis by those weights and by model coefficients gives a time-varying
-    curve. The function chooses no priors and fits no curve to observations.
-
-    Every basis function vanishes at ``center - boundary`` and
-    ``center + boundary``, so training and forecast positions should lie well
-    inside that interval. More functions follow shorter-scale changes, and a
-    wider domain generally needs more of them for the same resolution.
-
-    Forecast calls must reuse the training center, boundary, and basis count
-    and measure dated inputs from the same reference date. Their basis then
-    lines up with the training basis instead of being recentered on the new
-    data.
+    curve.
 
     Parameters
     ----------
@@ -333,8 +310,8 @@ def hsgp_basis(
         One-dimensional, finite numeric time positions, such as elapsed time
         from a fixed reference date.
     center : array_like
-        Finite scalar subtracted from the time positions, such as the
-        midpoint of the training time range.
+        Finite scalar subtracted from the time positions, such as the midpoint
+        of the training time range.
     boundary : array_like
         Positive, finite half-width of the approximation domain in the same
         units as ``time``.
@@ -352,31 +329,37 @@ def hsgp_basis(
         Angular frequencies shaped ``(n_basis,)`` in inverse time units. An
         invalid boundary gives ``nan`` frequencies.
 
+    See Also
+    --------
+    hsgp_weights : Compute coefficient standard deviations.
+    prepare_hsgp : Choose a fixed domain and basis count.
+
+    Notes
+    -----
+    Every basis function vanishes at ``center - boundary`` and
+    ``center + boundary``, so training and forecast positions should lie well
+    inside that interval. More functions follow shorter-scale changes, and a
+    wider domain generally needs more of them for the same resolution.
+
+    Forecast calls must reuse the training center, boundary, and basis count
+    and measure dated inputs from the same reference date. Their basis then
+    lines up with the training basis instead of being recentered on the new
+    data.
+
     Examples
     --------
-    Start with four weekly observations.
-
-    .. ipython::
-
-        In [1]: import polars as pl
-           ...: from mmmjax import hsgp_basis
-
-        In [2]: frame = pl.DataFrame({
-           ...:     "week": [0, 1, 2, 3],
-           ...:     "sales": [100.0, 120.0, 110.0, 130.0],
-           ...: })
-
-    Center the basis on the observed weeks with a boundary wide enough to
+    Center the basis on four observed weeks with a boundary wide enough to
     leave room for future weeks. The basis has one column per frequency.
 
     .. ipython::
 
-        In [3]: basis, frequencies = hsgp_basis(
-           ...:     frame["week"].to_numpy(),
-           ...:     center=1.5, boundary=10.0, n_basis=20,
+        In [1]: from mmmjax import hsgp_basis
+
+        In [2]: basis, frequencies = hsgp_basis(
+           ...:     [0.0, 1.0, 2.0, 3.0], center=1.5, boundary=10.0, n_basis=20,
            ...: )
 
-        In [4]: basis.shape, frequencies.shape
+        In [3]: basis.shape, frequencies.shape
     """
     if isinstance(n_basis, bool) or not isinstance(n_basis, int):
         raise TypeError("n_basis must be a positive Python integer and stay fixed during JIT compilation")
@@ -436,31 +419,23 @@ def hsgp_weights(
         \end{cases}
 
     With standard-normal model coefficients ``z``, the curve is
-    ``basis @ (weights * z)``. Zero-mean Normal priors with these standard
-    deviations placed directly on the basis coefficients give the same prior
-    over curves.
-
-    Larger length scales favor slower changes. Matérn 3/2 allows rougher
-    curves than Matérn 5/2, and the squared-exponential family ``expquad``
-    produces very smooth curves.
-
-    The amplitude is the standard deviation of the underlying process, so
-    zero disables variation. The target marginal variance is
-    ``amplitude**2``, and how closely the approximation matches it depends on
-    the domain and basis count.
+    ``basis @ (weights * z)``. Larger length scales favor slower changes.
+    Matérn 3/2 allows rougher curves than Matérn 5/2, and the
+    squared-exponential family ``expquad`` produces very smooth curves.
 
     Parameters
     ----------
     frequencies : array_like
         One-dimensional, finite angular frequencies returned by
-        :func:`hsgp_basis`. Zero and negative frequencies are also accepted.
+        :func:`hsgp_basis`.
     length_scale : array_like
         Positive, finite length scale in the time units used to build the
         basis. A scalar gives one shared scale and an array such as
         ``(group, channel)`` gives separate scales.
     amplitude : array_like, default 1.0
         Nonnegative, finite standard deviation of the underlying stationary
-        process. Its shape must broadcast with ``length_scale``.
+        process. Zero disables variation. Its shape must broadcast with
+        ``length_scale``.
     covariance : {"expquad", "matern32", "matern52"}, default "matern52"
         Covariance family. Keep this argument static when using ``jax.jit``.
 
@@ -472,9 +447,22 @@ def hsgp_weights(
         ``amplitude``. Floating dtype is at least float32. Invalid numeric
         inputs give ``nan`` in affected positions.
 
+    See Also
+    --------
+    hsgp_basis : Build a fixed time basis.
+    prepare_hsgp : Choose a fixed domain and basis count.
+
+    Notes
+    -----
+    Zero-mean Normal priors with these standard deviations placed directly on
+    the basis coefficients give the same prior over curves.
+
+    The target marginal variance is ``amplitude**2``, and how closely the
+    approximation matches it depends on the domain and basis count.
+
     Examples
     --------
-    Build a basis over four points in time.
+    Standard-normal coefficients give one prior draw of a smooth curve.
 
     .. ipython::
 
@@ -482,26 +470,12 @@ def hsgp_weights(
            ...: from mmmjax import hsgp_basis, hsgp_weights, normal_rng
 
         In [2]: basis, frequencies = hsgp_basis(
-           ...:     [0.0, 1.0, 2.0, 3.0],
-           ...:     center=1.5, boundary=10.0, n_basis=20,
+           ...:     [0.0, 1.0, 2.0, 3.0], center=1.5, boundary=10.0, n_basis=20,
            ...: )
+           ...: weights = hsgp_weights(frequencies, length_scale=3.0, amplitude=0.5)
+           ...: z = normal_rng(random.key(0), 0.0, 1.0, sample_shape=(20,))
 
-    The weights scale each frequency according to the length scale and
-    amplitude of the process.
-
-    .. ipython::
-
-        In [3]: weights = hsgp_weights(
-           ...:     frequencies, length_scale=3.0, amplitude=0.5,
-           ...: )
-
-    Standard-normal coefficients give one draw of a smooth curve. These are
-    prior draws, not estimates fitted to observed outcomes.
-
-    .. ipython::
-
-        In [4]: z = normal_rng(random.key(0), 0.0, 1.0, sample_shape=(20,))
-           ...: basis @ (weights * z)
+        In [3]: basis @ (weights * z)
     """
     if covariance not in ("expquad", "matern32", "matern52"):
         raise ValueError(f"covariance must be 'expquad', 'matern32', or 'matern52', got {covariance!r}")
