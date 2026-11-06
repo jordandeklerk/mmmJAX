@@ -137,6 +137,11 @@ def sample(
     reach ``max_tree_depth`` trigger a ``RuntimeWarning`` and are recorded in
     ``sample_stats``.
 
+    A prior with a shape or concentration well below one puts mass closer to a
+    bound than floating point can represent. Positions past that limit are
+    rejected, so the prior is truncated and divergences appear. 64-bit
+    precision moves the limit further out.
+
     Vectorized chains use more memory and are not always faster, and a dense
     mass matrix grows quadratically with the number of values. Smaller
     ``chunk_size`` and ``batch_size`` values reduce memory use without changing

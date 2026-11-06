@@ -73,8 +73,9 @@ for the usual causes.
 JAX computes in 32-bit floating point unless you tell it otherwise, and so
 does mmmJAX. That's fast and accurate enough for most marketing mix models,
 especially once the data is scaled. Switch to 64-bit for very long series, for
-quantities that differ by many orders of magnitude, or to compare against a
-library that samples in 64-bit.
+quantities that differ by many orders of magnitude, for priors with a shape or
+concentration well below one, or to compare against a library that samples in
+64-bit.
 
 ```python
 import jax

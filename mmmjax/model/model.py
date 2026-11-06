@@ -761,6 +761,13 @@ class Model:
         -------
         jax.Array
             Scalar callback log density plus parameterization adjustments.
+
+        Notes
+        -----
+        A transform can round a finite position onto an excluded bound, where a
+        prior with a shape or concentration below one is infinite. That value
+        comes from rounding and NUTS could never leave it, so positive infinity
+        is returned as negative infinity to reject the position.
         """
         parameters = self.constrain(position)
         density = self._blocks.evaluate_density(parameters, data)
@@ -772,7 +779,9 @@ class Model:
             )
             density = density + adjustment
 
-        return density
+        # blackjax accepts +inf and can never leave it, so a position that rounds onto a pole is rejected.
+        guarded = jnp.where(jnp.isposinf(density), -jnp.inf, density)
+        return guarded
 
     def generate_quantities(
         self,
