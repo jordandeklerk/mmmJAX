@@ -21,12 +21,14 @@ from mmmjax import (
     CorrelationCholesky,
     Data,
     Interval,
+    LowerBound,
     Model,
     Positive,
     Prior,
     Real,
     Scaling,
     Simplex,
+    UpperBound,
     beta,
     continue_sampling,
     dirichlet,
@@ -1467,9 +1469,21 @@ def test_initial_values_must_be_complete_finite_constrained_parameters(normal_mo
 @pytest.mark.parametrize("value", [-1.0, 0.0])
 def test_initial_positive_parameters_must_be_in_the_interior(nuts_calls, value):
     model = Model(parameters={"scale": Positive()}, log_density=lambda data, scale: half_normal(scale, 1.0))
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="initial_values for 'scale'"):
         sample(model, initial_values={"scale": value}, draws=2, warmup=3, chains=1)
     assert not nuts_calls
+
+
+@pytest.mark.parametrize(
+    "parameter, value",
+    [(LowerBound(-1.0), 0.001), (UpperBound(1.0), -0.001), (Interval(-1.0, 1.0), 0.001)],
+)
+def test_initial_values_near_zero_on_nonzero_bounds_are_accepted(nuts_calls, parameter, value):
+    model = Model(parameters={"location": parameter}, log_density=lambda data, location: normal(location, 0.0, 1.0))
+
+    sample(model, initial_values={"location": value}, draws=2, warmup=3, chains=1)
+
+    assert len(nuts_calls) == 1
 
 
 def test_nuts_samples_correlation_factors_with_labeled_matrix_axes():

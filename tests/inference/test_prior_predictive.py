@@ -1,5 +1,7 @@
 """Tests for explicit prior draws and labeled prior predictive quantities."""
 
+from collections.abc import Callable
+from dataclasses import dataclass
 from functools import partial
 
 import jax
@@ -8,6 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
+from tensorflow_probability.substrates.jax import bijectors as tfb
 
 import mmmjax
 import mmmjax.inference.sampling as sampling
@@ -21,6 +24,7 @@ from mmmjax import (
     Real,
     Simplex,
     dirichlet,
+    dirichlet_rng,
     fit_data_scaling,
     fourier_features,
     geometric_adstock,
@@ -959,6 +963,64 @@ def test_prior_values_must_satisfy_declared_support(parameter, value):
     model = Model(parameters={"location": parameter}, log_density=lambda data, location: jnp.nan)
     with pytest.raises(ValueError, match=r"(constraint|finite|support)"):
         sample_prior(model, lambda key: {"location": value}, draws=2)
+
+
+@dataclass(frozen=True)
+class _CustomDeclaration:
+    constrain: Callable[[jax.Array], jax.Array]
+    unconstrain: Callable[[jax.Array], jax.Array]
+    shape: tuple[int, ...]
+    position_shape: tuple[int, ...]
+
+    @property
+    def dtype(self):
+        return jnp.asarray(0.0).dtype
+
+    def log_density_adjustment(self, position):
+        raise AssertionError("Prior sampling must not evaluate the model density")
+
+    def initialize(self, key):
+        raise AssertionError("Prior sampling must not initialize positions")
+
+
+def _ordered_declaration(size):
+    def constrain(position):
+        increments = jnp.concatenate([jnp.zeros(1, position.dtype), jnp.exp(position[1:])])
+        return position[0] + jnp.cumsum(increments)
+
+    def unconstrain(parameter):
+        return jnp.concatenate([parameter[:1], jnp.log(jnp.diff(parameter))])
+
+    return _CustomDeclaration(constrain, unconstrain, shape=(size,), position_shape=(size,))
+
+
+@pytest.mark.parametrize(
+    "parameter, prior",
+    [
+        pytest.param(
+            Interval(-1.0, 1.0), partial(jax.random.uniform, minval=-1.0, maxval=1.0), id="interval-across-zero"
+        ),
+        pytest.param(Simplex((430,)), lambda key: dirichlet_rng(key, jnp.full(430, 0.5)), id="large-simplex"),
+        pytest.param(
+            _ordered_declaration(3), lambda key: jnp.sort(100.0 * jax.random.normal(key, (3,))), id="custom-ordered"
+        ),
+    ],
+)
+def test_legal_prior_draws_pass_the_support_check(parameter, prior):
+    model = Model(parameters={"location": parameter}, log_density=lambda data, location: jnp.nan)
+
+    results = sample_prior(model, lambda key: {"location": prior(key)}, draws=500)
+
+    assert results["prior"]["location"].sizes["draw"] == 500
+
+
+def test_prior_values_off_a_custom_simplex_are_rejected():
+    bijector = tfb.SoftmaxCentered()
+    declaration = _CustomDeclaration(bijector.forward, bijector.inverse, shape=(3,), position_shape=(2,))
+    model = Model(parameters={"weights": declaration}, log_density=lambda data, weights: jnp.nan)
+
+    with pytest.raises(ValueError, match="must satisfy"):
+        sample_prior(model, lambda key: {"weights": jnp.array([0.2, 0.3, 0.8])}, draws=2)
 
 
 @pytest.mark.parametrize("invalid", [-1.0, jnp.nan])

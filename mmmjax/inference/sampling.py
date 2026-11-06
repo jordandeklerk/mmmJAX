@@ -28,6 +28,7 @@ from mmmjax.model.model import (
     _ResultGroup,
     _validate_value_names,
 )
+from mmmjax.model.parameters import _satisfies_support
 
 __all__ = ["continue_sampling", "generate_quantities", "sample", "sample_prior"]
 
@@ -190,11 +191,9 @@ def sample(
         positions = jax.vmap(model.initialize_random)(jax.random.split(initialization_key, chains))
     else:
         initial = model.unconstrain(initial_values)
-        restored = model.constrain(initial)
-        for name, value in restored.items():
-            supplied = np.asarray(initial_values[name])
-            tolerance = 32 * np.finfo(value.dtype).eps
-            if not np.isfinite(supplied).all() or not np.allclose(supplied, value, rtol=tolerance, atol=0):
+        for name, declaration in model.parameters.items():
+            supplied = jnp.asarray(initial_values[name], dtype=declaration.dtype)
+            if not _satisfies_support(declaration, supplied):
                 raise ValueError(f"initial_values for {name!r} must satisfy its parameter constraints")
         positions = {name: jnp.broadcast_to(value, (chains, *value.shape)) for name, value in initial.items()}
 
@@ -870,15 +869,9 @@ def _prior_draws(
         return parameters
 
     def valid_support(parameters: dict[str, jax.Array]) -> dict[str, jax.Array]:
-        valid = {}
-        for name, declaration in model.parameters.items():
-            value = parameters[name]
-            position = declaration.unconstrain(value)
-            restored = declaration.constrain(position)
-            tolerance = 32 * jnp.finfo(restored.dtype).eps
-            valid[name] = jnp.all(jnp.isfinite(position)) & jnp.all(
-                jnp.isclose(restored, value, rtol=tolerance, atol=0)
-            )
+        valid = {
+            name: _satisfies_support(declaration, parameters[name]) for name, declaration in model.parameters.items()
+        }
         return valid
 
     parameters = _evaluate_draws(

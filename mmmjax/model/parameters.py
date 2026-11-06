@@ -1217,3 +1217,21 @@ def _initialize(
         minval=-2.0,
         maxval=2.0,
     )
+
+
+def _satisfies_support(declaration: Parameterization, value: jax.Array) -> jax.Array:
+    """Return whether a constrained value lies in the support of its declaration."""
+    position = declaration.unconstrain(value)
+    finite = jnp.all(jnp.isfinite(value)) & jnp.all(jnp.isfinite(position))
+    # An elementwise inverse is nan or inf off its support, and a round trip would only reject legal values.
+    if isinstance(declaration, (Real, Positive, LowerBound, UpperBound, Interval)):
+        return finite
+
+    # The copy skips a bijector's cache, and rounding grows with the largest magnitude in the round trip.
+    restored = declaration.constrain(jnp.copy(position))
+    tolerance = 32 * jnp.finfo(restored.dtype).eps
+    largest_value = jnp.max(jnp.abs(value), initial=1.0)
+    scale = jnp.max(jnp.abs(position), initial=largest_value)
+    close = jnp.isclose(restored, value, rtol=tolerance, atol=tolerance * scale)
+    supported = finite & jnp.all(close)
+    return supported
