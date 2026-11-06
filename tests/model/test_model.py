@@ -14,11 +14,15 @@ import xarray as xr
 from mmmjax import (
     CorrelationCholesky,
     Data,
+    Interval,
     Model,
     Positive,
     Real,
     Simplex,
+    beta,
+    dirichlet,
     exponential,
+    gamma,
     half_normal,
     lkj_cholesky,
     lognormal,
@@ -881,6 +885,44 @@ def test_log_density_constrains_parameters_and_adds_adjustments_once() -> None:
 
     assert result.shape == ()
     assert jnp.allclose(result, expected)
+
+
+@pytest.mark.parametrize("enable_x64", [False, True])
+@pytest.mark.parametrize(
+    "declaration, arguments, density, position",
+    [
+        pytest.param(Positive, (), lambda data, x: gamma(x, 0.5, 1.0), -1e4, id="positive"),
+        pytest.param(Interval, (0.0, 1.0), lambda data, x: beta(x, 0.5, 0.5), 1e3, id="interval"),
+        pytest.param(Simplex, (3,), lambda data, x: dirichlet(x, jnp.full(3, 0.5)), [2e3, 0.0], id="simplex"),
+        pytest.param(Real, (), lambda data, x: gamma(jnp.exp(x), 0.5, 1.0), -1e4, id="transform-in-block"),
+    ],
+)
+def test_log_density_rejects_positions_that_round_onto_a_pole(declaration, arguments, density, position, enable_x64):
+    with jax.enable_x64(enable_x64):
+        model = Model(parameters={"x": declaration(*arguments)}, log_density=density)
+        values = {"x": jnp.asarray(position)}
+
+        eager = model.log_density(values, None)
+        compiled = jax.jit(model.log_density)(values, None)
+
+        for result in (eager, compiled):
+            assert jnp.isneginf(result)
+
+
+def test_log_density_keeps_nan_from_invalid_settings() -> None:
+    model = Model(parameters={"x": Positive()}, log_density=lambda data, x: gamma(x, -1.0, 1.0))
+
+    result = model.log_density({"x": jnp.asarray(0.0)}, None)
+
+    assert jnp.isnan(result)
+
+
+def test_log_prob_reports_the_density_at_a_pole() -> None:
+    model = Model(parameters={"x": Positive()}, log_density=lambda data, x: gamma(x, 0.5, 1.0))
+
+    result = model.log_prob({"x": 0.0})
+
+    assert jnp.isposinf(result)
 
 
 @pytest.mark.parametrize("method_name", ["log_density", "log_prob"])
