@@ -423,6 +423,12 @@ def _generation_layout(
     if not (generate and model._has_generated_quantities):
         return {}, {}
     outputs, arguments = model._generate_with_inputs(key, parameters, inputs)
+    # An eager preview accepts code that tracing rejects, so trace the evaluator the draws will use before sampling.
+    jax.eval_shape(
+        jax.vmap(lambda key, values: model._generate_with_inputs(key, values, inputs)[0]),
+        key[None],
+        {name: value[None] for name, value in parameters.items()},
+    )
     return outputs, _output_dimensions(model, outputs, arguments, dimensions, prepared)
 
 

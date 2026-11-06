@@ -1612,6 +1612,47 @@ def test_generated_quantities_are_validated_before_chain_adaptation(nuts_calls, 
     assert not nuts_calls
 
 
+def _callback_without_vmap_method(key, mu):
+    doubled = jax.pure_callback(lambda value: 2 * np.asarray(value), jax.ShapeDtypeStruct(mu.shape, mu.dtype), mu)
+    return {"mu": doubled}
+
+
+@pytest.mark.parametrize(
+    "block, error",
+    [
+        pytest.param(lambda key, mu: {"mu": mu * float(mu[0])}, jax.errors.ConcretizationTypeError, id="float"),
+        pytest.param(lambda key, mu: {"mu": mu if mu[0] > 0 else -mu}, jax.errors.TracerBoolConversionError, id="if"),
+        pytest.param(lambda key, mu: {"mu": np.asarray(mu)}, jax.errors.TracerArrayConversionError, id="numpy"),
+        pytest.param(lambda key, mu: {"mu": mu[mu > 0].mean()}, jax.errors.NonConcreteBooleanIndexError, id="mask"),
+        pytest.param(_callback_without_vmap_method, NotImplementedError, id="vmap"),
+    ],
+)
+def test_untraceable_generated_quantities_fail_before_chain_adaptation(nuts_calls, block, error):
+    model = _saved_model(generated_quantities=block, generated_dims={})
+
+    with pytest.raises(error):
+        sample(model, draws=2, warmup=3, chains=1)
+    assert not nuts_calls
+
+
+def test_untraceable_generated_quantities_fail_before_continuing_chains(nuts_calls):
+    first = sample(_saved_model(), draws=2, warmup=3, chains=1)
+    edited = _saved_model(generated_quantities=lambda key, mu: {"mu": mu * float(mu[0])})
+
+    with pytest.raises(jax.errors.ConcretizationTypeError):
+        continue_sampling(edited, first, draws=2)
+    assert len(nuts_calls) == 1
+
+
+def test_generate_false_does_not_trace_generated_quantities(nuts_calls):
+    model = _saved_model(generated_quantities=lambda key, mu: {"mu": mu * float(mu[0])})
+
+    results = sample(model, draws=2, warmup=3, chains=1, generate=False)
+
+    assert "generated_quantities" not in results
+    assert len(nuts_calls) == 1
+
+
 @pytest.mark.parametrize(
     "chain_method,mass_matrix",
     [("sequential", "diagonal"), ("vectorized", "diagonal"), ("sequential", "dense"), ("vectorized", "dense")],

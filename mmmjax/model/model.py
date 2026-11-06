@@ -266,9 +266,9 @@ class Model:
         ``transformed_parameters``. Only parameterization adjustments are added
         automatically.
     generated_quantities : callable, optional
-        Function returning named reporting quantities or simulated
-        observations. Receives a JAX random key first and then the model inputs
-        it needs.
+        Pure JAX-compatible function returning named reporting quantities or
+        simulated observations. Receives a JAX random key first and then the
+        model inputs it needs.
     dims : mapping of str to str or sequence of str, optional
         Named axes of each constrained parameter, apart from chain and draw,
         for custom parameterizations or explicit-shape declarations. Must agree
