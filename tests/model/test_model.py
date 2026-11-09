@@ -504,6 +504,38 @@ def test_model_media_time_requires_exposure_periods():
         Model(parameters={}, log_density=lambda media_time: jnp.sum(media_time), data=data)
 
 
+def test_generation_key_name_cannot_shadow_a_transformed_output():
+    data = prepare_data(pl.DataFrame({"period": [1, 2]}), time="period")
+    model = Model(
+        parameters={"location": Real()},
+        log_density=lambda mu: normal(mu, 0.0, 1.0),
+        transformed_parameters=lambda location: {"mu": location + 1.0},
+        generated_quantities=lambda mu: {"shifted": mu},
+        data=data,
+    )
+
+    with pytest.raises(TypeError, match="places input 'mu' where the random key is required"):
+        model.generate_quantities(jax.random.key(0), {"location": 0.0}, model.data)
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        pytest.param(lambda key, data, location: {"seed": key}, id="generated"),
+        pytest.param(lambda key, data, location: {"predictive": {"seed": key}}, id="grouped"),
+    ],
+)
+def test_generated_quantities_reject_random_key_outputs(block):
+    model = Model(
+        parameters={"location": Real()},
+        log_density=lambda data, location: normal(location, 0.0, 1.0),
+        generated_quantities=block,
+    )
+
+    with pytest.raises(TypeError, match="generated quantity 'seed' must not be a random key"):
+        model.generate_quantities(jax.random.key(0), {"location": 0.0}, {})
+
+
 def test_generation_key_name_cannot_shadow_a_time_input():
     data = prepare_data(pl.DataFrame({"period": [1, 2]}), time="period")
 
@@ -727,7 +759,7 @@ def test_generate_random_key_name_is_not_restricted() -> None:
     assert result["a"] == 1.0
 
 
-def test_generate_mapping_callback_preserves_supplied_parameter_order() -> None:
+def test_generate_mapping_callback_sees_one_parameter_order_eagerly_and_under_jit() -> None:
     def density(data, **parameters):
         return jnp.asarray(0.0)
 
@@ -735,9 +767,15 @@ def test_generate_mapping_callback_preserves_supplied_parameter_order() -> None:
         return {"values": jnp.stack(list(parameters.values()))}
 
     model = Model(parameters={"a": Real(), "b": Real()}, log_density=density, generated_quantities=generate)
-    quantities = model.generate_quantities(jax.random.key(0), {"b": 2.0, "a": 1.0}, {})
+    key = jax.random.key(0)
+    supplied = {"b": 2.0, "a": 1.0}
+    expected = jnp.array([1.0, 2.0])
 
-    assert jnp.array_equal(quantities["values"], jnp.array([2.0, 1.0]))
+    eager = model.generate_quantities(key, supplied, {})
+    compiled = jax.jit(model.generate_quantities)(key, supplied, {})
+
+    assert jnp.array_equal(eager["values"], expected)
+    assert jnp.array_equal(compiled["values"], expected)
 
 
 def test_generate_parameters_must_belong_to_model() -> None:

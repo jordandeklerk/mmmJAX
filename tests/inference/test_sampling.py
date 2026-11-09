@@ -4,7 +4,7 @@ import json
 import os
 import subprocess
 import sys
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from textwrap import dedent
 
 import jax
@@ -34,6 +34,7 @@ from mmmjax import (
     dirichlet,
     fit_data_scaling,
     fourier_features,
+    generate_quantities,
     geometric_adstock,
     half_normal,
     hill_saturation,
@@ -44,6 +45,7 @@ from mmmjax import (
     normal_rng,
     prepare_data,
     sample,
+    sample_prior,
 )
 
 
@@ -1612,6 +1614,50 @@ def test_generated_quantities_are_validated_before_chain_adaptation(nuts_calls, 
     assert not nuts_calls
 
 
+@pytest.mark.parametrize(
+    "block, group",
+    [
+        pytest.param(
+            lambda key, outcome, mu: {"log_likelihood": normal(outcome, mu, 10.0)}, "log_likelihood", id="sum"
+        ),
+        pytest.param(lambda key, mu: {"predictive": mu[:2]}, "predictive", id="short"),
+        pytest.param(lambda key, mu: {"predictive": {"outcome": mu[None]}}, "predictive", id="mapped"),
+    ],
+)
+def test_outputs_stored_as_outcome_require_its_shape(nuts_calls, block, group):
+    model = _saved_model(generated_quantities=block, generated_dims={})
+
+    with pytest.raises(ValueError, match=rf"'{group}' output 'outcome' with shape \(3,\), got shape"):
+        sample(model, draws=2, warmup=3, chains=1)
+    assert not nuts_calls
+
+
+def test_generated_dims_let_an_outcome_output_take_another_shape(nuts_calls):
+    model = _saved_model(
+        generated_quantities=lambda key, mu: {"predictive": mu[:2]},
+        generated_dims={"outcome": ("subset",)},
+    )
+
+    results = sample(model, draws=2, warmup=3, chains=1)
+
+    assert results["posterior_predictive"]["outcome"].dims == ("chain", "draw", "subset")
+
+
+def test_named_outputs_keep_their_own_shape(nuts_calls):
+    model = _saved_model(
+        generated_quantities=lambda key, outcome, mu: {
+            "predictive": {"first_weeks": mu[:2]},
+            "log_likelihood": {"total": normal(outcome, mu, 10.0)},
+        },
+        generated_dims={},
+    )
+
+    results = sample(model, draws=2, warmup=3, chains=1)
+
+    assert results["posterior_predictive"]["first_weeks"].shape == (1, 2, 2)
+    assert results["log_likelihood"]["total"].shape == (1, 2)
+
+
 def _callback_without_vmap_method(key, mu):
     doubled = jax.pure_callback(lambda value: 2 * np.asarray(value), jax.ShapeDtypeStruct(mu.shape, mu.dtype), mu)
     return {"mu": doubled}
@@ -1642,6 +1688,23 @@ def test_untraceable_generated_quantities_fail_before_continuing_chains(nuts_cal
     with pytest.raises(jax.errors.ConcretizationTypeError):
         continue_sampling(edited, first, draws=2)
     assert len(nuts_calls) == 1
+
+
+def test_generated_quantities_never_run_on_concrete_values(nuts_calls):
+    concrete = []
+
+    def block(key, mu):
+        with suppress(jax.errors.ConcretizationTypeError):
+            concrete.append(float(mu[0]))
+        return {"mu": mu}
+
+    model = _saved_model(generated_quantities=block)
+
+    results = sample(model, draws=2, warmup=3, chains=1)
+    generate_quantities(model, results)
+    sample_prior(model, {"intercept": Prior(normal, location=0.0, scale=1.0)}, draws=2)
+
+    assert not concrete
 
 
 def test_generate_false_does_not_trace_generated_quantities(nuts_calls):

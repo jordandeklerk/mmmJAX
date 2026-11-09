@@ -418,18 +418,21 @@ def _generation_layout(
     prepared: PreparedData | None,
     *,
     generate: bool,
-) -> tuple[dict[_OutputKey, jax.Array], dict[str, tuple[str, ...]]]:
-    """Preview one generated draw to fix output names and axis labels before sampling."""
+) -> tuple[dict[_OutputKey, NDArray[np.generic]], dict[str, tuple[str, ...]]]:
+    """Trace one generated draw to fix output names, shapes, and axis labels without running it."""
     if not (generate and model._has_generated_quantities):
         return {}, {}
-    outputs, arguments = model._generate_with_inputs(key, parameters, inputs)
-    # An eager preview accepts code that tracing rejects, so trace the evaluator the draws will use before sampling.
-    jax.eval_shape(
-        jax.vmap(lambda key, values: model._generate_with_inputs(key, values, inputs)[0]),
-        key[None],
-        {name: value[None] for name, value in parameters.items()},
-    )
-    return outputs, _output_dimensions(model, outputs, arguments, dimensions, prepared)
+    output_dimensions: dict[str, tuple[str, ...]] = {}
+
+    def evaluate(key: jax.Array, values: dict[str, jax.Array]) -> dict[_OutputKey, jax.Array]:
+        outputs, arguments = model._generate_with_inputs(key, values, inputs)
+        output_dimensions.update(_output_dimensions(model, outputs, arguments, dimensions, prepared))
+        return outputs
+
+    # The draws run this vectorized, so code that tracing rejects fails here and not after sampling.
+    shapes = jax.eval_shape(jax.vmap(evaluate), key[None], {name: value[None] for name, value in parameters.items()})
+    outputs = {name: np.zeros(shape.shape[1:], shape.dtype) for name, shape in shapes.items()}
+    return outputs, output_dimensions
 
 
 def _run_results(
@@ -778,8 +781,9 @@ def sample_prior(
 
     if generate and model._has_generated_quantities:
         initial = {name: value[0] for name, value in parameters.items()}
-        outputs, arguments = model._generate_with_inputs(preview_key, initial, inputs)
-        output_dimensions = _output_dimensions(model, outputs, arguments, dimensions, prepared)
+        _, output_dimensions = _generation_layout(
+            model, inputs, initial, preview_key, dimensions, prepared, generate=generate
+        )
         keys = jax.random.split(generation_key, draws)
         generated = _evaluate_draws(
             lambda key, values: model._generate_with_inputs(key, values, inputs)[0],
@@ -976,8 +980,7 @@ def generate_quantities(
 
     generation_key, preview_key = jax.random.split(jax.random.key(int(seed)))
     initial = {name: value[0, 0] for name, value in posterior.items()}
-    outputs, arguments = model._generate_with_inputs(preview_key, initial, inputs)
-    output_dimensions = _output_dimensions(model, outputs, arguments, dimensions, prepared)
+    _, output_dimensions = _generation_layout(model, inputs, initial, preview_key, dimensions, prepared, generate=True)
     chains, draws = next(iter(posterior.values())).shape[:2]
     keys = jax.random.split(generation_key, (chains, draws))
     generated = _evaluate_draws(
@@ -1232,6 +1235,18 @@ def _output_dimensions(
 
     dimensions: dict[str, tuple[str, ...]] = {}
     for (group, name), value in outputs.items():
+        # A summed or reshaped array would store without complaint and then misalign with the observed outcome.
+        if (
+            name == "outcome"
+            and group in (_ResultGroup.PREDICTIVE, _ResultGroup.LOG_LIKELIHOOD)
+            and name not in model._generated_dims
+            and outcome_shape is not None
+            and value.shape != outcome_shape
+        ):
+            raise ValueError(
+                f"generated_quantities must return {str(group)!r} output 'outcome' with shape {outcome_shape}, "
+                f"got shape {value.shape}. Return one value per observation or name its axes in generated_dims"
+            )
         fallback = tuple(f"{name}_dim_{index}" for index in range(value.ndim))
         inherited = {axes for argument, axes in input_dimensions.items() if value is arguments.get(argument)}
         input_axes = {input_dimensions[argument] for argument in auxiliary_inputs if value is arguments.get(argument)}
