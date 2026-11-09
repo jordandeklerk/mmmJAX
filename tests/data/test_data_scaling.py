@@ -241,6 +241,29 @@ def test_population_outcome_scaling_rejects_changed_population_without_scaled_me
         getattr(fitted, operation)(prediction)
 
 
+@pytest.mark.parametrize("operation", ["transform", "inverse_transform"])
+def test_population_outcome_scaling_accepts_training_population_rounded_to_float32(training_data, operation):
+    training_data.arrays["population"] = np.array([39.538223, 29.145505])
+    fitted = fit_data_scaling(training_data, scale_outcome="population", media_method=None)
+    rounded = deepcopy(training_data)
+    rounded.arrays["population"] = training_data.arrays["population"].astype(np.float32)
+    expected = getattr(fitted, operation)(training_data).arrays["outcome"]
+
+    result = getattr(fitted, operation)(rounded).arrays["outcome"]
+
+    np.testing.assert_array_equal(result, expected)
+
+
+@pytest.mark.parametrize("operation", ["transform", "inverse_transform"])
+def test_population_outcome_scaling_rejects_integer_population_that_truncates_training_values(training_data, operation):
+    training_data.arrays["population"] = np.array([10.5, 20.0])
+    fitted = fit_data_scaling(training_data, scale_outcome="population", media_method=None)
+    prediction = deepcopy(training_data)
+    prediction.arrays["population"] = np.array([10, 20])
+    with pytest.raises(ValueError, match="population"):
+        getattr(fitted, operation)(prediction)
+
+
 def test_population_outcome_scaling_allows_changed_population_when_outcome_is_omitted(training_data):
     fitted = fit_data_scaling(training_data, scale_outcome="population", media_method=None)
     prediction = deepcopy(training_data)

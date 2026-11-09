@@ -217,12 +217,17 @@ class DataScaling:
             self._population is not None
             and "population" in aligned.arrays
             and any(name in aligned.arrays for name in self._population_roles)
-            and not np.array_equal(aligned.arrays["population"], self._population)
         ):
-            raise ValueError(
-                "population differs from the estimates used to fit scaling. "
-                "Keep the training population estimates when reusing these transformations"
-            )
+            population = aligned.arrays["population"]
+            floating = np.issubdtype(population.dtype, np.floating)
+            # A float32 model stores the training population rounded, so floats compare at their own precision.
+            # Integers compare exactly, so truncating a fractional population still counts as a change.
+            stored = self._population.astype(population.dtype) if floating else self._population
+            if not np.array_equal(population, stored):
+                raise ValueError(
+                    "population differs from the estimates used to fit scaling. "
+                    "Keep the training population estimates when reusing these transformations"
+                )
 
         for name, scaling in self._fitted:
             if name not in aligned.arrays:
