@@ -117,6 +117,26 @@ def test_data_scaling_preserves_unselected_values_and_independent_storage(traini
     assert training_data.columns == original.columns
 
 
+def test_data_scaling_keeps_small_control_spreads_at_large_levels_in_float32():
+    frame = pl.DataFrame(
+        {
+            "week": [1, 2, 3, 4, 5, 6],
+            "sales": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            "control": [20_000_000.5, 20_000_001.5, 20_000_003.0, 19_999_999.0, 20_000_002.0, 20_000_000.0],
+        }
+    )
+    data = prepare_data(frame, time="week", outcome="sales", controls=["control"])
+    with jax.enable_x64(False):
+        fitted = fit_data_scaling(data)
+        offset = np.asarray(fitted.transformations["controls"].offset, dtype=np.float64)
+        scale = np.asarray(fitted.transformations["controls"].scale, dtype=np.float64)
+        expected = (data.arrays["controls"] - offset) / scale
+
+        result = fitted.transform(data).arrays["controls"]
+
+    np.testing.assert_allclose(result, expected, rtol=2e-6, atol=0)
+
+
 @pytest.mark.parametrize("adjust_population", [False, True])
 @pytest.mark.parametrize("scale_outcome", [True, "population"])
 def test_inverse_data_scaling_recovers_values_with_zero_exposures(training_data, adjust_population, scale_outcome):

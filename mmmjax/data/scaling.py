@@ -237,8 +237,13 @@ class DataScaling:
             # Prepared data stays on the host until it is passed into model evaluation
             offset, divisor = np.asarray(scaling.offset), np.asarray(scaling.scale)
             with np.errstate(over="ignore", invalid="ignore"):
-                values = array.astype(dtype)
-                result = values * divisor + offset if inverse else (values - offset) / divisor
+                # Rounding a large level before subtracting it erases a small spread, so transform subtracts in float64.
+                # The inverse returns the narrow dtype anyway, so float64 arithmetic adds no useful precision there.
+                if inverse:
+                    result = array.astype(dtype) * divisor + offset
+                else:
+                    centered = array.astype(np.float64) - offset
+                    result = (centered / divisor).astype(dtype)
             if not np.isfinite(result).all():
                 raise ValueError(
                     f"input {name!r} produces nonfinite values after scaling. "
