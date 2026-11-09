@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import polars as pl
@@ -468,6 +469,19 @@ def test_media_metrics_reuse_fitted_scales_and_report_original_outcome_units(alr
     metrics = media_metrics(model, results, quantity="expected_users", incremental_increase=0.25)
     np.testing.assert_allclose(metrics["reference_spend"], data.arrays["spend"].sum(axis=(0, 1)), rtol=2e-6)
     _assert_closed_form(metrics, data, results, scaling=scaling)
+
+
+def test_media_metrics_accept_population_estimates_that_float32_rounds():
+    data = _data(grouped=True)
+    data.arrays["population"] = np.array([39.538223, 29.145505])
+    with jax.enable_x64(False):
+        scaling = fit_data_scaling(data, scale_outcome="population", adjust_population=True)
+        model = _model(data, scaling=scaling)
+        results = _results(data)
+
+        metrics = media_metrics(model, results, quantity="expected_users", incremental_increase=0.25)
+
+        _assert_closed_form(metrics, data, results, scaling=scaling)
 
 
 @pytest.mark.parametrize("already_scaled", [False, True])

@@ -217,12 +217,17 @@ class DataScaling:
             self._population is not None
             and "population" in aligned.arrays
             and any(name in aligned.arrays for name in self._population_roles)
-            and not np.array_equal(aligned.arrays["population"], self._population)
         ):
-            raise ValueError(
-                "population differs from the estimates used to fit scaling. "
-                "Keep the training population estimates when reusing these transformations"
-            )
+            population = aligned.arrays["population"]
+            floating = np.issubdtype(population.dtype, np.floating)
+            # A float32 model stores the training population rounded, so floats compare at their own precision.
+            # Integers compare exactly, so truncating a fractional population still counts as a change.
+            stored = self._population.astype(population.dtype) if floating else self._population
+            if not np.array_equal(population, stored):
+                raise ValueError(
+                    "population differs from the estimates used to fit scaling. "
+                    "Keep the training population estimates when reusing these transformations"
+                )
 
         for name, scaling in self._fitted:
             if name not in aligned.arrays:
@@ -232,8 +237,13 @@ class DataScaling:
             # Prepared data stays on the host until it is passed into model evaluation
             offset, divisor = np.asarray(scaling.offset), np.asarray(scaling.scale)
             with np.errstate(over="ignore", invalid="ignore"):
-                values = array.astype(dtype)
-                result = values * divisor + offset if inverse else (values - offset) / divisor
+                # Rounding a large level before subtracting it erases a small spread, so transform subtracts in float64.
+                # The inverse returns the narrow dtype anyway, so float64 arithmetic adds no useful precision there.
+                if inverse:
+                    result = array.astype(dtype) * divisor + offset
+                else:
+                    centered = array.astype(np.float64) - offset
+                    result = (centered / divisor).astype(dtype)
             if not np.isfinite(result).all():
                 raise ValueError(
                     f"input {name!r} produces nonfinite values after scaling. "
