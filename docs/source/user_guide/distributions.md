@@ -52,9 +52,10 @@ A discrete family's pointwise form ends in `_logpmf` rather than `_logpdf`, as
 `generated_quantities` returns the log likelihood under the
 [supplied key](../getting_started/what_is_mmmjax.md#a-model-is-a-program)
 `"log_likelihood"`, and it needs one term per observation from the pointwise
-form. If you return the summed form instead, it's stored without an error,
-but a check that scores the weeks one at a time then sees the whole series as a
-single week.
+form. If you return the summed form directly, {func}`~mmmjax.sample` stops with
+a shape error before warmup. Under a name of your own in a mapping it's still
+stored without an error, and a check that scores the weeks one at a time then
+sees the whole series as a single week.
 :::
 
 The functions of one family agree, so draws from `normal_rng` settle on the

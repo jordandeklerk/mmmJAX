@@ -5,6 +5,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from enum import StrEnum
+from inspect import signature
 from typing import Literal, override
 
 import jax
@@ -139,6 +140,7 @@ class _PreparedBlocks(_Blocks):
     """Supply named inputs from a prepared data bundle owned by the model."""
 
     training: _ModelData
+    generation_key: str | None = None
 
     def validated_data(self, data: object) -> _ModelData:
         """Keep prepared inputs tied to this model and its training labels."""
@@ -166,6 +168,11 @@ class _PreparedBlocks(_Blocks):
         assert self.generate is not None
         inputs = self.validated_data(data)
         effects = self._transformed(parameters, inputs)
+        # Transformed outputs have no names until they run, so the binder cannot check the key slot against them.
+        if self.generation_key in effects:
+            raise TypeError(
+                f"generated_quantities places input {self.generation_key!r} where the random key is required"
+            )
         arguments = _callback_inputs(self.generation_inputs, inputs, effects, parameters, name="generated_quantities")
         return self.generate(key, **arguments), arguments
 
@@ -266,9 +273,9 @@ class Model:
         ``transformed_parameters``. Only parameterization adjustments are added
         automatically.
     generated_quantities : callable, optional
-        Function returning named reporting quantities or simulated
-        observations. Receives a JAX random key first and then the model inputs
-        it needs.
+        Pure JAX-compatible function returning named reporting quantities or
+        simulated observations. Receives a JAX random key first and then the
+        model inputs it needs.
     dims : mapping of str to str or sequence of str, optional
         Named axes of each constrained parameter, apart from chain and draw,
         for custom parameterizations or explicit-shape declarations. Must agree
@@ -304,7 +311,9 @@ class Model:
     With prepared data, an array returned directly under ``predictive`` or
     ``log_likelihood`` is stored as ``outcome``, the name the observed data
     carries, so ArviZ can pair the two. A mapping there names each output
-    instead, and models without prepared data always need one.
+    instead, and models without prepared data always need one. An output stored
+    as ``outcome`` must have the outcome's shape unless ``generated_dims`` names
+    its axes, though a square panel with its axes swapped still passes.
 
     Examples
     --------
@@ -837,9 +846,7 @@ class Model:
                 "Generated quantities are unavailable because this model has no generated_quantities callback"
             )
         constrained = self._constrained_values(parameters)
-        # Data-first callbacks taking **parameters see the caller's ordering.
-        ordered = {name: constrained[name] for name in parameters}
-        generated, arguments = self._blocks.evaluate_generated(key, ordered, data)
+        generated, arguments = self._blocks.evaluate_generated(key, constrained, data)
         reserved = frozenset() if self._data is None else self._data.reserved_names
         outputs = _collect_outputs(generated, reserved, prepared=self._data is not None)
         return outputs, arguments
@@ -869,11 +876,17 @@ def _collect_outputs(generated: object, reserved: frozenset[str], *, prepared: b
     quantities: dict[_OutputKey, jax.Array] = {}
     for output_key, value in sorted(outputs.items()):
         try:
-            quantities[output_key] = jnp.asarray(value)
+            quantity = jnp.asarray(value)
         except (TypeError, ValueError) as exc:
             raise TypeError(
                 f"generated quantity {output_key[1]!r} must be array-like, got {type(value).__name__}"
             ) from exc
+        if jnp.issubdtype(quantity.dtype, jax.dtypes.prng_key):
+            raise TypeError(
+                f"generated quantity {output_key[1]!r} must not be a random key. "
+                "Return jax.random.key_data(key) to store its bits"
+            )
+        quantities[output_key] = quantity
     return quantities
 
 
@@ -1086,6 +1099,7 @@ def _bind_blocks(
         has_transformed=has_transformed,
     )
     generation_inputs: _InputBindings = ()
+    generation_key = None
     if generated_quantities is not None:
         generation_inputs = _bind_inputs(
             generated_quantities,
@@ -1095,6 +1109,7 @@ def _bind_blocks(
             leading_key=True,
             has_transformed=has_transformed,
         )
+        generation_key = next(iter(signature(generated_quantities).parameters))
     prepared = _PreparedBlocks(
         log_density=log_density,
         generate=generated_quantities,
@@ -1105,6 +1120,7 @@ def _bind_blocks(
         density_inputs=density_inputs,
         generation_inputs=generation_inputs,
         training=data,
+        generation_key=generation_key,
     )
     return prepared, data
 
