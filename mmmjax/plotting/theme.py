@@ -1,10 +1,13 @@
 """House style shared by the mmmjax plots."""
 
 from collections.abc import Hashable, Iterable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import plotnine as pn
-from matplotlib.typing import RcKeyType
+
+if TYPE_CHECKING:
+    # matplotlib added this name in 3.11, so a runtime import would break the older releases the package allows
+    from matplotlib.typing import RcKeyType
 
 __all__ = ["theme_mmmjax"]
 
@@ -71,7 +74,7 @@ def _channel_colors(order: Iterable[Hashable], shown: Iterable[Hashable]) -> dic
     return colors
 
 
-def _matplotlib_style() -> dict[RcKeyType, Any]:
+def _matplotlib_style() -> "dict[RcKeyType, Any]":
     """Give the ArviZ diagnostics the look of the plotnine theme."""
     style: dict[RcKeyType, Any] = {
         "axes.prop_cycle": f"cycler(color={_colors(10)!r})",
