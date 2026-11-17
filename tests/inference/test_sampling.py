@@ -2126,6 +2126,80 @@ def test_continuation_rejects_a_model_with_a_different_log_density(normal_model,
     assert len(nuts_calls) == 1
 
 
+def _rebuilt_model(change=None):
+    """Rebuild one prepared model with a single change to its generated outputs or its data."""
+    frame = pd.DataFrame({"week": [10, 11, 12], "sales": [100.0, 150.0, 200.0], "price": [5.0, 4.0, 3.0]})
+    if change == "outcome":
+        frame["sales"] = [100.0, 150.0, 210.0]
+    if change == "control":
+        frame["price"] = [5.0, 4.0, 2.0]
+    if change == "labels":
+        frame["week"] = [20, 21, 22]
+    data = prepare_data(frame, time="week", outcome="sales", controls=["price"])
+
+    def generate(key, outcome, intercept):
+        mean = jnp.full_like(outcome, intercept)
+        outputs = {
+            "predictive": {"prediction": normal_rng(key, mean, 10.0)},
+            "log_likelihood": {"pointwise": normal_logpdf(outcome, mean, 10.0)},
+            "mean": mean,
+            "residual": outcome - mean,
+        }
+        if change == "renamed":
+            outputs["average"] = outputs.pop("mean")
+        if change == "added":
+            outputs["doubled"] = 2.0 * mean
+        if change == "reshaped":
+            outputs["mean"] = intercept
+        if change == "dropped":
+            del outputs["log_likelihood"]
+        return outputs
+
+    # The residual keeps the time axis in its group, so a reshaped mean changes no labels.
+    generated_dims = {"residual": ("time",)}
+    if change == "renamed":
+        generated_dims["average"] = ("time",)
+    elif change != "reshaped":
+        generated_dims["mean"] = ("time",)
+    return Model(
+        parameters={"intercept": Real()},
+        log_density=lambda outcome, intercept: normal(outcome, intercept, 10.0) + normal(intercept, 150.0, 50.0),
+        generated_quantities=generate,
+        data=data,
+        generated_dims=generated_dims,
+    )
+
+
+@pytest.mark.parametrize("change", ["renamed", "added", "reshaped", "dropped"])
+def test_continuation_rejects_a_model_with_different_generated_outputs(nuts_calls, change):
+    result = sample(_rebuilt_model(), draws=2, warmup=3, chains=2, seed=3, progress=False)
+
+    with pytest.raises(ValueError, match="group"):
+        continue_sampling(_rebuilt_model(change), result, draws=2, progress=False)
+
+    assert len(nuts_calls) == 1
+
+
+@pytest.mark.parametrize("change", ["outcome", "control", "labels"])
+def test_continuation_rejects_a_model_with_different_data(nuts_calls, change):
+    result = sample(_rebuilt_model(), draws=2, warmup=3, chains=2, seed=3, progress=False)
+
+    with pytest.raises(ValueError, match="data in the"):
+        continue_sampling(_rebuilt_model(change), result, draws=2, progress=False)
+
+    assert len(nuts_calls) == 1
+
+
+def test_continuation_accepts_a_rebuilt_model_within_one_rounding_step_of_stored_data(nuts_calls):
+    result = sample(_rebuilt_model(), draws=2, warmup=3, chains=2, seed=3, progress=False)
+    controls = result["constant_data"]["controls"].values
+    controls[...] = np.nextafter(controls, np.inf)
+
+    continued = continue_sampling(_rebuilt_model(), result, draws=2, progress=False)
+
+    assert continued["posterior"].sizes["draw"] == 4
+
+
 def test_prepared_models_reject_data_when_continuing():
     model, _ = _prepared_model()
     result = sample(model, draws=2, warmup=60, chains=1, seed=3, progress=False)

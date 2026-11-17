@@ -362,7 +362,9 @@ simulation.
 
 {func}`~mmmjax.continue_sampling` picks up each chain where it stopped, with
 the step size and mass matrix from warmup, so it adds draws without adapting
-again.
+again. It needs the model and data that produced `results`, so if you've
+changed either one since the run, it stops with an error and the changed model
+needs a run of its own with {func}`~mmmjax.sample`.
 
 ```{code-cell} ipython3
 :tags: [skip-execution]
