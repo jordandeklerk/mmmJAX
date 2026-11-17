@@ -2114,6 +2114,18 @@ def test_continuation_rejects_invalid_results_counts_and_sampling_changes_before
             continue_sampling(normal_model, result, data=0.0, draws=2, progress=False, **{name: None})
 
 
+@pytest.mark.parametrize("change", ["data", "likelihood"])
+def test_continuation_rejects_a_model_with_a_different_log_density(normal_model, nuts_calls, change):
+    result = sample(normal_model, data=0.0, draws=2, warmup=3, chains=2, seed=11, progress=False)
+    wider = Model(parameters={"location": Real()}, log_density=lambda data, location: normal(location, data, 2.0))
+    model, data = (normal_model, 1.0) if change == "data" else (wider, 0.0)
+
+    with pytest.raises(ValueError, match="log density"):
+        continue_sampling(model, result, data=data, draws=2, progress=False)
+
+    assert len(nuts_calls) == 1
+
+
 def test_prepared_models_reject_data_when_continuing():
     model, _ = _prepared_model()
     result = sample(model, draws=2, warmup=60, chains=1, seed=3, progress=False)

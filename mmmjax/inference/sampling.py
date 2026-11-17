@@ -327,7 +327,10 @@ def continue_sampling(
     -----
     A ``ValueError`` is raised when the JAX precision setting differs from
     the original run's, or when a parallel run has fewer local devices than
-    chains. A different model or dataset needs a new run with :func:`sample`.
+    chains. It is also raised when the model no longer reproduces the log
+    density stored with each chain's final position, as happens after a
+    change to the model or its data. A different model or dataset needs a new
+    run with :func:`sample`.
 
     A new draw with a nonfinite log density raises a ``RuntimeError`` and
     leaves ``results`` unchanged. Divergent transitions and draws that reach
@@ -365,6 +368,16 @@ def continue_sampling(
 
     def logdensity(position: dict[str, jax.Array]) -> jax.Array:
         return model.log_density(position, inputs)
+
+    # Another model or dataset would pull the chains toward a different posterior and mix it into the stored draws.
+    current = np.asarray(jax.jit(jax.vmap(logdensity))(continuation.positions))
+    stored = np.asarray(continuation.logdensity)
+    tolerance = np.sqrt(np.finfo(stored.dtype).eps) * np.maximum(1.0, np.abs(stored))
+    if not np.all(np.abs(current - stored) <= tolerance):
+        raise ValueError(
+            "model gives a different log density at the stored positions than the run that produced results. "
+            "Continue with the original model and data, or start a new run with sample"
+        )
 
     prepared = _result_data(model)
     dimensions, _ = _parameter_metadata(model)
