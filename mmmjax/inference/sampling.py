@@ -327,7 +327,13 @@ def continue_sampling(
     -----
     A ``ValueError`` is raised when the JAX precision setting differs from
     the original run's, or when a parallel run has fewer local devices than
-    chains. A different model or dataset needs a new run with :func:`sample`.
+    chains.
+
+    The model must still match ``results``. A ``ValueError`` is raised when
+    its result groups, variables, labels, or prepared data differ from the
+    stored ones, or when it no longer reproduces the log density stored with
+    each chain's final position. A different model or dataset needs a new run
+    with :func:`sample`.
 
     A new draw with a nonfinite log density raises a ``RuntimeError`` and
     leaves ``results`` unchanged. Divergent transitions and draws that reach
@@ -369,9 +375,29 @@ def continue_sampling(
     prepared = _result_data(model)
     dimensions, _ = _parameter_metadata(model)
     initial_parameters = model.constrain({name: value[0] for name, value in continuation.positions.items()})
-    _, output_dimensions = _generation_layout(
+    outputs, output_dimensions = _generation_layout(
         model, inputs, initial_parameters, generation_keys[0], dimensions, prepared, generate=generate
     )
+    # One traced draw holds every group the new draws would join, so a model that no longer fits them stops here.
+    preview = _collect_sampling_results(
+        model,
+        {name: value[None, None] for name, value in initial_parameters.items()},
+        {name: value[None, None] for name, value in outputs.items()},
+        None,
+        output_dimensions,
+    )
+    _validate_continuation_groups(results, preview)
+
+    # Another model or dataset would pull the chains toward a different posterior and mix it into the stored draws.
+    current = np.asarray(jax.jit(jax.vmap(logdensity))(continuation.positions))
+    stored = np.asarray(continuation.logdensity)
+    tolerance = np.sqrt(np.finfo(stored.dtype).eps) * np.maximum(1.0, np.abs(stored))
+    if not np.all(np.abs(current - stored) <= tolerance):
+        raise ValueError(
+            "model gives a different log density at the stored positions than the run that produced results. "
+            "Continue with the original model and data, or start a new run with sample"
+        )
+
     (unconstrained, stats), resumed = _sample_nuts(
         logdensity,
         continuation.positions,
@@ -615,6 +641,47 @@ def _restore_continuation(results: object, model: Model) -> tuple[_NUTSContinuat
         # Results saved before per-chain keys hold one key that each run split by chain position.
         generation_keys = jax.random.split(generation_keys, continuation.step_size.shape[0])
     return continuation, generation_keys, bool(int(state.attrs["generate"]))
+
+
+def _validate_continuation_groups(results: xr.DataTree, preview: xr.DataTree) -> None:
+    """Require one draw from the model to line up with every group stored in results."""
+    remedy = "Continue with the original model and data, or start a new run with sample"
+    stored_groups = set(results.children) - {"sampling_state", "sample_stats", "unconstrained_posterior"}
+    if stored_groups != set(preview.children):
+        raise ValueError(
+            f"model produces the result groups {sorted(preview.children)}, but results hold {sorted(stored_groups)}. "
+            f"{remedy}"
+        )
+    for group in sorted(stored_groups):
+        stored = results[group].to_dataset()
+        current = preview[group].to_dataset()
+        sampled = "draw" in stored.dims
+        if sampled:
+            # Chains and draw counts differ by design, so only the layout of a single draw has to agree.
+            stored = stored.isel({axis: 0 for axis in ("chain", "draw") if axis in stored.dims}, drop=True)
+            current = current.isel(chain=0, draw=0, drop=True)
+        matches = (
+            set(stored.data_vars) == set(current.data_vars)
+            and all(
+                stored[name].dims == current[name].dims and stored[name].shape == current[name].shape
+                for name in stored.data_vars
+            )
+            and stored.coords.to_dataset().equals(current.coords.to_dataset())
+            and (sampled or all(_same_data(current[name].values, stored[name].values) for name in stored.data_vars))
+        )
+        if not matches:
+            content = "variables and labels" if sampled else "data"
+            raise ValueError(f"model no longer matches the {content} in the {group!r} group of results. {remedy}")
+
+
+def _same_data(supplied: NDArray[np.generic], saved: NDArray[np.generic]) -> bool:
+    """Compare floats up to the rounding step a library or platform change can move them by."""
+    if not (np.issubdtype(supplied.dtype, np.floating) and saved.dtype.kind in "biuf"):
+        identical = bool(np.array_equal(supplied, saved))
+        return identical
+    tolerance = float(np.sqrt(np.finfo(supplied.dtype.name).eps))
+    close = bool(np.allclose(supplied, saved, rtol=tolerance, atol=tolerance, equal_nan=True))
+    return close
 
 
 def _restore_keys(words: NDArray[np.generic], impl: str | None) -> jax.Array:
